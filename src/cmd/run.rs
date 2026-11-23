@@ -34,7 +34,10 @@ pub fn run_program(args: &Args) -> Result<bool, String> {
                 return Err(format!("{} Its parameter `{}` is a `{ty}`", not_given(&ty, "`main`"), pm.name));
             }
         }
-        let ir = if args.flag("--trace") { llvm::compile_traced(p, "main") } else { llvm::compile(p, "main") };
+        // the checks the last `verify` proved are left out (unless --all-checks)
+        let file = if matches!(src, Source::File(_)) && args.val("--file").is_none() { Some(path.to_string_lossy().to_string()) } else { args.val("--file").map(String::from) };
+        let proofs = proofs_for(&src, file.as_deref(), args);
+        let ir = llvm::compile_proven(p, "main", proofs, args.flag("--trace")).map(|r| r.0);
         let ir = ir.map_err(|e| format!("the program can't be compiled yet: {e}"))?;
         std::process::exit(llvm::jit::run(&ir, &prog, &program_args)?);
     };
@@ -68,8 +71,10 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
             stmts.push(Stmt::Var(n, Some(pm.ty.clone()), x));
             call_args.push(Expr::Mut(Box::new(Expr::Var(n))));
         } else {
-            // (its type and refinements are checked where `f` takes it, which names the argument)
-            stmts.push(Stmt::Let(Pattern::Bind(n), None, x));
+            // (its type and refinements are checked where `f` takes it, which names the
+            // argument; a sized integer's type is given, so a literal is one)
+            let sized = matches!(&pm.ty, TypeExpr::Named(t, a) if a.is_empty() && types::Width::of(t.as_str()).is_some());
+            stmts.push(Stmt::Let(Pattern::Bind(n), sized.then(|| pm.ty.clone()), x));
             call_args.push(Expr::Var(n));
         }
     }
@@ -115,7 +120,7 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
         llvm::compile_comptime(&checked.compiled, &[probe_name.clone()])
     };
     let (ir, roots, shapes) = ir.map_err(|e| format!("`{name}` can't be compiled yet: {e}"))?;
-    let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, true)?.pop().ok_or("nothing ran")?;
+    let (result, printed) = llvm::jit::run_kept(&ir, &roots, &shapes, i64::MAX, llvm::jit::release())?.pop().ok_or("nothing ran")?;
     print!("{printed}");
     match result {
         Ok(v) => {
@@ -143,8 +148,20 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
 /// `strata test`: each `test` block, compiled; a test that can't be
 /// compiled yet fails, saying why.
 pub fn run_tests(args: &Args) -> Result<bool, String> {
-    let src = load(&args)?;
-    let p = src.program();
+    // `strata --file core test`: core's own tests (core.mem's), with core as
+    // this strata is built with it
+    let core_tests;
+    let src;
+    let p = match crate::core::dir_of(args.val("--file")) {
+        Some(_) => {
+            core_tests = crate::core::tests();
+            &core_tests
+        }
+        None => {
+            src = load(&args)?;
+            src.program()
+        }
+    };
     let rep = full_checked(p).report;
     if !rep.ok() {
         print_errors(&rep);
@@ -254,9 +271,10 @@ pub fn not_given(ty: &str, what: &str) -> String {
         RUN_MODE => " How the program is run is hidden by default, so it behaves the same everywhere: to let it ask, say `mode = true` under `[run]` in strata.toml.",
         "std.fs.Files" => " Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted.",
         "std.process.Environment" => " Name the capability instead, `process: Process` (std.process), and pass it where `Environment` is wanted.",
+        "std.process.Commands" => " Name the capability instead, `mut launcher: Launcher` (std.process), and pass it where `Commands` is wanted.",
         _ => "",
     };
-    format!("{what} can ask for `Console` (std.io), capabilities (`Disk` from std.fs, `Process` from std.process, or the program's own `capability ...`), and options: a record that implements `CommandLine` (std.cli).{instead}")
+    format!("{what} can ask for `Console` (std.io), capabilities (`Disk` from std.fs, `Process` or `Launcher` from std.process, or the program's own `capability ...`), and options: a record that implements `CommandLine` (std.cli).{instead}")
 }
 
 /// `strata serve [PATH] [--port N]`: serve the program's `handle`, or run

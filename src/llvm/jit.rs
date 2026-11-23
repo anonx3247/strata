@@ -1,6 +1,6 @@
 //! The JIT: `strata run --jit` runs the program's LLVM IR in this process.
 //! The IR is the text `compile` writes (one code generator for both): LLVM's
-//! libraries parse it, optimize it as clang -O2 would, and compile it to
+//! libraries parse it, optimize it as clang -O2 would with `--release`, and compile it to
 //! machine code in memory. Its runtime calls go to the C runtime built into
 //! strata (build.rs), the one `strata build` links with.
 
@@ -23,6 +23,7 @@ unsafe extern "C" {
     fn strata_host_remove();
     fn strata_host_make_dir();
     fn strata_host_list_dir();
+    fn strata_host_run();
     fn strata_host_exists();
     fn strata_host_write_file();
     fn strata_host_read_file();
@@ -32,6 +33,12 @@ unsafe extern "C" {
     fn strata_pid();
     fn strata_int_from_u64();
     fn strata_int_bits();
+    fn strata_word_div();
+    fn strata_word_mod();
+    fn strata_uword_div();
+    fn strata_uword_mod();
+    fn strata_word_shift_fault();
+    fn strata_int_fit();
     fn strata_cstr();
     fn strata_cstr_free();
     fn strata_str_from_c();
@@ -54,6 +61,10 @@ unsafe extern "C" {
     fn strata_main_error();
     fn strata_str_cmp();
     fn strata_dup();
+    fn strata_list_owned();
+    fn strata_list_put();
+    fn strata_list_insert();
+    fn strata_list_remove_at();
     fn strata_set_code_host(v: extern "C" fn() -> i64, s: extern "C" fn(*mut i64) -> i64);
     fn strata_host_code_version();
     fn strata_host_code_snapshot();
@@ -66,6 +77,28 @@ unsafe extern "C" {
     fn strata_release();
     fn strata_free();
     fn strata_unique();
+    fn strata_scope_begin();
+    fn strata_scope_end();
+    fn strata_spawn();
+    fn strata_await();
+    fn strata_channel_new();
+    fn strata_channel_drop();
+    fn strata_channel_send();
+    fn strata_channel_recv();
+    fn strata_channel_close();
+    fn strata_select();
+    fn strata_virtual_timeline();
+    fn strata_virtual_now();
+    fn strata_virtual_sleep();
+    fn strata_host_now();
+    fn strata_host_sleep();
+    fn strata_cancelled();
+    fn strata_panic();
+    fn strata_was_unwound();
+    fn strata_unwound();
+    fn strata_scope_cancel();
+    static strata_cancel_any: i32;
+    static strata_slow_counts: i32;
     fn strata_str_eq();
     fn strata_str_len();
     fn strata_fault();
@@ -73,6 +106,8 @@ unsafe extern "C" {
     fn strata_leave();
     fn strata_overflow();
     fn strata_div();
+    fn strata_div_nz();
+    fn strata_mod_nz();
     fn strata_gen_string();
     fn strata_gen_len();
     fn strata_gen_float();
@@ -80,6 +115,10 @@ unsafe extern "C" {
     fn strata_random_unit();
     fn strata_random();
     fn strata_int_from_i64();
+    fn strata_raw_alloc();
+    fn strata_raw_reserve();
+    fn strata_raw_size();
+    fn strata_raw_fail();
     fn strata_int_to_float();
     fn strata_int_lit();
     fn strata_int_eq();
@@ -96,10 +135,8 @@ unsafe extern "C" {
     fn strata_fmod();
     fn strata_finite();
     fn strata_show_int();
-    fn strata_json_int();
     fn strata_show_float();
     fn strata_show_bool();
-    fn strata_json_str();
     fn strata_debug_str();
     fn strata_print();
     fn strata_str_split();
@@ -133,6 +170,12 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_concat", strata_concat as *const () as usize),
         ("strata_int_from_u64", strata_int_from_u64 as *const () as usize),
         ("strata_int_bits", strata_int_bits as *const () as usize),
+        ("strata_word_div", strata_word_div as *const () as usize),
+        ("strata_word_mod", strata_word_mod as *const () as usize),
+        ("strata_uword_div", strata_uword_div as *const () as usize),
+        ("strata_uword_mod", strata_uword_mod as *const () as usize),
+        ("strata_word_shift_fault", strata_word_shift_fault as *const () as usize),
+        ("strata_int_fit", strata_int_fit as *const () as usize),
         ("strata_cstr", strata_cstr as *const () as usize),
         ("strata_cstr_free", strata_cstr_free as *const () as usize),
         ("strata_str_from_c", strata_str_from_c as *const () as usize),
@@ -144,6 +187,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_host_remove", strata_host_remove as *const () as usize),
         ("strata_host_make_dir", strata_host_make_dir as *const () as usize),
         ("strata_host_list_dir", strata_host_list_dir as *const () as usize),
+        ("strata_host_run", strata_host_run as *const () as usize),
         ("strata_host_exists", strata_host_exists as *const () as usize),
         ("strata_host_write_file", strata_host_write_file as *const () as usize),
         ("strata_host_read_file", strata_host_read_file as *const () as usize),
@@ -175,6 +219,10 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_str_cmp", strata_str_cmp as *const () as usize),
         ("strata_alloc", super::native::strata_alloc as *const () as usize),
         ("strata_dup", strata_dup as *const () as usize),
+        ("strata_list_owned", strata_list_owned as *const () as usize),
+        ("strata_list_put", strata_list_put as *const () as usize),
+        ("strata_list_insert", strata_list_insert as *const () as usize),
+        ("strata_list_remove_at", strata_list_remove_at as *const () as usize),
         ("strata_trace_arg", trace_arg as *const () as usize),
         ("strata_trace_call", trace_call as *const () as usize),
         ("strata_trace_return", trace_return as *const () as usize),
@@ -184,6 +232,26 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_release", strata_release as *const () as usize),
         ("strata_free", strata_free as *const () as usize),
         ("strata_unique", strata_unique as *const () as usize),
+        ("strata_scope_begin", strata_scope_begin as *const () as usize),
+        ("strata_scope_end", strata_scope_end as *const () as usize),
+        ("strata_spawn", strata_spawn as *const () as usize),
+        ("strata_await", strata_await as *const () as usize),
+        ("strata_channel_new", strata_channel_new as *const () as usize),
+        ("strata_channel_drop", strata_channel_drop as *const () as usize),
+        ("strata_channel_send", strata_channel_send as *const () as usize),
+        ("strata_channel_recv", strata_channel_recv as *const () as usize),
+        ("strata_channel_close", strata_channel_close as *const () as usize),
+        ("strata_select", strata_select as *const () as usize),
+        ("strata_virtual_timeline", strata_virtual_timeline as *const () as usize),
+        ("strata_virtual_now", strata_virtual_now as *const () as usize),
+        ("strata_virtual_sleep", strata_virtual_sleep as *const () as usize),
+        ("strata_host_now", strata_host_now as *const () as usize),
+        ("strata_host_sleep", strata_host_sleep as *const () as usize),
+        ("strata_cancelled", strata_cancelled as *const () as usize),
+        ("strata_panic", strata_panic as *const () as usize),
+        ("strata_was_unwound", strata_was_unwound as *const () as usize),
+        ("strata_unwound", strata_unwound as *const () as usize),
+        ("strata_scope_cancel", strata_scope_cancel as *const () as usize),
         ("strata_str_eq", strata_str_eq as *const () as usize),
         ("strata_str_len", strata_str_len as *const () as usize),
         ("strata_fault", strata_fault as *const () as usize),
@@ -191,6 +259,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_leave", strata_leave as *const () as usize),
         ("strata_overflow", strata_overflow as *const () as usize),
         ("strata_div", strata_div as *const () as usize),
+        ("strata_div_nz", strata_div_nz as *const () as usize),
+        ("strata_mod_nz", strata_mod_nz as *const () as usize),
         ("strata_gen_string", strata_gen_string as *const () as usize),
         ("strata_gen_len", strata_gen_len as *const () as usize),
         ("strata_gen_float", strata_gen_float as *const () as usize),
@@ -198,6 +268,10 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_random_unit", strata_random_unit as *const () as usize),
         ("strata_random", strata_random as *const () as usize),
         ("strata_int_from_i64", strata_int_from_i64 as *const () as usize),
+        ("strata_raw_alloc", strata_raw_alloc as *const () as usize),
+        ("strata_raw_reserve", strata_raw_reserve as *const () as usize),
+        ("strata_raw_size", strata_raw_size as *const () as usize),
+        ("strata_raw_fail", strata_raw_fail as *const () as usize),
         ("strata_int_to_float", strata_int_to_float as *const () as usize),
         ("strata_int_lit", strata_int_lit as *const () as usize),
         ("strata_int_eq", strata_int_eq as *const () as usize),
@@ -214,10 +288,8 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_fmod", strata_fmod as *const () as usize),
         ("strata_finite", strata_finite as *const () as usize),
         ("strata_show_int", strata_show_int as *const () as usize),
-        ("strata_json_int", strata_json_int as *const () as usize),
         ("strata_show_float", strata_show_float as *const () as usize),
         ("strata_show_bool", strata_show_bool as *const () as usize),
-        ("strata_json_str", strata_json_str as *const () as usize),
         ("strata_debug_str", strata_debug_str as *const () as usize),
         ("strata_print", strata_print as *const () as usize),
         ("strata_str_split", strata_str_split as *const () as usize),
@@ -559,12 +631,24 @@ impl Calls<'_> {
     }
 }
 
-/// Run the IR's `main` with the program's arguments; its exit code. A fault
-/// exits the process from the runtime, as a compiled program does.
-/// The IR compiled in memory (optimized as clang -O2 would), its runtime
+static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--release`: programs, tests and `strata run f` compiled optimized (as
+/// clang -O2 would); by default unoptimized (-O0), which compiles several
+/// times faster. (`verify`'s fuzzing optimizes either way: its cases run
+/// many times; compile-time code and probes never do: they run once.)
+pub fn set_release(on: bool) {
+    RELEASE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn release() -> bool {
+    RELEASE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The IR compiled in memory (optimized with `--release`), its runtime
 /// calls mapped to the runtime built into strata.
 fn engine<'ctx>(ctx: &'ctx Context, ir: &str) -> Result<inkwell::execution_engine::ExecutionEngine<'ctx>, String> {
-    engine_at(ctx, ir, true)
+    engine_at(ctx, ir, release())
 }
 
 /// `engine`, optimized or not: code run once (compile-time code, a probe)
@@ -603,7 +687,7 @@ fn make_std_library() -> Result<StdLibrary, String> {
     let std = crate::stdlib::program();
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let meta = std::fs::metadata(&exe).map_err(|e| e.to_string())?;
-    let key: String = Sha256::digest(format!("v2{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let key: String = Sha256::digest(format!("v3{:?}{}{:?}", meta.modified().ok(), meta.len(), std).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
     let root = match std::env::var_os("STRATA_CACHE") {
         Some(d) => std::path::PathBuf::from(d),
         None => std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/strata"),
@@ -760,6 +844,13 @@ fn engine_at<'ctx>(ctx: &'ctx Context, ir: &str, optimize: bool) -> Result<inkwe
         if let Some(f) = module.get_function(name) {
             engine.add_global_mapping(&f, addr);
         }
+    }
+    // the runtime's data the compiled code reads
+    if let Some(g) = module.get_global("strata_cancel_any") {
+        engine.add_global_mapping(&g, &raw const strata_cancel_any as usize);
+    }
+    if let Some(g) = module.get_global("strata_slow_counts") {
+        engine.add_global_mapping(&g, &raw const strata_slow_counts as usize);
     }
     // std's precompiled functions: the library's code, loaded once
     for f in module.get_functions() {

@@ -799,10 +799,12 @@ record!(Law { comments, doc, name, params, body });
 record!(TraitDecl { name, params, supers, methods, laws, derivable, capability });
 record!(Derivable { kind, requires });
 record!(ImplDecl { type_params, bounds, trait_name, trait_args, for_type, methods, derived });
-record!(UseDecl { path, items });
+record!(UseDecl { path, alias, items });
+record!(UseItem { name, alias });
 record!(ExternDecl { lang, item });
 record!(CapabilityDecl { name, methods });
 record!(Arm { comments, pat, body });
+record!(SelectArm { comments, op, name, body });
 record!(LamParam { name, ty });
 record!(CompFor { pat, iter, cond });
 record!(FmtSpec { fill, align, plus, zero, width, precision });
@@ -811,7 +813,7 @@ tags!(BinOp { Add = 0, Sub = 1, Mul = 2, Div = 3, Mod = 4, Eq = 5, Ne = 6, Lt = 
 tags!(UnOp { Neg = 0, Not = 1 });
 tags!(TryKind { Result = 0, Option = 1 });
 tags!(CompKind { List = 0, Set = 1, Dict = 2 });
-tags!(Lang { C = 0 });
+tags!(Lang { C = 0, Builtin = 1 });
 
 impl Bin for DeclKind {
     fn enc(&self, w: &mut Writer) {
@@ -844,13 +846,17 @@ impl Bin for ExternItem {
     fn enc(&self, w: &mut Writer) {
         match self {
             ExternItem::Fn(f) => put!(w, 0, f),
-            ExternItem::Type(t) => put!(w, 1, t),
+            ExternItem::Type(t, ps) if ps.is_empty() => put!(w, 1, t),
+            ExternItem::Type(t, ps) => put!(w, 2, t, ps),
+            ExternItem::Static(n, size) => put!(w, 3, n, size),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("extern item", 1)? {
+        Ok(match r.tag("extern item", 3)? {
             0 => ExternItem::Fn(Bin::dec(r)?),
-            _ => ExternItem::Type(Bin::dec(r)?),
+            1 => ExternItem::Type(Bin::dec(r)?, vec![]),
+            2 => ExternItem::Type(Bin::dec(r)?, Bin::dec(r)?),
+            _ => ExternItem::Static(Bin::dec(r)?, Bin::dec(r)?),
         })
     }
 }
@@ -983,10 +989,11 @@ impl Bin for Stmt {
             Stmt::Assert(e) => put!(w, 9, e),
             Stmt::Comment(ls) => put!(w, 10, ls),
             Stmt::ComptimeFor(p, xs, b) => put!(w, 11, p, xs, b),
+            Stmt::Invariant(e) => put!(w, 12, e),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("statement", 11)? {
+        Ok(match r.tag("statement", 12)? {
             0 => Stmt::Let(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             1 => Stmt::Var(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
             2 => Stmt::Assign(Bin::dec(r)?, Bin::dec(r)?),
@@ -998,7 +1005,8 @@ impl Bin for Stmt {
             8 => Stmt::Expr(Bin::dec(r)?),
             9 => Stmt::Assert(Bin::dec(r)?),
             10 => Stmt::Comment(Bin::dec(r)?),
-            _ => Stmt::ComptimeFor(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+            11 => Stmt::ComptimeFor(Bin::dec(r)?, Bin::dec(r)?, Bin::dec(r)?),
+            _ => Stmt::Invariant(Bin::dec(r)?),
         })
     }
 }
@@ -1040,11 +1048,17 @@ impl Bin for Expr {
             Expr::Set(tys, xs) => put!(w, 31, tys, xs),
             Expr::Or(x, fb) => put!(w, 32, x, fb),
             Expr::Comptime(x) => put!(w, 33, x),
+            Expr::Scope(x) => put!(w, 34, x),
+            Expr::Spawn(x) => put!(w, 35, x),
+            Expr::Await(x) => put!(w, 36, x),
+            Expr::Select(arms) => put!(w, 37, arms),
+            Expr::Race(arms) => put!(w, 38, arms),
+            Expr::SupervisedSpawn(x) => put!(w, 39, x),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
         r.nest(|r| {
-            Ok(match r.tag("expression", 34)? {
+            Ok(match r.tag("expression", 40)? {
                 0 => Expr::Int(Bin::dec(r)?),
                 1 => Expr::BigInt(Bin::dec(r)?),
                 2 => Expr::Float(Bin::dec(r)?),
@@ -1078,7 +1092,13 @@ impl Bin for Expr {
                 30 => Expr::Dict(Bin::dec(r)?, Bin::dec(r)?),
                 31 => Expr::Set(Bin::dec(r)?, Bin::dec(r)?),
                 32 => Expr::Or(Bin::dec(r)?, Bin::dec(r)?),
-                _ => Expr::Comptime(Bin::dec(r)?),
+                33 => Expr::Comptime(Bin::dec(r)?),
+                34 => Expr::Scope(Bin::dec(r)?),
+                35 => Expr::Spawn(Bin::dec(r)?),
+                36 => Expr::Await(Bin::dec(r)?),
+                37 => Expr::Select(Bin::dec(r)?),
+                38 => Expr::Race(Bin::dec(r)?),
+                _ => Expr::SupervisedSpawn(Bin::dec(r)?),
             })
         })
     }
@@ -1241,8 +1261,8 @@ fn f(x: Int) -> Int requires x > 0 ensures it >= 0 terminates {
   if "s".len() == 1 { return 1 } else { f(mut v) }
 }
 test "t" { assert f(1) == 1 }
-use a.b.{c, d}
-use e.*
+from a.b use c, d as x
+use e as f
 "#;
         // not every line has to check: only parse, then round-trip the tree
         let program = crate::parser::parse_module_file(src, "m").unwrap_or_else(|e| panic!("{e}"));

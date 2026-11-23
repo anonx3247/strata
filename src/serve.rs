@@ -61,7 +61,7 @@ fn handler(env: &Env) -> Result<(FnDecl, usize), String> {
     let f = env
         .fns
         .get(&Symbol::new("handle"))
-        .ok_or("no `handle` function to serve: write `fn handle(req: Request) -> Response` (with `use std.http.{Request, Response}`)")?
+        .ok_or("no `handle` function to serve: write `fn handle(req: Request) -> Response` (with `from std.http use Request, Response`)")?
         .clone();
     let usage = "`handle` takes a `Request` (std.http) and may ask for `Console` and capabilities (`Disk`, `Process`, or the program's own)";
     let mut request = None;

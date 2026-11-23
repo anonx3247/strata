@@ -185,8 +185,8 @@ pub fn member(p: &Program, q: &str) -> Option<(&'static str, String)> {
                 DeclKind::Fn(_) => Some(("function", d.module.to_string())),
                 DeclKind::Type(_) => Some(("type", d.module.to_string())),
                 DeclKind::Trait(_) => Some(("trait", d.module.to_string())),
-                DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_), .. }) => Some(("function", d.module.to_string())),
-                DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) | DeclKind::Capability(_) => Some(("type", d.module.to_string())),
+                DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_) | ExternItem::Static(..), .. }) => Some(("function", d.module.to_string())),
+                DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }) | DeclKind::Capability(_) => Some(("type", d.module.to_string())),
                 _ => None,
             };
         }
@@ -240,7 +240,7 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
                 DeclKind::Trait(t) => t.name = Symbol::from(new),
                 DeclKind::Extern(e) => match &mut e.item {
                     ExternItem::Fn(f) => f.name = Symbol::from(new),
-                    ExternItem::Type(t) => *t = Symbol::from(new),
+                    ExternItem::Type(t, _) | ExternItem::Static(t, _) => *t = Symbol::from(new),
                 },
                 DeclKind::Capability(c) => c.name = Symbol::from(new),
                 _ => {}
@@ -657,12 +657,12 @@ fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut Symbol)) {
         }
         DeclKind::Use(u) => {
             f(&mut u.path);
-            u.items.iter_mut().flatten().for_each(|n| f(n));
+            u.items.iter_mut().flatten().for_each(|i| f(&mut i.name));
         }
         DeclKind::Test(_) => {}
         DeclKind::Extern(e) => match &mut e.item {
             ExternItem::Fn(fd) => f(&mut fd.name),
-            ExternItem::Type(t) => f(t),
+            ExternItem::Type(t, _) | ExternItem::Static(t, _) => f(t),
         },
     }
 }
@@ -1030,7 +1030,7 @@ fn store(p: &Program, mode: Store) -> Program {
 /// other modules' calls of the builtin (the standard library's too) still
 /// reach the builtin. The root module's own uses of `get` mean its function.
 fn root_fn(module: Symbol, name: Symbol, resolving: bool) -> Symbol {
-    if resolving && module.is_empty() && crate::types::BUILTINS.iter().any(|b| b.name == name.as_str()) {
+    if resolving && module.is_empty() && crate::types::builtins().iter().any(|b| b.name == name.as_str()) {
         Symbol::new(&format!("{ROOT_FN}{name}"))
     } else {
         qualified(module, name)
@@ -1098,7 +1098,7 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
                     }
                 }
             }
-            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => add(*t, true),
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t, _), .. }) => add(*t, true),
             _ => {}
         }
     }
@@ -1112,7 +1112,7 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
         }
         _ => vec![],
     }).collect();
-    for b in crate::types::BUILTIN_TYPES {
+    for b in crate::types::builtin_types() {
         known.insert(Symbol::new(b));
     }
     let root: Vec<(usize, Symbol, bool, Symbol)> = defined.get(&Symbol::EMPTY).cloned().unwrap_or_default();
@@ -1135,10 +1135,7 @@ pub fn union_members(p: &Program) -> std::borrow::Cow<'_, Program> {
                 return true;
             }
             p.decls.iter().filter(|d| d.module == m).any(|d| match &d.kind {
-                DeclKind::Use(u) => match &u.items {
-                    Some(items) => items.contains(&n),
-                    None => publics.get(&u.path).is_some_and(|ns| ns.contains(&n)),
-                },
+                DeclKind::Use(u) => u.items.iter().flatten().any(|i| i.local() == n),
                 _ => false,
             })
         };
@@ -1186,7 +1183,7 @@ pub fn near_misses(p: &Program, edited: &[String]) -> Vec<String> {
             names.extend(vs.iter().filter(|v| !matches!(v.payload, Payload::Type(_))).map(|v| (Symbol::new(short(&v.name)), t.name)));
         }
     }
-    for b in crate::types::BUILTIN_TYPES {
+    for b in crate::types::builtin_types() {
         names.push((Symbol::new(b), Symbol::EMPTY));
     }
     let close = |a: &str, b: &str| {
@@ -1278,7 +1275,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             DeclKind::Fn(f) | DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
                 table.insert(root_fn(d.module, f.name, resolving), item);
             }
-            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t), .. }) => {
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t, _) | ExternItem::Static(t, _), .. }) => {
                 table.insert(qualified(d.module, *t), item);
             }
             // a type's own methods come with the type, like a trait's
@@ -1322,15 +1319,11 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                 continue;
             }
             match &u.items {
-                None => {
-                    for (&q, it) in &table {
-                        if it.module == u.path && it.public {
-                            scope.insert(Symbol::new(&q[u.path.len() + 1..]), q);
-                        }
-                    }
-                }
+                // `use m`: the module, by its binding (`bindings`)
+                None => {}
                 Some(items) => {
-                    for &i in items {
+                    for item in items {
+                        let i = item.name;
                         let q = qualified(u.path, i);
                         match table.get(&q) {
                             None => errors.push(Diag { decl: d.qname(), msg: format!("module `{}` has no `{i}`", u.path) }),
@@ -1339,7 +1332,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
                                 msg: format!("`{i}` is private to module `{}` (only `pub` definitions are part of its contract)", u.path),
                             }),
                             Some(_) => {
-                                scope.insert(i, q);
+                                scope.insert(item.local(), q);
                                 // importing a type brings its constructors; a trait, its methods
                                 for &(short, cq) in children.get(&q).into_iter().flatten() {
                                     scope.insert(short, cq);
@@ -1360,14 +1353,25 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
         scopes.insert(m, scope);
     }
 
+    // each module's `use m` bindings (`time` for `use std.time`, `t` for `use std.time as t`)
+    let bindings: HashMap<Symbol, HashMap<Symbol, Symbol>> = all_modules
+        .iter()
+        .map(|&m| {
+            let bs = p.decls.iter().filter(|d| d.module == m).filter_map(|d| match &d.kind {
+                DeclKind::Use(u) if u.items.is_none() => Some((u.binding(), u.path)),
+                _ => None,
+            });
+            (m, bs.collect())
+        })
+        .collect();
     let imports: HashMap<Symbol, Vec<Symbol>> = all_modules
         .iter()
         .map(|&m| (m, p.decls.iter().filter(|d| d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some(u.path) } else { None }).collect()))
         .collect();
-    // each module's `use`s: (module, the names it lists, or `None` for `*`)
+    // each module's `use`s: (module, the names it imports, as named here; `None` for the module itself)
     let uses: HashMap<Symbol, Vec<(Symbol, Option<Vec<Symbol>>)>> = all_modules
         .iter()
-        .map(|&m| (m, p.decls.iter().filter(|d| d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some((u.path, u.items.clone())) } else { None }).collect()))
+        .map(|&m| (m, p.decls.iter().filter(|d| d.module == m).filter_map(|d| if let DeclKind::Use(u) = &d.kind { Some((u.path, u.items.as_ref().map(|is| is.iter().map(|i| i.local()).collect()))) } else { None }).collect()))
         .collect();
     let mut decls = Vec::new();
     let mut needs = Vec::new();
@@ -1380,6 +1384,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             module: d.module,
             imports: &imports[&d.module],
             uses: &uses[&d.module],
+            bindings: &bindings[&d.module],
             decl: d.qname(),
             for_tests: match &d.kind {
                 DeclKind::Test(_) => true,
@@ -1403,10 +1408,15 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             // `use orders.{ship}` no longer names a moved definition (the module imports it anew)
             (DeclKind::Use(u), _) if moves.is_some() => DeclKind::Use(UseDecl {
                 path: u.path,
-                items: u.items.as_ref().map(|is| is.iter().filter(|&&i| !moves.as_ref().unwrap().contains_key(&qualified(u.path, i))).copied().collect()),
+                alias: u.alias,
+                items: u.items.as_ref().map(|is| is.iter().filter(|i| !moves.as_ref().unwrap().contains_key(&qualified(u.path, i.name))).cloned().collect()),
             }),
             // `use core.{same_ids}` names what it imports
-            (DeclKind::Use(u), Some(&(old, new))) => DeclKind::Use(UseDecl { path: u.path, items: u.items.as_ref().map(|is| is.iter().map(|&i| if qualified(u.path, i) == old { new } else { i }).collect()) }),
+            (DeclKind::Use(u), Some(&(old, new))) => DeclKind::Use(UseDecl {
+                path: u.path,
+                alias: u.alias,
+                items: u.items.as_ref().map(|is| is.iter().map(|i| if qualified(u.path, i.name) == old { UseItem { name: new, alias: i.alias } } else { i.clone() }).collect()),
+            }),
             _ => r.decl(&d.kind),
         };
         errors.extend(r.errors);
@@ -1441,6 +1451,8 @@ struct Rw<'a> {
     imports: &'a [Symbol],
     /// the module's `use`s, for showing names of modules that aren't loaded
     uses: &'a [(Symbol, Option<Vec<Symbol>>)],
+    /// `use m` bindings: the name a module goes by here (`time`), to its path
+    bindings: &'a HashMap<Symbol, Symbol>,
     decl: String,
     /// The definition may use mocks: a test, a mock, or an implementation for one.
     for_tests: bool,
@@ -1491,7 +1503,7 @@ impl Rw<'_> {
             // only what names a definition is qualified
             // what this module's scope gives that name (a private name used
             // from outside stays as written, so its error reads the same)
-            Some(Store::Qualify) => return if n == q || self.scope.get(&n) == Some(&q) { q } else { n },
+            Some(Store::Qualify) => return if n == q || self.scope.get(&n) == Some(&q) || self.unbound(n) == q { q } else { n },
             Some(Store::Shorten) => return self.shortest(n, q),
             None => {}
         }
@@ -1528,7 +1540,23 @@ impl Rw<'_> {
         if self.scope.get(&short) == Some(&q) && !self.is_local(first) {
             return short;
         }
-        q
+        self.through_binding(q)
+    }
+
+    /// `q` written through the `use` binding of its module, or of a module
+    /// containing it (the longest): `time.Clock` for `std.time.Clock` with
+    /// `use std.time`. As is when none (or a local hides the binding).
+    fn through_binding(&self, q: Symbol) -> Symbol {
+        let best = self
+            .bindings
+            .iter()
+            .filter(|(b, path)| q.starts_with(&format!("{path}.")) && !self.is_local(**b))
+            // (the longest path, then the first binding by name)
+            .max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(a.0)));
+        match best {
+            Some((b, path)) => format!("{b}{}", &q[path.len()..]).into(),
+            None => q,
+        }
     }
     /// `shortest` for a module file read without the modules it uses (`git
     /// diff` shows one file at a time): `orders.Line` is `Line` if this
@@ -1538,11 +1566,11 @@ impl Rw<'_> {
     fn shortest_unloaded(&self, n: Symbol) -> Symbol {
         let Some((module, short)) = n.rsplit_once('.') else { return n };
         let short = Symbol::new(short);
-        let imported = self.uses.iter().any(|(path, items)| path == module && items.as_ref().is_none_or(|is| is.contains(&short)));
+        let imported = self.uses.iter().any(|(path, items)| path == module && items.as_ref().is_some_and(|is| is.contains(&short)));
         if imported && self.scope.get(&short).is_none() && !self.is_local(short) {
             return short;
         }
-        n
+        self.through_binding(n)
     }
     /// The name of a definition being declared, `name` in module `m`.
     fn declared(&self, m: Symbol, name: Symbol) -> Symbol {
@@ -1562,10 +1590,39 @@ impl Rw<'_> {
         }
     }
 
+    /// `time.Clock` with `use std.time`: `std.time.Clock` (the first part
+    /// is a module's binding, unless a local hides it).
+    fn unbound(&self, n: Symbol) -> Symbol {
+        let Some((first, rest)) = n.split_once('.') else { return n };
+        match self.bindings.get(&Symbol::new(first)) {
+            Some(path) if !self.is_local(Symbol::new(first)) && path != first => format!("{path}.{rest}").into(),
+            _ => n,
+        }
+    }
+
+    /// Whether this module may name module `m`'s definitions: its own, the
+    /// root module's, the prelude's, and those of a module it `use`s (`use
+    /// std` covers `std.time` too, written `std.time.x`).
+    fn covers(&self, m: &str) -> bool {
+        m == self.module.as_str()
+            || m.is_empty()
+            || crate::types::is_prelude_module(m)
+            || m == "strata.compiled"
+            || self.uses.iter().any(|(path, items)| path == m || (items.is_none() && m.starts_with(&format!("{path}."))))
+    }
+
     fn lookup(&mut self, n: Symbol) -> Symbol {
         if let Some(&q) = self.scope.get(&n) {
             self.test_only(q);
             return q;
+        }
+        let n = self.unbound(n);
+        // every other module's name comes through a `use`
+        if let Some(it) = self.table.get(&n) {
+            if !self.covers(&it.module) && !self.writing() && self.store.is_none() {
+                let (m, short) = (it.module, &n[it.module.len() + 1..]);
+                self.errors.push(Diag { decl: self.decl.clone(), msg: format!("`{n}` is in module `{m}`, which this module doesn't use: add `use {m}` (then write `{}.{short}`) or `from {m} use {short}`", m.rsplit('.').next().unwrap_or(&m)) });
+            }
         }
         if !n.contains('.') {
             for &m in self.imports {
@@ -1613,6 +1670,11 @@ impl Rw<'_> {
             Expr::Var(x) if !self.is_local(*x) => *x,
             Expr::Field(r, f) => format!("{}.{f}", self.module_path_any(r)?).into(),
             _ => return None,
+        };
+        // (`time` for `use std.time`: the module it binds)
+        let path = match self.bindings.get(&path) {
+            Some(&p) => p,
+            None => self.unbound(path),
         };
         self.modules.contains(&path).then_some(path)
     }
@@ -1847,6 +1909,7 @@ impl Rw<'_> {
                         Stmt::Loop(b) => Stmt::Loop(self.expr(b)),
                         Stmt::Break => Stmt::Break,
                         Stmt::Continue => Stmt::Continue,
+                        Stmt::Invariant(x) => Stmt::Invariant(self.expr(x)),
                         Stmt::For(p, it, b) => {
                             let it = self.expr(it);
                             self.push(&[]);
@@ -1874,6 +1937,24 @@ impl Rw<'_> {
             }
             // compile-time code calls the module's functions like any other
             Expr::Comptime(x) => Expr::Comptime(Box::new(self.expr(x))),
+            Expr::Scope(x) => Expr::Scope(Box::new(self.expr(x))),
+            Expr::Spawn(x) => Expr::Spawn(Box::new(self.expr(x))),
+            Expr::SupervisedSpawn(x) => Expr::SupervisedSpawn(Box::new(self.expr(x))),
+            Expr::Await(x) => Expr::Await(Box::new(self.expr(x))),
+            Expr::Select(arms) | Expr::Race(arms) => {
+                let arms = arms.iter()
+                    .map(|a| {
+                        let op = self.expr(&a.op);
+                        // the result's name is bound in the arm
+                        let names: Vec<Symbol> = a.name.iter().copied().collect();
+                        self.push(&names);
+                        let body = self.expr(&a.body);
+                        self.pop();
+                        SelectArm { comments: a.comments.clone(), op, name: a.name, body }
+                    })
+                    .collect();
+                if matches!(e, Expr::Race(_)) { Expr::Race(arms) } else { Expr::Select(arms) }
+            }
             _ => e.clone(),
         }
     }
@@ -1941,7 +2022,8 @@ impl Rw<'_> {
                 lang: e.lang,
                 item: match &e.item {
                     ExternItem::Fn(f) => ExternItem::Fn(self.func(f, self.declared(m, f.name))),
-                    ExternItem::Type(t) => ExternItem::Type(self.declared(m, *t)),
+                    ExternItem::Type(t, ps) => ExternItem::Type(self.declared(m, *t), ps.clone()),
+                    ExternItem::Static(n, size) => ExternItem::Static(self.declared(m, *n), *size),
                 },
             }),
             DeclKind::Test(t) => {
@@ -2040,14 +2122,11 @@ fn add_import(p: &mut Program, m: &str, path: &str, item: &str) {
     for d in p.decls.iter_mut().filter(|d| d.module == m) {
         if let DeclKind::Use(u) = &mut d.kind {
             if u.path == path {
-                match &mut u.items {
-                    None => return,
-                    Some(items) => {
-                        if !items.iter().any(|i| i == item) {
-                            items.push(Symbol::from(item));
-                        }
-                        return;
+                if let Some(items) = &mut u.items {
+                    if !items.iter().any(|i| i.local() == item) {
+                        items.push(UseItem { name: Symbol::from(item), alias: None });
                     }
+                    return;
                 }
             }
         }
@@ -2060,7 +2139,7 @@ fn add_import(p: &mut Program, m: &str, path: &str, item: &str) {
         .map(|i| i + 1)
         .or_else(|| p.decls.iter().position(|d| d.module == m))
         .unwrap_or(p.decls.len());
-    p.decls.insert(at, Decl { comments: vec![], doc: vec![], kind: DeclKind::Use(UseDecl { path: Symbol::from(path), items: Some(vec![Symbol::from(item)]) }), module: Symbol::from(m), public: false });
+    p.decls.insert(at, Decl { comments: vec![], doc: vec![], kind: DeclKind::Use(UseDecl { path: Symbol::from(path), alias: None, items: Some(vec![UseItem { name: Symbol::from(item), alias: None }]) }), module: Symbol::from(m), public: false });
 }
 
 /// Moving `old` into module `target` (no checks): the definition changes

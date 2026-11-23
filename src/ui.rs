@@ -69,7 +69,7 @@ fn snapshot(target: &Target) -> Json {
             Err(e) => return json!({"fatal": e}),
         },
         Target::File(f) => match crate::read_sources(&f.to_string_lossy()) {
-            Ok(p) => (p, vec![], HashMap::default(), f.display().to_string()),
+            Ok(p) => (p, vec![], store::Verdicts::none(), f.display().to_string()),
             Err(e) => return json!({"fatal": e}),
         },
     };
@@ -91,7 +91,7 @@ fn snapshot(target: &Target) -> Json {
     let code_hashes: HashMap<String, String> = p.decls.iter().map(|d| (d.qname(), store::code_hash(d))).collect();
     for d in p.decls.iter().filter(|_| !cache.is_empty()) {
         if let Some(v) = cache.get(&store::closure_hash_in(&graph, &code_hashes, &d.qname())) {
-            verdicts.insert(d.qname(), v.clone());
+            verdicts.insert(d.qname(), v);
         }
     }
     let status = view::Status {
@@ -209,7 +209,7 @@ fn snapshot(target: &Target) -> Json {
     // (the prelude's code, added to every program, isn't the program's; nor
     // is the standard library's, which resolving brings in: the map is the
     // program's types, whether it uses std's or not)
-    let own = |d: &&Decl| d.module != crate::types::PRELUDE_MODULE && !is_std(d);
+    let own = |d: &&Decl| !crate::types::is_prelude_module(&d.module) && !is_std(d);
     for d in rp.decls.iter().filter(own) {
         match &d.kind {
             DeclKind::Type(t) => {

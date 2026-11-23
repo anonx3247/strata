@@ -126,6 +126,23 @@ fn numbers_compile_and_run_as_interpreted() {
     assert_eq!(code, 101);
 }
 
+/// Sized integers in their own widths: wrapping arithmetic, Euclidean
+/// division, shifts past the width, unsigned order, conversions (the last
+/// one out of range: a fault).
+#[test]
+fn sized_integers_wrap_in_their_widths() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("sized");
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/build/sized.strata");
+    let (out, code) = built_as_expected(&file, &d);
+    assert!(out.starts_with("0\n4294967300\n"), "{out}");
+    assert!(out.contains("fault (Runtime): `300` doesn't fit in `U8`"), "{out}");
+    assert_eq!(code, 101);
+}
+
 #[test]
 fn faults_and_control_flow_match_the_interpreter() {
     if !have_clang() {
@@ -290,7 +307,7 @@ fn derived_traits_compile() {
         return;
     }
     let d = tmp("derived");
-    let (out, code) = case(&d, "derived", r#"use std.typing.{Record, Field}
+    let (out, code) = case(&d, "derived", r#"from std.typing use Record, Field
 
 /// Values from text, field by field.
 derivable(Record) trait FromText {
@@ -360,7 +377,7 @@ fn derived_for_sums_compile() {
     }
     let d = tmp("derived-sums");
     // `comptime for`, a match comprehension, `v.make()`
-    let (out, code) = case(&d, "sums", r#"use std.typing.{Choice, Union}
+    let (out, code) = case(&d, "sums", r#"from std.typing use Choice, Union
 
 /// A choice and its name.
 derivable(Choice) trait Named {
@@ -455,7 +472,7 @@ fn options_from_the_command_line_compile() {
     assert_eq!(codes, [0, 0, 0, 0, 2, 2, 0, 0, 2, 0, 0, 2, 0]);
     // a mutable options parameter, in a script
     let f = d.join("opts.strata");
-    save(&f, "use std.cli.CommandLine\n\ntype Options = {\n  /// How many.\n  count: Option[Int],\n  names: List[String],\n}\n\nderive CommandLine for Options\n\nfn main(mut opts: Options) {\n  opts.names = opts.names + [\"end\"]\n  print(f\"{opts.count} {opts.names}\")\n}\n");
+    save(&f, "from std.cli use CommandLine\n\ntype Options = {\n  /// How many.\n  count: Option[Int],\n  names: List[String],\n}\n\nderive CommandLine for Options\n\nfn main(mut opts: Options) {\n  opts.names = opts.names + [\"end\"]\n  print(f\"{opts.count} {opts.names}\")\n}\n");
     let exe = d.join("opts");
     let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
@@ -475,7 +492,7 @@ fn what_is_not_compiled_yet_is_named() {
     let why = "can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet";
     assert!(!o.status.success() && err.contains(why), "{err}");
     // `strata run` says so too (nothing is interpreted instead)
-    let o = Command::new(env!("CARGO_BIN_EXE_strata")).arg("run").arg(&f).output().unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(&f).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!o.status.success() && err.contains(&format!("the program can't be compiled yet: {why}")), "{err}");
 }
@@ -541,6 +558,43 @@ fn memory_is_freed() {
     // an operand that borrows a variable a later operand assigns
     let (out, code) = case(&d, "nested_assign", NESTED_ASSIGN);
     assert!(code == 0 && out.starts_with("first 1/1\nsecond 2\n"), "{out}");
+    // values that don't outlive their variable, on the stack: their fields
+    // (strings, a record, a list, a big integer) dropped with the variable,
+    // on every way out of its block
+    let f = d.join("stack.strata");
+    save(&f, STACK_VALUES);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert_eq!(ir.matches(" = alloca [").count(), 2, "the values that stay in their block, on the stack:\n{ir}");
+    let (out, code) = case(&d, "stack", STACK_VALUES);
+    assert!(code == 0 && out.ends_with("15840\n1\nfound Ada7 at 1\n"), "{out}");
+    // a field assigned in place when nothing else holds the value, in a
+    // copy when something does (another variable, a list, an operand, a
+    // task, a constant)
+    let f = d.join("in_place.strata");
+    save(&f, IN_PLACE);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("@strata_unique(ptr"), "no assignment in place");
+    let (out, code) = case(&d, "in_place", IN_PLACE);
+    assert!(code == 0 && out.ends_with("done\n"), "{out}");
+    // dictionaries and sets changed in place by `x = insert(x, …)` when
+    // nothing else holds them, copied when something does
+    let f = d.join("insert_in_place.strata");
+    save(&f, INSERT_IN_PLACE);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("@strata_list_owned(ptr"), "no insertion in place");
+    let (out, code) = case(&d, "insert_in_place", INSERT_IN_PLACE);
+    assert!(code == 0 && out.ends_with("done\n"), "{out}");
+    // constructors passed to a function that only reads them, on the stack;
+    // dictionaries and sets with elements removed in place
+    let f = d.join("more_in_place.strata");
+    save(&f, MORE_IN_PLACE);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    let ir = String::from_utf8_lossy(&ir.stdout);
+    assert_eq!(ir.matches(" = alloca [").count(), 4, "the arguments on the stack:\n{ir}");
+    assert!(ir.contains("@strata_list_remove_at(ptr"), "no removal in place");
+    let (out, code) = case(&d, "more_in_place", MORE_IN_PLACE);
+    assert!(code == 0 && out.ends_with("done\n"), "{out}");
     let chain = "type Chain = | End | Link(Int, Chain)\nfn main() { mut c: Chain = End mut i := 0 while i < 1000000 { c = Link(i, c) i += 1 } match c { Link(x, _) => print(x), End => print(0) } }\n";
     // natively only: the interpreter takes minutes on this loop
     let f = d.join("chain.strata");
@@ -552,6 +606,883 @@ fn memory_is_freed() {
     assert!(code == 0 && out == "999999\n", "{out}");
 }
 
+/// Tasks (`scope`, `spawn`, `await`) on threads, compiled and on the JIT:
+/// results, faults, early exits, and counts shared between threads (many
+/// tasks holding and dropping the same captured lists), everything freed.
+#[test]
+fn tasks_run_on_threads() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("tasks");
+    let (out, code) = case(&d, "tasks", TASKS);
+    assert!(code == 0 && out.starts_with("75025 6768\n"), "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("tasks.strata")).env("STRATA_MEMORY", "check")), &d.join("tasks.strata"));
+    assert_eq!(jit, (out, code));
+    // a panic in a task ends the program at once: the main thread, waiting
+    // for values no one will send, doesn't hang
+    let (out, code) = case(&d, "fault", "fn pick(xs: List[Int], i: Int) -> Int { xs[i] }\nfn main() {\n  (tx, rx) := channel()\n  scope {\n    spawn pick([1, 2], 5)\n    for x in rx {\n      print(x)\n    }\n  }\n  tx.close()\n}\n");
+    assert!(code == 101 && out.contains("fault (Runtime): index 5 out of range (length 2)"), "{out}");
+}
+
+/// Channels and `select`, compiled and on the JIT: a pool of workers, a
+/// `select` over two receivers (one unbuffered), one over a task and a
+/// send; a send after the channel ended, and a task that didn't close its
+/// copy of a sender, fault.
+#[test]
+fn channels_run_on_threads() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("channels");
+    let (out, code) = case(&d, "channels", CHANNELS);
+    assert!(code == 0 && out == "total 385\n10 [\"a\", \"b\", \"c\"]\nticked true\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("channels.strata")).env("STRATA_MEMORY", "check")), &d.join("channels.strata"));
+    assert_eq!(jit, (out, code));
+    let (out, code) = case(&d, "ended", "fn main() {\n  (tx, rx) := channel(1)\n  tx.close()\n  scope {\n    spawn {\n      tx.send(5)\n      tx.close()\n    }\n  }\n}\n");
+    assert!(code == 101 && out.contains("`send` on a channel that has ended"), "{out}");
+    let (out, code) = case(&d, "unclosed", "fn main() {\n  (tx, rx) := channel(1)\n  scope {\n    spawn {\n      tx.send(1)\n      if len([1, 2]) > 5 {\n        tx.close()\n      }\n    }\n  }\n  tx.close()\n  for x in rx {\n    print(x)\n  }\n}\n");
+    assert!(code == 101 && out.contains("a task ended without closing its copy of a sender"), "{out}");
+}
+
+/// Run `c` with stdin given `input`, then (if `close`) closed, or else a pipe
+/// held open with nothing more written: a read of it then waits for ever
+/// unless it is cancelled. Killed (and the test failed) after `secs`.
+fn output_with_stdin(c: &mut Command, input: &str, close: bool, secs: u64) -> (String, i32) {
+    let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(input.as_bytes()).unwrap();
+    let held = if close { drop(stdin); None } else { Some(stdin) };
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed().as_secs() >= secs {
+            let _ = child.kill();
+            panic!("still waiting for input after {secs} s: the read wasn't cancelled");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    drop(held);
+    let o = child.wait_with_output().unwrap();
+    let err: String = String::from_utf8_lossy(&o.stderr).lines().filter(|l| !l.starts_with("    stack:")).map(|l| format!("{l}\n")).collect();
+    (String::from_utf8_lossy(&o.stdout).to_string() + &err, o.status.code().unwrap_or(-1))
+}
+
+/// A task waiting for input is cancelled like any waiting task: a `race`
+/// whose loser waits in `read_line` on a stdin held open (nothing written)
+/// ends at once, 20 times; so does a supervised task's reader when its
+/// sibling panics. A task's `read_line` (the cancellable one) reads the
+/// lines given, the second and third from what the first read buffered.
+/// Natively and on the JIT, everything freed.
+#[test]
+fn reads_are_cancelled() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("io-cancel");
+    let strata = env!("CARGO_BIN_EXE_strata");
+    for (name, src, input, close, want) in [
+        ("blocked", IO_BLOCKED, "", false, "the reader lost 20 of 20 races\ncontained: index 3 out of range (length 1)\n"),
+        ("lines", IO_LINES, "first\nsecond\n", true, "first | second | the end of the input\n"),
+    ] {
+        let f = d.join(format!("{name}.strata"));
+        save(&f, src);
+        let exe = d.join(name);
+        let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
+        assert!(b.status.success(), "build failed: {}", String::from_utf8_lossy(&b.stderr));
+        let native = freed_everything(output_with_stdin(Command::new(&exe).env("STRATA_MEMORY", "check"), input, close, 20), &f);
+        assert_eq!(native, (want.to_string(), 0), "{name}");
+        let jit = freed_everything(output_with_stdin(Command::new(strata).args(["run", "--jit"]).arg(&f).env("STRATA_MEMORY", "check"), input, close, 60), &f);
+        assert_eq!(jit, native, "{name}");
+    }
+}
+
+const IO_BLOCKED: &str = r#"from std.io use Console
+
+
+fn line_of(c: Console) -> String {
+  mut d := c
+  mut d.read_line() ?? "the end of the input"
+}
+
+fn pick(xs: List[Int], i: Int) -> Int {
+  xs[i]
+}
+
+fn reads_and_fails(c: Console) -> String {
+  scope {
+    r := spawn line_of(c)
+    p := spawn pick([1], 3)
+    f"{await r} {await p}"
+  }
+}
+
+fn main(console: Console) {
+  mut lost := 0
+  for i in 0..20 {
+    r := race {
+      line_of(console) as line => f"read {line}",
+      [f"{i}", "computed"] as xs => xs[1],
+    }
+    if r == "computed" {
+      lost += 1
+    }
+  }
+  print(f"the reader lost {lost} of 20 races")
+  s := scope {
+    h := supervised spawn reads_and_fails(console)
+    match await h {
+      Ok(v) => v,
+      Err(p) => f"contained: {p.message}",
+    }
+  }
+  print(s)
+}
+"#;
+
+const IO_LINES: &str = r#"from std.io use Console
+
+fn line_of(c: Console) -> String {
+  mut d := c
+  mut d.read_line() ?? "the end of the input"
+}
+
+fn main(console: Console) {
+  a := scope {
+    h := spawn line_of(console)
+    await h
+  }
+  b := scope {
+    h := spawn line_of(console)
+    await h
+  }
+  c := scope {
+    h := spawn line_of(console)
+    await h
+  }
+  print(f"{a} | {b} | {c}")
+}
+"#;
+
+/// `race`: the first arm to finish wins; the others are cancelled at
+/// their next wait (deep in calls at a `recv`, at a `send` to a full channel,
+/// at an `await` of their own task, in a `select`, in a race of their own)
+/// and leave as `return` would, so everything they held is freed.
+#[test]
+fn races_cancel_the_losers() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("race");
+    let (out, code) = case(&d, "race", RACE);
+    assert!(code == 0 && out == "answer 42\nwon 100 of 100\n1 left in the channel\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("race.strata")).env("STRATA_MEMORY", "check")), &d.join("race.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+/// `supervised spawn`: a panic ends only that task, and awaiting it gives
+/// `Err(Panic { … })`: deep in calls, a broken `requires`, a dead task's
+/// sender copy closed (its receiver's loop ends), an ordinary task's panic
+/// below a supervised one, `await h except p { … }`, a supervised `race`
+/// arm; everything the dying tasks held is freed, the runtime's builtins'
+/// panics too (a division by zero, a negative shift, `sqrt`, `ord`, `chr`,
+/// a byte out of range, a float that isn't finite: deep in calls, every
+/// frame holding lists, 50 times).
+#[test]
+fn supervised_tasks_keep_running() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("supervised");
+    let (out, code) = case(&d, "supervised", SUPERVISED);
+    assert!(code == 0 && out.contains("50 of 50 panicked\nfell back after: precondition of `half` violated") && out.ends_with("lost: Runtime\n"), "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("supervised.strata")).env("STRATA_MEMORY", "check")), &d.join("supervised.strata"));
+    assert_eq!(jit, (out, code));
+    let (out, code) = case(&d, "builtins", SUPERVISED_BUILTINS);
+    assert!(code == 0 && out.contains("Runtime: division by zero\n") && out.contains("Runtime: 11 / 0 is not a finite number\n") && out.ends_with("50 of 50 panicked, the program goes on\n"), "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("builtins.strata")).env("STRATA_MEMORY", "check")), &d.join("builtins.strata"));
+    assert_eq!(jit, (out, code));
+    // a stack overflow can't return: the task still dies alone (its `await`
+    // gives the panic), but what its frames held stays allocated (IDEAS.md)
+    let f = d.join("overflow.strata");
+    save(&f, SUPERVISED_OVERFLOW);
+    let (out, code) = output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(&f).env("STRATA_MEMORY", "check"));
+    assert!(code == 0 && out.contains("Limit: stack overflow (recursion too deep)\nstill running\n") && !out.contains(" 0 live"), "{out}");
+}
+
+const SUPERVISED_OVERFLOW: &str = r#"fn down(n: Int, xs: List[String]) -> Int {
+  ys := [f"{n}"]
+  down(n + 1, xs) + len(ys)
+}
+
+fn main() {
+  r := scope {
+    h := supervised spawn down(0, [])
+    await h
+  }
+  match r {
+    Ok(v) => print(v),
+    Err(p) => print(f"{p.kind}: {p.message}"),
+  }
+  print("still running")
+}
+"#;
+
+const SUPERVISED: &str = r#"fn pick(xs: List[Int], i: Int) -> Int {
+  ys := [f"held {i}", "more"]
+  if i > 3 {
+    xs[i] + len(ys)
+  } else {
+    pick(xs, i + 1) + len(ys)
+  }
+}
+
+fn half(n: Int) -> Int
+  requires n % 2 == 0 {
+  n / 2
+}
+
+fn shown(r: Result[Int, Panic]) -> String {
+  match r {
+    Ok(v) => f"ok {v}",
+    Err(p) => f"panicked ({p.kind}): {p.message} at {p.stack}",
+  }
+}
+
+fn main() {
+  (a, b, c) := scope {
+    x := supervised spawn pick([1, 2], 0)
+    y := supervised spawn 40 + 2
+    z := supervised spawn half(3)
+    await (x, y, z)
+  }
+  print(shown(a))
+  print(shown(b))
+  print(shown(c))
+  // a dead task's copy of a sender is closed: the receiver's loop ends
+  (tx, rx) := channel(4)
+  (r, got) := scope {
+    h := supervised spawn {
+      tx.send("one")
+      tx.send(f"two {pick([1], 0)}")
+      tx.close()
+      0
+    }
+    tx.close()
+    mut got := []
+    for s in rx {
+      got += [s]
+    }
+    (await h, got)
+  }
+  print(f"{shown(r)}; received {got}")
+  // a panic in an ordinary task below a supervised one is the supervised one's
+  d := scope {
+    h := supervised spawn scope {
+      t := spawn pick([1], 0)
+      await t + 1
+    }
+    await h
+  }
+  print(shown(d))
+  // many, all freed
+  mut n := 0
+  for i in 0..50 {
+    r := scope {
+      h := supervised spawn pick([i], 0)
+      await h
+    }
+    if r is Err {
+      n += 1
+    }
+  }
+  print(f"{n} of 50 panicked")
+  // handled where it is awaited: `except` on the `Result`
+  e := scope {
+    h := supervised spawn half(5)
+    await h except p {
+      print(f"fell back after: {p.message}")
+      0
+    }
+  }
+  print(e)
+  // a supervised race arm: its panic is its result, and the race goes on
+  (hold, wait) := channel()
+  w := race {
+    supervised pick([1], 0) as r => match r {
+      Ok(v) => f"won with {v}",
+      Err(p) => f"lost: {p.kind}",
+    },
+    wait.recv() ?? "never" as x => x,
+  }
+  hold.close()
+  print(w)
+}
+"#;
+
+const SUPERVISED_BUILTINS: &str = r#"fn deep(xs: List[String], n: Int, k: Int) -> Int {
+  ys := [f"frame {n}", "held"]
+  if n == 0 {
+    boom(k, xs) + len(ys)
+  } else {
+    deep(xs + ys, n - 1, k) + len(ys)
+  }
+}
+
+fn boom(k: Int, xs: List[String]) -> Int {
+  zero := len(xs) - len(xs)
+  match k % 8 {
+    0 => len(xs) / zero,
+    1 => len(xs) % zero,
+    2 => 1 << (zero - 1),
+    3 => floor(sqrt(float(zero - 1))),
+    4 => ord(xs[0]),
+    5 => byte_len(chr(zero - 1)),
+    6 => byte_at(xs[0], 100),
+    _ => floor(float(len(xs)) / float(zero)),
+  }
+}
+
+fn main() {
+  mut n := 0
+  for i in 0..50 {
+    r := scope {
+      h := supervised spawn deep([f"start {i}"], 5, i)
+      await h
+    }
+    match r {
+      Ok(v) => print(f"no panic: {v}"),
+      Err(p) => {
+        n += 1
+        if i < 8 {
+          print(f"{p.kind}: {p.message}")
+        }
+      },
+    }
+  }
+  print(f"{n} of 50 panicked, the program goes on")
+}
+"#;
+
+const RACE: &str = r#"fn hold_and_wait(rx: Receiver[String], depth: Int) -> String {
+  xs := [f"level {depth}", "held"]
+  if depth == 0 {
+    rx.recv() ?? "ended"
+  } else {
+    hold_and_wait(rx, depth - 1) + xs[0]
+  }
+}
+
+fn answer() -> Int {
+  6 * 7
+}
+
+fn inner(rx: Receiver[String]) -> String {
+  race {
+    hold_and_wait(rx, 2) as s => s,
+    hold_and_wait(rx, 3) as t => t,
+  }
+}
+
+fn main() {
+  (tx, rx) := channel()
+  (full, sink) := channel(1)
+  r := race {
+    hold_and_wait(rx, 5) as s => f"waited {s}",
+    answer() as n => f"answer {n}",
+  }
+  print(r)
+  mut wins := 0
+  for i in 0..100 {
+    w := race {
+      {
+        full.send(f"v{i}")
+        full.send(f"w{i}")
+        full.close()
+        "sent"
+      } as a => a,
+      scope {
+        h := spawn hold_and_wait(rx, 3)
+        await h
+      } as b => b,
+      select {
+        rx.recv() as x => x ?? "none",
+      } as c => c,
+      inner(rx) as d => d,
+      [f"{i}", "won"] as e => e[1],
+    }
+    if w == "won" {
+      wins += 1
+    }
+  }
+  print(f"won {wins} of 100")
+  full.close()
+  tx.close()
+  mut n := 0
+  for x in sink {
+    n += 1
+  }
+  print(f"{n} left in the channel")
+}
+"#;
+
+/// std.time's clock: a `race` as a timeout (the loser cancelled while it
+/// waits on a channel), a five-second sleep cancelled by a quicker arm, a
+/// `select` with an `after` arm; everything freed, and the time taken shows
+/// the long sleep was cut short.
+#[test]
+fn clocks_time_out() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("clock");
+    let (out, code) = case(&d, "clock", CLOCK);
+    assert!(code == 0 && out == "None\n42\ntimed out\ntimeouts 20\ntrue\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("clock.strata")).env("STRATA_MEMORY", "check")), &d.join("clock.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+/// `after` follows the clock it is called on: a frozen fake clock's timer
+/// never fires though real time passes (the `recv` wins), one of 0 fires at
+/// once, a clock 1000 times faster fires its ten seconds in about 10 ms, and
+/// the system clock passed as a `Clock` works too; everything freed.
+#[test]
+fn fake_clocks_drive_after() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("fake-clock");
+    let (out, code) = case(&d, "fake-clock", FAKE_CLOCK);
+    assert!(code == 0 && out == "received\nfrozen timer at 0\nfast timer\ntrue\ntimer\n", "{out}");
+    let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("fake-clock.strata")).env("STRATA_MEMORY", "check")), &d.join("fake-clock.strata"));
+    assert_eq!(jit, (out, code));
+}
+
+/// When every task waits and none of the waits ends by itself, nothing can
+/// happen any more: a deadlock is reported (a panic naming each wait), not a
+/// silent hang; a real clock's sleep or a long computation isn't one. A
+/// virtual clock's time jumps to the nearest deadline once every task waits:
+/// a timeout, sleeps in the order of their deadlines, an `after` arm, with no
+/// task moving the time.
+#[test]
+fn waits_are_known() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let d = tmp("waits");
+    let (out, code) = case(&d, "deadlock", DEADLOCK);
+    assert!(code == 101 && out.contains("deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`"), "{out}");
+    let (jit_out, jit_code) = output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join("deadlock.strata")));
+    assert!(jit_code == 101 && jit_out.contains("deadlock: every task is waiting"), "{jit_out}");
+    for (name, src, want) in [("not-deadlocked", NOT_DEADLOCKED, "1\n196418\n"), ("virtual-time", VIRTUAL_TIME, "timed out\n30\none\ntwo\nthree\n33\nafter 10 s\n43\n")] {
+        let (out, code) = case(&d, name, src);
+        assert!(code == 0 && out == want, "{name}: {out}");
+        let jit = freed_everything(output(Command::new(env!("CARGO_BIN_EXE_strata")).args(["run", "--jit"]).arg(d.join(format!("{name}.strata"))).env("STRATA_MEMORY", "check")), &d.join(format!("{name}.strata")));
+        assert_eq!(jit, (out, code), "{name}");
+    }
+}
+
+const DEADLOCK: &str = r#"fn main() {
+  (atx, arx) := channel()
+  (btx, brx) := channel()
+  scope {
+    spawn {
+      x := brx.recv() ?? 0
+      atx.send(x)
+      atx.close()
+    }
+    spawn {
+      y := arx.recv() ?? 0
+      btx.send(y)
+      btx.close()
+    }
+  }
+  atx.close()
+  btx.close()
+}
+"#;
+
+const NOT_DEADLOCKED: &str = r#"from std.time use SystemClock, ms
+
+fn fib(n: Int) -> Int {
+  if n < 2 {
+    n
+  } else {
+    fib(n - 1) + fib(n - 2)
+  }
+}
+
+fn main(clock: SystemClock) {
+  (tx, rx) := channel()
+  // a real sleep while the main thread waits: not a deadlock
+  scope {
+    spawn {
+      clock.sleep(ms(100))
+      tx.send(1)
+      tx.close()
+    }
+    tx.close()
+    print(rx.recv() ?? 0)
+  }
+  // a long computation while the main thread waits: not a deadlock
+  r := scope {
+    h := spawn fib(27)
+    await h
+  }
+  print(r)
+}
+"#;
+
+const VIRTUAL_TIME: &str = r#"from std.time use VirtualClock, seconds
+
+fn answer(rx: Receiver[Int]) -> Int {
+  rx.recv() ?? 0
+}
+
+fn main(clock: VirtualClock) {
+  (tx, rx) := channel()
+  // a timeout no task moves the time for
+  r := race {
+    answer(rx) as v => f"answer {v}",
+    clock.sleep(seconds(30)) => "timed out",
+  }
+  print(r)
+  print(clock.now().value / 1000000000)
+  // sleeps end in the order of their deadlines
+  scope {
+    spawn {
+      clock.sleep(seconds(3))
+      print("three")
+    }
+    spawn {
+      clock.sleep(seconds(1))
+      print("one")
+    }
+    spawn {
+      clock.sleep(seconds(2))
+      print("two")
+    }
+  }
+  print(clock.now().value / 1000000000)
+  // an `after` arm
+  s := select {
+    rx.recv() as v => f"got {v ?? 0}",
+    clock.after(seconds(10)) => "after 10 s",
+  }
+  print(s)
+  print(clock.now().value / 1000000000)
+  tx.close()
+}
+"#;
+
+const FAKE_CLOCK: &str = r#"from std.time use SystemClock, Clock, Instant, Duration, nanos, ms, seconds, elapsed
+
+/// A clock whose time never moves.
+type FrozenClock = { at: Int }
+
+impl Clock for FrozenClock {
+  fn now(self) -> Instant {
+    Instant(self.at)
+  }
+
+  fn sleep(self, d: Duration) {
+    ()
+  }
+}
+
+/// A clock running `speed` times faster than the system's.
+type FastClock = { inner: SystemClock, speed: Int }
+
+impl Clock for FastClock {
+  fn now(self) -> Instant {
+    Instant(self.inner.now().value * self.speed)
+  }
+
+  fn sleep(self, d: Duration) {
+    self.inner.sleep(nanos(d.value / self.speed))
+  }
+}
+
+/// Any clock: here the system's, through the `Clock` trait.
+fn timer_of(clock: Clock, rx: Receiver[Int]) -> String {
+  select {
+    rx.recv() as x => "received",
+    clock.after(ms(20)) => "timer",
+  }
+}
+
+fn main(clock: SystemClock) {
+  (tx, rx) := channel()
+  start := clock.now()
+  // the frozen clock's 1 ms never passes, though 50 ms of real time do
+  frozen := FrozenClock { at: 5 }
+  r := scope {
+    spawn {
+      clock.sleep(ms(50))
+      tx.send(1)
+      tx.close()
+    }
+    select {
+      rx.recv() as x => "received",
+      frozen.after(ms(1)) => "frozen timer",
+    }
+  }
+  print(r)
+  // a timer of 0 is ready at once, in any clock's time
+  print(select {
+    rx.recv() as x => "received",
+    frozen.after(nanos(0)) => "frozen timer at 0",
+  })
+  // ten seconds of a clock 1000 times faster are 10 ms of the system's
+  fast := FastClock { inner: clock, speed: 1000 }
+  before := clock.now()
+  print(select {
+    rx.recv() as x => "received",
+    fast.after(seconds(10)) => "fast timer",
+  })
+  print(elapsed(before, clock.now()).value < 2000000000)
+  print(timer_of(clock, rx))
+  tx.close()
+}
+"#;
+
+const CLOCK: &str = r#"from std.time use SystemClock, Clock, ms, seconds, elapsed
+
+fn never(rx: Receiver[Int]) -> Int {
+  xs := ["held", "too"]
+  (rx.recv() ?? 0) + len(xs)
+}
+
+fn work(n: Int) -> Int {
+  n * 2
+}
+
+fn timeout(clock: SystemClock, rx: Receiver[Int]) -> Option[Int] {
+  race {
+    never(rx) as r => Some(r),
+    clock.sleep(ms(30)) => None,
+  }
+}
+
+fn main(clock: SystemClock) {
+  (tx, rx) := channel()
+  start := clock.now()
+  print(timeout(clock, rx))
+  r := race {
+    work(21) as n => n,
+    {
+      clock.sleep(seconds(5))
+      0
+    } as z => z,
+  }
+  print(r)
+  s := select {
+    rx.recv() as x => "got",
+    clock.after(ms(20)) => "timed out",
+  }
+  print(s)
+  mut timeouts := 0
+  for i in 0..20 {
+    if timeout(clock, rx) is None {
+      timeouts += 1
+    }
+  }
+  print(f"timeouts {timeouts}")
+  took := elapsed(start, clock.now()).value
+  print(took >= 650000000 && took < 4000000000)
+  tx.close()
+}
+"#;
+
+const CHANNELS: &str = r#"fn work(n: Int) -> Int {
+  n * n
+}
+
+fn slow(n: Int) -> Int {
+  if n < 2 { n } else { slow(n - 1) + slow(n - 2) }
+}
+
+fn pool() {
+  (tx, rx) := channel(4)
+  (out, results) := channel()
+  scope {
+    spawn {
+      for n in 1..=10 {
+        tx.send(n)
+      }
+      tx.close()
+    }
+    for _ in 0..3 {
+      spawn {
+        for n in rx {
+          out.send(work(n))
+        }
+        out.close()
+      }
+    }
+    tx.close()
+    out.close()
+    mut total := 0
+    for r in results {
+      total += r
+    }
+    print(f"total {total}")
+  }
+}
+
+fn merge() {
+  (nums, nums_rx) := channel()
+  (words, words_rx) := channel(2)
+  scope {
+    spawn {
+      for i in 0..5 {
+        nums.send(i)
+      }
+      nums.close()
+    }
+    spawn {
+      for w in ["a", "b", "c"] {
+        words.send(w)
+      }
+      words.close()
+    }
+    nums.close()
+    words.close()
+    mut got_nums := 0
+    mut got_words: List[String] = []
+    mut nums_open := true
+    mut words_open := true
+    while nums_open || words_open {
+      select {
+        nums_rx.recv() as n => match n {
+          Some(x) => {
+            got_nums += x
+          },
+          None => {
+            nums_open = false
+          },
+        },
+        words_rx.recv() as w => match w {
+          Some(x) => {
+            got_words += [x]
+          },
+          None => {
+            words_open = false
+          },
+        },
+      }
+    }
+    print(f"{got_nums} {got_words.sort()}")
+  }
+}
+
+fn ticks() {
+  r := scope {
+    t := spawn slow(22)
+    (tx, rx) := channel(1)
+    mut ticks := 0
+    loop {
+      select {
+        await t as v => {
+          tx.close()
+          break
+        },
+        tx.send(ticks) => {
+          ticks += 1
+          _ := rx.recv()
+        },
+      }
+    }
+    ticks > 0
+  }
+  print(f"ticked {r}")
+}
+
+fn main() {
+  pool()
+  merge()
+  ticks()
+}
+"#;
+
+const TASKS: &str = r#"fn fib(n: Int) -> Int {
+  if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+}
+
+/// Stops at the first square over 25, waiting for the tasks started so far.
+fn first_big(xs: List[Int]) -> Option[Int] {
+  scope {
+    for x in xs {
+      h := spawn x * x
+      if await h > 25 {
+        return Some(x)
+      }
+    }
+    None
+  }
+}
+
+fn nested(n: Int) -> Int {
+  scope {
+    a := spawn scope {
+      b := spawn n + 1
+      await b * 2
+    }
+    await a
+  }
+}
+
+/// Every task holds the same list and the same strings, copies parts of
+/// them and drops them: the counts change on all threads at once.
+fn shared(words: List[String], rounds: Int) -> Int {
+  scope {
+    hs := [spawn {
+      mut kept: List[String] = []
+      for r in 0..rounds {
+        ys := words
+        kept = kept + [ys[(r + k) % len(ys)]]
+        if len(kept) > 8 {
+          kept = kept[1..]
+        }
+      }
+      len(kept) + k
+    } for k in 0..8]
+    (await hs).fold(0, (a, b) -> a + b)
+  }
+}
+
+fn main() {
+  xs := [1, 2, 3]
+  (a, b) := scope {
+    x := spawn fib(25)
+    y := spawn len(xs) + fib(20)
+    await (x, y)
+  }
+  print(f"{a} {b}")
+  print(f"{scope { await [spawn fib(n) for n in 20..26] }}")
+  print(f"{first_big([1, 3, 5, 7])}")
+  print(f"{nested(4)}")
+  mut total := 0
+  for i in 0..4 {
+    total += scope { await spawn i * i }
+  }
+  print(f"{total}")
+  words := ["alpha", "beta", "gamma"].map(w -> w + "!")
+  print(f"{shared(words, 20000)} {words}")
+  scope {
+    t := spawn print("from a task")
+    await t
+    print("after it")
+  }
+}
+"#;
 
 /// With the JIT, `strata run` compiles by default: what doesn't compile is
 /// interpreted without a note (`--jit` gives one); compiled and interpreted,
@@ -592,7 +1523,7 @@ fn fields_trait_equality_and_stacks_compile() {
     let b = Command::new(strata).arg("build").arg(&f).arg("-o").arg(&exe).output().unwrap();
     assert!(b.status.success(), "{}", String::from_utf8_lossy(&b.stderr));
     let native = Command::new(&exe).output().unwrap();
-    let interp = Command::new(strata).arg("run").arg(&f).output().unwrap();
+    let interp = Command::new(strata).args(["run", "--jit"]).arg(&f).output().unwrap();
     let err = String::from_utf8_lossy(&native.stderr).to_string();
     assert_eq!(err, String::from_utf8_lossy(&interp.stderr));
     assert!(err.contains("    stack: main -> Thing.describe -> inner -> half\n"), "{err}");
@@ -826,10 +1757,10 @@ fn verify_fuzzes_compiled() {
     let d = tmp("jit-verify");
     let f = d.join("v.strata");
     save(&f, "fn pieces(s: String) -> Positive { len(split(s, \"a\")) - 1 }\nfn loops(n: Natural) -> Int { mut i := 0 while i != n * 2 + 1 { i += 2 } i }\nfn fine(xs: List[String]) -> Natural { len(join(xs, \",\").code_points()) }\n");
-    let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
+    let (out, _) = output(Command::new(strata).args(["verify", "--jit", "--file"]).arg(&f).env("STRATA_SOLVER", "none").env("STRATA_VERDICTS", d.join(".verdicts-jit")));
     assert!(!out.contains("note:"), "{out}");
     assert!(out.contains("result of `pieces`: 0 does not satisfy `Positive`") && out.contains("~ fine                     fuzzed: 200 cases, 0 discarded"), "{out}");
-    let (out, _) = output(Command::new(strata).args(["verify", "--file"]).arg(&f).env("STRATA_SOLVER", "none"));
+    let (out, _) = output(Command::new(strata).args(["verify", "--file"]).arg(&f).env("STRATA_SOLVER", "none").env("STRATA_VERDICTS", d.join(".verdicts")));
     assert!(!out.contains("note:"), "{out}");
     assert!(out.contains("✗ pieces                   Refinement violation (found by the fuzzer)") && out.contains("result of `pieces`: 0 does not satisfy `Positive`"), "{out}");
     assert!(out.contains("✗ loops                    Limit violation (found by the fuzzer)") && out.contains("too many steps (stack: loops)"), "{out}");
@@ -975,7 +1906,7 @@ extern c fn nothing() -> Counter
 extern c fn twice(mut x: I32)
 
 pub fn numbers() -> List[Int] {
-  [neg8(5), neg8(-128), inc8(254), umax(), imin(), half(umax()), (if even(4) { 1 } else { 0 })]
+  [neg8(5).to_int(), neg8(-128).to_int(), inc8(254).to_int(), umax().to_int(), imin().to_int(), half(umax()).to_int(), (if even(4) { 1 } else { 0 })]
 }
 
 pub fn texts() -> String {
@@ -992,20 +1923,20 @@ pub fn counting() -> List[Int] {
       first := counter_bump(h)
       second := counter_bump(h)
       counter_close(h)
-      [code, first, second, x]
+      [code.to_int(), first.to_int(), second.to_int(), x.to_int()]
     }
-    None => [code],
+    None => [code.to_int()],
   }
 }
 
 pub fn refused() -> List[Int] {
   mut c: Option[Counter] = None
   code := counter_open(-1, mut c)
-  [code, (if c == None { 1 } else { 0 })]
+  [code.to_int(), (if c == None { 1 } else { 0 })]
 }
 
 pub fn null_handle() -> Int {
-  counter_bump(nothing())
+  counter_bump(nothing()).to_int()
 }
 
 pub fn nul_string() -> String {
@@ -1108,3 +2039,286 @@ fn impl_type_parameters_compile() {
         assert_eq!((out.as_str(), code), (want, 0));
     }
 }
+
+/// Values that stay in their block (`llvm/escape.rs`), next to values that
+/// don't: those passed to a function that keeps them, copied, or returned.
+const STACK_VALUES: &str = "type Name = { first: String, last: String }
+
+type Person = { name: Name, age: Int, tags: List[String] }
+
+// borrows `n`: a field read
+fn full(n: Name) -> String {
+    n.first + \" \" + n.last
+}
+
+// borrows `p` (passes it on to a function that borrows it)
+fn label(p: Person) -> String {
+    full(p.name) + \"/\" + to_string(len(p.tags))
+}
+
+// keeps `p`
+fn keep(p: Person) -> List[Person] {
+    [p]
+}
+
+// a value on the stack left by `return`
+fn find(names: List[String], wanted: String) -> Int {
+    mut i := 0
+    while i < len(names) {
+        n := Name { first: names[i], last: \"L\" }
+        if n.first == wanted {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+fn main() {
+    mut total := 0
+    mut kept := []
+    mut i := 0
+    while i < 1000 {
+        i += 1
+        n := Name { first: \"Ada\" + to_string(i), last: \"Lovelace\" }
+        p := Person { name: Name { first: \"x\", last: to_string(i) }, age: i * 4611686018427387904, tags: [\"a\", to_string(i)] }
+        if i % 3 == 0 {
+            continue
+        }
+        total += byte_len(full(n)) + byte_len(label(p))
+        if i == 500 {
+            kept = kept + keep(p)
+        }
+        q := Person { name: n, age: i, tags: [] }
+        match q {
+            Person { age, .. } => {
+                total += age % 5
+            },
+        }
+        if i == 998 {
+            break
+        }
+    }
+    print(total)
+    print(len(kept))
+    names := [\"Ada1\", \"Ada7\", \"Bob\"]
+    at := find(names, \"Ada7\")
+    print(f\"found Ada7 at {at}\")
+}
+";
+
+/// Fields assigned in place, and the values that must not change with them.
+const IN_PLACE: &str = "type State = { n: Int, name: String, errs: List[String], at: (Int, String) }
+
+type P = { x: Int, y: Int }
+
+fn bump(mut s: State) {
+    s.n += 1
+    s.errs = push(s.errs, \"bumped\")
+}
+
+// replaces the whole value moved in
+fn reset(mut s: State) {
+    s = State { n: 42, name: \"reset\", errs: [\"r\"], at: (4, \"d\") }
+}
+
+// another argument mentions the variable: not moved
+fn set_n(mut s: State, n: Int) {
+    s.n = n
+}
+
+// passes it on
+fn twice(mut s: State) {
+    bump(mut s)
+    bump(mut s)
+}
+
+fn both(a: State, b: Int) -> String {
+    f\"{a.n} {b}\"
+}
+
+fn main() {
+    mut s := State { n: 0, name: \"s\", errs: [], at: (0, \"a\") }
+    mut i := 0
+    while i < 1000 {
+        s.n += 1
+        s.name = \"s\" + to_string(i)
+        s.errs = push(s.errs, to_string(i))
+        i += 1
+    }
+    print(f\"{s.n} {s.name} {len(s.errs)}\")
+    // a copy keeps its value
+    t := s
+    s.n = -1
+    print(f\"{t.n} {s.n}\")
+    // so does the value in a list
+    xs := [s]
+    s.name = \"changed\"
+    print(f\"{xs[0].name} {s.name}\")
+    // an operand that reads `s` before a later one assigns it
+    print(both(s, {
+        s.n = 7
+        2
+    }))
+    // a loop over a field the body assigns
+    mut k := 0
+    for e in s.errs {
+        if k < 3 {
+            s.errs = push(s.errs, e)
+        }
+        k += 1
+    }
+    print(f\"{k} {len(s.errs)}\")
+    // a `mut` parameter
+    bump(mut s)
+    print(f\"{s.n} {s.errs[len(s.errs) - 1]}\")
+    twice(mut s)
+    set_n(mut s, s.n + 1)
+    print(f\"{s.n} {len(s.errs)}\")
+    u := s
+    reset(mut s)
+    print(f\"{s.n} {s.name} {u.n} {u.name}\")
+    // a task holding `s` while it changes
+    r := scope {
+        h := spawn s.n * 10
+        s.n = 100
+        await h
+    }
+    print(f\"{r} {s.n}\")
+    // a tuple field, and a tuple
+    s.at = (1, \"b\")
+    mut pair := (1, \"one\")
+    pair.1 = \"uno\"
+    print(f\"{s.at.1} {pair.1}\")
+    // a constant record (every field a literal): never written in place
+    mut c := P { x: 1, y: 2 }
+    c.x = 10
+    d := P { x: 1, y: 2 }
+    print(f\"{c.x} {d.x}\")
+    print(\"done\")
+}
+";
+
+/// Dictionaries and sets updated by `x = insert(x, …)`, and the values that
+/// must not change with them.
+const INSERT_IN_PLACE: &str = "type Entry = { name: String, n: Int }
+
+type State = { seen: Set[Int], names: Dict[String, Entry], count: Int }
+
+fn note(mut s: State, k: String, n: Int) {
+    s.names = insert(s.names, k, Entry { name: k + \"!\", n })
+    s.seen = s.seen.insert(n)
+    s.count += 1
+}
+
+fn main() {
+    mut d := Dict[String, Int] {}
+    mut i := 0
+    while i < 2000 {
+        d = insert(d, \"k\" + to_string(i % 700), i)
+        i += 1
+    }
+    (k5, k699) := (\"k5\", \"k699\")
+    print(f\"{len(d)} {get(d, k5) ?? -9} {get(d, k699) ?? -9}\")
+    // a copy keeps its value
+    old := d
+    d = insert(d, \"new\", -1)
+    d = insert(d, \"k5\", 5)
+    new := \"new\"
+    print(f\"{len(old)} {len(d)} {get(old, k5) ?? -9} {get(d, k5) ?? -9} {contains(old, new)}\")
+    // so does one in a list
+    ds := [d]
+    d = insert(d, \"later\", 0)
+    print(f\"{len(ds[0])} {len(d)}\")
+    // a constant dictionary
+    mut c := Dict[String, Int] { \"a\": 1, \"b\": 2 }
+    c = insert(c, \"c\", 3)
+    c = insert(c, \"a\", 10)
+    e := Dict[String, Int] { \"a\": 1, \"b\": 2 }
+    print(f\"{c} {e}\")
+    // a value mentioning the dictionary itself
+    mut dd := Dict[String, Int] { \"x\": 1 }
+    dd = insert(dd, \"size\", len(dd))
+    dd = insert(dd, \"size2\", len(dd))
+    print(dd)
+    // sets, through a variable and a method call
+    mut seen := Set[Int] {}
+    for n in [5, 3, 9, 3, 1, 5, 7] {
+        seen = insert(seen, n)
+        seen = seen.insert(n * 100)
+    }
+    print(seen)
+    // fields of a record, through a `mut` parameter
+    mut s := State { seen: Set[Int] {}, names: Dict[String, Entry] {}, count: 0 }
+    for w in [\"b\", \"a\", \"c\", \"a\"] {
+        note(mut s, w, len(w.bytes()) + s.count)
+    }
+    t := s
+    note(mut s, \"z\", 99)
+    a := get(s.names, \"a\") ?? Entry { name: \"?\", n: -9 }
+    print(f\"{s.count} {len(s.names)} {a.name} {a.n} {s.seen} {t.count} {len(t.names)}\")
+    print(\"done\")
+}
+";
+
+/// Constructors as arguments of functions that only read them (on the
+/// stack) or keep them, and removals from dictionaries and sets.
+const MORE_IN_PLACE: &str = "type P = { x: Int, name: String }
+
+type Box = { p: P, tag: String }
+
+fn norm(p: P) -> Int {
+    p.x * 2 + byte_len(p.name)
+}
+
+fn wrap(p: P) -> Box {
+    Box { p, tag: \"w\" }
+}
+
+fn first(a: P, b: P) -> Int {
+    a.x + b.x
+}
+
+fn main() {
+    // constructors as arguments: on the stack when the callee only reads them
+    mut total := 0
+    mut kept := []
+    mut i := 0
+    while i < 1000 {
+        total += norm(P { x: i, name: \"n\" + to_string(i) })
+        // a variable holding the call's result, not the argument
+        c := norm(P { x: i, name: \"c\" })
+        total += c
+        total += first(P { x: 1, name: to_string(i) }, P { x: i, name: \"b\" })
+        if i % 100 == 0 {
+            kept = push(kept, wrap(P { x: i, name: \"kept\" + to_string(i) }))
+        }
+        i += 1
+    }
+    print(f\"{total} {len(kept)} {kept[3].p.name}\")
+    // removing in place
+    mut d := Dict[String, Int] {}
+    for k in 0..300 {
+        d = insert(d, \"k\" + to_string(k), k)
+    }
+    old := d
+    for k in 0..300 {
+        if k % 3 == 0 {
+            d = remove(d, \"k\" + to_string(k))
+        }
+    }
+    d = remove(d, \"absent\")
+    print(f\"{len(d)} {len(old)}\")
+    mut s := Set[Int] { 1, 2, 3 }
+    s = s.remove(2)
+    s = remove(s, 9)
+    t := s
+    s = remove(s, 1)
+    print(f\"{s} {t}\")
+    mut c := Dict[String, Int] { \"a\": 1, \"b\": 2 }
+    c = remove(c, \"a\")
+    e := Dict[String, Int] { \"a\": 1, \"b\": 2 }
+    print(f\"{c} {e}\")
+    print(\"done\")
+}
+";

@@ -169,7 +169,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
                             go(a, out);
                             go(b, out);
                         }
-                        Stmt::Loop(b) => go(b, out),
+                        Stmt::Loop(b) | Stmt::Invariant(b) => go(b, out),
                         Stmt::Break | Stmt::Continue => {}
                         Stmt::For(p, a, b) => {
                             pat(p, out, ct);
@@ -260,7 +260,7 @@ pub fn refs(d: &Decl, ctor_types: &HashMap<String, String>) -> BTreeSet<String> 
             }
             out.remove(c.name.as_str());
         }
-        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }) => {}
+        DeclKind::Use(_) | DeclKind::Extern(ExternDecl { item: ExternItem::Type(..) | ExternItem::Static(..), .. }) => {}
         DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
             f.params.iter().for_each(|p| ty(&p.ty, &mut out));
             ty(&f.ret, &mut out);
@@ -430,7 +430,7 @@ impl Codebase {
         let new = &self.program;
         let changes = changes(old, new);
         // the standard library is built into strata: its changes are git's alone
-        if changes.is_empty() || crate::package::find(&self.root).ok().flatten().is_some_and(|p| p.name == crate::stdlib::NAME) {
+        if changes.is_empty() || crate::package::find(&self.root).ok().flatten().is_some_and(|p| crate::stdlib::builtin_package(&p.name)) {
             return Ok(changes);
         }
         let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
@@ -500,14 +500,204 @@ impl Codebase {
         Ok(out)
     }
 
-    pub fn load_verdicts(&self) -> HashMap<String, crate::verify::Verdict> {
-        fs::read_to_string(self.cache().join("verdicts.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    /// `verify`'s verdicts for this package (see [`Verdicts`]).
+    pub fn load_verdicts(&self) -> Verdicts {
+        Verdicts::at(&self.root)
     }
 
-    pub fn save_verdicts(&self, v: &HashMap<String, crate::verify::Verdict>) {
-        let _ = fs::create_dir_all(self.cache());
-        let _ = fs::write(self.cache().join("verdicts.json"), serde_json::to_string_pretty(v).unwrap());
+    /// Where `verify` keeps what it proved for `build` (`proofs`).
+    pub fn proofs_dir(&self) -> PathBuf {
+        self.cache()
     }
+}
+
+/// Where `verify` keeps what it proved of a script (a file outside a
+/// package): `~/.cache/strata/scripts/<its path's hash>` (`STRATA_CACHE`).
+pub fn script_proofs_dir(file: &str) -> Option<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let path = fs::canonicalize(file).ok()?;
+    let key: String = Sha256::digest(path.to_string_lossy().as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let root = match std::env::var_os("STRATA_CACHE") {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".cache/strata"),
+    };
+    Some(root.join("scripts").join(key))
+}
+
+/// What `verify` proved, kept in `dir` (`proofs.json`).
+pub fn load_proofs(dir: &Path) -> ProofFile {
+    fs::read_to_string(dir.join("proofs.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+pub fn save_proofs(dir: &Path, v: &ProofFile) {
+    write_atomically(&dir.join("proofs.json"), serde_json::to_string_pretty(v).unwrap().as_bytes());
+}
+
+/// `verify`'s verdicts, kept between runs and shared by every worktree of a
+/// git repository: in `<git common dir>/strata/verdicts`, else in
+/// `~/.cache/strata/verdicts` (`STRATA_CACHE`; `STRATA_VERDICTS` names the
+/// folder itself). Each verdict is a file of its own, written whole and
+/// renamed into place, so runs at the same time neither see half a verdict
+/// nor lose one another's.
+///
+/// A check's verdict (`get_check`) is under `checks/`, kept across builds of
+/// the compiler (`verify --no-cache` runs them again), and its key is a hash of
+/// the check's label, its key (the closure hash of its definition, with all
+/// it depends on, and the cases), and the run's settings (seed, race,
+/// solver, std's hash). A definition's latest verdict, the worst of its
+/// checks, is under `definitions/` by its closure hash (`get`): what the
+/// viewer and `diff` show.
+pub struct Verdicts {
+    root: Option<PathBuf>,
+    settings: String,
+}
+
+/// Bumped when what a kept verdict means (or how it is stored) changes.
+const VERDICTS_FORMAT: u32 = 1;
+
+impl Verdicts {
+    /// No verdicts.
+    pub fn none() -> Verdicts {
+        Verdicts { root: None, settings: String::new() }
+    }
+
+    /// The verdicts of the code at `at` (a package's folder, a script, a folder of modules).
+    pub fn at(at: &Path) -> Verdicts {
+        Verdicts { root: Self::root(at), settings: String::new() }
+    }
+
+    fn root(at: &Path) -> Option<PathBuf> {
+        if let Some(d) = std::env::var_os("STRATA_VERDICTS") {
+            return Some(PathBuf::from(d));
+        }
+        let dir = if at.is_dir() { at.to_path_buf() } else { at.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).to_path_buf() };
+        let git = std::process::Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "--git-common-dir"]).stderr(std::process::Stdio::null()).output().ok();
+        match git.filter(|o| o.status.success()) {
+            Some(o) => Some(dir.join(String::from_utf8_lossy(&o.stdout).trim()).join("strata/verdicts")),
+            None => Some(crate::verify::cache_root()?.join("verdicts")),
+        }
+    }
+
+    /// The same verdicts, for checks run with `settings`; folders of the
+    /// older layout (one per compiler) unused for two weeks are removed.
+    pub fn with_settings(mut self, settings: &str) -> Verdicts {
+        self.settings = format!("{VERDICTS_FORMAT}:{settings}");
+        if let Some(r) = &self.root {
+            let old = std::time::Duration::from_secs(14 * 24 * 3600);
+            for e in fs::read_dir(r).into_iter().flatten().flatten() {
+                let name = e.file_name();
+                let stale = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > old);
+                if stale && name != "checks" && name != "definitions" {
+                    let _ = fs::remove_dir_all(e.path());
+                }
+            }
+        }
+        self
+    }
+
+    fn check_file(&self, label: &str, key: &str) -> Option<PathBuf> {
+        use sha2::{Digest, Sha256};
+        let h: String = Sha256::digest(format!("{}\n{label}\n{key}", self.settings).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+        Some(self.root.as_ref()?.join("checks").join(&h[..2]).join(&h[2..]))
+    }
+
+    fn definition_file(&self, hash: &str) -> Option<PathBuf> {
+        use sha2::{Digest, Sha256};
+        let h: String = Sha256::digest(hash.as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
+        Some(self.root.as_ref()?.join("definitions").join(h))
+    }
+
+    fn read(path: Option<PathBuf>) -> Option<crate::verify::Verdict> {
+        serde_json::from_str(&fs::read_to_string(path?).ok()?).ok()
+    }
+
+    fn write(path: Option<PathBuf>, v: &crate::verify::Verdict) {
+        let Some(path) = path else { return };
+        let Ok(text) = serde_json::to_string(v) else { return };
+        write_atomically(&path, text.as_bytes());
+    }
+
+    /// The verdict of the check `label` with `key`, from an earlier run with the same settings.
+    pub fn get_check(&self, label: &str, key: &str) -> Option<crate::verify::Verdict> {
+        Self::read(self.check_file(label, key))
+    }
+
+    /// Keep a check's verdict, unless the solver gave up: it may have run out
+    /// of time on a busy machine (its time limit is a backstop).
+    pub fn put_check(&self, label: &str, key: &str, v: &crate::verify::Verdict) {
+        let text = serde_json::to_string(v).unwrap_or_default();
+        if text.contains("the solver gave up") || text.contains("the solver could not be run") {
+            return;
+        }
+        Self::write(self.check_file(label, key), v)
+    }
+
+    /// The latest verdict of the definition whose closure hash is `hash`.
+    pub fn get(&self, hash: &str) -> Option<crate::verify::Verdict> {
+        Self::read(self.definition_file(hash))
+    }
+
+    pub fn put(&self, hash: &str, v: &crate::verify::Verdict) {
+        Self::write(self.definition_file(hash), v)
+    }
+
+    /// Has no definition a verdict yet?
+    pub fn is_empty(&self) -> bool {
+        self.root.as_ref().and_then(|r| fs::read_dir(r.join("definitions")).ok()).map_or(true, |mut d| d.next().is_none())
+    }
+}
+
+/// Write `path` whole: into a file of its own first, then renamed into place.
+pub fn write_atomically(path: &Path, bytes: &[u8]) {
+    let Some(dir) = path.parent() else { return };
+    let tmp = dir.join(format!(".{}.{:?}.tmp", std::process::id(), std::thread::current().id()));
+    let _ = fs::create_dir_all(dir).and_then(|_| fs::write(&tmp, bytes)).and_then(|_| fs::rename(&tmp, path));
+}
+
+/// What `build` may leave out of `p`: the proofs made for each function's
+/// code as it is now (its definition's hash, with all it depends on, unchanged).
+pub fn current_proofs(p: &Program, dir: &Path) -> HashMap<String, crate::llvm::Proofs> {
+    let closures = Closures::new(p);
+    load_proofs(dir)
+        .functions
+        .into_iter()
+        .filter(|(_, pr)| closures.hash(&pr.decl) == pr.hash)
+        .map(|(name, pr)| (name, crate::llvm::Proofs { proven: pr.proven, open: pr.open }))
+        .collect()
+}
+
+/// The definitions `verify` checks (functions, impls) that it hasn't
+/// verified as they are now: what `build` verifies first.
+pub fn unverified(p: &Program, dir: &Path) -> std::collections::BTreeSet<String> {
+    let closures = Closures::new(p);
+    let done = load_proofs(dir).verified;
+    p.decls
+        .iter()
+        .filter(|d| matches!(d.kind, DeclKind::Fn(_) | DeclKind::Impl(_)))
+        .map(|d| d.qname())
+        .filter(|q| done.get(q) != Some(&closures.hash(q)))
+        .collect()
+}
+
+/// `proofs.json`: each definition verified, with its hash then, and each
+/// function's checks.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProofFile {
+    #[serde(default)]
+    pub verified: HashMap<String, String>,
+    #[serde(default)]
+    pub functions: HashMap<String, Proved>,
+}
+
+/// A function's checks as `verify` left them: proven or not, for the
+/// definition `decl` whose hash (with what it depends on) was `hash`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Proved {
+    pub decl: String,
+    pub hash: String,
+    pub proven: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<String>,
 }
 
 /// Each module of `p` as a module file: (path in its package, bytes).
@@ -541,8 +731,8 @@ pub fn module_at(path: &Path) -> Result<Option<(crate::package::Package, String)
     if m == "main" {
         m.clear();
     }
-    if pkg.name == crate::stdlib::NAME {
-        m = if m.is_empty() { crate::stdlib::NAME.to_string() } else { format!("{}.{m}", crate::stdlib::NAME) };
+    if crate::stdlib::builtin_package(&pkg.name) {
+        m = crate::stdlib::package_module(&pkg.name, &m);
     }
     Ok(Some((pkg, m)))
 }
@@ -610,7 +800,8 @@ pub const LOG: &str = "strata.log";
 /// Where a module's file is, relative to its package: `shop.orders` is
 /// `shop/orders.strata`, the root module `main.strata`.
 pub fn module_path(m: &str) -> PathBuf {
-    // inside `std/` itself, `std.io` is `io.strata`
+    // inside `std/` itself, `std.io` is `io.strata` (core's files are named by
+    // `core::file_of`: a package's own module `core` is `core.strata`)
     let m = m.strip_prefix("std.").unwrap_or(if m == crate::stdlib::NAME { "" } else { m });
     if m.is_empty() { PathBuf::from("main.strata") } else { PathBuf::from(format!("{}.strata", m.replace('.', "/"))) }
 }

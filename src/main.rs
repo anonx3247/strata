@@ -9,6 +9,7 @@ mod binary;
 mod cli;
 mod cmd;
 mod desugar;
+mod core;
 mod derive;
 mod diff;
 mod history;
@@ -83,16 +84,24 @@ every change made through strata, committed with them):
                                with --file, git: `diff [BASE]` compares BASE (default HEAD)
                                with the working tree, one step per commit
   interface <module>           a module's public contract: what other modules can use
-  render [MODULE] [--split DIR]
+  render [MODULE] [--split DIR] [--rust]
                                print a module as text (L2): the file that holds it (the
                                root module is `main`); --split writes one file per module
                                (as text files: `shop/orders.st`, never read back)
   pack <FILE.strata>           the whole program in one file (a bundle, with strata.toml);
                                --file, run, ui and every view read it like a package;
-                               --prelude: the prelude's definitions instead (for std.ast.eval)
+                               --prelude: the prelude's definitions instead (for compiler/eval)
   header <FILE.strata>         a module file's table of contents: each definition's kind,
                                name, hashes, size and dependencies, read without decoding it;
-                               --tree: each definition (a bundle's too) as a `std.ast` value, one per line
+                               --tree: each definition (a bundle's too) as a `compiler/ast` value, one per line
+                               --text: the definitions as the printer writes them, as stored
+  lex <FILE> [--rust]          a text file's tokens, one per line (then its comments), by
+                               the lexer written in Strata (`compiler/lex`); --rust: by the
+                               Rust lexer (the reference `compiler/lex` is tested against)
+  parse <FILE> [--rust]        a text file parsed as a script: each definition as a `compiler/ast`
+                               value, one per line, as parsed (not stored), by `compiler/parse`;
+                               --stored: as stored (references qualified), by `compiler/resolve`;
+                               --rust: by the Rust parser
   (`--file` accepts a folder: each .strata file is a module named after its path.
    `--file F edit [MODULE]` and `--file F add TEXT` change F outside any log: a script,
    or a folder's module, created if new; only what doesn't parse is refused)
@@ -111,10 +120,9 @@ Git:
                                and show .strata files as text in `git diff` and `git log -p`
   sync [BRANCH]                merge BRANCH (default main; origin's if there is a remote)
                                into this branch with the driver, then check; commits the
-                               merge only if `ci` passes
-  ci [--fix]                   what CI requires: every package and script in the repository
-                               checks, exports exist, and every .strata file is in canonical
-                               form, the bytes strata writes for it (--fix rewrites them)
+                               merge only if every package and script checks
+  upgrade                      rewrite every package and script in the repository in the
+                               current binary form (after a change to the format)
 
 Views:
   ui [--port 7777]                the workspace in the browser: agents over ACP, the code
@@ -128,11 +136,18 @@ Views:
 Checking:
   check [--json]               types, exhaustiveness, literal refinements
   holes [--json]               typed holes with goal type, context and obligations
-  verify [SELECTOR] [--cases N] [--checks] [--smt] [--require R,..] [--no-race] [--json]
+  verify [SELECTOR] [--cases N] [--checks] [--smt] [--obligations] [--require R,..] [--no-race] [--no-cache] [--json]
                                prove every contract with an SMT solver (z3), confirm
-                               its counterexamples by running them, fuzz the rest;
-                               results cached by content hash. --checks lists the
-                               proven checks, --smt prints the solver queries.
+                               its counterexamples by running them, fuzz the rest.
+                               A check's verdict is kept (in the git repository, shared
+                               by its worktrees, else ~/.cache/strata/verdicts) under
+                               a hash of its definition and all it depends on, the
+                               flags and solver, across strata builds: only what
+                               changed runs, the rest says (cached) (--no-cache:
+                               run all again). --checks lists the
+                               proven checks, --smt prints the solver queries,
+                               --obligations each obligation with the solver's
+                               answer (proven, refuted, unknown), nothing run.
                                Each function also says whether it terminates.
                                --require (proven, terminates, no-recursion) fails
                                the run when a checked function falls short (as do
@@ -148,13 +163,17 @@ Checking:
                                can't be compiled yet is skipped)
 
 Running:
-  run [PATH] [-- ARGS..]       run the program: `main` gets the capabilities it asks for
+  run [PATH] [--rust] [-- ARGS..]
+                               run the program (by compiler/'s evaluator; --rust, or what
+                               it can't run: compiled): `main` gets the capabilities it asks for
                                (Console; Disk, Process from std; its own) and ARGS; it
                                returns (), an ExitCode, or a Result (Err: exit code 1).
                                PATH is a .strata file or a package folder (or --file).
                                It is compiled to machine code in memory (LLVM); what
                                can't be compiled yet is an error saying why.
-                               --trace prints each call and return to stderr
+                               --trace prints each call and return to stderr;
+                               the checks the last `verify` proved are left out
+                               (--all-checks keeps them; `build` too)
   serve [PATH] [--port N]      serve the web: each request is passed to the program's
                                `fn handle(req: Request) -> Response` (std.http), which may
                                also ask for Console and capabilities (default port 8000);
@@ -169,8 +188,14 @@ Running:
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
                                otherwise tested on their own
-  build [PATH] [-o OUT] [--emit-llvm]
+  build-core [-o FILE]         compile core.rt (the runtime written in Strata) to LLVM IR for
+                               the C runtime: the second stage of building strata itself
+                               (tools/bootstrap.sh writes it to target/core_rt.ll, which
+                               build.rs then links instead of the C versions)
+  build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify] [--release]
                                compile the program to a native executable, through LLVM
+                               (unoptimized, -O0, unless --release: -O2 and the runtime
+                               inlined; `run` and `test` take --release too)
                                (needs clang; STRATA_CC chooses another): `main` takes no
                                parameters yet, and only part of the language compiles
                                (Int, Float, Bool, String, functions, control flow,
@@ -241,12 +266,22 @@ fn read_sources(path: &str) -> Result<Program, String> {
 }
 
 fn load(args: &Args) -> Result<Source, String> {
+    // commands that write code load a package whose settings may name what they are about to write
+    let writes = matches!(args.pos.first().map(|s| s.as_str()), Some("add" | "edit" | "rename" | "move" | "status" | "done" | "abort"));
     if let Some(f) = args.val("--file") {
-        return Ok(Source::File(read_sources(f)?));
+        let p = read_sources(f)?;
+        if !writes {
+            package::check_settings(std::path::Path::new(f), &p)?;
+        }
+        return Ok(Source::File(p));
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = Codebase::find(&cwd).ok_or("no package here (no strata.toml in this folder or above: run `strata init`, or pass --file)")?;
-    Ok(Source::Db(Codebase::open(&root)?))
+    let cb = Codebase::open(&root)?;
+    if !writes {
+        package::check_settings(&root, &cb.program)?;
+    }
+    Ok(Source::Db(cb))
 }
 
 /// Full static check: types, exhaustiveness, then literal refinements.
@@ -273,6 +308,34 @@ fn print_errors(rep: &types::CheckReport) {
     }
 }
 
+/// Where `verify` keeps what it proved of `src` for `build` (a script's
+/// by its path `file`).
+fn proofs_dir(src: &Source, file: Option<&str>) -> Option<std::path::PathBuf> {
+    match src {
+        Source::Db(cb) => Some(cb.proofs_dir()),
+        Source::File(_) => store::script_proofs_dir(file?),
+    }
+}
+
+/// What `build` and `run` leave out of `src`'s compiled code: the checks the
+/// last `verify` proved, for code unchanged since (none with `--all-checks`).
+fn proofs_for(src: &Source, file: Option<&str>, args: &Args) -> HashMap<String, llvm::Proofs> {
+    if args.flag("--all-checks") {
+        llvm::ALL_CHECKS.store(true, std::sync::atomic::Ordering::Relaxed);
+        return HashMap::default();
+    }
+    proofs_dir(src, file).map(|d| store::current_proofs(src.program(), &d)).unwrap_or_default()
+}
+
+/// `verify`'s verdicts for `src` (a package, or the script or folder `file`).
+fn verdicts_at(src: &Source, file: Option<&str>) -> store::Verdicts {
+    match (src, file) {
+        (Source::Db(cb), _) => cb.load_verdicts(),
+        (Source::File(_), Some(f)) => store::Verdicts::at(std::path::Path::new(f)),
+        _ => store::Verdicts::none(),
+    }
+}
+
 fn verdicts_for(src: &Source) -> HashMap<String, String> {
     let Source::Db(cb) = src else { return HashMap::default() };
     let cache = cb.load_verdicts();
@@ -291,6 +354,22 @@ fn run() -> Result<bool, String> {
         return Ok(true);
     };
     let json_out = args.flag("--json");
+    llvm::jit::set_release(args.flag("--release"));
+    // `lex` and `parse` are the Strata front end's (`compiler/`) unless
+    // `--rust`, or when no compiler package is found
+    let strata_default = matches!(cmd, "lex" | "parse") && !args.flag("--rust") && cmd::compare::available();
+    if strata_default || matches!(cmd, "lex" | "parse" | "render" | "run" | "build" | "test") && (args.flag("--strata") || args.flag("--compare")) {
+        return cmd::compare::command(&args, cmd);
+    }
+    // `render` (a whole script) and `run` (a program's `main`) are the Strata
+    // side's too, unless `--rust`; what it doesn't cover (a package's module,
+    // a view's options, one function called, a program the evaluator can't
+    // run) is Rust's
+    if !args.flag("--rust") && cmd::compare::covers_by_default(&args, cmd) {
+        if let Ok(ok) = cmd::compare::command(&args, cmd) {
+            return Ok(ok);
+        }
+    }
     match cmd {
         "help" | "--help" => {
             println!("{USAGE}");
@@ -308,13 +387,15 @@ fn run() -> Result<bool, String> {
         "resolve" => cmd::resolve(&args),
         "setup-git" => cmd::setup_git(),
         "sync" => cmd::sync(&args),
-        "ci" => cmd::ci(args.flag("--fix")),
+        "upgrade" => cmd::upgrade(),
         "log" => cmd::log(&args, json_out),
         "ui" => cmd::ui(&args),
         "builtins" => cmd::builtins(json_out),
         "render" => cmd::render(&args),
         "pack" => cmd::pack(&args),
         "header" => cmd::header(&args),
+        "lex" => cmd::lex(&args),
+        "parse" => cmd::parse(&args),
         "interface" => cmd::interface(&args),
         "ast" => cmd::ast(&args),
         "view" => cmd::view(&args),
@@ -325,6 +406,7 @@ fn run() -> Result<bool, String> {
         "serve" => cmd::serve_program(&args),
         "test" => cmd::run_tests(&args),
         "build" => cmd::build(&args),
+        "build-core" => cmd::build_core(&args),
         other => Err(format!("unknown command `{other}` (try `strata help`)")),
     }
 }

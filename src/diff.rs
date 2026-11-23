@@ -478,7 +478,7 @@ fn words(o: &Decl, n: &Decl) -> Vec<String> {
             }
             contract_words(a, b, &mut out);
         }
-        (DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. }), DeclKind::Extern(ExternDecl { item: ExternItem::Type(_), .. })) => {}
+        (DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }), DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. })) => {}
         _ => out.push("kind changed".into()),
     }
     if o.public != n.public {
@@ -608,7 +608,7 @@ fn effective_renames(old: &Program, new: &Program, renames: &[(String, String)])
 }
 
 /// The structural diff from `old` to `new`.
-pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &StepNames, verdicts: &HashMap<String, Verdict>) -> Json {
+pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &StepNames, verdicts: &crate::store::Verdicts) -> Json {
     // each side's dependency graph and code hashes, built once (resolving is
     // costly) and only if a closure hash is needed: to look a verdict up
     // (with none, there's nothing to look up)
@@ -813,8 +813,8 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
         let owned: Vec<String> = [o.map(|x| x.qname()), n.map(|x| x.qname())].into_iter().flatten().collect();
         let name_refs: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
         let verdict = {
-            let before = o.map(|o| verdict_word(verdicts.get(&closure_old(&o.qname()))));
-            let after = n.map(|n| verdict_word(verdicts.get(&closure_new(&n.qname()))));
+            let before = o.map(|o| verdict_word(verdicts.get(&closure_old(&o.qname())).as_ref()));
+            let after = n.map(|n| verdict_word(verdicts.get(&closure_new(&n.qname())).as_ref()));
             json!({"before": before, "after": after})
         };
         let sect = section(kind, mk, interface_changed);
@@ -848,6 +848,7 @@ pub fn diff(old: &Program, new: &Program, renames: &[(String, String)], steps: &
             continue;
         }
         let (b, a) = (before_hash.as_ref().and_then(|h| verdicts.get(h)), verdicts.get(&after_hash));
+        let (b, a) = (b.as_ref(), a.as_ref());
         if b.is_none() && a.is_none() && !(before_hash.is_none() && matches!(d.kind, DeclKind::Fn(_))) {
             continue;
         }

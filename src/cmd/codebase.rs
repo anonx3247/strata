@@ -13,13 +13,17 @@ pub fn init() -> Result<bool, String> {
 /// The text an `add` or a piped `edit` brings in, as definitions: `add`'s
 /// file (text, or a module file), `edit`'s standard input; unqualified
 /// definitions go into the module named (`strata edit shop < defs`).
-fn edits_in(args: &Args, cmd: &str, p: &Program, default_module: &str) -> Result<Program, String> {
+fn edits_in(args: &Args, cmd: &str, p: &Program, default_module: &str, builtin: Option<&str>) -> Result<Program, String> {
     let module = match args.pos.get(if cmd == "add" { 2 } else { 1 }) {
         None => default_module.to_string(),
         Some(arg) => edit_module(p, arg).unwrap_or_else(|| arg.clone()),
     };
-    // inside the standard library, its modules are `std.io`, `std.web`, ... (`io` names `std.io`)
-    let module = if is_std(p) { std_module(&module) } else { module };
+    // inside the standard library, its modules are `std.io`, `std.web`, ... (`io` names `std.io`;
+    // in `core`, `types` names `core.types`)
+    let module = match builtin.or_else(|| builtin_package_of(p)) {
+        Some(pkg) => crate::stdlib::package_module(pkg, &module),
+        None => module,
+    };
     let text = if cmd == "add" {
         let f = args.pos.get(1).ok_or("usage: strata add <FILE> [MODULE]  (a text file, or a .strata file or folder)")?;
         let path = std::path::Path::new(f);
@@ -36,20 +40,26 @@ fn edits_in(args: &Args, cmd: &str, p: &Program, default_module: &str) -> Result
     parser::parse_module_file(&text, &module).map_err(|e| format!("parse error at {e}"))
 }
 
-/// Whether a package's program is the standard library's (its modules are `std.*`).
-fn is_std(p: &Program) -> bool {
-    !p.decls.is_empty() && p.decls.iter().all(|d| d.module == crate::stdlib::NAME || d.module.as_str().starts_with("std."))
+/// The built-in package (`std`, `core`) a package's program is, by its modules' names.
+fn builtin_package_of(p: &Program) -> Option<&'static str> {
+    [crate::stdlib::NAME, crate::core::NAME].into_iter().find(|pkg| {
+        !p.decls.is_empty() && p.decls.iter().all(|d| d.module == *pkg || d.module.as_str().starts_with(&format!("{pkg}.")))
+    })
 }
 
-/// A module of the standard library as named inside it: `io` is `std.io`, the root `std`.
-fn std_module(m: &str) -> String {
-    if m.is_empty() || m == "main" {
-        crate::stdlib::NAME.to_string()
-    } else if m == crate::stdlib::NAME || m.starts_with("std.") {
-        m.to_string()
-    } else {
-        format!("{}.{m}", crate::stdlib::NAME)
-    }
+/// `strata --file core/ edit MODULE < text`: the module's definitions
+/// replaced by the text's, as parsed (core's names stay global).
+fn edit_core(args: &Args, dir: &std::path::Path) -> Result<bool, String> {
+    let m = args.pos.get(1).ok_or("usage: strata --file core/ edit MODULE < text  (a module of core: types, builtins, prelude)")?;
+    let module = crate::stdlib::package_module(crate::core::NAME, m);
+    let mut text = String::new();
+    std::io::stdin().read_to_string(&mut text).map_err(|e| e.to_string())?;
+    let p = parser::parse_module_file(&text, &module).map_err(|e| format!("parse error at {e}"))?;
+    let path = dir.join(crate::core::file_of(&module));
+    let bytes = binary::encode_module(&p, &module, &Default::default());
+    std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    println!("{}: {} definitions (rebuild strata to use them)", path.display(), p.decls.len());
+    Ok(true)
 }
 
 /// `strata add | edit`.
@@ -58,7 +68,13 @@ pub fn edit(args: &Args, cmd: &str, json_out: bool) -> Result<bool, String> {
         // the standard library's folder is edited as a package is, checked: it is
         // built into strata, so it must always check (another folder, or a
         // file, is stored as it is and checked afterwards)
-        Some(f) if std::path::Path::new(f).is_dir() && crate::package::find(std::path::Path::new(f)).ok().flatten().is_some_and(|p| p.name == crate::stdlib::NAME) => {
+        // `core` is every program's prelude: its names are nobody's module's
+        // (`Option`, not `core.types.Option`), so it is stored as written, and
+        // checked by every program that has it (rebuild strata, then check)
+        Some(f) if std::path::Path::new(f).is_dir() && crate::package::find(std::path::Path::new(f)).ok().flatten().is_some_and(|p| p.name == crate::core::NAME) => {
+            return edit_core(args, std::path::Path::new(f));
+        }
+        Some(f) if std::path::Path::new(f).is_dir() && crate::package::find(std::path::Path::new(f)).ok().flatten().is_some_and(|p| crate::stdlib::builtin_package(&p.name)) => {
             let pkg = crate::package::find(std::path::Path::new(f))?.unwrap();
             store::Codebase::open(&pkg.dir)?
         }
@@ -72,7 +88,8 @@ pub fn edit(args: &Args, cmd: &str, json_out: bool) -> Result<bool, String> {
     if cmd == "edit" && (args.flag("--editor") || std::io::IsTerminal::is_terminal(&std::io::stdin())) {
         return edit_in_editor(&mut cb, &args, json_out);
     }
-    let edits = edits_in(args, cmd, &cb.program, "")?;
+    let builtin = crate::package::find(cb.root()).ok().flatten().map(|p| p.name).filter(|n| crate::stdlib::builtin_package(n));
+    let edits = edits_in(args, cmd, &cb.program, "", builtin.as_deref())?;
     let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
     let msg = args.val("-m").unwrap_or(if cmd == "add" { "import" } else { "edit" });
     Ok(apply_edit(&mut cb, cmd, edits, deletes, msg, json_out)?.is_ok())
@@ -99,7 +116,7 @@ fn edit_file(args: &Args, cmd: &str, f: &str) -> Result<bool, String> {
         None if dir => String::new(),
         None => old.decls.first().map(|d| d.module.to_string()).unwrap_or_default(),
     };
-    let edits = edits_in(args, cmd, &old, &module)?;
+    let edits = edits_in(args, cmd, &old, &module, None)?;
     let deletes: Vec<String> = args.flags.get("--rm").cloned().unwrap_or_default();
     for q in &deletes {
         if !old.decls.iter().any(|d| d.qname() == *q) {
@@ -528,7 +545,7 @@ pub fn edit_in_editor(cb: &mut Codebase, args: &Args, json_out: bool) -> Result<
                 vec![file(m, shown, text)]
             }
             None => {
-                let names = view::select(&p, Some(arg));
+                let names = view::select(&p, Some(arg)).unwrap_or_default();
                 let picked: Vec<&Decl> = p.decls.iter().filter(|d| names.contains(&d.qname())).collect();
                 if picked.is_empty() {
                     return Err(format!("`{arg}` is no module and picks no definition (a new module is opened by its file: `strata edit {arg}.strata`)"));

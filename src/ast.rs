@@ -312,16 +312,20 @@ pub struct ExternDecl {
     pub item: ExternItem,
 }
 
-/// The language of an `extern` (only C so far).
+/// The language of an `extern`: C, or `Builtin` for what the compiler and
+/// its runtime provide (`builtin fn len[A](xs: List[A]) -> Int`, `builtin
+/// type Int`), declared only in the `core` package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Lang {
     C,
+    Builtin,
 }
 
 impl Lang {
     pub fn name(self) -> &'static str {
         match self {
             Lang::C => "c",
+            Lang::Builtin => "builtin",
         }
     }
     pub fn from_name(s: &str) -> Option<Lang> {
@@ -337,8 +341,13 @@ pub enum ExternItem {
     /// `extern c fn strlen(s: String) -> U64`: a signature with contracts and
     /// no body (`body` is `()`); the symbol is the function's name.
     Fn(FnDecl),
-    /// `extern c type Sqlite3`: an opaque handle (a pointer), only passed back.
-    Type(Symbol),
+    /// `extern c type Sqlite3`: an opaque handle (a pointer), only passed back;
+    /// `builtin type List[T]`: a type the compiler provides, with its parameters.
+    Type(Symbol, Vec<Symbol>),
+    /// `builtin static allocator: 512`: a block of that many bytes, zeroed,
+    /// one per program, at a fixed address; its name is a `Ptr` to it (core
+    /// only: the state of the runtime written in Strata).
+    Static(Symbol, i64),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -357,12 +366,36 @@ pub struct Decl {
     pub public: bool,
 }
 
-/// `use orders.{Order, ship}` / `use orders.*`
+/// `use std.time` (the module, named `time`: `time.now()`), `use std.time as t`
+/// (named `t`), `from std.time use Clock, Timer as T` (those names, unqualified).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UseDecl {
     pub path: Symbol,
-    /// `None` means everything public (`.*`).
-    pub items: Option<Vec<Symbol>>,
+    /// `use m as a`: the name the module goes by here (by default its last part).
+    pub alias: Option<Symbol>,
+    /// `from m use ...`: the names imported; `None` for `use m` (the module).
+    pub items: Option<Vec<UseItem>>,
+}
+
+/// One name of `from m use ...`: `Clock`, or `Timer as T`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UseItem {
+    pub name: Symbol,
+    pub alias: Option<Symbol>,
+}
+
+impl UseDecl {
+    /// The name `use m` binds the module to: its alias, or its last part.
+    pub fn binding(&self) -> Symbol {
+        self.alias.unwrap_or_else(|| Symbol::new(self.path.rsplit('.').next().unwrap_or(&self.path)))
+    }
+}
+
+impl UseItem {
+    /// The name it is known by here.
+    pub fn local(&self) -> Symbol {
+        self.alias.unwrap_or(self.name)
+    }
 }
 
 impl Decl {
@@ -381,7 +414,7 @@ impl Decl {
             DeclKind::Use(u) => format!("use {}", u.path),
             DeclKind::Extern(e) => match &e.item {
                 ExternItem::Fn(f) => f.name.to_string(),
-                ExternItem::Type(t) => t.to_string(),
+                ExternItem::Type(t, _) | ExternItem::Static(t, _) => t.to_string(),
             },
             DeclKind::Capability(c) => c.name.to_string(),
         }
@@ -526,6 +559,10 @@ pub enum Stmt {
     /// program is compiled; its body is written out once per element, with
     /// the element known in each copy.
     ComptimeFor(Pattern, Expr, Expr),
+    /// `invariant e`, written between a loop's header and its body
+    /// (`while c invariant e { ... }`) and kept as the first statements of
+    /// the body: true on entry and after every pass and `continue`.
+    Invariant(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -600,6 +637,40 @@ pub enum Expr {
     Dict(Vec<TypeExpr>, Vec<(Expr, Expr)>),
     /// `Set { 1, 2 }`, `Set[Int] {}`.
     Set(Vec<TypeExpr>, Vec<Expr>),
+    /// `scope { … }`: a block that ends only once every task spawned in it
+    /// has finished, awaited or not.
+    Scope(Box<Expr>),
+    /// `spawn e`: `e` run in a new task of the enclosing `scope`; a handle,
+    /// `Task[T]`.
+    Spawn(Box<Expr>),
+    /// `await h`: a task's result; of a tuple or list of handles, a tuple or
+    /// list of results.
+    Await(Box<Expr>),
+    /// `select { rx.recv() as x => …, tx.send(v) => …, await h as r => … }`:
+    /// waits until one of the operations can happen, does that one only, and
+    /// runs its arm.
+    Select(Vec<SelectArm>),
+    /// `race { fetch(a) as p => …, fetch(b) as q => … }`: each arm's left
+    /// side runs as a task of its own; the first to finish runs its arm, and
+    /// the others are cancelled (they stop at their next wait).
+    Race(Vec<SelectArm>),
+    /// `supervised spawn e`: `e` run in a new task whose panic ends only that
+    /// task; awaiting its handle gives `Result[T, Panic]`. (As a `race` arm's
+    /// left side, written `supervised e`: that arm's task.)
+    SupervisedSpawn(Box<Expr>),
+}
+
+/// One arm of a `select`: an operation that may wait (`rx.recv()`,
+/// `tx.send(v)`, `await h`), the name its result gets (`as x`), and the code
+/// run when it is the one that happens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SelectArm {
+    /// `//` comment lines just above it, as written ("" is a blank line between groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<String>,
+    pub op: Expr,
+    pub name: Option<Symbol>,
+    pub body: Expr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -784,7 +855,7 @@ macro_rules! visitor {
                     v.expr(f);
                     xs.into_iter().for_each(|x| v.expr(x))
                 }
-                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) | Expr::Comptime(r) => v.expr(r),
+                Expr::Field(r, _) | Expr::Is(r, _) | Expr::Un(_, r) | Expr::Return(r) | Expr::Mut(r) | Expr::Try(r, _) | Expr::Comptime(r) | Expr::Scope(r) | Expr::Spawn(r) | Expr::SupervisedSpawn(r) | Expr::Await(r) => v.expr(r),
                 Expr::Lambda(ps, body) => {
                     for p in ps {
                         if let Some(t) = &$($m)? p.ty {
@@ -806,6 +877,12 @@ macro_rules! visitor {
                     v.expr(s);
                     for a in arms {
                         v.pattern(&$($m)? a.pat);
+                        v.expr(&$($m)? a.body)
+                    }
+                }
+                Expr::Select(arms) | Expr::Race(arms) => {
+                    for a in arms {
+                        v.expr(&$($m)? a.op);
                         v.expr(&$($m)? a.body)
                     }
                 }
@@ -883,7 +960,7 @@ macro_rules! visitor {
                     v.expr(a);
                     v.expr(b)
                 }
-                Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) => v.expr(x),
+                Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Invariant(x) => v.expr(x),
             }
         }
 
@@ -997,7 +1074,7 @@ macro_rules! visitor {
                 DeclKind::Use(_) => {}
                 DeclKind::Extern(e) => match &$($m)? e.item {
                     ExternItem::Fn(f) => $func(v, f),
-                    ExternItem::Type(_) => {}
+                    ExternItem::Type(..) | ExternItem::Static(..) => {}
                 },
                 DeclKind::Capability(c) => {
                     for m in &$($m)? c.methods {

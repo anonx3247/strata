@@ -18,7 +18,7 @@ use crate::fx::{HashMap, HashSet};
 
 const FILE: &str = "pending.json";
 
-/// Hole names of a pending change start with this; `strata ci` refuses them.
+/// Hole names of a pending change start with this.
 pub const PREFIX: &str = "pending_";
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -322,7 +322,8 @@ pub fn holeify(old: &Program, new: &Program, edited: &[String], errors: &[Diag],
     let mut why: HashMap<usize, Vec<String>> = HashMap::default();
     for e in errors {
         match index.get(&e.decl) {
-            Some(&i) if !edited.contains(&new.decls[i].qname()) => {
+            // (an error in what the program imports, std's, has no definition here)
+            Some(&i) if new.decls.get(i).is_some_and(|d| !edited.contains(&d.qname())) => {
                 if !broken.contains(&i) {
                     broken.push(i);
                 }

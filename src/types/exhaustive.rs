@@ -13,9 +13,14 @@ pub enum P {
     Any,
     /// A constructor, with patterns for its fields.
     C(String, Vec<P>),
-    /// Some values we cannot describe (a string literal, an undecidable
-    /// condition): it covers no atom fully.
+    /// Some values we cannot describe (a string literal): it covers no atom
+    /// fully.
     Lit,
+    /// The values a condition holds for, when the checker can't decide it
+    /// (`where valid(it)`, a refinement calling a function): like `Lit`, but
+    /// a `match` that only such arms might complete is left to `verify`
+    /// (an obligation that some arm matches) instead of rejected.
+    Cond,
     /// Every value of a type (`String`, `Circle`, `Shape` the trait).
     Ty(Ty),
     /// These integers (a literal, `where 3 <= it && it <= 5`, `Positive`).
@@ -149,7 +154,7 @@ impl Checker<'_> {
         match p {
             P::Any => Some(any()),
             P::C(name, subs) => (a.key == AtomKey::Ctor(name.clone())).then(|| subs.clone()),
-            P::Lit | P::Or(_) => None,
+            P::Lit | P::Cond | P::Or(_) => None,
             P::Ints(s) => match a.key {
                 AtomKey::Region(lo, hi) if ints::contains(s, lo, hi) => Some(vec![]),
                 _ => None,
@@ -265,7 +270,7 @@ impl Checker<'_> {
         if tys.is_empty() {
             return rows.is_empty();
         }
-        if depth > 12 || matches!(q[0], P::Lit) {
+        if depth > 12 || matches!(q[0], P::Lit | P::Cond) {
             return true;
         }
         if let P::Or(alts) = &q[0] {
@@ -317,10 +322,25 @@ impl Checker<'_> {
                     }
                 }
             }
+            // (an arm with a condition the checker can't decide may cover the
+            // rest: `verify` proves that some arm matches, and the compiled code
+            // checks it, `no match arm`)
+            if arms.iter().any(|(p, _)| has_cond(p)) {
+                continue;
+            }
             if let Some(w) = self.missing(&rows, &[t.clone()], 0) {
                 let shown = excluded.as_ref().map_or(self.show(&t), |(_, w)| w.clone());
                 self.err(format!("non-exhaustive match on `{shown}`: `{}` is not covered", w[0]));
             }
         }
+    }
+}
+
+/// Whether a pattern's set has a condition the checker can't decide.
+fn has_cond(p: &P) -> bool {
+    match p {
+        P::Cond => true,
+        P::C(_, ps) | P::Or(ps) => ps.iter().any(has_cond),
+        _ => false,
     }
 }

@@ -189,7 +189,7 @@ fn calls_within(e: &Expr, env: &Env, locals: &[String], own: Option<&str>, out: 
                                 self.expr(a);
                                 self.expr(b);
                             }
-                            Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) => self.expr(x),
+                            Stmt::Loop(x) | Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Invariant(x) => self.expr(x),
                             Stmt::Comment(_) | Stmt::Break | Stmt::Continue => {}
                         }
                     }
@@ -249,6 +249,8 @@ fn loops(env: &Env, f: &FnDecl, solver: Option<&crate::smt::Solver>) -> Result<V
     }
     let Some(bin) = solver else { return Err("it has a `while` loop, and no SMT solver was found to check its bound".into()) };
     let mut vc = crate::smt::Vc::new(env);
+    // (the loops' invariants help show their bounds go down)
+    vc.solver = Some(bin.clone());
     vc.function(f, &f.name);
     let mut hows = vec![];
     for lp in vc.loops.clone() {
@@ -445,7 +447,7 @@ impl Structural<'_> {
                             self.expr(a, &v);
                             self.expr(b, &v);
                         }
-                        Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Loop(x) => self.expr(x, &v),
+                        Stmt::Expr(x) | Stmt::Assert(x) | Stmt::Loop(x) | Stmt::Invariant(x) => self.expr(x, &v),
                         Stmt::Break | Stmt::Continue | Stmt::Comment(_) => {}
                     }
                 }
@@ -536,7 +538,7 @@ fn candidate_measures(env: &Env, f: &FnDecl) -> Vec<Expr> {
     let only_params = |e: &Expr| {
         let mut ok = true;
         crate::ast::walk(e, |x| match x {
-            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(&n.sym()) || crate::types::BUILTINS.iter().any(|b| b.name == n),
+            Expr::Var(n) => ok &= params.contains(n.as_str()) || env.fns.contains_key(&n.sym()) || crate::types::builtins().iter().any(|b| b.name == n),
             Expr::Lambda(..) | Expr::Hole(_) | Expr::Float(_) | Expr::Str(_) => ok = false,
             _ => {}
         });
@@ -705,11 +707,7 @@ impl StdCache {
         let exe = std::env::current_exe().ok()?;
         let meta = std::fs::metadata(&exe).ok()?;
         let key: String = Sha256::digest(format!("termination v1 {:?} {} {} {}", meta.modified().ok()?, meta.len(), solver.bin, solver.version).as_bytes()).iter().take(16).map(|b| format!("{b:02x}")).collect();
-        let root = match std::env::var_os("STRATA_CACHE") {
-            Some(d) => std::path::PathBuf::from(d),
-            None => std::path::PathBuf::from(std::env::var_os("HOME")?).join(".cache/strata"),
-        };
-        Some(root.join("termination").join(key))
+        Some(crate::verify::cache_root()?.join("termination").join(key))
     }
 
     /// Is `name` one of std's own functions?
@@ -903,7 +901,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
             Err(e) => Err(e.clone()),
             Ok(hows) => {
                 if let Some(other) = mutual(name) {
-                    // a trait method by its short name (`next`, not `std.prelude.next`)
+                    // a trait method by its short name (`next`, not `core.iter.next`)
                     let shown = other.strip_prefix("trait method ").map_or(other.as_str(), crate::names::short);
                     Err(format!("it is recursive through `{shown}`"))
                 } else if n.calls.contains(name) {
@@ -944,7 +942,7 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
                     Termination::Proven { .. } => {}
                     Termination::Assumed { by } => assumed.extend(by),
                     Termination::Unknown { .. } => {
-                        // a trait method by its short name (`next`, not `std.prelude.next`)
+                        // a trait method by its short name (`next`, not `core.iter.next`)
                         let shown = c.strip_prefix("trait method ").map_or(c.as_str(), crate::names::short);
                         t = Termination::Unknown { reason: format!("it calls `{shown}`, which may not terminate") };
                         break;
@@ -989,6 +987,25 @@ pub fn analyze(env: &Env, solver: Option<&crate::smt::Solver>, roots: Option<&Ha
             if cannot_fail(env, f, &|g| transparent.contains_key(g)) {
                 transparent.insert(name.to_string(), assumed);
                 changed = true;
+            }
+        }
+        // a trait implementation's methods, by their labels (`Money.combine`):
+        // seen through where a call's receiver has a known type
+        for imp in &env.impls {
+            for m in &imp.methods {
+                let label = impl_label(env, imp, &m.name);
+                if transparent.contains_key(&label) || recursive.contains(&label) {
+                    continue;
+                }
+                let assumed = match memo.get(&label) {
+                    Some(Termination::Proven { .. }) => false,
+                    Some(Termination::Assumed { .. }) => true,
+                    _ => continue,
+                };
+                if cannot_fail(env, &crate::verify::method_decl(env, imp, m), &|g| transparent.contains_key(g)) {
+                    transparent.insert(label, assumed);
+                    changed = true;
+                }
             }
         }
     }

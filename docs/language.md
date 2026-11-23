@@ -126,7 +126,7 @@ fn describe(v: Int | String) -> String {
 
 **Narrowing.** Inside an arm, the matched variable has the arm's type (`s` is a `Square` above), and no new name is needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. A matched field (`match t.status { Closed => t.status.why, … }`) narrows too. Assigning to a narrowed `mut` variable ends its narrowing.
 
-**Exhaustive and reachable.** The checker splits the matched type into variants, union members, and the ranges the arms' bounds cut out: of an `Int`, of a `Float`, or of the length of a `String` or `List`. It reports a value no arm takes (`` `where 3 <= it && it <= 5` is not covered``), and an arm the arms above already cover (`unreachable match arm `Positive``). Conditions that compare `it` (or `len(it)`) with constants, combined with `&&`, `||`, `!` and `==>`, are decided exactly. Any other condition (`matches(it, …)`, a call, another variable) covers nothing until the SMT backend decides it, so such a match needs a `_` arm.
+**Exhaustive and reachable.** The checker splits the matched type into variants, union members, and the ranges the arms' bounds cut out: of an `Int`, of a `Float`, or of the length of a `String` or `List`. It reports a value no arm takes (`` `where 3 <= it && it <= 5` is not covered``), and an arm the arms above already cover (`unreachable match arm `Positive``). Conditions that compare `it` (or `len(it)`) with constants, combined with `&&`, `||`, `!` and `==>`, are decided exactly. Any other condition (`matches(it, …)`, a call, another variable) is left to `strata verify`: a match that only such arms might complete is not an error for the checker, the prover proves that some arm matches (or shows a value no arm takes: `no match arm for 1`), and the compiled code checks it (a `no match arm` fault).
 
 **The matched value's own refinement counts.** In `fn f(n: Positive)`, `match n { 1 => …, where it > 1 => … }` is exhaustive, `match xs { [x, ..] => … }` is exhaustive for `xs: NonEmpty[Int]`, and a `where it <= 0` arm on `n` is unreachable (`no `Positive` matches it`). This holds for variables (mutable ones too: a declared type holds after every assignment), their fields, a function's result type, and inside a narrowing arm. Narrowing follows the code, though: an arm that assigns the matched `mut` variable (anywhere in the arm, so a loop's next pass is covered too) does not narrow it, and the variable keeps its declared type there.
 
@@ -153,10 +153,10 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 ```
 
 - **Contracts** (`requires` / `ensures`) on a trait method bind every implementation.
-- **Laws** are checked by `strata verify` against every implementation, with generated inputs. In `examples/traits.strata`, `verify` finds that averaging (`Midpoint`) is not associative.
+- **Laws** are checked by `strata verify` against every implementation: proven by the solver, which sees through the implementation's methods (when they end and can't fail), else with generated inputs. In `examples/traits.strata`, both laws are proven for `Money` and for `List[T]`, and the solver finds that averaging (`Midpoint`) is not associative.
 - **Generic functions** are fuzzed with a type that actually implements their bounds.
 
-**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Async and iterators will be designed as their own language features.
+**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a fake implementation or `mock Db`. Iterators and tasks are language features of their own, not capabilities (see Iterators, and Tasks).
 
 **Mocks: fakes for tests.** A fake is declared like a type, with `mock` in place of `type`, and implemented like any type; its implementations may leave methods out:
 
@@ -216,10 +216,10 @@ test "the real clock" (sys: SystemClock) {
 - A capability has no constructor: `SystemClock {}`, `mock SystemClock`, JSON input and `SystemClock.seconds()` are all errors. A program's signature (`main`'s parameters) lists every capability it can use.
 - `main` names the capabilities it may use and picks among them in ordinary code (an option choosing SQLite or Postgres), handing the rest of the program a capability trait value (`late(sys)`).
 - A test may ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`); one that doesn't uses fakes.
-- `verify` never runs a capability's code, nor code that takes one: it reports them as assumed.
+- `verify` never runs a capability's code (it reports it as assumed), nor code that takes one; that code is proven from the capability's contracts like any other.
 - The viewer colours capabilities and capability traits apart from other types.
 
-std's are capabilities too: `Disk` (`std.fs`, for `Files`) and `Process` (`std.process`, for `Environment`), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
+std's are capabilities too: `Disk` (`std.fs`, for `Files`), `Process` (`std.process`, for `Environment`) and `Launcher` (`std.process`, for `Commands`: running other programs), which `main` names. `Commands` has one method, `run(mut self, program: String, args: List[String], dir: String) -> Result[Finished, String]` (`Finished = { code: Int, out: String, err: String }`): it starts `program` (looked up in `PATH`) with `args`, never through a shell, in the folder `dir` (`""`: the current one), with nothing on its standard input, waits, and gives its exit code (128 + the signal for one killed by a signal) and what it wrote; `Err` only when it can't be started (no such program or folder). Its `ensures` says the code is never negative, which is all `verify` assumes of a call. Code that takes `Commands` is tested with `mock Commands` or a mock type that answers the calls the test expects. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`. A test may ask for it too (`test "..." (mut console: Console) { ... }`): what it writes is the test's own output, shown only if the test fails. Under `strata run --trace`, the console's calls are in the trace with the rest, what was written and what was read.
 
 **How the program is run** is hidden by default, so a program behaves the same everywhere. A package that needs to know says so in `strata.toml`:
 
@@ -275,9 +275,13 @@ pub fn ship(mut db: Db, id: OrderId) -> Result[Order, ShipError]  ensures ...
 fn helper() -> Int { ... }            // private: invisible outside `orders`
 
 // billing.strata
-use orders.{Order, ship}              // or `use orders.*`, or write `orders.ship(x)`
+from orders use Order, ship           // the names, unqualified
+use std.time                          // the module: `time.now()`, `time.Clock`
+use std.json as j                     // under another name: `j.parse(s)`
 pub fn invoice(o: Order) -> Cents { ... }
 ```
+
+- **Every other module comes in through a `use`**, std's included: `use m` binds the module to its last name (`use shop.orders` gives `orders.ship(x)`), `use m as a` to `a`, and `from m use x, y as z` brings names in unqualified (a type with its constructors, a trait with its methods). A name written in full (`std.json.parse`) still needs a `use` of its module (`use std` covers `std.json` too); without one it is an error saying which `use` to add. Only the prelude (`Option`, `Result`, `Int`, `print`, …) needs none. A long `from` list is printed filled to the line width.
 
 - A module is used **only through its public contract**: `pub` types, function signatures, `requires`/`ensures`, trait laws. Anything else is private, and using it from another module is an error ("`secret` is private to module `a`").
 - `strata interface orders` prints that contract, with a hash. Editing a private definition, or a function body without touching its signature, is reported as "implementation only": nothing outside the module can be affected. Changing a `pub` signature or type says so ("module core: its public contract changed").
@@ -297,7 +301,7 @@ fn restock(mut line: Line, extra: Int) { line.qty += extra }   // changes the ca
 restock(mut line, 5)                                           // and the call says so
 ```
 
-Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. Method chains can be split across lines:
+Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. A loop can state what stays true from pass to pass, between its header and its body: `while i < n` then `invariant 2 * total == i * (i + 1)` on the next line. It is checked at the loop's head when the program runs, and `strata verify` proves it (see [verification](verification.md#loops)); most loops need none, as `verify` infers simple ones. Method chains can be split across lines:
 
 ```rust
 best := scores
@@ -327,7 +331,7 @@ Dict { w: len(w) for w in words }
 Set { x % 3 for x in xs }
 ```
 
-They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the interpreter and the prover treat them exactly as those calls.
+They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the compiler and the prover treat them exactly as those calls.
 
 Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
 
@@ -357,12 +361,203 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 - Each works on its own type only: `except` / `!!` on an `Option`, or `or` / `??` on a `Result`, is an error. So a `Result[Option[T], E]` reads one way: `(load(k) !! None) ?? default` handles the error, then the missing value.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
 
+## Tasks: `scope`, `spawn` and `await`
+
+Work runs in parallel in tasks. A `scope` starts them and ends only once every task in it has finished:
+
+```rust
+fn fetch_both(net: Net) -> (Page, Page) {
+  scope {
+    a := spawn fetch(net, url1)
+    b := spawn fetch(net, url2)
+    await (a, b)
+  }
+}
+
+squares := scope { await [spawn x * x for x in xs] }
+```
+
+- `spawn e` runs the expression `e` (all of it, as `return e` takes all of it) in a new task, and gives a handle, `Task[T]`. It must be inside a `scope`.
+- `await h` waits for the task and gives its result; `await (a, b)` gives a tuple of results, `await hs` a list. It takes what follows it like `-` does, so `(await hs).len()` needs the parentheses.
+- There is no `async` function: any function can be called in a task, and a call that waits (a read, a long computation) is a plain call. Nothing about a function says whether tasks run it.
+
+Tasks share nothing that can change, so the result doesn't depend on timing: `scope { a := spawn f(); b := spawn g(); await (a, b) }` is `(f(), g())`, and `verify` reasons about it as such. What a task uses from around it is a copy at `spawn` time, as in a lambda: it can't change outer variables (`spawn { n += 1 }` is an error), and `return`, `!` and `?` can't leave it (handle the error in the task, or make it the task's result).
+
+A handle stays in its scope: a scope can't give one back, a task can't hold another's, and one can't be stored in a variable declared outside. A fault in a task (an index out of range, a broken contract) ends the program at once, as anywhere else: nothing catches it, and the other tasks don't run on (a thread waiting for what the failed task would have sent doesn't hang). Its call stack shows where the task was started and where it failed: `main -> spawn -> pick`. Under `strata test` it fails that test only: the test's other tasks stop at their next wait, and the next test runs.
+
+**A deadlock is a panic, not a hang.** When every task of the program is waiting (in a `recv`, a `send`, a `select`, an `await`, the end of a `scope`, a fake clock's sleep) and none of the waits can end by itself (a real clock's sleep or `after` timer can: it isn't a deadlock), nothing can ever happen again. The program stops with what each task waits on, and where: `deadlock: every task is waiting, so none can go on: main waits in the end of a `scope`, at main; a task waits in `recv`, at main -> spawn -> Receiver.recv; …`. Under `strata test` the test fails with it. A task reading the console or a file isn't waiting in this sense: it can go on by itself.
+
+A `scope` whose last line is a `spawn` (`scope { spawn work() }`) gives `()`: the handle isn't its value. Tasks run on threads, one per task for now.
+
+### Channels and `select`
+
+Tasks pass values to each other through channels. `channel(n)` gives a channel's two ends, with room for `n` values waiting; `channel()` has none, so a `send` waits until a receiver takes the value. The type of what goes through is inferred from its use.
+
+```rust
+fn squares(jobs: List[Int]) -> Int {
+  (tx, rx) := channel(16)
+  (out, results) := channel()
+  scope {
+    spawn {
+      for j in jobs { tx.send(j) }
+      tx.close()
+    }
+    for _ in 0..4 {
+      spawn {
+        for j in rx { out.send(j * j) }
+        out.close()
+      }
+    }
+    tx.close()
+    out.close()
+    mut total := 0
+    for r in results { total += r }
+    total
+  }
+}
+```
+
+- `tx.send(v)` moves `v` into the channel, waiting while it is full. `rx.recv()` gives `Some(v)`, or `None` once the channel has ended and is empty; `for v in rx` takes every value, then stops.
+- **Closing is explicit, once per task.** Each task holding the sender (the one that made the channel, and every `spawn` that uses it) calls `tx.close()` when it is done sending; the channel ends when all of them have. The checker requires it where the channel is made and in each task that uses the sender; a task that still ends without closing (the call was in a branch not taken) has its copy closed for it, and that is a fault. A `spawn` takes a sender only as a variable of its own, not inside a tuple or record.
+- Any number of tasks can send to one channel and receive from it. `Sender[T]` and `Receiver[T]` are the types of the two ends.
+
+`select` waits on several operations and does the first one that can happen, and only that one:
+
+```rust
+loop {
+  select {
+    jobs.recv() as j => match j {
+      Some(x) => run(x),
+      None => break,
+    },
+    results.send(last) => {
+      sent += 1
+    },
+    await download as d => show(d),
+  }
+}
+```
+
+An arm is `rx.recv()` (its `as` name is an `Option`), `tx.send(v)` (nothing to name) or `await h` (the task's result). An arm that doesn't happen has done nothing: a value it would have sent isn't sent, and a task it awaits keeps running. A `recv` on a channel that has ended is always ready (with `None`), so a loop over several channels stops looking at one once it ends. When several arms can happen, which one does is not fixed.
+
+### `race`
+
+`race` has the same arms as `select`, but each arm's left side is any expression, run as a task of its own. The first to finish runs its arm, with its result as the `as` name; the others are cancelled:
+
+```rust
+fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
+  race {
+    mirrors.recv() as p => p ?? not_found(key),
+    lookup(local, key) as hit => hit,
+  }
+}
+```
+
+A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `select`, a `sleep`, a console's `read_line`), however deep in calls it is, and leaves as `return` would: what it holds is dropped, nothing after the wait runs, and the tasks it started stop too. Code that doesn't wait runs to its end (a long computation isn't interrupted halfway). The `race` ends once every loser has stopped, then runs the winner's arm. A left side follows a `spawn`'s rules (no `return`, `!` or `?` out of it; a sender it uses is its own copy, to close).
+
+### Supervised tasks
+
+A panic ends the program, wherever it happens. A task started with `supervised spawn` is the exception: its panic ends only that task (and the tasks it started), and awaiting it gives a `Result[T, Panic]` instead of a `T`. The failure is handled where the task is awaited, with what handles any `Result`:
+
+```rust
+fn page(net: Net, url: String) -> Page {
+  scope {
+    h := supervised spawn fetch(net, url)
+    await h except p {
+      log(f"{url}: {p.message}")
+      cached(url)
+    }
+  }
+}
+```
+
+- `Panic` is `{ kind: String, message: String, stack: String }`: the kind (`Runtime`, `Requires`, `Refinement`, …), the message, and the call stack from `main` through each `spawn`.
+- A handler after `await h` is the result's: `await h except p { … }` is `(await h) except p { … }`, and `await h!` is `(await h)!`.
+- When a supervised task panics, every task below it stops at its next wait; its copies of senders are closed (its receivers see the channel end); what it held is freed (a division by zero or a bad builtin argument included; only a stack overflow or running out of memory leaves it allocated); its siblings and the task that started it go on. A panic in an ordinary task below it is the supervised task's.
+- In a `race`, an arm can be supervised the same way: `race { supervised fetch(a) as r => …, … }` (`r` is then a `Result[T, Panic]`, and a panic is that arm's result).
+- `supervised` is a keyword only right before `spawn` (and at the start of a `race` arm): it is a name anywhere else.
+
+### Time: `Clock`
+
+Time comes from outside the program, so it goes through a capability (`std.time`): `main` or a test asks for the `SystemClock` and passes it on (as a `Clock`). `clock.now()` is an `Instant` (monotonic: only the time between two means something, `elapsed(a, b)`), and `clock.sleep(d)` waits for a `Duration` (`nanos`, `micros`, `ms`, `seconds`; `.value` is nanoseconds). Sleeping is a wait like a `recv`: a cancelled task stops sleeping at once. So a `race` makes a timeout:
+
+```rust
+fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
+  race {
+    fetch(net, url) as p => Some(p),
+    clock.sleep(seconds(2)) => None,
+  }
+}
+```
+
+In a `select`, `clock.after(d) => …` is an arm that happens once `d` has passed, in that clock's time, since the `select` began (it names nothing): `select { jobs.recv() as j => run(j), clock.after(ms(100)) => flush() }`. Any `Clock` works, so a test can pass a stand-in whose time it controls (one that stands still, or runs faster): its `after` arms and its `sleep` follow its time, not the system's.
+
+A test of timeouts asks for a `VirtualClock`, a capability like `SystemClock`: each test (and the program, for `main`) has its own virtual time, at 0 when it starts and shared by its tasks, and it moves by itself: once every task is waiting and one of them waits for this clock (a `sleep`, an `after` timer), its time jumps to the nearest such deadline. A timeout then happens at once, and exactly:
+
+```rust
+/// Waits for a question; none ever comes.
+fn answer(questions: Receiver[Int]) -> Int {
+  questions.recv() ?? 0
+}
+
+test "gives up after 30 seconds" (clock: VirtualClock) {
+  (ask, questions) := channel()
+  r := race {
+    answer(questions) as v => Some(v),
+    clock.sleep(seconds(30)) => None,
+  }
+  ask.close()
+  assert r == None
+  assert clock.now().value == seconds(30).value
+}
+```
+
+Sleeps of a virtual clock end in the order of their deadlines, each once everything else is waiting, so a test of timers is exact and takes no real time.
+
+A test that needs a time that stands still writes its own mock of `Clock` (std has none: it is a few lines, and each test knows the time it wants; a mock is for tests only):
+
+```rust
+/// The time on a receipt, in seconds.
+fn stamp(clock: Clock) -> String {
+  f"at {clock.now().value / 1000000000} s"
+}
+
+/// A clock stopped at one time.
+mock StoppedClock = { at: Instant }
+
+// (`sleep` is left out: a mock's missing methods are generated)
+impl Clock for StoppedClock {
+  fn now(self) -> Instant {
+    self.at
+  }
+}
+
+test "a receipt shows the time" {
+  clock := StoppedClock { at: Instant(seconds(5).value) }
+  assert stamp(clock) == "at 5 s"
+}
+```
+
 ## Built-in types
+
+**`core`.** What every program has without a `use` is declared in `core/`, a package below the standard library that depends on nothing (std depends on it): `core.types` (the types below, `Debug`, `Display`, `Option`, `Result`, the refinements), `core.builtins` (the builtin functions), and code modules a program gets only when it uses them: `core.iter` (iterators, when it names one of theirs: `xs.iter()`, `impl Iterator`, ...; a list's `map` is a builtin and needs none), `core.channel` (`channel()`, `Sender`, `Receiver` and their methods), `core.text` (`s.bytes()`, `s.code_points()`) and `core.task` (`Panic`, for `supervised spawn`). `core.mem` is raw memory (`Ptr`, `raw_alloc`, `load_i64`, `store_u8`, `atomic_add_i64`, ..., on machine integers), what the runtime is written in: only core's own modules can use it (anywhere else, `Ptr` and its functions are errors). `core.rt` is the runtime written in Strata: the allocator and reference counting (`strata_alloc`, `strata_dup`, `strata_release`, `strata_free`), so nothing in its functions may allocate (the checker refuses lists, records and closures made at run time, `Int` arithmetic, and calls to anything but core.rt's, core.mem's and the integer conversions). `strata --file core test` runs core's own tests. What the compiler itself provides is declared with `builtin`, which only `core` may use: a type with its parameters (`builtin type Dict[K, V]`) and a function's signature, with `requires` where it fails on some arguments, so a builtin's precondition is a contract like any other, and one without `requires` always returns:
+
+```rust
+/// `xs[i]`: element `i`, from 0.
+builtin fn at[A](xs: List[A], i: Int) -> A
+  requires 0 <= i && i < len(xs)
+
+/// The string of one character, code point `c` (not a surrogate).
+builtin fn chr(c: Int) -> String
+  requires 0 <= c && c <= 1114111 && !(55296 <= c && c <= 57343)
+```
+
+A name may have several signatures (`len` of a list, a dict or a set): the first whose parameters fit the arguments is called. `strata --file core render builtins` shows them all (`strata builtins` lists them in short); `strata --file core/ edit MODULE < text` stores a module of core as written (its names are global, nobody's module's), and `strata --file core check` checks the core strata is built with. Not yet contracts: `matches` with a pattern that isn't a regular expression, and a channel used after it ended.
 
 | Type | Notes |
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` never overflows: it is a machine integer while it fits and a big integer when it doesn't (like Python), literals included. `Float` is never NaN or infinite: an operation whose result would be is a fault (`1e308 * 10.0`). Where that can't be ruled out (code that runs other programs' arithmetic), `checked_add`, `checked_sub`, `checked_mul`, `checked_div`, `checked_rem`, `checked_sqrt` give an `Option[Float]` and `checked_floor`, `checked_ceil`, `checked_round` an `Option[Int]`, `None` instead of the fault. There is no implicit Int/Float mixing (`float(n)`, `round(x)`) |
-| `I8` … `I64`, `U8` … `U64` | sized integers: `Int` refinements with a machine integer's range (`U8 = Int where 0 <= it && it <= 255`), checked and verified like any refinement, so `verify` finds where a `U8` would overflow |
+| `I8` … `I64`, `U8` … `U64` | sized integers: machine integers of a fixed width, each a type of its own, compiled to its own width (`U32` is an LLVM `i32`). Arithmetic wraps around: an operation (`+ - * / % & \| ^ << >>`, `-x`) is `Int`'s, then the result modulo 2^width (two's complement for the signed ones): `/` and `%` are Euclidean as on `Int`, a shift by the width or more gives 0 (`>>` of a negative number, -1). They never mix with `Int` or with each other: `x + n` with `x: U32` and `n: Int` is an error; convert with `x.to_int()`, `n.to_u32()` (`n` must fit: a precondition `verify` proves, else a runtime check) or `n.wrap_u32()` (`n` modulo 2^32). An integer literal is an `Int`, except where its place says it is a sized one: an annotation (`let b: U8 = 200`), a parameter, a result, a field, a list of them, or the other operand of an operator (`x + 1`, `x >> 3`); it must fit (`let b: U8 = 300` is an error). `verify` models them as integers in their range with each operation wrapped, so it finds where an `ensures` breaks on overflow (`x + 1 > x` fails for `x = 255`) |
 | `()` | the unit type: "no meaningful value", Python's `None` as a *type* |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
@@ -371,7 +566,7 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 | `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `Dict[String, Int] {}`, `dict(pairs)` from a list of pairs, `get`, `insert`, `remove`, `keys`, `values`, `items`; a JSON object when keys are strings |
 | `Set[T]` | `Set { 1, 2 }`, `Set[Int] {}`, `set(xs)` from a list, `insert`, `union`, `intersection`, `difference`, `to_list` |
 
-`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Bits**: `&`, `|`, `^` work on `Int`s bit by bit, as two's complement infinitely sign-extended (as in Python: `-1 & x` is `x`, big integers included), `a << n` is `a` times 2^n and `a >> n` is `a` divided by 2^n rounded down (`-5 >> 1` is `-3`); a negative `n` is a fault, which `verify` looks for. They bind as in Rust and Python, tighter than comparisons (`x & 255 == x` is `(x & 255) == x`): `|`, then `^`, then `&`, then the shifts, then `+` / `-`. A bit operation compared is shown in parentheses, `(x & 255) == x`, since C (and so most readers) puts `==` first. In a refinement or a `where` pattern, where `|` separates a union's members or a pattern's alternatives, a bit-or must be in parentheses (`where (it | 1) == 3 | 0`). **Strings** are UTF-8, and a string isn't counted or indexed itself: the unit is named, `s.bytes()`, `s.code_points()` or `s.graphemes()` (iterators: `len(s.graphemes())`, `s.graphemes()[i]`; see Iterators), and `len(s)`, `s[i]`, `s[a..b]` say so. Positions in a string are byte offsets: `index_of(s, sub)` gives one, and `byte_slice(s, a, b)` cuts at them in constant time (clamped to the string; an offset inside a character moves back to its start), with `byte_len(s)`. String functions don't fail: `split(s, "")` splits at every character (`["", "a", "b", ""]`), `replace(s, "", x)` puts `x` around every character, and `repeat(s, n)` with `n < 1` is `""`. Also `chars`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). `to_json(x)` gives any value as compact JSON, as `strata run` writes it. **f-strings** interpolate any expression, shown as by `to_string` (`Display`, below): `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error. `float_bits` / `float_from_bits` give a float's IEEE 754 bits as an `Int`, and back (`None` for a NaN's).
+`+` adds numbers and joins strings and lists (`"a" + "b"`, `[1] + [2]`). **Bits**: `&`, `|`, `^` work on `Int`s bit by bit, as two's complement infinitely sign-extended (as in Python: `-1 & x` is `x`, big integers included), `a << n` is `a` times 2^n and `a >> n` is `a` divided by 2^n rounded down (`-5 >> 1` is `-3`); a negative `n` is a fault, which `verify` looks for. They bind as in Rust and Python, tighter than comparisons (`x & 255 == x` is `(x & 255) == x`): `|`, then `^`, then `&`, then the shifts, then `+` / `-`. A bit operation compared is shown in parentheses, `(x & 255) == x`, since C (and so most readers) puts `==` first. In a refinement or a `where` pattern, where `|` separates a union's members or a pattern's alternatives, a bit-or must be in parentheses (`where (it | 1) == 3 | 0`). **Strings** are UTF-8, and a string isn't counted or indexed itself: the unit is named, `s.bytes()`, `s.code_points()` or `s.graphemes()` (iterators: `len(s.graphemes())`, `s.graphemes()[i]`; see Iterators), and `len(s)`, `s[i]`, `s[a..b]` say so. Positions in a string are byte offsets: `index_of(s, sub)` gives one, and `byte_slice(s, a, b)` cuts at them in constant time (clamped to the string; an offset inside a character moves back to its start), with `byte_len(s)`. String functions don't fail: `split(s, "")` splits at every character (`["", "a", "b", ""]`), `replace(s, "", x)` puts `x` around every character, and `repeat(s, n)` with `n < 1` is `""`. Also `chars`, `contains`, `starts_with`, `ends_with`, `split`, `join`, `lines`, `trim`, `replace`, `repeat`, `reverse`, `to_upper`, `to_lower`, `is_digit` / `is_alpha` / `is_space`, `ord` / `chr`, `parse_int`, `matches` (regex). JSON is `std.json`'s: a type that derives `Json` (or a built-in type) is written with `x.to_json()` and `stringify`. **f-strings** interpolate any expression, shown as by `to_string` (`Display`, below): `f"{name} has {len(xs)} items"` (`{{` and `}}` are literal braces). A **format spec** follows a `:`, as in Python: `[[fill]align][+][0][width][.precision]`. `{price:.2}` gives two decimal places (or keeps at most 2 characters of a `String`), `{name:<12}` / `{n:>5}` / `{title:*^20}` pad to a width (numbers align right by default, everything else left), `{n:05}` pads with zeros after the sign, `{delta:+}` always shows the sign. A spec that doesn't suit the type is a check error. `float_bits` / `float_from_bits` give a float's IEEE 754 bits as an `Int`, and back (`None` for a NaN's).
 
 **Showing values: `Debug` and `Display`.** Every type has two traits without saying so. `Debug` (`debug(x)`, `x.debug()`) writes a value as it is written in code: `Some("hi")`, `Point { x: 1, y: 2 }`, `[1, 2]`, `(1, "a")`, `Dict { "a": 1 }`, `Set { 1, 2 }`, `UserId(7)`, strings quoted. `Display` (`to_string(x)`, `x.to_string()`) is what `print` and f-strings show: a `String` is its text, anything else its `debug`; inside a list, a record or any other value, the parts are shown with `debug` (as Python's `str` of a list uses `repr`), so `["a b"]` and `["a", "b"]` stay apart. A type replaces either with an impl of its own, which is used everywhere it is shown (nested values too):
 
@@ -474,7 +669,7 @@ join(s.graphemes()[1..3], "")       // "él"
 Naturals { at: 0 }.drop(3).take(4)  // 3, 4, 5, 6
 ```
 
-**Not yet:** a nested comprehension whose inner source is an iterator, generators and async.
+**Not yet:** a nested comprehension whose inner source is an iterator, and generators.
 
 ## Foreign functions: `extern c`
 
@@ -505,7 +700,7 @@ libs = ["m"]             # libraries (-lm)
 - **Faults at the boundary.** Arguments are checked against their types (`I8` is in range) and `requires` before the call; the result against its type and `ensures` after it. A string holding a NUL character can't be passed (C would read it as its end).
 - **The name is the C symbol**, so an extern function can't be renamed (wrap it instead).
 - **Only its own module calls it.** Extern definitions are never `pub`, and code in other modules (submodules included) can't call them. The module that declares them gives the rest of the program its own functions, or a capability for what touches the outside world, so a signature still shows what code can touch.
-- **Contracts are assumed.** `verify` never proves or runs foreign code: a function in a module that declares externs, one that takes one of its types, and one that calls into it are all reported as assumed.
+- **Contracts are assumed.** `verify` never proves foreign code: a foreign function's contract (`ensures it >= 0`) is taken as true where it is called, and the code calling it is verified like any other (fuzzing runs the compiled code, C included). A compiled program checks that contract at each call, as nothing proves it.
 - **Calling C** works wherever code runs: `strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it. C's own library (`strlen`, …) needs no `[native]`.
 
 Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
@@ -515,7 +710,7 @@ Not yet: `main` asking for a native module's capability, structs passed by value
 A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.
 
 ```rust
-use std.cli.CommandLine
+from std.cli use CommandLine
 
 /// Greet people by name.
 type Options = {
@@ -527,7 +722,7 @@ type Options = {
   names: List[String] = [],
 }
 
-impl CommandLine for Options {}
+derive CommandLine for Options
 
 fn main(opts: Options) {
   who := if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
@@ -546,9 +741,9 @@ cat README.md | strata run examples/wc
 
 **`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
 
-**Command-line options** are a record that implements `CommandLine` (`std.cli`); the trait has no methods. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
+**Command-line options** are a record that derives `CommandLine` (`std.cli`): `derive CommandLine for Options` writes its `from_args` and `help` for that record, at compile time. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. `strata check` rejects a `CommandLine` record a command line can't fill.
 
-`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
+`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
 
 The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
 
@@ -556,36 +751,77 @@ The **standard library** is the `std/` package, written in Strata and built into
 |---|---|
 | `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`); `Recorder` / `recorder(input)` / `printed(r)` for tests |
 | `std.fs` | `Files` (`read`, `read_bytes`, `write`, `append`, `exists`, `list`, `make_dir`, `remove`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
-| `std.process` | `Environment` (`args`, `var`), `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
+| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
+| `std.process` | `Environment` (`args`, `var`), `Commands` (`run`, giving a `Finished`) with the runtime's `Launcher`, `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
 | `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log. `strata ui`'s viewer reads it |
 | `std.cli` | `CommandLine`: a record of options read from the arguments |
-| `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.decode(parse(text)!)`, `stringify(s.encode()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
-| `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json`, `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
+| `std.typing` | types as compile-time values, for derivable traits: `Type` (`name`, `doc`, `kind`, `args`, `fields`, `elements`, `members`, …, and `check`), `Kind`, `Field`, `Choice`; `setting(key)` reads the package's `strata.toml` while compiling, `compile_error` fails a `derive` with a message |
+| `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.from_json(parse(text)!)`, `stringify(s.to_json()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
+| `std.toml` | `Toml`: records and sum types read from TOML and written to it (`derive Toml for Config`; `Config.read_toml(text)`, `config.write_toml()`, `to_toml` / `from_toml` for `TomlValue`s), implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Dict[String, V]`, `Date`, `Time` and `DateTime`. TOML 1.1 read and written in Strata: `parse(text)` gives the document's root table (`List[(String, TomlValue)]`, keys in the order written) or an error saying where (`3:1: `b` is defined twice`); `TomlValue` is `Text`, `Integer`, `Number`, `Boolean`, `Moment` (a `DateTime`: optional `Date`, `Time` and `Offset`, TOML's four kinds), `Array` or `Table`; `lookup(doc, ["server", "port"])`; `stringify(doc)` writes TOML text |
+| `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json` (a value whose type has `Json`), `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
 | `std.web` | `Html[M]` and `Attr[M]`: HTML as values, one function per element (`div`, `p`, `table`, `button`, …) and attribute (`class`, `href`, `on_click(msg)`, …); `render`, `document(title, head, body)` |
 | `std.regex` | regular expressions written in Strata: `parse(pattern)` gives a `Regex` (`Literal`, `Class` of code-point ranges, `Look`, `Repeat`, `Capture`, `Concat`, `Alternation`) or an error; `show` prints the tree. `compile(r)` makes its Thompson NFA (`List[Inst]`), `is_full_match(prog, text)` runs it as a Pike VM, and `full_match(text, pattern)` does both: what `matches` means. `matcher(pattern)` makes a DFA (`Automaton`) when the pattern asserts nothing but `^` and `$`, else keeps the NFA; `run_matcher(m, text)` runs it. Compiled code uses them for every `matches` |
 | `std.unicode` | sets of code points as `List[(Int, Int)]` ranges (`union`, `intersect`, `difference`, `negate`, `contains_code`), properties (`property("Greek")`, `property_value("gc", "Lu")`), simple case folding (`case_fold`); Unicode 16.0 tables in `std.unicode_tables` |
 | `std.utf8` | text as UTF-8 bytes (`List[Int]`, each 0 to 255) and back: `encode(text)`, `decode(bytes)` / `decode_range(bytes, start, end)` (`None` if they aren't UTF-8) |
-| `std.ast` | Strata's syntax tree as Strata types (`Decl`, `DeclKind`, `TypeExpr`, `Expr`, `Stmt`, `Pattern`, …), node for node as the compiler's |
-| `std.ast.binary` | `.strata` files read and written in Strata: `read(bytes)` (a module file or a bundle), `read_header`, `decode_module` (checking each definition's hash), `decode_definition`, `encode_definition` (a definition's bytes, exactly as strata writes them), `hash` / `interface_hash` / `code_hash`; `without_notes` (in `std.ast`). Its SHA-256 is private: it names definitions, and std has no public hash function until one has been reviewed as cryptography |
-| `std.ast.text` | code as text, as `strata render` writes it, for messages: `expr_text(e, depth)`, `type_text`, `pattern_text`, `block_text`, `escape` (one line but for the blocks inside; the printer's line breaking comes later) |
-| `std.ast.eval` | running a program from its stored trees, in Strata: `run(decls, args)` gives a `Run` (`stdout`, `stderr`, `code`), what the compiled program prints and its exit code, faults and their messages included. It finds methods from the receiver's type at run time and gives `main` the console and the process; `strata pack --prelude FILE` writes the prelude's definitions, which a program runs with. Not yet: files, mocks, `comptime` and `derive`, `extern`, and a type parameter's static methods (`T.zero()`, which take the type checker) |
 
-**JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends: a record is an object (with `"type"`, its type's name, when written; optional when read), a field left out takes its default, an `Option` is the value or `null` (or left out), a sum's variant is an object whose `"type"` names it (`{"type": "Circle", "r": 2}`, one positional field as `"value"`), a sum whose variants carry nothing is a string (`"Quiet"`), a tuple is an array, a `distinct` type is its underlying value, and a union is its member's value (reading takes the first member the JSON fits; members whose JSON overlaps are refused: `Int | Float`, two lists, `String` next to a choice, two members with the same `"type"`). Every refinement is checked, and errors say where: `home.zip: "1234" does not satisfy …`. Keys a record doesn't have are ignored, unless `strata.toml` says `unknown_keys = "error"` under `[json]`; `decode_with(j, Reject)` or `decode_with(j, Ignore)` decides for one call. Integers are within ±(2^53 − 1) both ways, the integers a JavaScript number holds exactly (`std.json.SafeInt`): reading or writing a larger one is an error (`encode` returns a `Result`). A package that wants it proven instead sets `integers = "proven"` under `[json]`: then every integer field must be shown to be a `SafeInt` (typed so, or refined within it), and `strata verify` fails on one that may not be. A type with no such form (a function, `Option[Option[T]]`, a field named `type`, a variant with several positional fields) is an error at the `derive`, as is a field whose type doesn't derive `Json` itself. A generic type derives it for every type argument that has it (`derive Json for Pair` is `Pair[T]` for each `T: Json`). Through the generic impls, `Some(x)` where `x` is written as `null` (`Some(None)`) is an error from `encode`; their elements' refinements are checked by `decode` (`read[List[Port]]("[70000]")` is an `Err` naming `Port`). `to_json` and `print` still write any value in the older, tagged form.
+The **compiler written in Strata** is the `compiler/` package: a program, not part of std (programs don't import it). Its `main` runs one step of the front end on files (`strata --file compiler run -- lex FILE`, `parse`, `stored`, `check`, `eval`, …: see `compiler/main.strata`), and the tests compare what it prints with the Rust front end. Its modules:
+
+| Module | What it has |
+|---|---|
+| `ast` | Strata's syntax tree as Strata types (`Decl`, `DeclKind`, `TypeExpr`, `Expr`, `Stmt`, `Pattern`, …), node for node as the compiler's |
+| `binary` | `.strata` files read and written in Strata: `read(bytes)` (a module file or a bundle), `read_header`, `decode_module` (checking each definition's hash), `decode_definition`, `encode_definition` (a definition's bytes, exactly as strata writes them), `hash` / `interface_hash` / `code_hash`; `without_notes` (in `ast`). Its SHA-256 is private: it names definitions, and std has no public hash function until one has been reviewed as cryptography |
+| `text` | the printer, in Strata: code as text, laid out as `src/printer.rs` lays it out (lines broken to stay within 80 columns): `module_text(decls)` (a module file's definitions), `decl_text`, `fn_decl_text`, `type_decl_text`, `expr_text(e, depth)`, `type_text`, `pattern_text`, `block_text`, `escape`. It prints a tree as given: `strata render` first turns a stored tree into its written form (names shortened to what the imports allow), which takes name resolution |
+| `lex` | the lexer, in Strata: `lex(text)` gives the tokens (`Token { tok, line, col, nl_before, space_before }`, `tok` an `IntTok`, `StrTok`, `FStrTok`, `Ident`, `Sym`, …, then `Eof`) and the `//` comments, or the error `src/lexer.rs` gives (`1:9: unterminated string`); `token_text` / `comment_text` print them as `strata lex FILE` does |
+| `parse` | the parser, in Strata: `parse_module(text, module)` / `parse_program(text)` give the definitions as `src/parser.rs` parses them (comments in place), or its error (`3:5: expected `)` (found Sym(","))`); `parse_expr(text)`. The tree is as written: storing it (`strata edit`) qualifies its references, which takes name resolution |
+| `resolve` | names, in Strata, as `src/resolve.rs` does them: `stored(decls, std)` gives a parsed program (a script, or a package's modules together) in its stored form (every reference to a definition by its qualified name, locals and methods as written), with std's definitions in scope; `written(decls, std)` the written form `render` shows (each reference as short as the imports allow, a union written out named, a type one union lists shown inside it); `union_members` decides a union's bare members; `errors(decls, std)` gives the resolver's errors (a `use` of what doesn't exist or is private, a private name, std's host built-ins outside std, a mock outside tests, an extern called from another module) |
+| `desugar` | the sugar turned into calls, as `src/desugar.rs` does after resolution: `desugar(decls)` gives the program with `a..b` as `range`, `xs[i]` as `at`, slices as `slice`, comprehensions as `map` / `filter` / `fold`, `Dict { .. }` / `Set { .. }` as `dict` / `set`, record defaults filled in, refinements written as type arguments as aliases (`$where_0`) and unions with members of both kinds split (`Shape$own`), and the errors (a range missing an end outside a slice). `check` and `eval` work on its result |
+| `walk` | rebuilding a tree one level at a time (`expr_children`, `type_children`, `decl_parts`) and collecting what is in it (`kids`, `decl_exprs`, `decl_types`, `any_expr`), for the passes that rewrite programs |
+| `check` | the type checker in Strata, so far: `definition_errors` (a name defined twice, or the prelude's; two `impl Type` blocks; a trait implemented twice), `variant_errors`, `mixed_unions` (a union with members of both kinds split as the checker splits it), `expression_errors` (unknown variables, wrong numbers of arguments) and `type_errors` (inference for `Int`, `Float`, `Bool`, `String`, `()`, lists and the program's functions), each worded as `strata check` words it |
+| `eval` | running a program from its stored trees, in Strata: `run(decls, args)` gives a `Run` (`stdout`, `stderr`, `code`), what the compiled program prints and its exit code, faults and their messages included. It finds methods from the receiver's type at run time, gives `main` the console and the process, and knows what a function's type parameters stand for while it runs (`T.zero()`, `Self.check(x)`, `T.from_json(j)`): from the values it is called with, the receiver's `impl`, and the types `check.instantiated` writes around generic calls (`{ $result: T := call; $result }`, the type the caller wants). `strata pack --prelude FILE` writes the prelude's definitions, which a program runs with; `world(decls)` / `value_in(w, module, e)` run one expression (what `derive` runs compile-time code with). Not yet: files, mocks, `extern` |
+| `derive` | derived traits and `comptime`, as `src/derive.rs` makes them: `expand(decls)` replaces each `derive Trait for Type` by its `impl` (the type described as a `std.typing.Type` value, checked against the trait's kind and requirements; each `derived fn` specialized: `comptime e` evaluated by `eval` and written in, `comptime for` and match comprehensions written out, `match comptime` keeping the arm that fits, `make` / `try_make` built field by field, calls of functions with `comptime` parameters turned into copies) and folds every other `comptime e` into its value, with the errors (`compile_error(..)` reached, a kind that doesn't fit). `setting(..)` is `None` (no `strata.toml` read yet) |
+
+**JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends: a record is an object (with `"type"`, its type's name, when written; optional when read), a field left out takes its default, an `Option` is the value or `null` (or left out), a sum's variant is an object whose `"type"` names it (`{"type": "Circle", "r": 2}`, one positional field as `"value"`), a sum whose variants carry nothing is a string (`"Quiet"`), a tuple is an array, a `distinct` type is its underlying value, and a union is its member's value (reading takes the first member the JSON fits; members whose JSON overlaps are refused: `Int | Float`, two lists, `String` next to a choice, two members with the same `"type"`). Every refinement is checked, and errors say where: `home.zip: "1234" does not satisfy …`. Keys a record doesn't have are ignored, unless `strata.toml` says `unknown_keys = "error"` under `[json]`; `from_json_with(j, Reject)` or `from_json_with(j, Ignore)` decides for one call. Integers are within ±(2^53 − 1) both ways, the integers a JavaScript number holds exactly (`std.json.SafeInt`): reading or writing a larger one is an error (`to_json` returns a `Result`). A package that wants it proven instead sets `integers = "proven"` under `[json]`: then every integer field must be shown to be a `SafeInt` (typed so, or refined within it), and `strata verify` fails on one that may not be. A type with no such form (a function, `Option[Option[T]]`, a field named `type`, a variant with several positional fields) is an error at the `derive`, as is a field whose type doesn't derive `Json` itself. A generic type derives it for every type argument that has it (`derive Json for Pair` is `Pair[T]` for each `T: Json`). Through the generic impls, `Some(x)` where `x` is written as `null` (`Some(None)`) is an error from `to_json`; their elements' refinements are checked by `from_json` (`read[List[Port]]("[70000]")` is an `Err` naming `Port`). `print` shows any value as code.
 
 ```rust
-use std.json.{Json, parse, stringify}
+from std.json use Json, parse, stringify
 
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
 derive Json for Signup
 
-signup := Signup.decode(parse(body)!)!
-text := stringify(signup.encode()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
+signup := Signup.from_json(parse(body)!)!
+text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
+```
+
+**TOML** (`std.toml`) is read by a parser written in Strata, for `strata.toml` files once the tools read them in Strata. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. `tests/toml.rs` checks it reads documents as the `toml` crate does (the same values, the same documents refused), and that what `stringify` writes reads back as the same value; with `STRATA_TOML_CORPUS` set to a checkout of [toml-test](https://github.com/toml-lang/toml-test), on all of its TOML 1.1 files too.
+
+```rust
+from std.toml use parse, lookup, Integer
+
+doc := parse("[server]\nport = 8080\n")!
+port := match lookup(doc, ["server", "port"]) {
+  Some(Integer(n)) => n,
+  _ => 80,
+}
+```
+
+`derive Toml` reads records and sum types from TOML as `derive Json` does from JSON, in the form a configuration file is written: a record is a table of its fields (no `type` key), a field left out takes its default, and an `Option` field is left out for `None` (TOML has no null, so an `Option` anywhere but a field is an error at the `derive`). A sum's variant is a table whose `type` names it (one positional field as `value`), a sum whose variants carry nothing is a string, a tuple is an array, a `Dict[String, V]` a table, and `Date`, `Time`, `DateTime` are TOML's dates and times. Every refinement is checked, errors say where (`servers[0].port: 70000 does not satisfy …`), integers are 64-bit, and keys a record doesn't have are ignored unless `strata.toml` says `unknown_keys = "error"` under `[toml]` (or `from_toml_with(v, Reject)`). The methods are named for TOML (`to_toml`, `from_toml`, `read_toml`, `write_toml`), so a type may derive `Json` too.
+
+```rust
+from std.toml use Toml
+
+type Server = { host: String, port: Int where 0 < it && it < 65536 = 8080 }
+type Config = { name: String, servers: List[Server] = [] }
+derive Toml for Server
+derive Toml for Config
+
+config := Config.read_toml("name = \"app\"\n[[servers]]\nhost = \"a.example\"\n")!
+text := config.write_toml()!
 ```
 
 **Regular expressions** (`std.regex`) are written in Strata, so a self-hosted compiler can use them. `parse` reads the syntax of Rust's `regex` crate (Unicode by default: `\d`, `\w`, `\s` and `.` are Unicode's; `\p{Greek}`, `\p{gc=Lu}`, `\p{age=6.0}`; classes with `&&`, `--`, `~~` and `[[:alpha:]]`; named groups; the flags `imsUuRx`; `\b`, `\b{start}`, `\A`, `\z`; no look-around or back-references) into the tree regex-syntax builds: classes as ranges of code points with `(?i)` folded in, flags gone, the same simplifications (`ab|ac` is `a(?:b|c)`, `a|b` is `[ab]`). `tests/regex.rs` checks the two agree on curated and random patterns. The Unicode data (`std.unicode_tables`) is generated by `tools/unicode_tables.py` from regex-syntax's tables (Unicode 16.0.0).
 
 ```rust
-use std.regex.{parse, show}
+from std.regex use parse, show
 
 re := parse("(?i)ab|ac")!
 show(re)    // cat(cls(41-41 61-61),cls(42-43 62-63))
@@ -642,4 +878,4 @@ Events carry a message (`on_click(Reset)`), or make one from what the user enter
 
 **HTML** (`std.web`) is built as values and rendered to text; see `examples/page`. Text is always escaped. Tag and attribute names are checked where they are written: `element` and `attr` take a `TagName` and an `AttrName`, and an attribute can't be an inline script (`attr("onclick", …)` is rejected when checking). `Html` and `Attr` are records around private types, so only those functions make them; the types themselves have nothing left to check, and the verifier passes over views. Events are attributes too: `on_click(msg)` carries a value of the page's message type `M`. The message isn't written into the page: `render` numbers the page's handlers (`data-handle-click="3"`), the page sends the number back, and `dispatch(page, n, value, fields)` gives handler `n`'s message (`strata serve` does this with the page it served, so a page can only send its own messages). A page without events is an `Html[()]`. The text inside a `<style>` element (`style_sheet(css)`) isn't escaped, but can't close the element.
 
-Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The only real implementations are private types of `std` that the runtime makes for `main`; nothing else can create them. Tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath, and only `strata run` lets them reach the system: `test`, `verify` and fuzzing never touch the terminal or the disk.
+Each capability is a trait, so code that prints takes a `Console`, and its signature says so. The real implementations are capabilities the runtime makes, for `main` and for a test that names one; nothing else can create them. Other tests pass the in-memory stand-ins (see `examples/wc`), or `mock Console`. Only `std` can call the native `host_*` operations underneath; `verify` and fuzzing never run code that reaches them.

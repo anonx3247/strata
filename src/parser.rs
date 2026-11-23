@@ -9,6 +9,9 @@ pub struct Parser {
     /// `|` separates a union's members or a pattern's alternatives): a
     /// bit-or there is written in parentheses.
     no_pipe: bool,
+    /// Parsing what `await` takes: a result's handlers (`except`, `!`, `?`,
+    /// `or { }`) after it are the `await`'s, not the handle's.
+    no_handlers: bool,
     comments: Vec<Comment>,
     used: Vec<bool>,
 }
@@ -49,7 +52,7 @@ fn is_upper(s: &str) -> bool {
 
 const KEYWORDS: &[&str] = &[
     "type", "fn", "test", "let", "if", "else", "match", "mock", "where", "mut", "while", "for", "in", "loop", "break", "continue",
-    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except", "or", "comptime",
+    "requires", "ensures", "terminates", "true", "false", "is", "assert", "trait", "impl", "law", "for", "pub", "use", "return", "except", "or", "comptime", "scope", "spawn", "await",
 ];
 
 impl Parser {
@@ -59,7 +62,7 @@ impl Parser {
     fn new(src: &str) -> R<Parser> {
         let (toks, comments) = lex_with_comments(src)?;
         let used = vec![false; comments.len()];
-        Ok(Parser { toks, pos: 0, no_struct: false, no_pipe: false, comments, used })
+        Ok(Parser { toks, pos: 0, no_struct: false, no_pipe: false, no_handlers: false, comments, used })
     }
 
     // ---------- comments ----------
@@ -135,6 +138,17 @@ impl Parser {
     }
     fn peek_at(&self, n: usize) -> &Tok {
         &self.toks[(self.pos + n).min(self.toks.len() - 1)].tok
+    }
+    /// Whether the token `n` ahead, on the same line, starts an operand of
+    /// its own (a name, a literal, a block): what follows a prefix word.
+    fn starts_operand_at(&self, n: usize) -> bool {
+        let t = &self.toks[(self.pos + n).min(self.toks.len() - 1)];
+        !t.nl_before && match &t.tok {
+            Tok::Ident(s) => s != "as",
+            Tok::Sym(s) => *s == "{",
+            Tok::Eof => false,
+            _ => true,
+        }
     }
     fn nl_before(&self) -> bool {
         self.toks[self.pos].nl_before
@@ -291,27 +305,31 @@ impl Parser {
         let comments = self.leading();
         let public = self.eat_kw("pub");
         if self.eat_kw("use") {
-            let mut path = self.ident()?.to_string();
-            let mut items = Some(vec![]);
-            while self.eat_sym(".") {
-                if self.eat_sym("*") {
-                    items = None;
-                    break;
+            // `use std.time`, `use std.time as t`
+            let path = self.use_path()?;
+            if let Some((m, last)) = path.rsplit_once('.') {
+                if last.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return Err(self.err(&format!("`use` names a module: to import `{last}` from `{m}`, write `from {m} use {last}`")));
                 }
-                if self.eat_sym("{") {
-                    items = Some(self.list("}", |p| p.ident())?);
-                    break;
-                }
-                let seg = self.ident()?;
-                // `use orders.Line` imports one item
-                if seg.chars().next().is_some_and(|c| c.is_uppercase()) || !self.is_sym(".") {
-                    items = Some(vec![seg]);
-                    break;
-                }
-                path.push('.');
-                path.push_str(&seg);
             }
-            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path: path.into(), items }), module: Symbol::EMPTY, public });
+            let alias = if self.eat_kw("as") { Some(self.ident()?) } else { None };
+            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path: path.into(), alias, items: None }), module: Symbol::EMPTY, public });
+        }
+        if self.is_kw("from") && matches!(self.peek_at(1), Tok::Ident(_)) {
+            // `from std.time use Clock, Timer as T`
+            self.next();
+            let path = self.use_path()?;
+            self.expect_kw("use")?;
+            let mut items = vec![];
+            loop {
+                let name = self.ident()?;
+                let alias = if self.eat_kw("as") { Some(self.ident()?) } else { None };
+                items.push(UseItem { name, alias });
+                if !self.eat_sym(",") {
+                    break;
+                }
+            }
+            return Ok(Decl { comments, doc, kind: DeclKind::Use(UseDecl { path: path.into(), alias: None, items: Some(items) }), module: Symbol::EMPTY, public });
         }
         // `distinct` is only a keyword at the start of a declaration
         let kind = if self.is_kw("distinct") && matches!(self.peek_at(1), Tok::Ident(t) if t == "type") {
@@ -360,9 +378,40 @@ impl Parser {
                 if self.is_sym("[") || self.is_sym("=") {
                     return Err(self.err(&format!("`extern {lang_name} type {name}` is an opaque handle: no type parameters, no definition")));
                 }
-                ExternItem::Type(name)
+                ExternItem::Type(name, vec![])
             };
             DeclKind::Extern(ExternDecl { lang, item })
+        } else if self.is_kw("builtin") && matches!(self.peek_at(1), Tok::Ident(k) if k == "static") {
+            // `builtin static allocator: 512`: a block of bytes, its name its address
+            self.next();
+            self.next();
+            let name = self.ident()?;
+            self.expect_sym(":")?;
+            let size = match self.next() {
+                Tok::Int(n) if n > 0 => n,
+                _ => return Err(self.err(&format!("`builtin static {name}` needs its size in bytes: `builtin static {name}: 64`"))),
+            };
+            DeclKind::Extern(ExternDecl { lang: Lang::Builtin, item: ExternItem::Static(name, size) })
+        } else if self.is_kw("builtin") && matches!(self.peek_at(1), Tok::Ident(k) if k == "fn" || k == "type") {
+            // `builtin fn len[A](xs: List[A]) -> Int`, `builtin type List[T]`:
+            // what the compiler provides, declared in `core` (contextual)
+            self.next();
+            let item = if self.eat_kw("fn") {
+                let (f, has_body) = self.fn_rest(true)?;
+                if has_body {
+                    return Err(self.err(&format!("`builtin fn {}` has no body: the compiler provides it", f.name)));
+                }
+                ExternItem::Fn(f)
+            } else {
+                self.expect_kw("type")?;
+                let name = self.ident()?;
+                let params = self.type_params()?;
+                if self.is_sym("=") {
+                    return Err(self.err(&format!("`builtin type {name}` has no definition: the compiler provides it")));
+                }
+                ExternItem::Type(name, params)
+            };
+            DeclKind::Extern(ExternDecl { lang: Lang::Builtin, item })
         } else if self.is_kw("derivable") && matches!(self.peek_at(1), Tok::Sym("(")) {
             // `derivable(Record) trait ...`: contextual, like `distinct`
             self.next();
@@ -612,7 +661,7 @@ impl Parser {
             let name = self.ident()?;
             let payload = match self.payload()? {
                 // a built-in type is never declared again
-                Payload::None if crate::types::BUILTIN_TYPES.contains(&name.as_str()) => Payload::Type(TypeExpr::Named(name, vec![])),
+                Payload::None if crate::types::builtin_types().contains(&name.as_str()) => Payload::Type(TypeExpr::Named(name, vec![])),
                 p => p,
             };
             Variant { comments: vec![], name, payload }
@@ -875,6 +924,14 @@ impl Parser {
         if self.eat_kw("comptime") {
             return Ok(Expr::Comptime(Box::new(self.unary()?)));
         }
+        // `await h`: a task's result; a handler after it is the result's:
+        // `await h except p { … }` is `(await h) except p { … }`
+        if self.eat_kw("await") {
+            let old = std::mem::replace(&mut self.no_handlers, true);
+            let h = self.unary();
+            self.no_handlers = old;
+            return self.postfix_from(Expr::Await(Box::new(h?)));
+        }
         self.postfix()
     }
 
@@ -912,11 +969,11 @@ impl Parser {
     }
 
     fn args(&mut self) -> R<Vec<Expr>> {
-        let old = (self.no_struct, self.no_pipe);
-        (self.no_struct, self.no_pipe) = (false, false);
+        let old = (self.no_struct, self.no_pipe, self.no_handlers);
+        (self.no_struct, self.no_pipe, self.no_handlers) = (false, false, false);
         // `f(mut x)`: the call may change `x` (its parameter is `mut`); see `marked`
         let r = self.list(")", |p| p.expr());
-        (self.no_struct, self.no_pipe) = old;
+        (self.no_struct, self.no_pipe, self.no_handlers) = old;
         r
     }
 
@@ -954,6 +1011,8 @@ impl Parser {
             } else if self.is_sym("[") && !self.nl_before() {
                 self.next();
                 e = Expr::Index(Box::new(e), Box::new(self.index()?));
+            } else if self.no_handlers && (self.is_sym("!") || self.is_sym("?") || self.is_kw("except") || self.is_kw("or")) {
+                break;
             } else if self.is_sym("!") && !self.nl_before() {
                 self.next();
                 e = Expr::Try(Box::new(e), TryKind::Result);
@@ -1006,6 +1065,14 @@ impl Parser {
     }
 
     fn primary(&mut self) -> R<Expr> {
+        // (inside brackets and blocks, handlers are their own again)
+        let old = std::mem::replace(&mut self.no_handlers, false);
+        let r = self.primary_inner();
+        self.no_handlers = old;
+        r
+    }
+
+    fn primary_inner(&mut self) -> R<Expr> {
         match self.peek().clone() {
             Tok::Int(n) => {
                 self.next();
@@ -1126,6 +1193,11 @@ impl Parser {
                 };
                 Ok(Expr::If(Box::new(c), Box::new(t), Box::new(f)))
             }
+            Tok::Ident(kw) if kw == "scope" => {
+                // `scope { … }`: its tasks all finish before it does
+                self.next();
+                Ok(Expr::Scope(Box::new(self.block()?)))
+            }
             Tok::Ident(kw) if kw == "match" => {
                 self.next();
                 let scrut = self.expr_ns()?;
@@ -1154,6 +1226,49 @@ impl Parser {
                     arms.push(Arm { comments, pat, body });
                 }
                 Ok(Expr::Match(Box::new(scrut), name, arms))
+            }
+            // `select { op as x => e, … }` (`select` followed by `{`: std.web's
+            // `select(…)` stays a call)
+            Tok::Ident(kw) if (kw == "select" || kw == "race") && matches!(self.peek_at(1), Tok::Sym("{")) => {
+                let race = kw == "race";
+                self.next();
+                self.expect_sym("{")?;
+                let mut arms = Vec::new();
+                while !self.eat_sym("}") {
+                    let mut comments = self.leading();
+                    // a race arm `supervised e`: its task's panic is its own (the
+                    // arm's result a `Result[T, Panic]`), held as `supervised spawn e`
+                    let supervised = race && matches!(self.peek(), Tok::Ident(s) if s == "supervised") && self.starts_operand_at(1);
+                    if supervised {
+                        self.next();
+                    }
+                    let op = self.expr_ns()?;
+                    let op = if supervised { Expr::SupervisedSpawn(Box::new(op)) } else { op };
+                    let name = if matches!(self.peek(), Tok::Ident(s) if s == "as") {
+                        self.next();
+                        Some(self.ident()?)
+                    } else {
+                        None
+                    };
+                    self.expect_sym("=>")?;
+                    let body = self.expr()?;
+                    self.eat_sym(",");
+                    comments.extend(self.trailing());
+                    arms.push(SelectArm { comments, op, name, body });
+                }
+                Ok(if race { Expr::Race(arms) } else { Expr::Select(arms) })
+            }
+            Tok::Ident(kw) if kw == "spawn" => {
+                // `spawn e`, the whole expression (as `return e`): run in a new task
+                self.next();
+                Ok(Expr::Spawn(Box::new(self.expr()?)))
+            }
+            // `supervised spawn e`: a task whose panic is its own (`supervised` is a
+            // keyword only right before `spawn`, on the same line: a name elsewhere)
+            Tok::Ident(kw) if kw == "supervised" && matches!(self.peek_at(1), Tok::Ident(s) if s == "spawn") && !self.toks[self.pos + 1].nl_before => {
+                self.next();
+                self.next();
+                Ok(Expr::SupervisedSpawn(Box::new(self.expr()?)))
             }
             Tok::Ident(kw) if kw == "return" => {
                 self.next();
@@ -1306,6 +1421,40 @@ impl Parser {
         false
     }
 
+    /// A module's path after `use` or `from`: `std.time`. The old forms
+    /// (`use m.{x}`, `use m.*`) say what to write instead.
+    fn use_path(&mut self) -> R<String> {
+        let mut path = self.ident()?.to_string();
+        while self.eat_sym(".") {
+            if self.is_sym("{") || self.is_sym("*") {
+                return Err(self.err(&format!("to import names from `{path}`, write `from {path} use x, y` (and `use {path}` for the module, its names written `{}.x`)", path.rsplit('.').next().unwrap_or(&path))));
+            }
+            path.push('.');
+            path.push_str(&self.ident()?);
+        }
+        Ok(path)
+    }
+
+    /// A loop's body, after its `invariant e` clauses (`invariant` is a
+    /// word only there), which become the body's first statements.
+    fn loop_body(&mut self) -> R<Expr> {
+        let mut invs = vec![];
+        while self.eat_kw("invariant") {
+            invs.push(Stmt::Invariant(self.expr_ns()?));
+        }
+        let body = self.block()?;
+        if invs.is_empty() {
+            return Ok(body);
+        }
+        Ok(match body {
+            Expr::Block(ss, last) => {
+                invs.extend(ss);
+                Expr::Block(invs, last)
+            }
+            other => Expr::Block(invs, Box::new(other)),
+        })
+    }
+
     fn block(&mut self) -> R<Expr> {
         self.expect_sym("{")?;
         let old = (self.no_struct, self.no_pipe);
@@ -1353,14 +1502,14 @@ impl Parser {
             } else if self.eat_kw("assert") {
                 stmts.push(Stmt::Assert(self.expr()?));
             } else if self.eat_kw("loop") {
-                stmts.push(Stmt::Loop(self.block()?));
+                stmts.push(Stmt::Loop(self.loop_body()?));
             } else if self.eat_kw("break") {
                 stmts.push(Stmt::Break);
             } else if self.eat_kw("continue") {
                 stmts.push(Stmt::Continue);
             } else if self.eat_kw("while") {
                 let cond = self.expr_ns()?;
-                stmts.push(Stmt::While(cond, self.block()?));
+                stmts.push(Stmt::While(cond, self.loop_body()?));
             } else if self.is_kw("comptime") && matches!(self.peek_at(1), Tok::Ident(f) if f == "for") {
                 // `comptime for v in xs { ... }`: written out once per element while compiling
                 self.next();
@@ -1373,7 +1522,7 @@ impl Parser {
                 let pat = self.pattern()?;
                 self.expect_kw("in")?;
                 let iter = self.expr_ns()?;
-                stmts.push(Stmt::For(pat, iter, self.block()?));
+                stmts.push(Stmt::For(pat, iter, self.loop_body()?));
             } else {
                 let e = self.expr()?;
                 let op = match self.peek() {

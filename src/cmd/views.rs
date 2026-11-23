@@ -90,7 +90,7 @@ fn ui_in_strata(target: ui::Target, port: u16) -> Result<bool, String> {
 /// `strata builtins`.
 pub fn builtins(json_out: bool) -> Result<bool, String> {
     if json_out {
-        let out: Vec<_> = types::BUILTINS.iter().map(|b| json!({"name": b.name, "type_params": b.params, "signature": b.sig, "total": b.total})).collect();
+        let out: Vec<_> = types::builtins().iter().map(|b| json!({"name": b.name, "type_params": b.params, "signature": b.sig, "total": b.total})).collect();
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
     } else {
         println!("// prelude types\n");
@@ -98,7 +98,7 @@ pub fn builtins(json_out: bool) -> Result<bool, String> {
             println!("{}\n", printer::decl(&d));
         }
         println!("// builtin functions\n");
-        for b in types::BUILTINS {
+        for b in types::builtins() {
             let tp = if b.params.is_empty() { String::new() } else { format!("[{}]", b.params) };
             println!("{}{tp}{}", b.name, b.sig);
         }
@@ -108,6 +108,10 @@ pub fn builtins(json_out: bool) -> Result<bool, String> {
 
 /// `strata render`.
 pub fn render(args: &Args) -> Result<bool, String> {
+    if let Some(dir) = crate::core::dir_of(args.val("--file")) {
+        print!("{}", crate::core::render(&dir, args.pos.get(1).map(|s| s.as_str()))?);
+        return Ok(true);
+    }
     let src = load(&args)?;
     // shown as written: each reference as short as the module's `use`s allow
     let p = &resolve::written_form(src.program());
@@ -159,11 +163,16 @@ pub fn pack(args: &Args) -> Result<bool, String> {
     // the prelude's definitions, its types and its code, as a module file of
     // the root module, named as programs write them (`Option`, `CodePoints`):
     // what every program runs with, for Strata code that runs trees
-    // (`std.ast.eval`). As parsed: storing would resolve its names against
+    // (`compiler/eval`). As parsed: storing would resolve its names against
     // the prelude itself.
     if args.flag("--prelude") {
-        let mut p = crate::parser::parse_program(crate::types::PRELUDE).map_err(|e| format!("the prelude: {e}"))?;
-        p.decls.extend(crate::parser::parse_program(crate::types::PRELUDE_CODE).map_err(|e| format!("the prelude's code: {e}"))?.decls);
+        // (core's types and code; its builtins are the evaluator's own)
+        let mut p = crate::core::types();
+        p.decls.extend(crate::core::code().decls);
+        p.decls.retain(|d| !matches!(&d.kind, crate::ast::DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin));
+        for d in &mut p.decls {
+            d.module = crate::ast::Symbol::EMPTY;
+        }
         let bytes = binary::encode_module(&p, "", &Default::default());
         store::write_file(std::path::Path::new(out), &bytes)?;
         println!("wrote {out}: the prelude, {} definitions, {} bytes", p.decls.len(), bytes.len());
@@ -188,7 +197,15 @@ pub fn pack(args: &Args) -> Result<bool, String> {
 pub fn header(args: &Args) -> Result<bool, String> {
     let file = args.pos.get(1).ok_or("usage: strata header <FILE.strata>")?;
     let bytes = std::fs::read(file).map_err(|e| format!("{file}: {e}"))?;
-    // each definition's tree as a `std.ast` value, one per line (a bundle's too)
+    // each definition's tree as a `compiler/ast` value, one per line (a bundle's too)
+    // the definitions as the printer writes them, as stored (not shortened
+    // to their written form, which `render` shows): what `compiler/text` is
+    // tested against
+    if args.flag("--text") {
+        let decls = binary::read(&bytes).map_err(|e| format!("{file}: {e}"))?.program.decls;
+        print!("{}\n", decls.iter().map(crate::printer::decl).collect::<Vec<_>>().join("\n\n"));
+        return Ok(true);
+    }
     if args.flag("--tree") {
         for d in binary::read(&bytes).map_err(|e| format!("{file}: {e}"))?.program.decls {
             println!("{}", crate::ast_value::decl(&d));
@@ -257,7 +274,7 @@ pub fn view(args: &Args) -> Result<bool, String> {
     let src = load(&args)?;
     let p = src.program();
     let level: u8 = args.val("--level").unwrap_or("1").parse().ok().filter(|l| *l <= 2).ok_or("--level must be 0 (map), 1 (interfaces) or 2 (source)")?;
-    let mut names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
+    let mut names = view::select(p, args.pos.get(1).map(|s| s.as_str()))?;
     // mocks are for tests: shown when asked for, or picked by name
     if !args.flag("--mocks") && args.pos.get(1).is_none() {
         let hidden = view::mock_decls(p);
@@ -270,5 +287,70 @@ pub fn view(args: &Args) -> Result<bool, String> {
     }
     let st = view::Status { holes, verdicts: verdicts_for(&src) };
     print!("{}", view::render(p, &names, level, &st));
+    Ok(true)
+}
+
+/// `strata lex FILE`: a text file's tokens (`3:5 nl sp Ident(x)`: where, a
+/// newline or a space before it, what), then its comments, or the lexer's
+/// error. A float is shown by its bits and a string as the printer quotes
+/// it, so `compiler/lex`'s output can be compared byte for byte.
+pub fn lex(args: &Args) -> Result<bool, String> {
+    use crate::lexer::{FPart, Tok};
+    let file = args.pos.get(1).ok_or("usage: strata lex <FILE>")?;
+    let src = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    let quote = |s: &str| format!("\"{}\"", crate::printer::escape(s));
+    let (tokens, comments) = match crate::lexer::lex_with_comments(&src) {
+        Ok(tc) => tc,
+        Err(e) => {
+            println!("error: {e}");
+            return Ok(true);
+        }
+    };
+    for t in &tokens {
+        let what = match &t.tok {
+            Tok::Int(n) => format!("Int({n})"),
+            Tok::BigInt(s) => format!("BigInt({s})"),
+            Tok::Float(f) => format!("Float({})", f.to_bits()),
+            Tok::Str(s) => format!("Str({})", quote(s)),
+            Tok::FStr(ps) => format!(
+                "FStr({})",
+                ps.iter()
+                    .map(|p| match p {
+                        FPart::Lit(s) => quote(s),
+                        FPart::Code(c, l, k) => format!("{{{}@{l}:{k}}}", quote(c)),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Tok::Ident(s) => format!("Ident({s})"),
+            Tok::Hole(s) => format!("Hole({s})"),
+            Tok::Doc(s) => format!("Doc({})", quote(s)),
+            Tok::Sym(s) => format!("Sym({s})"),
+            Tok::Eof => "Eof".to_string(),
+        };
+        println!("{}:{}{}{} {what}", t.line, t.col, if t.nl_before { " nl" } else { "" }, if t.space_before { " sp" } else { "" });
+    }
+    for c in &comments {
+        println!("{}:{} comment {}{}", c.line, c.col, quote(&c.text), if c.trailing { " trailing" } else { "" });
+    }
+    Ok(true)
+}
+
+/// `strata parse FILE`: a text file parsed as a script, each definition as
+/// the `compiler/ast` value `debug` prints, one per line, as the parser gives it
+/// (storing it would qualify its references), or the parser's error.
+pub fn parse(args: &Args) -> Result<bool, String> {
+    let file = args.pos.get(1).ok_or("usage: strata parse <FILE>")?;
+    let src = std::fs::read_to_string(file).map_err(|e| format!("{file}: {e}"))?;
+    match crate::parser::parse_program(&src) {
+        Ok(p) => {
+            // `--stored`: as it would be stored, every reference qualified
+            let p = if args.flag("--stored") { crate::resolve::stored_form(&p) } else { p };
+            for d in &p.decls {
+                println!("{}", crate::ast_value::decl(d));
+            }
+        }
+        Err(e) => println!("error: {e}"),
+    }
     Ok(true)
 }

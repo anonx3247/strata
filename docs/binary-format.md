@@ -4,20 +4,20 @@ Strata code is stored as its syntax tree, not its text, in a binary format of ou
 
 - **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text: a `.strata` file that holds text is refused.
 - **Text comes out through the views.** `strata render` prints a module, `render --split DIR` writes one text file per module (`shop/orders.st`), `view` and `strata ui` show it.
-- `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that runs trees (`std.ast.eval`).
-- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `std.ast` value, one per line.
+- `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that runs trees (`compiler/eval`).
+- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `compiler/ast` value, one per line, and `--text` as the printer writes it, as stored (references qualified: `render` shows them shortened).
 - In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
 
-The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself: `std.ast.binary` does (in Strata, on the tree `std.ast`, hashes included, with its own SHA-256), tested against `binary.rs` on every module file of the repository (`tests/ast.rs`). This page is its specification; the three are kept in step.
+The format is written by hand in `src/binary.rs`, with no serialization library, so that Strata can read and write it itself: `compiler/binary` does (in Strata, on the tree `compiler/ast`, hashes included, with its own SHA-256), tested against `binary.rs` on every module file of the repository (`tests/ast.rs`). This page is its specification; the three are kept in step.
 
 Design:
 
 - **A header, like a C header file, but inside the module file.** It comes first and lists every definition: its name, kind, visibility, three hashes, the definitions it depends on and the size of its bytes. Listing a module, building the dependency graph or finding what changed reads only the header. That takes 14 µs for all of `examples/tasks`; decoding everything takes about 170 µs.
 - **Interface first, bodies after.** Each definition's bytes start with its interface: types, signatures, contracts, laws, with each body written as `()`. Its bodies follow. Checking code against a module only needs the interfaces, and a reader can stop there.
 - **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file. Its hash is the hash of those bytes. The same bytes could also be stored as one object under that hash (the hash-store idea in IDEAS.md).
-- **References by what they name.** Every reference to a definition is stored by its qualified name (`orders.Line`), however it was written (`Line` under `use orders.{Line}`, or `orders.Line`); a call to another module's function is stored as a call of that name (`orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`). A definition's own name, its variants and methods, locals, fields and method calls (found from their receiver) are stored as written, and so is a name that resolves to nothing. When code is shown, each reference is written as short as its module's `use`s allow, so text is normalised: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) decides from its own `use` lines. In `src/resolve.rs`: `stored_form` and `written_form`.
+- **References by what they name.** Every reference to a definition is stored by its qualified name (`orders.Line`), however it was written (`Line` under `from orders use Line`, or `orders.Line` under `use orders`); a call to another module's function is stored as a call of that name (`orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`). A definition's own name, its variants and methods, locals, fields and method calls (found from their receiver) are stored as written, and so is a name that resolves to nothing. When code is shown, each reference is written as short as its module's `use`s allow, so text is normalised: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) decides from its own `use` lines. In `src/resolve.rs`: `stored_form` and `written_form`.
 - **Exact.** Decoding gives back the very tree that was encoded: comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
-- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A module file's bytes are what strata writes for it, so `strata ci` checks every file is exactly that (a header's dependency lists can go stale when another module changes outside strata; `ci --fix` rewrites them).
+- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A module file's bytes are what strata writes for it (a header's dependency lists can go stale when another module changes outside strata; `strata upgrade` rewrites them).
 - **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed what is left of the file, nesting deeper than 10,000 levels is refused, and a definition whose bytes don't match the hash in the header is rejected.
 
 A file of another format version is rejected. See [Changing the format](#changing-the-format).
@@ -127,14 +127,15 @@ TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool
 Law         = comments:list(str)  doc:list(str)  name:str  params:list(Param)  body:Expr
 ImplDecl    = type_params:list(str)  bounds:list(Bound)  trait_name:str  trait_args:list(TypeExpr)
               for_type:TypeExpr  methods:list(FnDecl)  derived:bool
-UseDecl     = path:str  items:option(list(str))
+UseDecl     = path:str  alias:option(str)  items:option(list(UseItem))     use m [as a] (no items), from m use x, y as z
+UseItem     = name:str  alias:option(str)
 ExternDecl  = lang:Lang  item:ExternItem
 Lang        = 0 C
 CapabilityDecl = name:str  methods:list(FnDecl)
 ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m.*`. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
 
 ### Types
 
@@ -169,12 +170,18 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
      | 32 Or(Expr, fallback:Expr)                                   x or { … }, x ?? v
      | 33 Comptime(Expr)                                            comptime e
+     | 34 Scope(Expr)                                               scope { … }
+     | 35 Spawn(Expr)                                               spawn e
+     | 36 Await(Expr)                                               await h
+     | 37 Select(list(SelectArm))                                   select { rx.recv() as x => … }
+     | 38 Race(list(SelectArm))                                     race { e as x => … }
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))
 LamParam = name:str  ty:option(TypeExpr)
 CompFor  = pat:Pattern  iter:Expr  cond:option(Expr)
 CompKind = 0 List | 1 Set | 2 Dict        (a Dict comprehension's element is a Tuple of the key and value)
+SelectArm = comments:list(str)  op:Expr  name:option(str)  body:Expr      (in a `select`, `op` is `rx.recv()`, `tx.send(v)` or `await h`; in a `race`, any expression, run as a task)
 Arm      = comments:list(str)  pat:Pattern  body:Expr
 StrPart  = 0 Lit(str) | 1 Expr(Expr, spec:option(FmtSpec))
 FmtSpec  = fill:char  align:option(char)  plus:bool  zero:bool  width:uint  precision:option(uint)
@@ -195,6 +202,7 @@ Stmt    = 0 Let(Pattern, option(TypeExpr), Expr)   1 Var(name:str, option(TypeEx
         | 4 For(Pattern, Expr, body:Expr)          5 Loop(body:Expr)
         | 6 Break   7 Continue   8 Expr(Expr)   9 Assert(Expr)   10 Comment(list(str))
         | 11 ComptimeFor(Pattern, Expr, body:Expr)          comptime for v in Self.members { … }
+        | 12 Invariant(Expr)                                 a loop's `invariant e`, first in its body
 
 Pattern = 0 Wild   1 Bind(str)   2 Int(int)   3 Str(str)   4 Bool(bool)
         | 5 Ctor(name:str, CtorPat)
@@ -241,6 +249,6 @@ The code is stored in this format, so a change to the tree (a new node, a new fi
 1. with the strata of before the change, write each file's text: `strata render --file F > F.st` (`render --split DIR` for a package);
 2. make the change and build;
 3. read the text back in: `strata --file F edit < F.st` for a script, `strata --file PKG/ edit MODULE < M.st` for each module of a package (the standard library first: its modules are `std.io`, …; the compiled prelude, `src/llvm/prelude.strata`, is module `strata.compiled`);
-4. `strata ci --fix` brings the headers' dependency lists up to date, and `strata ci` must pass.
+4. `strata upgrade` rewrites every package and script of the repository in the current form, bringing the headers' dependency lists up to date (it prints each file it rewrites).
 
 Adding a node at the end of a list of tags keeps old files readable, so it needs no conversion; adding a field to a node, or changing a node, does. Once the format is settled, the version will count changes, and the reader may accept older versions.

@@ -2,15 +2,16 @@
 //! SMT solver (Z3) proves or refutes.
 //!
 //! The body is executed symbolically. Values are SMT terms (`Int`, `Bool`,
-//! `String`), records and sums are kept as structures of terms (a sum is a tag
-//! plus the payload of every constructor), whose structured parts are made
-//! when the code first reads them (`Val::Lazy`), and lists are tracked by position
+//! `String`), records and sums are structures of terms at their outer level
+//! (a sum is a tag plus the payload of every constructor), whose structured
+//! parts are terms of SMT datatypes, opened when the code first reads them
+//! (`Val::Data`, `data.rs`), and lists are tracked by position
 //! where they can be (a checked list's element is a function of its position;
 //! slices, `+` and literals translate positions) and otherwise by their
 //! length only. A branch splits the path condition and the two results are
 //! merged with `ite`. A loop forgets what it changes: those variables become
-//! fresh values that keep only what their types guarantee (loop invariants
-//! come later). After the loop, the state is that one with a `while`'s
+//! fresh values that keep only what their types guarantee, and the loop's
+//! invariants, inferred (`infer_invariants`). After the loop, the state is that one with a `while`'s
 //! condition false, or the state at one of its `break`s.
 //!
 //! Every runtime check of the interpreter is an obligation: a callee's
@@ -29,13 +30,27 @@
 //! `div` and `mod` and like the interpreter.
 
 use crate::ast::*;
-use crate::types::{subst_texpr, Env};
+use crate::types::{subst_texpr, Env, Width};
 use crate::fx::{HashMap, HashSet};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// An SMT-LIB term.
 type T = String;
+
+/// Whether an obligation is a partial operation's precondition (an index in
+/// range, a divisor not zero, a builtin's argument it accepts): the checks
+/// IDEAS.md "Failures" asks to measure.
+fn is_partial_op(what: &str) -> bool {
+    what == "index in range" || what == "no division by zero" || what.starts_with("`chr` of") || what.starts_with("`ord` of") || what.starts_with("`float` of") || what.starts_with("`sqrt` of") || what.ends_with("of a finite number") || what.ends_with("gives a finite number") || what.ends_with("by a non-negative number of bits") || what.ends_with("with arguments it accepts")
+}
+
+/// `STRATA_PARTIAL_OPS=off`: leave partial operations' preconditions out of
+/// `verify`, to measure what they cost (they stay checked at run time).
+fn partial_ops_off() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var("STRATA_PARTIAL_OPS").is_ok_and(|v| v == "off"))
+}
 
 #[derive(Clone, Debug)]
 pub enum Val {
@@ -67,46 +82,11 @@ pub enum Val {
     /// A function value of a known type: what it does is unknown, but what
     /// it returns is a valid value of `ret`, as any value of that type is.
     FnOf { ret: TypeExpr },
-    /// A part of a value (a field of a record, the payload of a constructor)
-    /// not looked at yet: `Vc::cells[id]`, made the first time it is read
-    /// (`Vc::force`), so that the cost follows what the code reads rather
-    /// than the size of the type.
-    Lazy(usize),
-}
-
-/// How a lazy part is made when it is first read.
-#[derive(Clone, Debug)]
-enum Make {
-    /// A fresh value of the cell's type.
-    Shape,
-    /// The part `of` (of a list's element template) at position `i` inside `outer` (see `place`).
-    View { of: usize, i: T, outer: Vec<T> },
-    /// Part `a` when `c` holds, else part `b` (two branches merged).
-    Merge { c: T, a: usize, b: usize },
-}
-
-/// A lazy part of a value (`Val::Lazy`).
-#[derive(Clone, Debug)]
-struct Cell {
-    ty: TypeExpr,
-    make: Make,
-    /// "The part is a valid `ty`": `true` when `ty` has no refinement, else
-    /// an unknown whose definition is assumed when the part is made. A check
-    /// of the whole value is this term for the part, so checking or assuming
-    /// the validity of a value never makes its parts.
-    valid: T,
-    /// The context it was made in: fresh unknowns are functions of these
-    /// positions, and have this reason.
-    indexing: Option<Vec<String>>,
-    reason: Option<String>,
-    /// The scope (`Vc::regions`) it belongs to; 0 for the function's.
-    region: usize,
-    /// Made with placeholders (a part of a list's element template): what is
-    /// known of it is kept in `facts`, placed for each position, rather than
-    /// assumed.
-    placeholder: bool,
-    value: Option<Val>,
-    facts: Vec<T>,
+    /// A structured value (record, sum, tuple, union) as one term of its
+    /// type's datatype sort (`data.rs`), unfolded one level when the code
+    /// reads it (`Vc::force`), so that the cost follows what the code reads
+    /// rather than the size of the type.
+    Data { ty: TypeExpr, t: T },
 }
 
 /// A scope whose facts and unknowns are taken apart from the rest when it
@@ -117,10 +97,6 @@ struct Region {
     nd: usize,
     nf: usize,
 }
-
-/// The prover's size budget: at most this many lazy parts per function;
-/// past it, parts are `Opaque` (any value).
-const MAX_CELLS: usize = 200_000;
 
 /// A function applied to list elements (`map`, `filter`, `all`, `find`),
 /// kept so that it can be applied to any element later.
@@ -165,6 +141,10 @@ pub enum Gen {
     /// The first list, then the second (`a + b`, `push`), the first of this
     /// length.
     Concat(usize, usize, T),
+    /// A list inside a datatype value: a term of the list sort named last
+    /// (`data.rs`), whose length and items are functions of it; the items
+    /// are values of this type.
+    Seq(T, TypeExpr, String),
 }
 
 /// The element of a list of a checked type at a placeholder position
@@ -175,6 +155,55 @@ struct Template {
     val: Val,
     facts: Vec<T>,
 }
+
+/// A candidate loop invariant: a Bool expression over the variables in
+/// scope, `$entry_x` for `x` before the loop, and `it` for `it` (an
+/// `ensures`, of the variable the function returns).
+#[derive(Clone, Debug)]
+struct Candidate {
+    e: Expr,
+    it: Option<String>,
+}
+
+impl Candidate {
+    fn shown(&self) -> String {
+        let s = rename_entry(&crate::printer::expr(&self.e, 0));
+        match &self.it {
+            Some(x) => format!("{s} (it = {x})"),
+            None => s,
+        }
+    }
+}
+
+/// `$entry_x` written `x₀` (its value on entry).
+fn rename_entry(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(k) = rest.find("$entry_") {
+        out.push_str(&rest[..k]);
+        let after = &rest[k + 7..];
+        let n = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').map(|c| c.len_utf8()).sum::<usize>();
+        out.push_str(&after[..n]);
+        out.push('₀');
+        rest = &after[n..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// At most this many candidate invariants per loop.
+const MAX_CANDIDATES: usize = 40;
+
+/// The most elements a list made by the solver as an input has, and how many
+/// levels of lists and sums inside an input are made.
+pub const INPUT_LEN: usize = 6;
+const INPUT_DEPTH: usize = 3;
+/// For a counterexample's lists (`example_facts`): one level of lists
+/// inside a parameter's list's elements.
+const EXAMPLE_DEPTH: usize = 1;
+/// The most terms `open_input` makes a model give values for (6 elements
+/// of 6 elements of records of lists grow fast).
+const MAX_INPUT_LEAVES: usize = 400;
 
 /// Stands for the position in a `Template`'s terms; `@@o0`, `@@o1`, … for
 /// the positions of the lists it is inside of.
@@ -206,6 +235,16 @@ fn place(t: &str, own: &str, outer: &[T]) -> T {
     }
     out.push_str(rest);
     out
+}
+
+impl ListInfo {
+    /// The length of a list of `Gen::Seq` items.
+    fn len_of_seq(&self) -> T {
+        match &self.source {
+            Gen::Seq(s, _, n) => data::list_len(n, s),
+            _ => "0".into(),
+        }
+    }
 }
 
 /// What the prover knows about the elements of one list.
@@ -262,7 +301,9 @@ const MAX_TYPE_NESTING: usize = 2;
 
 pub struct Vc<'a> {
     env: &'a Env,
-    decls: Vec<(String, &'static str)>,
+    decls: Vec<Decl>,
+    /// Names of fresh unknowns made so far.
+    next_var: usize,
     /// Facts about fresh values (each guarded by the path it was made on).
     facts: Vec<T>,
     /// Why a fresh constant is unconstrained (it stands for something not modelled).
@@ -305,6 +346,8 @@ pub struct Vc<'a> {
     /// For each loop being run, innermost last: the path and the variables
     /// at each `break`, merged into the state after the loop.
     breaks: Vec<Vec<(Vec<T>, Vec<HashMap<String, Val>>)>>,
+    /// The same at each `continue`: where a pass ends early.
+    continues: Vec<Vec<(Vec<T>, Vec<HashMap<String, Val>>)>>,
     /// Declared types of variables (`let x: T`, `mut p: T`): they hold for
     /// the variable's whole life, so every assignment is checked against
     /// them. Kept by name; a shadowed name keeps all its declarations, which
@@ -325,24 +368,57 @@ pub struct Vc<'a> {
     qvars: usize,
     /// Unknowns bound by a quantifier (`every`): not free in what contains it.
     bound: HashSet<String>,
+    /// Lists compared by position, nested this deep.
+    eq_depth: usize,
+    /// The parameters' lists' first elements (`open_input`), to show a
+    /// counterexample with non-empty lists: what is known of them, kept out
+    /// of the queries until a counterexample needs them (`express`), and
+    /// the terms the model is asked for.
+    example_facts: Vec<T>,
+    example_leaves: Vec<String>,
+    /// Make those (`verify`'s own proofs; not termination's queries).
+    pub examples: bool,
+    /// How many levels of lists and sums `open_input` makes.
+    input_depth: usize,
+    /// The type a method without `self` is called on (`Money.empty()`), for
+    /// the call being made.
+    called_on: Option<String>,
     /// The functions passed to the builtin being called, by argument.
     fn_args: Vec<Option<Func>>,
     /// The constant standing for each bit operation met (`& x y`), so one met
     /// twice is one value.
     bit_terms: HashMap<String, T>,
-    /// The lazy parts of values (`Val::Lazy`).
-    cells: Vec<Cell>,
+    /// The datatype sorts and validity predicates met (`data.rs`).
+    sorts: data::Sorts,
+    /// Facts about terms that hold on every path (what a datatype value's
+    /// type gives, its validity's definition).
+    defs: Vec<T>,
+    /// The validity predicates defined in `defs`, by term.
+    defined: HashSet<T>,
+    /// Terms unfolded outside any scope, by type and term.
+    unfolded: HashMap<String, Val>,
+    /// The strings read from datatype values (`data.rs`): each is named by
+    /// a constant in a query, which Z3's string solver needs.
+    str_terms: Vec<T>,
+    /// For inputs made by the solver (`inputs`): each list's first elements.
+    input_elems: HashMap<usize, Vec<Val>>,
+    /// The solver, to infer loop invariants while running the body (none:
+    /// loops keep only their variables' declared types).
+    pub solver: Option<Solver>,
+    /// Inside a trial pass of a loop (`infer_invariants`): inner loops infer nothing.
+    trial: usize,
+    /// The function's `ensures`, each with the variable its body returns
+    /// (`it`), and its `requires`: candidate invariants.
+    hints: Vec<(Expr, String)>,
+    requires_hints: Vec<Expr>,
+    /// The invariants inferred, as shown in the report.
+    pub invariants: Vec<String>,
+    /// Checks true whatever the values (by the types alone): proven
+    /// without a query, kept for `build` (not listed).
+    pub given: Vec<String>,
     /// The scopes open, innermost last (see `Region`).
     regions: Vec<Region>,
     next_region: usize,
-    /// For two parts compared before either was made: the unknown that
-    /// stands for their equality, and its scope. Its definition (the
-    /// comparison of the made parts) is assumed when one of them is made.
-    eq_atoms: HashMap<(usize, usize), (T, usize)>,
-    /// By part: the parts it was compared with, the equality's unknown and scope.
-    pending: HashMap<usize, Vec<(usize, T, usize)>>,
-    /// Comparing parts made from list element templates, nested this deep.
-    eq_depth: usize,
 }
 
 fn and(ts: &[T]) -> T {
@@ -360,20 +436,25 @@ fn or(ts: &[T]) -> T {
         _ => format!("(or {})", ts.join(" ")),
     }
 }
-/// The sort of a function from a position to a value of `sort`.
-fn fn_sort(sort: &str, arity: usize) -> Option<&'static str> {
-    Some(match (sort, arity) {
-        ("Int", 1) => "(Int) Int",
-        ("Bool", 1) => "(Int) Bool",
-        ("String", 1) => "(Int) String",
-        ("Int", 2) => "(Int Int) Int",
-        ("Bool", 2) => "(Int Int) Bool",
-        ("String", 2) => "(Int Int) String",
-        ("Int", 3) => "(Int Int Int) Int",
-        ("Bool", 3) => "(Int Int Int) Bool",
-        ("String", 3) => "(Int Int Int) String",
-        _ => return None,
-    })
+/// The most positions an unknown can be a function of (a list's element
+/// inside lists inside lists).
+const MAX_POSITIONS: usize = 3;
+
+/// A fresh unknown: a constant (`args` 0) or a function of `args` positions.
+#[derive(Clone, Debug)]
+struct Decl {
+    name: String,
+    args: usize,
+    sort: String,
+}
+
+impl Decl {
+    fn declaration(&self) -> String {
+        match self.args {
+            0 => format!("(declare-const {} {})", self.name, self.sort),
+            n => format!("(declare-fun {} ({}) {})", self.name, vec!["Int"; n].join(" "), self.sort),
+        }
+    }
 }
 
 fn not(t: &str) -> T {
@@ -389,6 +470,40 @@ fn implies(a: &str, b: &str) -> T {
 fn ite(c: &str, a: &str, b: &str) -> T {
     if a == b { a.to_string() } else { format!("(ite {c} {a} {b})") }
 }
+/// A sized integer value's type (`Val::Distinct("U32", Int)`).
+fn word_of(v: &Val) -> Option<Width> {
+    match v {
+        Val::Distinct(n, _) => Width::of(n),
+        _ => None,
+    }
+}
+
+/// What a sized integer `x` of type `w` always is: within its range.
+fn word_range(w: Width, x: &str) -> T {
+    let lo = if w.min() < 0 { format!("(- {})", -w.min()) } else { w.min().to_string() };
+    format!("(and (<= {lo} {x}) (<= {x} {}))", w.max())
+}
+
+/// `x` modulo 2^bits, as a value of the sized type `w` (two's complement
+/// for a signed one): what an operation on sized integers gives.
+fn wrap_term(w: Width, x: &str) -> T {
+    if let Ok(n) = x.parse::<i128>() {
+        let r = w.wrap(n);
+        return if r < 0 { format!("(- {})", -r) } else { r.to_string() };
+    }
+    let m = num_bigint::BigInt::from(1) << w.bits;
+    if w.signed {
+        let h = num_bigint::BigInt::from(1) << (w.bits - 1);
+        format!("(- (mod (+ {x} {h}) {m}) {h})")
+    } else {
+        format!("(mod {x} {m})")
+    }
+}
+
+fn word(w: Width, t: T) -> Val {
+    Val::Distinct(w.name().to_string(), Box::new(Val::Int(t)))
+}
+
 fn num(n: i64) -> T {
     if n < 0 { format!("(- {})", n.unsigned_abs()) } else { n.to_string() }
 }
@@ -407,7 +522,7 @@ fn val_key(v: &Val) -> Option<String> {
         Val::Distinct(n, _) => format!("distinct:{n}"),
         Val::Sum { ty, .. } => format!("sum:{ty}"),
         Val::List { .. } => "List*".into(),
-        Val::Union { .. } | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } | Val::Lazy(_) => return None,
+        Val::Union { .. } | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } | Val::Data { .. } => return None,
     })
 }
 
@@ -445,6 +560,7 @@ impl<'a> Vc<'a> {
         Vc {
             env,
             decls: vec![],
+            next_var: 0,
             facts: vec![],
             reasons: HashMap::default(),
             reason: None,
@@ -466,6 +582,7 @@ impl<'a> Vc<'a> {
             relied_on: Default::default(),
             returns: vec![],
             breaks: vec![],
+            continues: vec![],
             declared: HashMap::default(),
             matched: vec![],
             lists: vec![],
@@ -474,29 +591,44 @@ impl<'a> Vc<'a> {
             qvars: 0,
             bound: HashSet::default(),
             fn_args: vec![],
+            called_on: None,
+            eq_depth: 0,
+            example_facts: vec![],
+            example_leaves: vec![],
+            examples: false,
+            input_depth: INPUT_DEPTH,
             bit_terms: HashMap::default(),
-            cells: vec![],
+            sorts: Default::default(),
+            defs: vec![],
+            defined: HashSet::default(),
+            unfolded: HashMap::default(),
+            str_terms: vec![],
+            input_elems: HashMap::default(),
+            solver: None,
+            trial: 0,
+            hints: vec![],
+            requires_hints: vec![],
+            invariants: vec![],
+            given: vec![],
             regions: vec![],
             next_region: 1,
-            eq_atoms: HashMap::default(),
-            pending: HashMap::default(),
-            eq_depth: 0,
         }
     }
 
-    fn fresh(&mut self, sort: &'static str) -> T {
-        let n = format!("v{}", self.decls.len());
-        let indexed = self.indexing.as_ref().and_then(|args| fn_sort(sort, args.len()));
-        self.decls.push((n.clone(), indexed.unwrap_or(sort)));
+    fn fresh(&mut self, sort: &str) -> T {
+        let n = format!("v{}", self.next_var);
+        self.next_var += 1;
+        let args = self.indexing.as_ref().filter(|a| a.len() <= MAX_POSITIONS);
+        self.decls.push(Decl { name: n.clone(), args: args.map_or(0, |a| a.len()), sort: sort.to_string() });
         if let Some(r) = &self.reason {
             self.reasons.insert(n.clone(), r.clone());
         }
-        match (indexed, &self.indexing) {
-            (Some(_), Some(args)) => format!("({n} {})", args.join(" ")),
-            _ => n,
+        match args {
+            Some(args) => format!("({n} {})", args.join(" ")),
+            None => n,
         }
     }
-    fn fresh_why(&mut self, sort: &'static str, why: &str) -> T {
+    fn fresh_why(&mut self, sort: &str, why: &str) -> T {
         let old = self.reason.replace(why.to_string());
         let t = self.fresh(sort);
         self.reason = old;
@@ -511,7 +643,7 @@ impl<'a> Vc<'a> {
 
     /// Record an obligation built by `goal` (which itself makes none).
     fn oblige(&mut self, what: String, goal: impl FnOnce(&mut Self) -> T) {
-        if self.spec > 0 || self.dead {
+        if self.spec > 0 || self.dead || (partial_ops_off() && is_partial_op(&what)) {
             return;
         }
         self.spec += 1;
@@ -520,9 +652,11 @@ impl<'a> Vc<'a> {
         self.proving -= 1;
         self.spec -= 1;
         if g == "true" {
+            // true whatever the values: no query, but proven all the same
+            self.given.push(crate::types::shown_name(&what));
             return;
         }
-        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::std.prelude.len()`)
+        // (the prelude's names as written: `self.len()`, not `self.FiniteIterator::core.iter.len()`)
         let what = crate::types::shown_name(&what);
         self.obligations.push(Obligation { what, goal: g.clone(), pc: self.pc.clone(), facts: self.facts.len(), termination: false });
         // past a check, execution continues only if it held
@@ -556,7 +690,7 @@ impl<'a> Vc<'a> {
     /// The type every element of a list is known to have, if one is.
     fn elem_type(&self, id: usize) -> Option<TypeExpr> {
         match &self.lists[id].source {
-            Gen::Type(t) => Some(t.clone()),
+            Gen::Type(t) | Gen::Seq(_, t, _) => Some(t.clone()),
             Gen::Sub(p) | Gen::Filter(p, _) | Gen::Shift(p, _) | Gen::Rev(p, _) => self.elem_type(*p),
             _ => None,
         }
@@ -629,6 +763,13 @@ impl<'a> Vc<'a> {
         let x = match self.lists[id].source.clone() {
             Gen::Unknown => Val::Opaque("the elements of a list are not tracked".into()),
             Gen::Type(t) => self.havoc(&t),
+            // an item at some position
+            Gen::Seq(..) => {
+                let k = self.fresh("Int");
+                let len = self.lists[id].len_of_seq();
+                self.assume(format!("(and (<= 0 {k}) (< {k} {len}))"));
+                return self.element_at_inner(id, &k).unwrap_or(Val::Opaque("an element".into()));
+            }
             Gen::Values(vs) if vs.is_empty() => {
                 // a list literal `[]` has no element: this one doesn't exist
                 self.assume("false".into());
@@ -720,7 +861,7 @@ impl<'a> Vc<'a> {
     /// Can elements of list `id` be taken by position?
     fn positional(&self, id: usize) -> bool {
         match &self.lists[id].source {
-            Gen::Type(_) | Gen::Values(_) | Gen::Range(..) => true,
+            Gen::Type(_) | Gen::Values(_) | Gen::Range(..) | Gen::Seq(..) => true,
             Gen::Shift(p, _) | Gen::Rev(p, _) | Gen::Map(p, _) => self.positional(*p),
             Gen::Either(_, a, b) | Gen::Concat(a, b, _) => self.positional(*a) && self.positional(*b),
             Gen::Unknown | Gen::Sub(_) | Gen::Filter(..) => false,
@@ -733,6 +874,19 @@ impl<'a> Vc<'a> {
         }
         let x = match self.lists[id].source.clone() {
             Gen::Type(_) => self.instance(id, i)?,
+            Gen::Seq(s, t, n) => {
+                let x = self.from_term(&t, data::list_at(&n, &s, i));
+                // an item of a valid list is valid
+                if self.refined(&t, 0) {
+                    let lt = TypeExpr::Named(Symbol::from("List"), vec![t.clone()]);
+                    let all = self.valid_term(&lt, &s);
+                    self.spec += 1;
+                    let c = self.check_type(&t, &x, &[]);
+                    self.spec -= 1;
+                    self.assume(implies(&all, &c));
+                }
+                x
+            }
             Gen::Values(vs) if vs.is_empty() => {
                 self.assume("false".into());
                 Val::Opaque("an element of an empty list".into())
@@ -822,7 +976,7 @@ impl<'a> Vc<'a> {
         let n = self.lists[root].outer.len();
         let mut args: Vec<String> = (0..n).map(|k| format!("@@o{k}")).collect();
         args.push(IDX.to_string());
-        if fn_sort("Int", args.len()).is_none() {
+        if args.len() > MAX_POSITIONS {
             return None;
         }
         let scope = self.enter();
@@ -870,6 +1024,7 @@ impl<'a> Vc<'a> {
                 info.outer = info.outer.iter().map(|o| t(o)).collect();
                 info.source = match info.source {
                     Gen::Range(a, b) => Gen::Range(t(&a), t(&b)),
+                    Gen::Seq(x, ty, n) => Gen::Seq(t(&x), ty, n),
                     Gen::Values(vs) => Gen::Values(vs.iter().map(|x| self.subst_val(x, i, outer)).collect()),
                     // a checked type: the lists of a template are only made by `shape`
                     g => g,
@@ -877,15 +1032,9 @@ impl<'a> Vc<'a> {
                 self.lists.push(info);
                 Val::List { len: t(len), id: self.lists.len() - 1 }
             }
-            // a part with placeholders: the same part at this position, made when read
-            Val::Lazy(id) if self.cells[*id].placeholder => {
-                let c = &self.cells[*id];
-                let valid = t(&c.valid);
-                let placeholder = i.contains("@@") || outer.iter().any(|o| o.contains("@@"));
-                let cell = Cell { ty: c.ty.clone(), make: Make::View { of: *id, i: i.to_string(), outer: outer.to_vec() }, valid, indexing: self.indexing.clone(), reason: c.reason.clone(), region: 0, placeholder, value: None, facts: vec![] };
-                self.new_cell(cell)
-            }
-            Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } | Val::Lazy(_) => v.clone(),
+            // a term with placeholders: the same term at this position
+            Val::Data { ty, t: x } => Val::Data { ty: ty.clone(), t: t(x) },
+            Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => v.clone(),
         }
     }
 
@@ -939,13 +1088,56 @@ impl<'a> Vc<'a> {
         self.matched.truncate(nm);
         let p = p?;
         // (an unknown of a sort that can't be a function of `j` would be one for every position)
-        if self.decls[nd..].iter().any(|(n, s)| !s.starts_with('(') && !self.bound.contains(n)) {
+        if self.decls[nd..].iter().any(|d| d.args == 0 && !self.bound.contains(&d.name)) {
             return None;
         }
         // what is known of the elements, and of the unknowns made for them, holds at every position
         let mut body = known;
         body.push(p);
         Some(format!("(forall (({j} Int)) (=> {inside} {}))", and(&body)))
+    }
+
+    /// `a == b` for two lists known by position: equal lengths, and equal
+    /// elements at every position (the elements of each made at a quantified
+    /// position, as `forall_positions` makes them). `None` when either list
+    /// isn't known by position, or comparing made unknowns of their own.
+    fn eq_lists(&mut self, (a, la): (usize, &str), (b, lb): (usize, &str)) -> Option<T> {
+        if !self.positional(a) || !self.positional(b) {
+            return None;
+        }
+        self.qvars += 1;
+        let j = format!("q{}", self.qvars);
+        let scope = self.enter();
+        let nm = self.matched.len();
+        let inside = format!("(and (<= 0 {j}) (< {j} {la}))");
+        let pc = std::mem::take(&mut self.pc);
+        let preds: Vec<usize> = self.lists.iter().map(|l| l.preds.len()).collect();
+        let (memo, cutoffs) = (self.memo.clone(), self.cutoffs.clone());
+        let indexing = self.indexing.replace(vec![j.clone()]);
+        self.binding += 1;
+        self.spec += 1;
+        let p = match (self.element_at(a, &j, &inside), self.element_at(b, &j, &inside)) {
+            (Some(x), Some(y)) => Some(self.eq(&x, &y)),
+            _ => None,
+        };
+        self.spec -= 1;
+        self.binding -= 1;
+        self.indexing = indexing;
+        self.pc = pc;
+        let (nd, nf) = self.leave(scope);
+        (self.memo, self.cutoffs) = (memo, cutoffs);
+        for (l, n) in self.lists.iter_mut().zip(preds) {
+            l.preds.truncate(n);
+        }
+        let known: Vec<T> = self.facts.drain(nf..).collect();
+        self.matched.truncate(nm);
+        let p = p?;
+        if self.decls[nd..].iter().any(|d| d.args == 0 && !self.bound.contains(&d.name)) {
+            return None;
+        }
+        let mut premise = vec![inside];
+        premise.extend(known);
+        Some(format!("(and (= {la} {lb}) (forall (({j} Int)) (=> {} {p})))", and(&premise)))
     }
 
     /// From now on, `f` holds for every element of list `id` when `guard`
@@ -990,11 +1182,19 @@ impl<'a> Vc<'a> {
         self.facts.truncate(nf);
         self.matched.truncate(nm);
         let p = p?;
-        // (functions of a position belong to a list's template, not to this element)
-        let bound: Vec<String> = self.decls[nd..].iter().filter(|(_, s)| !s.starts_with('(')).map(|(n, s)| format!("({n} {s})")).collect();
-        let names: Vec<String> = self.decls[nd..].iter().filter(|(_, s)| !s.starts_with('(')).map(|(n, _)| n.clone()).collect();
-        self.bound.extend(names);
         let body = implies(&ant, &p);
+        // outside any scope, the element is a witness constant rather than a
+        // bound variable: every caller uses the formula only as a premise
+        // (`(=> q b)`, asserted as is), where `forall x. P(x)` and `P(c)`
+        // for a fresh `c` are equisatisfiable (skolemization). The solver
+        // then sees plain constants, which its string solver needs.
+        if self.regions.is_empty() && self.indexing.is_none() && !body.contains("@@") {
+            return Some(body);
+        }
+        // (functions of a position belong to a list's template, not to this element)
+        let bound: Vec<String> = self.decls[nd..].iter().filter(|d| d.args == 0).map(|d| format!("({} {})", d.name, d.sort)).collect();
+        let names: Vec<String> = self.decls[nd..].iter().filter(|d| d.args == 0).map(|d| d.name.clone()).collect();
+        self.bound.extend(names);
         Some(if bound.is_empty() { body } else { format!("(forall ({}) {body})", bound.join(" ")) })
     }
 
@@ -1051,7 +1251,8 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::Int(t) => t.clone(),
-            Val::Lazy(_) => {
+            Val::Distinct(_, x) if word_of(v).is_some() => self.as_int(x),
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.as_int(&v)
             }
@@ -1065,7 +1266,7 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::Bool(t) => t.clone(),
-            Val::Lazy(_) => {
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.as_bool(&v)
             }
@@ -1079,7 +1280,7 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::Str(t) => t.clone(),
-            Val::Lazy(_) => {
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.as_str(&v)
             }
@@ -1097,7 +1298,7 @@ impl<'a> Vc<'a> {
         }
         match v {
             Val::List { len, .. } => len.clone(),
-            Val::Lazy(_) => {
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.list_len(&v)
             }
@@ -1116,17 +1317,18 @@ impl<'a> Vc<'a> {
     // ---- values of a type ----
 
     /// A value of type `t` with fresh constants, nothing assumed. Its outer
-    /// level is made now; the fields of a record and the payloads of a sum
-    /// that are themselves structured are lazy parts (`Val::Lazy`), made
-    /// when the code reads them.
+    /// level is made now, each plain field an unknown of its own (lists by
+    /// position, as the solver handles best); the fields of a record and the
+    /// payloads of a sum that are themselves structured are terms of their
+    /// datatypes (`Val::Data`), unfolded when the code reads them.
     fn shape(&mut self, t: &TypeExpr) -> Val {
         match t {
-            TypeExpr::Union(ms) => self.union_shape(ms).unwrap_or_else(|| Val::Opaque("values of this union type are not modelled (members of overlapping or unknown shapes)".into())),
+            TypeExpr::Union(_) => self.fresh_data(t).unwrap_or_else(|| Val::Opaque("values of this union type are not modelled (members of overlapping or unknown shapes)".into())),
             TypeExpr::Named(n, args) if self.env.variant_parent(n.sym()).is_some() => {
                 // a variant as a type: a value of its sum with that tag
                 let parent = self.env.variant_parent(n.sym()).unwrap();
-                let v = self.shape(&TypeExpr::Named(Symbol::from(parent), args.clone()));
-                if let (Val::Sum { tag, ctors, .. }, true) = (&v, true) {
+                let v = self.shape(&TypeExpr::Named(parent, args.clone()));
+                if let Val::Sum { tag, ctors, .. } = &v {
                     if let Some(k) = ctors.iter().position(|c| &c.0 == n) {
                         self.facts.push(format!("(= {tag} {k})"));
                     }
@@ -1141,6 +1343,12 @@ impl<'a> Vc<'a> {
                 "Bool" => Val::Bool(self.fresh("Bool")),
                 "String" => Val::Str(self.fresh("String")),
                 "Float" => Val::Opaque("floats are not modelled yet".into()),
+                s if Width::of(s).is_some() => {
+                    let w = Width::of(s).unwrap();
+                    let x = self.fresh("Int");
+                    self.facts.push(word_range(w, &x));
+                    word(w, x)
+                }
                 "List" => {
                     let len = self.fresh("Int");
                     self.facts.push(format!("(>= {len} 0)"));
@@ -1148,6 +1356,8 @@ impl<'a> Vc<'a> {
                     self.new_list(len, gen_)
                 }
                 "Tuple" => Val::Tuple(args.iter().map(|a| self.shape(a)).collect()),
+                // a task's handle stands for its result
+                "Task" if args.len() == 1 => self.shape(&args[0]),
                 // dicts and sets are tracked by their size
                 "Dict" | "Set" => {
                     let len = self.fresh("Int");
@@ -1156,7 +1366,12 @@ impl<'a> Vc<'a> {
                 }
                 _ => {
                     let Some(td) = self.env.types.get(&n.sym()).cloned() else {
-                        return Val::Opaque(format!("values of the generic type `{n}` are not known"));
+                        // a type parameter (or a trait as a type): a value of a sort
+                        // nothing is known of, but equal to itself
+                        return match self.sort_of(t) {
+                            Some(sort) => Val::Data { ty: t.clone(), t: self.fresh_why(&sort, &format!("values of the generic type `{n}` are not known")) },
+                            None => Val::Opaque(format!("values of the generic type `{n}` are not known")),
+                        };
                     };
                     let sub: HashMap<Symbol, TypeExpr> = td.params.iter().cloned().zip(args.iter().cloned()).collect();
                     match &td.body {
@@ -1181,33 +1396,21 @@ impl<'a> Vc<'a> {
         }
     }
 
-    // ---- lazy parts ----
+    // ---- parts ----
 
     /// A part of a value, of type `t`: made now when it is a plain value, else
-    /// lazily (`Val::Lazy`).
+    /// a term of its datatype (`Val::Data`), unfolded when read.
     fn part(&mut self, t: &TypeExpr) -> Val {
         if !self.structured(t) {
             return self.shape(t);
         }
-        if self.cells.len() >= MAX_CELLS {
-            return Val::Opaque("a part of a value past the prover's size budget (only the parts read first are modelled)".into());
+        match self.sort_of(t) {
+            Some(sort) => {
+                let x = self.fresh(&sort);
+                self.from_term(t, x)
+            }
+            None => Val::Opaque("values of this type are not modelled".into()),
         }
-        let valid = if self.refined(t, 0) {
-            let old = self.reason.take();
-            let v = self.fresh("Bool");
-            self.reason = old;
-            v
-        } else {
-            "true".into()
-        };
-        let placeholder = self.indexing.as_ref().is_some_and(|ix| ix.iter().any(|a| a.contains("@@")));
-        self.new_cell(Cell { ty: t.clone(), make: Make::Shape, valid, indexing: self.indexing.clone(), reason: self.reason.clone(), region: 0, placeholder, value: None, facts: vec![] })
-    }
-
-    fn new_cell(&mut self, mut c: Cell) -> Val {
-        c.region = self.regions.last().map_or(0, |r| r.id);
-        self.cells.push(c);
-        Val::Lazy(self.cells.len() - 1)
     }
 
     /// Is a value of `t` more than one term or list (a record, sum, tuple,
@@ -1224,125 +1427,11 @@ impl<'a> Vc<'a> {
         }
     }
 
-    /// `v`, made if it is a lazy part.
+    /// `v`, unfolded one level if it is a datatype term.
     fn force(&mut self, v: Val) -> Val {
         match v {
-            Val::Lazy(id) => self.force_cell(id),
+            Val::Data { ty, t } => self.unfold(&ty, &t),
             v => v,
-        }
-    }
-
-    /// Make lazy part `id` (once): in the context it was made in, with what
-    /// its type guarantees defined (its `valid`), its facts placed where its
-    /// scope's are, and the comparisons waiting on it settled.
-    fn force_cell(&mut self, id: usize) -> Val {
-        if let Some(v) = &self.cells[id].value {
-            return v.clone();
-        }
-        let (home, placeholder) = (self.cells[id].region, self.cells[id].placeholder);
-        // a part of an outer scope made inside an inner one (a quantified
-        // fact): it is made as if there, its facts and unknowns before the
-        // inner scopes'
-        let keep = match home {
-            // (a part with placeholders keeps its facts: no scope to place them in)
-            _ if placeholder => 0,
-            0 => 0,
-            _ => match self.regions.iter().position(|r| r.id == home) {
-                Some(p) => p + 1,
-                None => return Val::Opaque("a part of a value made in a scope that has ended".into()),
-            },
-        };
-        let inner = if placeholder { vec![] } else { self.regions.split_off(keep) };
-        let (tail_d, tail_f) = match inner.first() {
-            Some(r) => (self.decls.split_off(r.nd), self.facts.split_off(r.nf)),
-            None => (vec![], vec![]),
-        };
-        let (at_d, at_f) = (self.decls.len(), self.facts.len());
-        let pc = std::mem::take(&mut self.pc);
-        let indexing = std::mem::replace(&mut self.indexing, self.cells[id].indexing.clone());
-        let reason = std::mem::replace(&mut self.reason, self.cells[id].reason.clone());
-        let checking = std::mem::take(&mut self.checking);
-        let proving = std::mem::replace(&mut self.proving, 0);
-        let binding = std::mem::replace(&mut self.binding, 0);
-        let dead = std::mem::replace(&mut self.dead, false);
-        self.spec += 1;
-        let scope = placeholder.then(|| self.enter());
-        let v = self.materialize(id);
-        self.cells[id].value = Some(v.clone());
-        match scope {
-            Some(r) => {
-                let (_, nf) = self.leave(r);
-                self.cells[id].facts = self.facts.split_off(nf);
-            }
-            None => self.settle(id),
-        }
-        self.spec -= 1;
-        self.dead = dead;
-        self.binding = binding;
-        self.proving = proving;
-        self.checking = checking;
-        self.reason = reason;
-        self.indexing = indexing;
-        self.pc = pc;
-        if !inner.is_empty() {
-            let (ad, af) = (self.decls.len() - at_d, self.facts.len() - at_f);
-            self.decls.extend(tail_d);
-            self.facts.extend(tail_f);
-            self.regions.extend(inner.into_iter().map(|r| Region { id: r.id, nd: r.nd + ad, nf: r.nf + af }));
-            // comparisons made in the inner scopes
-            self.settle(id);
-        }
-        v
-    }
-
-    fn materialize(&mut self, id: usize) -> Val {
-        match self.cells[id].make.clone() {
-            Make::Shape => {
-                let t = self.cells[id].ty.clone();
-                let v = self.shape(&t);
-                let valid = self.cells[id].valid.clone();
-                if valid != "true" {
-                    let c = self.check_type(&t, &v, &[]);
-                    self.facts.push(format!("(= {valid} {c})"));
-                }
-                v
-            }
-            Make::View { of, i, outer } => {
-                let base = self.force_cell(of);
-                let v = self.subst_val(&base, &i, &outer);
-                let fs: Vec<T> = self.cells[of].facts.iter().map(|f| place(f, &i, &outer)).collect();
-                self.facts.extend(fs);
-                v
-            }
-            Make::Merge { c, a, b } => {
-                let x = self.force_cell(a);
-                let y = self.force_cell(b);
-                self.merge(&c, &x, &y)
-            }
-        }
-    }
-
-    /// The comparisons of part `id` (now made) with parts it was compared
-    /// with before either was made: each one's unknown is defined by
-    /// comparing the made parts (one level; their parts compare the same way).
-    fn settle(&mut self, id: usize) {
-        let Some(list) = self.pending.remove(&id) else { return };
-        let mut later = vec![];
-        for (y, e, r) in list {
-            if r != 0 && !self.regions.iter().any(|g| g.id == r) {
-                later.push((y, e, r));
-                continue;
-            }
-            if let Some(l) = self.pending.get_mut(&y) {
-                l.retain(|p| !(p.0 == id && p.1 == e));
-            }
-            let a = self.cells[id].value.clone().unwrap_or(Val::Opaque("a part".into()));
-            let b = self.force_cell(y);
-            let q = self.eq(&a, &b);
-            self.facts.push(format!("(= {e} {q})"));
-        }
-        if !later.is_empty() {
-            self.pending.entry(id).or_default().extend(later);
         }
     }
 
@@ -1359,13 +1448,6 @@ impl<'a> Vc<'a> {
     fn leave(&mut self, id: usize) -> (usize, usize) {
         let r = self.regions.pop().expect("a scope is open");
         debug_assert_eq!(r.id, id);
-        if !self.pending.is_empty() {
-            self.pending.retain(|_, l| {
-                l.retain(|p| p.2 != id);
-                !l.is_empty()
-            });
-            self.eq_atoms.retain(|_, a| a.1 != id);
-        }
         (r.nd, r.nf)
     }
 
@@ -1414,68 +1496,11 @@ impl<'a> Vc<'a> {
         }
     }
 
-    /// A value of a union type: one slot per member shape. `None` when two
-    /// members could have the same shape in a way the slots can't tell apart
-    /// (`List[Int] | List[String]`), or a member's shape is not known.
-    fn union_shape(&mut self, ms: &[TypeExpr]) -> Option<Val> {
-        let mut members = vec![];
-        for m in ms {
-            self.flatten_union(m, &mut members);
-        }
-        let mut groups: Vec<(String, Vec<TypeExpr>)> = vec![];
-        for m in members {
-            let k = self.type_key(&m)?;
-            match groups.iter_mut().find(|g| g.0 == k) {
-                Some(g) => g.1.push(m),
-                None => groups.push((k, vec![m])),
-            }
-        }
-        let tag = self.fresh("Int");
-        self.facts.push(format!("(and (<= 0 {tag}) (< {tag} {}))", groups.len()));
-        let mut slots = vec![];
-        for (i, (k, ms)) in groups.iter().enumerate() {
-            let heads: Vec<TypeExpr> = ms.iter().map(|m| self.env.expand_alias(m)).collect();
-            let v = if let Some(sum) = k.strip_prefix("sum:") {
-                // the sum itself or some of its variants: a value of the sum,
-                // whose constructor is one of those variants
-                let mut args: Option<Vec<TypeExpr>> = None;
-                let mut ctors: Option<Vec<String>> = Some(vec![]);
-                for h in &heads {
-                    let TypeExpr::Named(n, a) = h else { return None };
-                    if args.get_or_insert_with(|| a.clone()) != a {
-                        return None;
-                    }
-                    if n == sum {
-                        ctors = None;
-                    } else if let Some(cs) = &mut ctors {
-                        cs.push(n.to_string());
-                    }
-                }
-                let v = self.shape(&TypeExpr::Named(Symbol::from(sum), args.unwrap_or_default()));
-                if let (Some(cs), Val::Sum { tag: inner, ctors: all, .. }) = (&ctors, &v) {
-                    let ks: Vec<T> = cs.iter().filter_map(|c| all.iter().position(|x| &x.0 == c)).map(|j| format!("(= {inner} {j})")).collect();
-                    self.facts.push(implies(&format!("(= {tag} {i})"), &or(&ks)));
-                }
-                v
-            } else if ms.len() == 1 {
-                self.shape(&ms[0])
-            } else {
-                match k.as_str() {
-                    // `Positive | Negative`: both are integers
-                    "Int" | "Bool" | "String" | "Unit" => self.shape(&TypeExpr::Named(Symbol::from(k.as_str()), vec![])),
-                    _ => return None,
-                }
-            };
-            slots.push((k.clone(), v));
-        }
-        Some(Val::Union { tag, slots })
-    }
-
     /// Does `v` have the shape of `t` (the interpreter's `shape_fits`,
     /// refinements ignored)? Exact where the shapes are known, else unknown.
     fn shape_test(&mut self, t: &TypeExpr, v: &Val) -> T {
         match v {
-            Val::Lazy(_) => {
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 return self.shape_test(t, &v);
             }
@@ -1539,7 +1564,7 @@ impl<'a> Vc<'a> {
     /// and what makes a value valid for a union.
     fn in_type(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
         match v {
-            Val::Lazy(_) => {
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.in_type(t, &v, extra)
             }
@@ -1582,7 +1607,7 @@ impl<'a> Vc<'a> {
     /// Does `v` have constructor `c` (`v is Circle`)?
     fn is_ctor(&mut self, v: &Val, c: &str) -> T {
         match v {
-            Val::Lazy(_) => {
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.is_ctor(&v, c)
             }
@@ -1663,7 +1688,7 @@ impl<'a> Vc<'a> {
     /// The field `f` of a value.
     fn field(&mut self, v: &Val, f: &str) -> Val {
         match v {
-            Val::Lazy(_) => {
+            Val::Data { .. } => {
                 let v = self.force(v.clone());
                 self.field(&v, f)
             }
@@ -1781,9 +1806,9 @@ impl<'a> Vc<'a> {
             Val::Absent => Val::Absent,
             Val::FnOf { .. } => v.clone(),
             Val::Opaque(r) => Val::Opaque(r.clone()),
-            Val::Lazy(id) => {
-                let t = self.cells[*id].ty.clone();
-                self.havoc(&t)
+            Val::Data { ty, .. } => {
+                let ty = ty.clone();
+                self.havoc(&ty)
             }
         }
     }
@@ -1868,14 +1893,14 @@ impl<'a> Vc<'a> {
     /// The condition for `v` to be a valid value of `t`. `extra` are bindings
     /// visible to inline refinements (a function's parameters, for its result).
     fn check_type(&mut self, t: &TypeExpr, v: &Val, extra: &[(String, Val)]) -> T {
-        if let Val::Lazy(id) = v {
-            // a part not made yet is valid for its own type when its `valid` holds
+        if let Val::Data { ty, t: x } = v {
+            // a term is valid for its own type when its predicate holds
             if !self.refined(t, 0) {
                 return "true".into();
             }
-            let ty = self.cells[*id].ty.clone();
-            if &ty == t || self.erased(&ty) == self.erased(t) {
-                return self.cells[*id].valid.clone();
+            if ty == t || self.erased(ty) == self.erased(t) {
+                let (ty, x) = (ty.clone(), x.clone());
+                return self.valid_term(&ty, &x);
             }
             let v = self.force(v.clone());
             return self.check_type(t, &v, extra);
@@ -1944,6 +1969,13 @@ impl<'a> Vc<'a> {
             TypeExpr::Named(n, args) => match (n.as_str(), v) {
                 ("List", Val::List { len, id }) => match args.first() {
                     None => "true".into(),
+                    // a sequence of a datatype value: its own predicate
+                    Some(t) if matches!(&self.lists[*id].source, Gen::Seq(_, et, _) if self.erased(et) == self.erased(t)) => {
+                        // (by the items' own type: `Entry[P]` and `Entry[Int]` are not one sort)
+                        let Gen::Seq(s, et, _) = self.lists[*id].source.clone() else { unreachable!() };
+                        let lt = TypeExpr::Named(Symbol::from("List"), vec![et]);
+                        self.valid_term(&lt, &s)
+                    }
                     Some(t) if len == "0" || self.valid_known(*id, t) => "true".into(),
                     // every element valid: proven on an arbitrary element, and known from then on
                     Some(t) => {
@@ -2067,20 +2099,19 @@ impl<'a> Vc<'a> {
     fn merge(&mut self, c: &str, a: &Val, b: &Val) -> Val {
         match (a, b) {
             (Val::Absent, x) | (x, Val::Absent) => x.clone(),
-            (Val::Lazy(x), Val::Lazy(y)) if x == y => a.clone(),
-            // two parts, one of them not made yet: a part that is either, made
-            // when read (making it here could go on forever: a tree merged
-            // with its own subtree, `if c { t } else { t.left }`, merges each
-            // subtree with the one below it)
-            (Val::Lazy(x), Val::Lazy(y)) if (self.cells[*x].value.is_none() || self.cells[*y].value.is_none()) && self.cells.len() < MAX_CELLS => {
-                let (x, y) = (*x, *y);
-                let (vx, vy) = (self.cells[x].valid.clone(), self.cells[y].valid.clone());
-                let placeholder = self.cells[x].placeholder || self.cells[y].placeholder || c.contains("@@");
-                let cell = Cell { ty: self.cells[x].ty.clone(), make: Make::Merge { c: c.to_string(), a: x, b: y }, valid: ite(c, &vx, &vy), indexing: self.indexing.clone(), reason: self.reason.clone(), region: 0, placeholder, value: None, facts: vec![] };
-                self.new_cell(cell)
+            (Val::Data { ty: ta, t: x }, Val::Data { ty: tb, t: y }) if x == y && ta == tb => a.clone(),
+            (Val::Data { ty: ta, t: x }, Val::Data { ty: tb, t: y }) => {
+                let (ta, tb, x, y) = (ta.clone(), tb.clone(), x.clone(), y.clone());
+                match self.merge_data(c, (&ta, &x), (&tb, &y)) {
+                    Some(v) => v,
+                    None => {
+                        let (x, y) = (self.force(a.clone()), self.force(b.clone()));
+                        self.merge(c, &x, &y)
+                    }
+                }
             }
-            (Val::Opaque(r), Val::Lazy(_)) | (Val::Lazy(_), Val::Opaque(r)) => Val::Opaque(r.clone()),
-            (Val::Lazy(_), _) | (_, Val::Lazy(_)) => {
+            (Val::Opaque(r), Val::Data { .. }) | (Val::Data { .. }, Val::Opaque(r)) => Val::Opaque(r.clone()),
+            (Val::Data { .. }, _) | (_, Val::Data { .. }) => {
                 let (x, y) = (self.force(a.clone()), self.force(b.clone()));
                 self.merge(c, &x, &y)
             }
@@ -2181,7 +2212,7 @@ impl<'a> Vc<'a> {
     }
 
     fn pattern(&mut self, p: &Pattern, v: &Val, binds: &mut Vec<(String, Val)>) -> T {
-        if let (Val::Lazy(_), false) = (v, matches!(p, Pattern::Bind(_) | Pattern::Wild)) {
+        if let (Val::Data { .. }, false) = (v, matches!(p, Pattern::Bind(_) | Pattern::Wild)) {
             let v = self.force(v.clone());
             return self.pattern(p, &v, binds);
         }
@@ -2343,38 +2374,16 @@ impl<'a> Vc<'a> {
 
     fn eq(&mut self, a: &Val, b: &Val) -> T {
         match (a, b) {
-            (Val::Lazy(x), Val::Lazy(y)) if x == y => "true".into(),
-            (Val::Lazy(x), Val::Lazy(y)) if (self.cells[*x].value.is_none() || self.cells[*y].value.is_none()) && !self.cells[*x].placeholder && !self.cells[*y].placeholder && self.indexing.is_none() => {
-                // a part not made yet: their equality is an unknown, defined when
-                // both are (as for merging, making it here could go on forever)
-                let key = (*x.min(y), *x.max(y));
-                // (one made in a scope that is not open here can't be used here)
-                if let Some((e, r)) = self.eq_atoms.get(&key) {
-                    if *r == 0 || self.regions.iter().any(|g| g.id == *r) {
-                        return e.clone();
-                    }
-                }
-                // (no reason: it is defined as soon as the parts are read)
-                let old = self.reason.take();
-                let e = self.fresh("Bool");
-                self.reason = old;
-                let r = self.regions.last().map_or(0, |g| g.id);
-                self.eq_atoms.insert(key, (e.clone(), r));
-                self.pending.entry(*x).or_default().push((*y, e.clone(), r));
-                self.pending.entry(*y).or_default().push((*x, e.clone(), r));
-                e
-            }
-            (Val::Lazy(x), Val::Lazy(y)) if self.eq_depth > 3 && (self.indexing.is_some() || self.cells[*x].placeholder || self.cells[*y].placeholder) => self.unknown_bool("comparing parts of values nested deeply"),
-            (Val::Opaque(r), Val::Lazy(_)) | (Val::Lazy(_), Val::Opaque(r)) => {
+            (Val::Data { t: x, .. }, Val::Data { t: y, .. }) if x == y => "true".into(),
+            // two terms of one sort: equal exactly when the values are
+            (Val::Data { ty: ta, t: x }, Val::Data { ty: tb, t: y }) if self.sort_of(ta).is_some() && self.sort_of(ta) == self.sort_of(tb) => format!("(= {x} {y})"),
+            (Val::Opaque(r), Val::Data { .. }) | (Val::Data { .. }, Val::Opaque(r)) => {
                 let r = r.clone();
                 self.unknown_bool(&r)
             }
-            (Val::Lazy(_), _) | (_, Val::Lazy(_)) => {
+            (Val::Data { .. }, _) | (_, Val::Data { .. }) => {
                 let (x, y) = (self.force(a.clone()), self.force(b.clone()));
-                self.eq_depth += 1;
-                let e = self.eq(&x, &y);
-                self.eq_depth -= 1;
-                e
+                self.eq(&x, &y)
             }
             (Val::Int(x), Val::Int(y)) | (Val::Bool(x), Val::Bool(y)) | (Val::Str(x), Val::Str(y)) => format!("(= {x} {y})"),
             (Val::Int(x), Val::Opaque(_)) | (Val::Opaque(_), Val::Int(x)) => {
@@ -2410,7 +2419,33 @@ impl<'a> Vc<'a> {
                 }
                 and(&cs)
             }
-            (Val::List { len: l1, .. }, Val::List { len: l2, .. }) => {
+            (Val::List { id: i1, .. }, Val::List { id: i2, .. }) if matches!((&self.lists[*i1].source, &self.lists[*i2].source), (Gen::Seq(..), Gen::Seq(..))) => {
+                // (a list sort's values are lists: equal terms, equal lists; two
+                // terms can be distinct with the same items only in a model no
+                // run has, which can only cost a proof)
+                let (Gen::Seq(x, _, n), Gen::Seq(y, _, m)) = (&self.lists[*i1].source, &self.lists[*i2].source) else { unreachable!() };
+                if n != m {
+                    return self.unknown_bool("comparing lists of different types");
+                }
+                format!("(= {x} {y})")
+            }
+            (Val::List { len: l1, id: i1 }, Val::List { len: l2, id: i2 }) => {
+                let (l1, l2, i1, i2) = (l1.clone(), l2.clone(), *i1, *i2);
+                if i1 == i2 {
+                    return format!("(= {l1} {l2})");
+                }
+                // by position, where both are known so: only in a goal, where
+                // the quantifier is negated (the solver picks one position, a
+                // witness), never in a fact it would have to instantiate; and
+                // not inside a quantified fact
+                if self.proving > 0 && self.eq_depth < 2 && self.indexing.is_none() && self.regions.is_empty() {
+                    self.eq_depth += 1;
+                    let e = self.eq_lists((i1, &l1), (i2, &l2));
+                    self.eq_depth -= 1;
+                    if let Some(e) = e {
+                        return e;
+                    }
+                }
                 // equal lists have equal lengths; the elements are not tracked
                 let b = self.unknown_bool("the elements of a list are not tracked");
                 self.facts.push(format!("(=> {b} (= {l1} {l2}))"));
@@ -2598,7 +2633,13 @@ impl<'a> Vc<'a> {
             }
             Expr::Lambda(..) => self.fn_value(e, vec![]).0,
             Expr::Mock(t) => Val::Opaque(format!("`mock {}`", crate::printer::ty(t))),
-            Expr::Mut(x) | Expr::Comptime(x) => self.eval(x),
+            // which arm runs depends on timing
+            Expr::Select(_) => Val::Opaque("which arm of a `select` runs depends on timing".into()),
+            Expr::Race(_) => Val::Opaque("which arm of a `race` wins depends on timing".into()),
+            // a task's result is its expression's value: `await spawn e` is `e`
+            Expr::Mut(x) | Expr::Comptime(x) | Expr::Scope(x) | Expr::Spawn(x) | Expr::Await(x) => self.eval(x),
+            // whether a supervised task panics isn't known here
+            Expr::SupervisedSpawn(_) => Val::Opaque("a supervised task's result (it may have panicked)".into()),
             Expr::Interp(parts) => {
                 for part in parts {
                     if let StrPart::Expr(x, _) = part {
@@ -2670,6 +2711,10 @@ impl<'a> Vc<'a> {
             }
             Expr::Un(UnOp::Neg, x) => match self.eval(x) {
                 Val::Int(t) => Val::Int(format!("(- {t})")),
+                v if word_of(&v).is_some() => {
+                    let (w, t) = (word_of(&v).unwrap(), self.as_int(&v));
+                    word(w, wrap_term(w, &format!("(- {t})")))
+                }
                 other => other,
             },
             Expr::Un(UnOp::Not, x) => {
@@ -2696,6 +2741,19 @@ impl<'a> Vc<'a> {
                     _ => {
                         let a = self.eval(l);
                         let b = self.eval(r);
+                        // sized integers: `Int`'s operation, then wrapped (the operands are of one type)
+                        if let Some(w) = word_of(&a).or(word_of(&b)) {
+                            let (x, y) = (Val::Int(self.as_int(&a)), Val::Int(self.as_int(&b)));
+                            let r = match op {
+                                Eq => return Val::Bool(self.eq(&x, &y)),
+                                Ne => return Val::Bool(not(&self.eq(&x, &y))),
+                                Lt | Le | Gt | Ge => return self.compare(*op, x, y),
+                                BitAnd | BitOr | BitXor | Shl | Shr => self.bits(*op, x, y),
+                                _ => self.arith(*op, x, y),
+                            };
+                            let r = self.as_int(&r);
+                            return word(w, wrap_term(w, &r));
+                        }
                         match op {
                             Eq => Val::Bool(self.eq(&a, &b)),
                             Ne => Val::Bool(not(&self.eq(&a, &b))),
@@ -2757,6 +2815,12 @@ impl<'a> Vc<'a> {
                     g.push(cond.clone());
                     alts.push((and(&g), binds, &a.body));
                     prev.push(cond);
+                }
+                // arms with conditions the checker can't decide: some arm matches
+                // (else the compiled code's `no match arm` fault)
+                if arms.iter().any(|a| self.undecided(&a.pat)) {
+                    let all = or(&prev);
+                    self.oblige("some arm of the `match` matches".into(), |_| all);
                 }
                 self.branches_narrowed(alts, narrow)
             }
@@ -2951,8 +3015,14 @@ impl<'a> Vc<'a> {
     /// list builtin is checked on one arbitrary element of the list.
     fn call_exprs(&mut self, name: &str, exprs: &[Expr]) -> Val {
         // `Trait::empty(type, ..)`: the type argument only picks the implementation
+        let mut called_on = None;
         let exprs = match self.env.method_contract(name) {
-            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => &exprs[1..],
+            Some((_, d)) if !crate::resolve::takes_self(d) && exprs.len() == d.params.len() + 1 => {
+                if let Expr::Str(h) = &exprs[0] {
+                    called_on = Some(h.clone());
+                }
+                &exprs[1..]
+            }
             _ => exprs,
         };
         let mut vals: Vec<Option<Val>> = exprs.iter().map(|e| if self.is_fn(e) { None } else { Some(self.eval(e)) }).collect();
@@ -3009,6 +3079,7 @@ impl<'a> Vc<'a> {
         let _ = fn_result_ty;
         let funcs: Vec<Option<Func>> = exprs.iter().map(|e| if self.is_fn(e) { self.func_of(e) } else { None }).collect();
         let saved = std::mem::replace(&mut self.fn_args, funcs);
+        self.called_on = called_on;
         let r = self.call(name, exprs, vals);
         self.fn_args = saved;
         if let Some(k) = key {
@@ -3104,6 +3175,27 @@ impl<'a> Vc<'a> {
             self.write_back(&f.params, arg_exprs, &args);
             return r;
         }
+        // a trait's method on a value of a known type: that implementation's
+        // (seen through in a contract when it ends and can't fail)
+        let called_on = self.called_on.take();
+        if let Some((imp, decl)) = self.implementation(name, called_on, &args) {
+            let decl = crate::verify::method_decl(env, imp, decl);
+            let label = crate::termination::impl_label(env, imp, &decl.name);
+            if self.spec > 0 && self.depth < 4 {
+                if let Some(&assumed) = self.transparent.get(&label) {
+                    if assumed {
+                        self.relied_on.insert(label);
+                    }
+                    let binds: HashMap<String, Val> = decl.params.iter().map(|p| p.name.to_string()).zip(args.iter().cloned()).collect();
+                    self.depth += 1;
+                    let saved = std::mem::replace(&mut self.scopes, vec![binds]);
+                    let r = self.eval(&decl.body);
+                    self.scopes = saved;
+                    self.depth -= 1;
+                    return r;
+                }
+            }
+        }
         if let Some((_, decl)) = env.method_contract(name) {
             let r = self.call_contract(name, decl, &[], &[], &args);
             self.write_back(&decl.params, arg_exprs, &args);
@@ -3117,6 +3209,56 @@ impl<'a> Vc<'a> {
             return Val::Opaque(format!("the result of method `{name}` (it depends on the receiver's type)"));
         }
         self.builtin(name, arg_exprs, args)
+    }
+
+    /// The implementation a trait method call runs, and its method (its own
+    /// or the trait's default), when the receiver's type is known: from its
+    /// value, or the type's name a method without `self` is called with.
+    fn implementation(&self, name: &str, called_on: Option<String>, args: &[Val]) -> Option<(&'a ImplDecl, &'a FnDecl)> {
+        let env = self.env;
+        let (tr, m) = crate::types::split_trait_call(name)?;
+        let head = match (called_on, args.first()) {
+            (Some(h), _) => h,
+            (None, Some(v)) => self.head_of(v)?,
+            _ => return None,
+        };
+        let imp = env.impls.iter().find(|i| i.trait_name == tr && crate::types::texpr_head(&i.for_type) == head)?;
+        let decl = imp.methods.iter().find(|x| x.name == m || crate::names::short(&x.name) == crate::names::short(m)).or_else(|| env.traits.get(&imp.trait_name)?.methods.iter().find(|x| crate::names::short(&x.decl.name) == crate::names::short(m) && x.default).map(|x| &x.decl))?;
+        Some((imp, decl))
+    }
+
+    /// Whether a pattern has a condition the checker can't decide (its
+    /// `match` is left to the prover): a `where` that isn't a bound on an
+    /// integer, a length or a float, or a refined type by name.
+    fn undecided(&self, p: &Pattern) -> bool {
+        match p {
+            Pattern::Cond(_) => true,
+            Pattern::Ctor(c, cp) => {
+                let refined = !self.env.ctors.contains_key(&c.sym()) && self.env.types.get(&c.sym()).is_some_and(|td| td.refinement.is_some());
+                refined
+                    || match cp {
+                        CtorPat::Positional(ps) | CtorPat::Type(ps) => ps.iter().any(|p| self.undecided(p)),
+                        CtorPat::Record(fs, _) => fs.iter().any(|(_, p)| self.undecided(p)),
+                        CtorPat::None => false,
+                    }
+            }
+            Pattern::List(ps, _) | Pattern::Tuple(ps) | Pattern::Or(ps) => ps.iter().any(|p| self.undecided(p)),
+            _ => false,
+        }
+    }
+
+    /// The type a value has, by its head (`Money`, `List`), when its shape says.
+    fn head_of(&self, v: &Val) -> Option<String> {
+        Some(match v {
+            Val::Int(_) => "Int".into(),
+            Val::Bool(_) => "Bool".into(),
+            Val::Str(_) => "String".into(),
+            Val::Rec(n, _) | Val::Distinct(n, _) => n.clone(),
+            Val::Sum { ty, .. } => ty.clone(),
+            Val::List { .. } => "List".into(),
+            Val::Data { ty, .. } => crate::types::texpr_head(&self.sort_type(ty)).to_string(),
+            _ => return None,
+        })
     }
 
     /// `mut` parameters may have been changed by the callee.
@@ -3183,10 +3325,27 @@ impl<'a> Vc<'a> {
         Val::Sum { ty: "Option".into(), args: vec![t.clone()], tag: ite(some, &ks.to_string(), &kn.to_string()), ctors }
     }
 
-    fn builtin(&mut self, name: &str, arg_exprs: &[Expr], a: Vec<Val>) -> Val {
+    fn builtin(&mut self, name: &str, arg_exprs: &[Expr], mut a: Vec<Val>) -> Val {
+        // an index's list made first (read from a field), so its check is the real one
+        if name == "at" && matches!(a.first(), Some(Val::Data { .. })) {
+            a[0] = self.force(a[0].clone());
+        }
         let arg = |i: usize| a.get(i).cloned().unwrap_or(Val::Opaque("a missing argument".into()));
         let not_modelled = format!("`{name}` is not modelled");
         self.builtin_faults(name, &a);
+        if let ("to_int", [v]) = (name, a.as_slice()) {
+            if word_of(v).is_some() {
+                return Val::Int(self.as_int(v));
+            }
+        }
+        if let (Some((w, wraps)), 1) = (crate::types::sized::conversion(name), a.len()) {
+            let x = self.as_int(&arg(0));
+            if wraps {
+                return word(w, wrap_term(w, &x));
+            }
+            self.oblige(format!("`{name}` of an Int that fits in `{}`", w.name()), |_| word_range(w, &x));
+            return word(w, x);
+        }
         match (name, a.len()) {
             ("len" | "str_len", 1) => match arg(0) {
                 Val::Str(s) => Val::Int(format!("(str.len {s})")),
@@ -3352,6 +3511,15 @@ impl<'a> Vc<'a> {
                 let i = self.as_int(&arg(1));
                 self.oblige("index in range".into(), |_| format!("(and (<= 0 {i}) (< {i} (str.len {s})))"));
                 Val::Str(format!("(str.at {s} {i})"))
+            }
+            // an index into a list of another shape (a union's list member, a
+            // list not modelled): checked against its length all the same (it
+            // was left unchecked, so `(d.get(k) ?? [])[0]` was "proven")
+            ("at", 2) if !matches!(arg(0), Val::Str(_)) => {
+                let l = self.list_len(&arg(0));
+                let i = self.as_int(&arg(1));
+                self.oblige("index in range".into(), |_| format!("(and (<= 0 {i}) (< {i} {l}))"));
+                Val::Opaque(not_modelled)
             }
             ("get", 2) if matches!(arg(0), Val::List { .. }) => {
                 let l = self.list_len(&arg(0));
@@ -3547,7 +3715,7 @@ impl<'a> Vc<'a> {
             _ => {
                 // anything else: a fresh value of the builtin's result type, when it has one
                 // (when every version of it returns the same type, free of type variables)
-                let rets: Vec<TypeExpr> = crate::types::BUILTINS
+                let rets: Vec<TypeExpr> = crate::types::builtins()
                     .iter()
                     .filter(|b| b.name == name)
                     .filter_map(|b| match crate::types::parse_type_str(b.sig) {
@@ -3555,7 +3723,7 @@ impl<'a> Vc<'a> {
                         _ => None,
                     })
                     .collect();
-                let n = crate::types::BUILTINS.iter().filter(|b| b.name == name).count();
+                let n = crate::types::builtins().iter().filter(|b| b.name == name).count();
                 match rets.first() {
                     Some(ret) if rets.len() == n && rets.iter().all(|r| r == ret) => {
                         let old = self.reason.replace(not_modelled);
@@ -3652,25 +3820,45 @@ impl<'a> Vc<'a> {
                 }
                 self.dead = true;
             }
-            Stmt::Continue => self.dead = true,
+            Stmt::Continue => {
+                if !self.dead {
+                    if let Some(frame) = self.continues.last_mut() {
+                        frame.push((self.pc.clone(), self.scopes.clone()));
+                    }
+                }
+                self.dead = true;
+            }
+            // (checked on entry and after every pass: `written_on_entry`, `written_kept`)
+            Stmt::Invariant(_) => {}
             Stmt::While(c, body) => {
+                let head = format!("while {}", crate::printer::expr(c, 0));
+                let written: Vec<Expr> = crate::types::loop_invariants(body).cloned().collect();
+                self.written_on_entry(&written, &head);
+                let entry = self.entry_values(body, c);
+                let invariants = self.infer_invariants(c, body, &entry, &written);
                 self.havoc_loop(body, Some(c));
+                self.assume_written(&written);
+                // what every pass keeps holds at the head; what the declared
+                // types already say there is left out (it says nothing more)
+                let terms: Vec<Option<T>> = invariants.iter().map(|(_, cand)| self.candidate_value(cand, &entry)).collect();
+                let mut implied = vec![true; terms.len()];
+                if let Some(solver) = self.solver.clone() {
+                    let pc = self.pc.clone();
+                    self.drop_falsifiable(&solver, &pc, &terms, &mut implied);
+                }
+                for (((shown, _), t), implied) in invariants.iter().zip(terms).zip(implied) {
+                    let Some(t) = t.filter(|_| !implied) else { continue };
+                    self.assume(t);
+                    self.invariants.push(format!("invariant of `{head}`: {shown} (inferred)"));
+                }
                 self.breaks.push(vec![]);
+                self.continues.push(vec![]);
                 let cv = self.eval(c);
                 let cv = self.as_bool(&cv);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 self.pc.push(cv.clone());
                 // candidate bounds, from the condition's comparisons, before the pass
-                let has_continue = {
-                    let mut found = false;
-                    crate::ast::walk(body, |x| {
-                        if let Expr::Block(ss, _) = x {
-                            found |= ss.iter().any(|s| matches!(s, Stmt::Continue));
-                        }
-                    });
-                    found
-                };
                 let measures = bounds(c);
                 let before: Vec<(String, T)> = measures
                     .iter()
@@ -3682,21 +3870,29 @@ impl<'a> Vc<'a> {
                     })
                     .collect();
                 self.eval(body);
-                let mut info = LoopInfo { what: format!("while {}", crate::printer::expr(c, 0)), candidates: vec![], always_exits: self.dead, reason: None };
-                if has_continue {
-                    info.reason = Some(format!("the loop `{}` uses `continue`", info.what));
-                } else if !self.dead {
-                    // after the pass: either the loop is over, or the bound went down
-                    self.spec += 1;
-                    let again = self.eval(c);
-                    self.spec -= 1;
-                    let again = self.as_bool(&again);
-                    for (m, (shown, b)) in measures.iter().zip(before) {
+                let ends = self.pass_ends(saved.len());
+                self.written_kept(&written, &head, &ends);
+                let mut info = LoopInfo { what: head.clone(), candidates: vec![], always_exits: ends.is_empty(), reason: None };
+                if !ends.is_empty() {
+                    // after every pass (the body's end, each `continue`): either the loop is over, or the bound went down
+                    let (pc, scopes) = (std::mem::take(&mut self.pc), self.scopes.clone());
+                    let mut goals = vec![vec![]; measures.len()];
+                    for (p, s, _) in &ends {
+                        (self.pc, self.scopes) = (p.clone(), s.clone());
                         self.spec += 1;
-                        let v = self.eval(m);
+                        let again = self.eval(c);
+                        let again = self.as_bool(&again);
+                        for (k, (m, (_, b))) in measures.iter().zip(&before).enumerate() {
+                            let v = self.eval(m);
+                            let a = self.as_int(&v);
+                            goals[k].push(implies(&and(&p[n + 1..]), &format!("(or (not {again}) (and (>= {b} 0) (< {a} {b})))")));
+                        }
                         self.spec -= 1;
-                        let a = self.as_int(&v);
-                        let k = self.oblige_termination(format!("loop bound `{shown}`"), format!("(or (not {again}) (and (>= {b} 0) (< {a} {b})))"));
+                    }
+                    (self.pc, self.scopes) = (pc, scopes);
+                    self.pc.truncate(n + 1);
+                    for ((shown, _), g) in before.into_iter().zip(goals) {
+                        let k = self.oblige_termination(format!("loop bound `{shown}`"), and(&g));
                         info.candidates.push((shown, k));
                     }
                 }
@@ -3710,8 +3906,13 @@ impl<'a> Vc<'a> {
             }
             Stmt::For(p, xs, body) => {
                 let xv = self.eval(xs);
+                let head = format!("for {} in {}", crate::printer::pat(p), crate::printer::expr(xs, 0));
+                let written: Vec<Expr> = crate::types::loop_invariants(body).cloned().collect();
+                self.written_on_entry(&written, &head);
                 self.havoc_loop(body, None);
+                self.assume_written(&written);
                 self.breaks.push(vec![]);
+                self.continues.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 let x = match &xv {
@@ -3730,19 +3931,32 @@ impl<'a> Vc<'a> {
                     self.bind(&x, b);
                 }
                 self.eval(body);
+                let ends = self.pass_ends(saved.len());
+                self.written_kept(&written, &head, &ends);
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
                 // after the last element the loop's variables are any values
-                // of their types, which covers the state at a `break` too
-                self.breaks.pop();
+                // of their types (and invariants), which covers the state at
+                // a `break` too, unless invariants were assumed: then afresh
+                let breaks = self.breaks.pop().unwrap_or_default();
+                if !breaks.is_empty() && !written.is_empty() {
+                    self.havoc_loop(body, None);
+                }
             }
             Stmt::Loop(body) => {
+                let head = "loop".to_string();
+                let written: Vec<Expr> = crate::types::loop_invariants(body).cloned().collect();
+                self.written_on_entry(&written, &head);
                 self.havoc_loop(body, None);
+                self.assume_written(&written);
                 self.breaks.push(vec![]);
+                self.continues.push(vec![]);
                 let saved = self.scopes.clone();
                 let n = self.pc.len();
                 self.eval(body);
+                let ends = self.pass_ends(saved.len());
+                self.written_kept(&written, &head, &ends);
                 self.pc.truncate(n);
                 self.dead = false;
                 self.scopes = saved;
@@ -3818,6 +4032,59 @@ impl<'a> Vc<'a> {
         }
     }
 
+    /// Where a pass of the innermost loop ended: its body's end (unless no
+    /// path reaches it) and each `continue` (`true`), with their paths and
+    /// their variables down to `depth` scopes (the loop's own).
+    fn pass_ends(&mut self, depth: usize) -> Vec<(Vec<T>, Vec<HashMap<String, Val>>, bool)> {
+        let mut ends: Vec<_> = self.continues.pop().unwrap_or_default().into_iter().map(|(p, s)| (p, s, true)).collect();
+        if !self.dead {
+            ends.insert(0, (self.pc.clone(), self.scopes.clone(), false));
+        }
+        for (_, s, _) in &mut ends {
+            s.truncate(depth);
+        }
+        ends
+    }
+
+    /// A loop's written invariants hold before it.
+    fn written_on_entry(&mut self, written: &[Expr], head: &str) {
+        for x in written {
+            let v = self.eval(x);
+            let b = self.as_bool(&v);
+            self.oblige(format!("invariant `{}` on entry to `{head}`", crate::printer::expr(x, 0)), |_| b);
+        }
+    }
+
+    /// At the loop's head: its written invariants hold (they are checked
+    /// on entry and after every pass).
+    fn assume_written(&mut self, written: &[Expr]) {
+        for x in written {
+            self.spec += 1;
+            let v = self.eval(x);
+            self.spec -= 1;
+            let b = self.as_bool(&v);
+            self.assume(b);
+        }
+    }
+
+    /// A loop's written invariants hold where each pass ends.
+    fn written_kept(&mut self, written: &[Expr], head: &str, ends: &[(Vec<T>, Vec<HashMap<String, Val>>, bool)]) {
+        if written.is_empty() {
+            return;
+        }
+        let (pc, scopes, dead) = (std::mem::take(&mut self.pc), self.scopes.clone(), self.dead);
+        for (p, s, at_continue) in ends {
+            (self.pc, self.scopes, self.dead) = (p.clone(), s.clone(), false);
+            for x in written {
+                let v = self.eval(x);
+                let b = self.as_bool(&v);
+                let at = if *at_continue { "at a `continue` in" } else { "after a pass of" };
+                self.oblige(format!("invariant `{}` {at} `{head}`", crate::printer::expr(x, 0)), |_| b);
+            }
+        }
+        (self.pc, self.scopes, self.dead) = (pc, scopes, dead);
+    }
+
     /// After a loop: the state is the loop head's when it is left normally
     /// (under `normal`, the condition being false), or the state at one of its
     /// `break`s. `n` is the length of the path before the loop, which every
@@ -3849,6 +4116,241 @@ impl<'a> Vc<'a> {
             }
         }
         self.scopes = scopes;
+    }
+
+    /// The variables a loop changes, with their values before it: bound as
+    /// `$entry_x` in candidates (`x >= $entry_x`).
+    fn entry_values(&mut self, body: &Expr, c: &Expr) -> Vec<(String, String, Val)> {
+        let env = self.env;
+        let mut_params = |n: &str| env.mut_params(n);
+        let mut names: Vec<String> = std::iter::once(body).chain([c]).flat_map(|e| changed_vars(e, &mut_params)).collect::<HashSet<String>>().into_iter().collect();
+        names.sort();
+        names.into_iter().filter_map(|x| self.lookup(&x).map(|v| (x.clone(), format!("$entry_{x}"), v))).collect()
+    }
+
+    /// Facts every pass of `while c { body }` keeps, from a list of
+    /// candidates (Houdini): those that can be false on entry are dropped,
+    /// then, from any state where the others and the condition hold, one
+    /// pass runs and those that can be false after it are dropped, until a
+    /// pass drops nothing. What remains holds on entry and after every pass,
+    /// so at the head of the loop, every time. Shown, with the candidate.
+    fn infer_invariants(&mut self, c: &Expr, body: &Expr, entry: &[(String, String, Val)], written: &[Expr]) -> Vec<(String, Candidate)> {
+        let Some(solver) = self.solver.clone() else { return vec![] };
+        // (inner loops of a trial infer nothing)
+        if self.trial > 0 || self.spec > 0 || self.dead {
+            return vec![];
+        }
+        let cands = self.invariant_candidates(c, entry);
+        if cands.is_empty() {
+            return vec![];
+        }
+        // on entry
+        let at_entry: Vec<Option<T>> = cands.iter().map(|k| self.candidate_value(k, entry)).collect();
+        let mut alive: Vec<bool> = at_entry.iter().map(|t| t.is_some()).collect();
+        let pc = self.pc.clone();
+        self.drop_falsifiable(&solver, &pc, &at_entry, &mut alive);
+        // after a pass, from the head
+        for _ in 0..=cands.len() {
+            if !alive.iter().any(|a| *a) {
+                break;
+            }
+            let (scopes, n_pc, dead, n_ob, n_loops, n_rec) = (self.scopes.clone(), self.pc.len(), self.dead, self.obligations.len(), self.loops.len(), self.rec_sites.len());
+            let returns = std::mem::take(&mut self.returns);
+            self.trial += 1;
+            self.spec += 1;
+            self.havoc_loop(body, Some(c));
+            // (the written invariants are proven on their own, with these: together they hold)
+            for x in written {
+                let v = self.eval(x);
+                let b = self.as_bool(&v);
+                self.pc.push(b);
+            }
+            for (k, cand) in cands.iter().enumerate() {
+                if alive[k] {
+                    if let Some(t) = self.candidate_value(cand, entry) {
+                        self.pc.push(t);
+                    }
+                }
+            }
+            let cv = self.eval(c);
+            let cv = self.as_bool(&cv);
+            self.pc.push(cv);
+            let base = self.pc.len();
+            let depth = self.scopes.len();
+            self.breaks.push(vec![]);
+            self.continues.push(vec![]);
+            self.eval(body);
+            self.breaks.pop();
+            // kept where every pass ends (none: every path left the loop, nothing to keep)
+            let ends = self.pass_ends(depth);
+            let mut pc_after = std::mem::take(&mut self.pc);
+            pc_after.truncate(base);
+            let mut after: Vec<Option<T>> = cands.iter().map(|_| Some("true".to_string())).collect();
+            for (p, s, _) in &ends {
+                (self.pc, self.scopes) = (p.clone(), s.clone());
+                for (k, cand) in cands.iter().enumerate() {
+                    let v = if alive[k] { self.candidate_value(cand, entry) } else { None };
+                    after[k] = match (after[k].take(), v) {
+                        (Some(acc), Some(v)) => Some(and(&[acc, implies(&and(&p[base..]), &v)])),
+                        _ => None,
+                    };
+                }
+            }
+            self.pc = pc_after.clone();
+            self.spec -= 1;
+            self.trial -= 1;
+            self.returns = returns;
+            self.scopes = scopes;
+            self.pc.truncate(n_pc);
+            self.dead = dead;
+            self.obligations.truncate(n_ob);
+            self.loops.truncate(n_loops);
+            self.rec_sites.truncate(n_rec);
+            if !self.drop_falsifiable(&solver, &pc_after, &after, &mut alive) {
+                break;
+            }
+        }
+        cands.into_iter().zip(alive).filter(|(_, a)| *a).map(|(k, _)| (k.shown(), k)).collect()
+    }
+
+    /// Drop (in `alive`) each term that can be false under `pc`; a term that
+    /// is `None` is dropped. Whether any was dropped.
+    fn drop_falsifiable(&self, solver: &Solver, pc: &[T], terms: &[Option<T>], alive: &mut [bool]) -> bool {
+        let mut dropped = false;
+        for (a, t) in alive.iter_mut().zip(terms) {
+            if *a && t.is_none() {
+                *a = false;
+                dropped = true;
+            }
+        }
+        loop {
+            let live: Vec<usize> = (0..terms.len()).filter(|&k| alive[k]).collect();
+            if live.is_empty() {
+                return dropped;
+            }
+            let goal = and(&live.iter().map(|&k| terms[k].clone().unwrap_or_default()).collect::<Vec<_>>());
+            let ob = Obligation { what: "invariant".into(), goal, pc: pc.to_vec(), facts: self.facts.len(), termination: false };
+            let script = self.script(&ob, &[]);
+            let Some(head) = script.find("(check-sat)") else { return dropped };
+            let mut defs = String::new();
+            for (j, &k) in live.iter().enumerate() {
+                defs.push_str(&format!("(declare-const inv{j} Bool)\n(assert (= inv{j} {}))\n", terms[k].as_deref().unwrap_or("true")));
+            }
+            let names: Vec<String> = (0..live.len()).map(|j| format!("inv{j}")).collect();
+            let q = format!("{}{defs}(check-sat)\n(get-value ({}))\n", &script[..head], names.join(" "));
+            let out = run_solver(solver, &q, Limit::Search, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
+            let first = out.lines().next().unwrap_or("").trim();
+            match first {
+                "unsat" => return dropped,
+                "sat" => {
+                    let vals = parse_values(&out[first.len()..]);
+                    let mut any = false;
+                    for (j, &k) in live.iter().enumerate() {
+                        if vals.get(&format!("inv{j}")).map(|v| v.trim()) != Some("true") {
+                            alive[k] = false;
+                            any = true;
+                        }
+                    }
+                    if !any {
+                        // (a model that falsifies none: give up on them all)
+                        live.iter().for_each(|&k| alive[k] = false);
+                    }
+                    dropped = true;
+                }
+                // the solver gave up on them together: each on its own, kept if proven
+                _ => {
+                    for &k in &live {
+                        let ob = Obligation { what: "invariant".into(), goal: terms[k].clone().unwrap_or_default(), pc: pc.to_vec(), facts: self.facts.len(), termination: false };
+                        let q = self.script(&ob, &[]);
+                        let out = run_solver(solver, &q, Limit::Search, &std::sync::atomic::AtomicBool::new(false)).ok().flatten().unwrap_or_default();
+                        if out.lines().next().map(str::trim) != Some("unsat") {
+                            alive[k] = false;
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// The candidates for `while c`'s invariants: the condition's comparisons
+    /// made non-strict (what holds after the last pass too), the `ensures`
+    /// of the variable returned, the `requires`, and each integer the loop
+    /// changes against its value on entry, 0, the integer parameters and the
+    /// other integers it changes. At most `MAX_CANDIDATES`.
+    fn invariant_candidates(&mut self, c: &Expr, entry: &[(String, String, Val)]) -> Vec<Candidate> {
+        let var = |n: &str| Expr::Var(Symbol::new(n));
+        let bin = |op: BinOp, a: Expr, b: Expr| Expr::Bin(op, Box::new(a), Box::new(b));
+        let plain = |e: Expr| Candidate { e, it: None };
+        let mut out: Vec<Candidate> = vec![];
+        fn atoms(e: &Expr, out: &mut Vec<Expr>) {
+            match e {
+                Expr::Bin(BinOp::And, a, b) => {
+                    atoms(a, out);
+                    atoms(b, out);
+                }
+                Expr::Bin(BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Ne, _, _) => out.push(e.clone()),
+                _ => {}
+            }
+        }
+        let mut cs = vec![];
+        atoms(c, &mut cs);
+        for a in cs {
+            let Expr::Bin(op, l, r) = a else { continue };
+            match op {
+                BinOp::Lt | BinOp::Le => out.push(plain(bin(BinOp::Le, *l, *r))),
+                BinOp::Gt | BinOp::Ge => out.push(plain(bin(BinOp::Ge, *l, *r))),
+                BinOp::Ne => {
+                    out.push(plain(bin(BinOp::Le, (*l).clone(), (*r).clone())));
+                    out.push(plain(bin(BinOp::Ge, *l, *r)));
+                }
+                _ => {}
+            }
+        }
+        let changed: Vec<&String> = entry.iter().map(|(x, _, _)| x).collect();
+        for (e, x) in self.hints.clone() {
+            if changed.contains(&&x) {
+                out.push(Candidate { e, it: Some(x) });
+            }
+        }
+        for r in self.requires_hints.clone() {
+            out.push(plain(r));
+        }
+        let ints: Vec<&(String, String, Val)> = entry.iter().filter(|(_, _, v)| matches!(v, Val::Int(_))).collect();
+        let params: Vec<String> = self.params.iter().filter(|(n, v)| matches!(v, Val::Int(_)) && !changed.contains(&n)).map(|(n, _)| n.clone()).collect();
+        for (x, ex, _) in &ints {
+            out.push(plain(bin(BinOp::Ge, var(x), var(ex))));
+            out.push(plain(bin(BinOp::Le, var(x), var(ex))));
+            out.push(plain(bin(BinOp::Ge, var(x), Expr::Int(0))));
+            let others = params.iter().cloned().chain(ints.iter().map(|(y, _, _)| y.clone()).filter(|y| y != x));
+            for y in others {
+                out.push(plain(bin(BinOp::Le, var(x), var(&y))));
+                out.push(plain(bin(BinOp::Ge, var(x), var(&y))));
+            }
+        }
+        let mut seen = HashSet::default();
+        out.retain(|k| seen.insert(k.shown()));
+        out.truncate(MAX_CANDIDATES);
+        out
+    }
+
+    /// A candidate's value in the current state (the loop's variables as
+    /// they are now, `$entry_x` as before the loop). `None` when it isn't
+    /// a known Bool.
+    fn candidate_value(&mut self, k: &Candidate, entry: &[(String, String, Val)]) -> Option<T> {
+        let mut layer: HashMap<String, Val> = entry.iter().map(|(_, ex, v)| (ex.clone(), v.clone())).collect();
+        if let Some(x) = &k.it {
+            layer.insert("it".into(), self.lookup(x)?);
+        }
+        self.scopes.push(layer);
+        self.spec += 1;
+        let v = self.eval(&k.e);
+        self.spec -= 1;
+        self.scopes.pop();
+        match v {
+            Val::Bool(t) => Some(t),
+            _ => None,
+        }
     }
 
     /// Before a loop: every variable the loop may change takes any value.
@@ -3904,6 +4406,132 @@ impl<'a> Vc<'a> {
 
     /// The obligations of a function: its body under its parameters'
     /// refinements and `requires`, checked against every contract it meets.
+    /// Values of `f`'s parameters that meet their types and its `requires`,
+    /// made by the solver: up to `n` of them, each different from the ones
+    /// before. Lists have at most `INPUT_LEN` elements. For the refinements
+    /// random values rarely meet (`all(1..len(it), i -> it[i - 1] <= it[i])`,
+    /// a record whose fields depend on each other).
+    pub fn inputs(&mut self, f: &FnDecl, solver: &Solver, n: usize, seed: u64) -> Vec<Vec<Expr>> {
+        self.self_name = f.name.to_string();
+        for p in &f.params {
+            let v = self.havoc(&p.ty);
+            self.params.push((p.name.to_string(), v.clone()));
+            self.bind(&p.name, v);
+        }
+        let binds = self.params.clone();
+        for r in &f.requires {
+            let c = self.pred(r, binds.clone());
+            self.pc.push(c);
+        }
+        // every part a value is shown with: its lazy parts, its lists' first elements
+        let mut lens = vec![];
+        let mut leaves: Vec<(T, String)> = vec![];
+        for (_, v) in self.params.clone() {
+            self.open_input(&v, 0, &mut lens, &mut leaves);
+        }
+        let mut seen: HashSet<String> = HashSet::default();
+        leaves.retain(|(t, _)| seen.insert(t.clone()));
+        let ob = Obligation { what: "inputs".into(), goal: "false".into(), pc: self.pc.clone(), facts: self.facts.len(), termination: false };
+        // a constant for each leaf (the model is read by name)
+        let names: Vec<String> = (0..leaves.len()).map(|k| format!("input{k}")).collect();
+        let seeds: Vec<String> = leaves.iter().flat_map(|(t, _)| t.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.starts_with('v') && w.len() > 1 && w[1..].chars().all(|c| c.is_ascii_digit())).map(String::from)).collect();
+        let script = self.script(&ob, &seeds);
+        let Some(head) = script.find("(check-sat)") else { return vec![] };
+        let mut defs = String::new();
+        for ((t, sort), a) in leaves.iter().zip(&names) {
+            defs.push_str(&format!("(declare-const {a} {sort})\n(assert (= {a} {t}))\n"));
+        }
+        for l in &lens {
+            defs.push_str(&format!("(assert (<= {l} {INPUT_LEN}))\n"));
+        }
+        let mut found: Vec<Vec<Expr>> = vec![];
+        let mut blocked = String::new();
+        let never = std::sync::atomic::AtomicBool::new(false);
+        for k in 0..n {
+            let s = seed.wrapping_add(k as u64) % 1_000_000;
+            let q = format!("(set-option :smt.random_seed {s})\n(set-option :sat.random_seed {s})\n{}{defs}{blocked}(check-sat)\n(get-value ({}))\n", &script[..head], names.join(" "));
+            let Ok(Some(out)) = run_solver(solver, &q, Limit::Search, &never) else { break };
+            let first = out.lines().next().unwrap_or("").trim();
+            if first != "sat" {
+                break;
+            }
+            let by_name = data::model_values(&out[first.len()..], &names);
+            let mut model: HashMap<String, Sx> = HashMap::default();
+            for ((t, _), a) in leaves.iter().zip(&names) {
+                if let Some(v) = by_name.get(a) {
+                    model.insert(t.clone(), v.clone());
+                }
+            }
+            // the next model differs from this one (a value of a sort nothing is known of can't be written)
+            let same: Vec<String> = names.iter().filter_map(|a| by_name.get(a).map(|v| format!("(= {a} {v})"))).filter(|c| !c.contains("!val!")).collect();
+            if same.is_empty() {
+                break;
+            }
+            blocked.push_str(&format!("(assert (not (and {})))\n", same.join(" ")));
+            // (a method's hidden type argument is no value: the run leaves it out)
+            let args: Option<Vec<Expr>> = self
+                .params
+                .iter()
+                .zip(&f.params)
+                .map(|((_, v), p)| match &p.ty {
+                    TypeExpr::Named(n, _) if n == crate::types::TYPE_ARG => Some(Expr::Unit),
+                    _ => self.to_literal(v, &model),
+                })
+                .collect();
+            if let Some(a) = args {
+                found.push(a);
+            }
+        }
+        found
+    }
+
+    /// Make the parts of `v` an input is shown with: lazy parts, and each
+    /// list's first `INPUT_LEN` elements (kept in `input_elems`), down to
+    /// `INPUT_DEPTH` levels; collect the lists' lengths and every leaf.
+    fn open_input(&mut self, v: &Val, depth: usize, lens: &mut Vec<T>, leaves: &mut Vec<(T, String)>) {
+        if depth > self.input_depth || leaves.len() > MAX_INPUT_LEAVES {
+            return;
+        }
+        let v = self.force(v.clone());
+        match &v {
+            Val::Int(t) => leaves.push((t.clone(), "Int".into())),
+            Val::Bool(t) => leaves.push((t.clone(), "Bool".into())),
+            Val::Str(t) => leaves.push((t.clone(), "String".into())),
+            Val::Tuple(xs) => xs.iter().for_each(|x| self.open_input(x, depth, lens, leaves)),
+            Val::Rec(_, fs) => fs.iter().for_each(|(_, x)| self.open_input(x, depth, lens, leaves)),
+            Val::Distinct(_, x) => self.open_input(x, depth, lens, leaves),
+            Val::Sum { tag, ctors, .. } => {
+                leaves.push((tag.clone(), "Int".into()));
+                ctors.iter().flat_map(|c| &c.1).for_each(|x| self.open_input(x, depth + 1, lens, leaves));
+            }
+            Val::Union { tag, slots } => {
+                leaves.push((tag.clone(), "Int".into()));
+                slots.iter().for_each(|(_, x)| self.open_input(x, depth, lens, leaves));
+            }
+            Val::List { len, id } => {
+                leaves.push((len.clone(), "Int".into()));
+                lens.push(len.clone());
+                if self.input_elems.contains_key(id) || !self.positional(*id) {
+                    return;
+                }
+                let xs: Vec<Val> = (0..INPUT_LEN).filter_map(|k| self.element_at(*id, &k.to_string(), &format!("(> {len} {k})"))).collect();
+                if xs.len() < INPUT_LEN {
+                    return;
+                }
+                let xs: Vec<Val> = xs.into_iter().map(|x| self.force(x)).collect();
+                self.input_elems.insert(*id, xs.clone());
+                for x in &xs {
+                    self.open_input(x, depth + 1, lens, leaves);
+                }
+            }
+            Val::Data { .. } | Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => {}
+        }
+    }
+
+    pub fn env(&self) -> &'a Env {
+        self.env
+    }
+
     pub fn function(&mut self, f: &FnDecl, label: &str) {
         self.self_name = label.to_string();
         for p in &f.params {
@@ -3914,11 +4542,30 @@ impl<'a> Vc<'a> {
             self.params.push((p.name.to_string(), v.clone()));
             self.bind(&p.name, v);
         }
+        // the lists' first elements, for a counterexample to show (their facts
+        // set aside): one level of lists inside them, at most so many terms
+        if self.examples {
+            let (nf, mut lens, mut leaves) = (self.facts.len(), vec![], vec![]);
+            self.input_depth = EXAMPLE_DEPTH;
+            for (_, v) in self.params.clone() {
+                self.open_input(&v, 0, &mut lens, &mut leaves);
+            }
+            self.input_depth = INPUT_DEPTH;
+            self.example_facts = self.facts.split_off(nf);
+            self.example_leaves = leaves.into_iter().map(|l| l.0).collect();
+        }
         let binds = self.params.clone();
         for r in &f.requires {
             let c = self.pred(r, binds.clone());
             self.pc.push(c);
         }
+        // what a loop may need to keep: the `ensures`, of the variable returned
+        if let Expr::Block(_, tail) = &f.body {
+            if let Expr::Var(x) = &**tail {
+                self.hints = f.ensures.iter().map(|e| (e.clone(), x.to_string())).collect();
+            }
+        }
+        self.requires_hints = f.requires.clone();
         let res = self.eval(&f.body);
         // the result is checked where the body ends, and at every early return
         let mut exits = vec![];
@@ -3978,7 +4625,9 @@ pub fn type_is_refined(env: &Env, t: &TypeExpr) -> bool {
 /// Variables a loop may change: assigned ones, and those passed to `mut` parameters.
 // ---- regular expressions (smt/regexes.rs) ----
 
+mod data;
 mod regexes;
+use data::Sx;
 pub use regexes::*;
 
 // ---- the solver ----
@@ -4024,12 +4673,135 @@ pub fn solver() -> Option<Solver> {
 impl Solver {
     /// The command line: a deterministic resource limit per query (so
     /// results can be cached), and a time limit only as a backstop.
-    fn args(&self) -> Vec<String> {
+    /// In a batch (`run_batch`), the time limit is per query and the
+    /// solver takes `push` / `pop`.
+    fn args(&self, limit: Limit, session: bool) -> Vec<String> {
         match self.kind {
-            SolverKind::Z3 => vec!["-in".into(), "-T:20".into(), format!("rlimit={Z3_RLIMIT}")],
-            SolverKind::Cvc5 => vec!["--lang".into(), "smt2".into(), "--produce-models".into(), format!("--rlimit-per={CVC5_RLIMIT}"), "--tlimit-per=20000".into()],
+            SolverKind::Z3 => {
+                let rlimit = match limit {
+                    Limit::Proof => Z3_PROOF_RLIMIT,
+                    Limit::Search => Z3_RLIMIT,
+                };
+                vec!["-in".into(), if session { "-t:20000".into() } else { "-T:20".into() }, format!("rlimit={rlimit}")]
+            }
+            SolverKind::Cvc5 => {
+                let mut a: Vec<String> = vec!["--lang".into(), "smt2".into(), "--produce-models".into(), "--dt-nested-rec".into(), format!("--rlimit-per={CVC5_RLIMIT}"), "--tlimit-per=20000".into()];
+                if session {
+                    a.push("--incremental".into());
+                }
+                a
+            }
         }
     }
+}
+
+/// How much a query may cost: a proof, or a search for a model (loop
+/// invariants, inputs), which may take longer.
+#[derive(Clone, Copy, Debug)]
+pub enum Limit {
+    Proof,
+    Search,
+}
+
+/// How an unknown outcome starts when the model had no literal for a value.
+const COULD_NOT_EXPRESS: &str = "the solver found a possible counterexample it could not express";
+
+/// Printed after each answer of a batch, to know where it ends.
+const ANSWERED: &str = "@@answered";
+
+/// Run several queries in one solver process (`solve_all`): `header`, then
+/// each query between `push` and `pop`, all written at once (input closed,
+/// as for a single query, so any solver that answers a script answers
+/// this), and the answers read in order as they come, each passed to `each`
+/// with its index. Returns how many were answered: fewer when the process
+/// ends early (or can't be run), and the rest are for the caller to run
+/// alone. `Err(())` once `stop` is set (the process is killed).
+fn run_batch(solver: &Solver, header: &str, queries: &[String], stop: &std::sync::atomic::AtomicBool, mut each: impl FnMut(usize, &str)) -> Result<usize, ()> {
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::sync::mpsc::RecvTimeoutError;
+    let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
+    let Ok(mut child) = Command::new(&solver.bin).args(solver.args(Limit::Proof, true)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(0) };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else { return Ok(0) };
+    let mut script = header.to_string();
+    for q in queries {
+        script.push_str(&format!("(push)\n{q}(pop)\n(echo \"{ANSWERED}\")\n"));
+    }
+    // written and read on threads of their own, so neither pipe can fill while the other waits
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(script.as_bytes());
+    });
+    let (tx, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut done = 0;
+    let mut out = String::new();
+    while done < queries.len() {
+        if stop.load(Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(());
+        }
+        match lines.recv_timeout(std::time::Duration::from_millis(5)) {
+            Ok(line) if line.trim().trim_matches('"') == ANSWERED => {
+                each(done, &out);
+                out.clear();
+                done += 1;
+            }
+            Ok(line) => {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(done)
+}
+
+/// Run `script` on the solver: its answer, `Ok(None)` if it can't be run,
+/// `Err(())` once `stop` is set (the process is killed).
+fn run_solver(solver: &Solver, script: &str, limit: Limit, stop: &std::sync::atomic::AtomicBool) -> Result<Option<String>, ()> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
+    let Ok(mut child) = Command::new(&solver.bin).args(solver.args(limit, false)).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(None) };
+    let Some(mut stdin) = child.stdin.take() else { return Ok(None) };
+    if stdin.write_all(script.as_bytes()).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Ok(None);
+    }
+    drop(stdin);
+    // read the answer on another thread, so a long one can't fill the pipe while we wait
+    let Some(mut stdout) = child.stdout.take() else { return Ok(None) };
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+        out
+    });
+    loop {
+        if stop.load(Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            // (the reader ends when the pipe closes: not waited for, a child of the solver may hold it)
+            drop(reader);
+            return Err(());
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(2)),
+            Err(_) => return Ok(None),
+        }
+    }
+    Ok(reader.join().ok())
 }
 
 /// Solver processes running at once, at most one per core: `verify` checks
@@ -4065,17 +4837,29 @@ impl Drop for SolverSlot {
     }
 }
 
-/// Resource limits per obligation: deterministic, unlike a timeout. The
-/// units differ; both are a few seconds of hard nonlinear arithmetic.
+/// Resource limits per query: deterministic, unlike a timeout. The units
+/// differ; both are a few seconds of hard nonlinear arithmetic. A search for
+/// a model (`Limit::Search`) gets Z3's whole limit; a proof gets a tenth of
+/// it: over std, the examples and `compiler` (1,109 proofs), the hardest
+/// proof took 422,229 units, and the time past that was spent only on
+/// checks the solver can't prove, looking for a counterexample (up to 18M
+/// units, 16 s, for one; a counterexample is the fuzzer's job too).
 const Z3_RLIMIT: u64 = 20_000_000;
+const Z3_PROOF_RLIMIT: u64 = 2_000_000;
 const CVC5_RLIMIT: u64 = 5_000_000;
 
 impl Vc<'_> {
     /// The free constants an obligation depends on (its cone of influence).
     fn cone(&self, ob: &Obligation, seeds: &[String]) -> (Vec<T>, HashSet<String>) {
+        self.cone_with(ob, seeds, &[])
+    }
+
+    /// `cone`, with `extra` facts known too.
+    fn cone_with(&self, ob: &Obligation, seeds: &[String], extra: &[T]) -> (Vec<T>, HashSet<String>) {
         let consts = |t: &str| -> Vec<String> { t.split(|c: char| !c.is_alphanumeric() && c != '_').filter(|w| w.starts_with('v') && w[1..].chars().all(|c| c.is_ascii_digit()) && w.len() > 1).map(String::from).collect() };
-        let facts = &self.facts[..ob.facts];
-        let mut seen: HashSet<String> = consts(&ob.goal).into_iter().chain(ob.pc.iter().flat_map(|p| consts(p))).chain(seeds.iter().cloned()).collect();
+        // (definitions hold on every path: those made later too)
+        let facts: Vec<&T> = self.defs.iter().chain(&self.facts[..ob.facts]).chain(extra).collect();
+        let mut seen: HashSet<String> = consts(&ob.goal).into_iter().chain(ob.pc.iter().flat_map(|p| consts(p))).chain(seeds.iter().flat_map(|s| consts(s))).collect();
         let fact_consts: Vec<Vec<String>> = facts.iter().map(|f| consts(f)).collect();
         let mut used = vec![false; facts.len()];
         loop {
@@ -4091,31 +4875,61 @@ impl Vc<'_> {
                 break;
             }
         }
-        let kept = facts.iter().zip(&used).filter(|(_, u)| **u).map(|(f, _)| f.clone()).collect();
+        let kept = facts.iter().zip(&used).filter(|(_, u)| **u).map(|(f, _)| (*f).clone()).collect();
         (kept, seen)
     }
 
     fn script(&self, ob: &Obligation, leaves: &[String]) -> String {
-        // the parameters are in the cone too, so a model satisfies their types
-        let (facts, consts) = self.cone(ob, leaves);
+        self.header() + &self.body(ob, leaves)
+    }
+
+    /// What every query of this function starts with: the options and the
+    /// sorts.
+    fn header(&self) -> String {
         // `utf8_len`: a string's length in bytes (`byte_len`), known where it is used
         let mut s = String::from("(set-option :produce-models true)\n(set-logic ALL)\n(declare-fun utf8_len (String) Int)\n");
-        for (n, sort) in &self.decls {
-            if consts.contains(n) || leaves.contains(n) {
-                if sort.starts_with('(') {
-                    s.push_str(&format!("(declare-fun {n} {sort})\n"));
-                } else {
-                    s.push_str(&format!("(declare-const {n} {sort})\n"));
-                }
+        s.push_str(&self.sorts.declarations());
+        s
+    }
+
+    /// An obligation's query after the header: what it depends on, the
+    /// negated goal, `check-sat` and the model's values of `leaves`.
+    fn body(&self, ob: &Obligation, leaves: &[String]) -> String {
+        self.body_with(ob, leaves, &[])
+    }
+
+    /// `body`, with `extra` facts known too.
+    fn body_with(&self, ob: &Obligation, leaves: &[String], extra: &[T]) -> String {
+        // the parameters are in the cone too, so a model satisfies their types
+        let (facts, consts) = self.cone_with(ob, leaves, extra);
+        let mut s = String::new();
+        for d in &self.decls {
+            if consts.contains(&d.name) {
+                s.push_str(&d.declaration());
+                s.push('\n');
             }
         }
+        let mut body = String::new();
         for f in facts {
-            s.push_str(&format!("(assert {f})\n"));
+            body.push_str(&format!("(assert {f})\n"));
         }
         for p in &ob.pc {
-            s.push_str(&format!("(assert {p})\n"));
+            body.push_str(&format!("(assert {p})\n"));
         }
-        s.push_str(&format!("(assert (not {}))\n", ob.goal));
+        body.push_str(&format!("(assert (not {}))\n", ob.goal));
+        // a string read from a datatype value, named: Z3's string solver
+        // gives up on a selector term where it decides the constant at once
+        let mut named: Vec<&T> = self.str_terms.iter().filter(|t| body.contains(t.as_str()) && !t.contains("@@") && !t.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| self.bound.contains(w) || (w.starts_with('q') && w.len() > 1 && w[1..].chars().all(|c| c.is_ascii_digit())))).collect();
+        named.sort_by_key(|t| std::cmp::Reverse(t.len()));
+        let mut eqs = String::new();
+        for (i, t) in named.iter().enumerate() {
+            let n = format!("str{i}");
+            body = body.replace(t.as_str(), &n);
+            s.push_str(&format!("(declare-const {n} String)\n"));
+            eqs.push_str(&format!("(assert (= {n} {t}))\n"));
+        }
+        s.push_str(&body);
+        s.push_str(&eqs);
         // no string is longer than memory: without this bound Z3 tries to
         // build a string of 10^308 characters to refute `len(s) < 10^308`
         for t in str_len_terms(&s) {
@@ -4146,70 +4960,104 @@ impl Vc<'_> {
         self.solve_until(solver, i, &std::sync::atomic::AtomicBool::new(false))
     }
 
+    /// The terms a counterexample is read from: the parameters' leaves.
+    fn leaves(&self) -> Vec<String> {
+        let mut leaves = vec![];
+        for (_, v) in &self.params {
+            leaves_of(&self.lists, v, &mut leaves);
+        }
+        leaves.dedup();
+        leaves
+    }
+
     /// `solve`, giving up (`Stopped`) as soon as `stop` is set: the solver
     /// process is killed.
     pub fn solve_until(&self, solver: &Solver, i: usize, stop: &std::sync::atomic::AtomicBool) -> Outcome {
-        use std::sync::atomic::Ordering::Relaxed;
-        let ob = &self.obligations[i];
-        let mut leaves = vec![];
-        for (_, v) in &self.params {
-            leaves_of(&self.cells, v, &mut leaves);
+        let leaves = self.leaves();
+        let script = self.script(&self.obligations[i], &leaves);
+        match run_solver(solver, &script, Limit::Proof, stop) {
+            Err(()) => Outcome::Stopped,
+            Ok(None) => Outcome::Unknown("the solver could not be run".into()),
+            Ok(Some(out)) => {
+                let o = self.outcome(i, &leaves, &out);
+                self.express(solver, i, o, stop)
+            }
         }
-        let script = self.script(ob, &leaves);
-        // Err(()) when stopped
-        let run = || -> Result<Option<String>, ()> {
-            let Some(_slot) = solver_slot_until(stop) else { return Err(()) };
-            let Ok(mut child) = Command::new(&solver.bin).args(solver.args()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Ok(None) };
-            let Some(mut stdin) = child.stdin.take() else { return Ok(None) };
-            if stdin.write_all(script.as_bytes()).is_err() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(None);
-            }
-            drop(stdin);
-            // read the answer on another thread, so a long one can't fill the pipe while we wait
-            let Some(mut stdout) = child.stdout.take() else { return Ok(None) };
-            let reader = std::thread::spawn(move || {
-                let mut out = String::new();
-                let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
-                out
-            });
-            loop {
-                if stop.load(Relaxed) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    // (the reader ends when the pipe closes: not waited for, a child of the solver may hold it)
-                    drop(reader);
-                    return Err(());
+    }
+
+    /// A counterexample the model couldn't show (a non-empty list): asked
+    /// again with the parameters' lists' first elements (`example_facts`),
+    /// so a list of up to `INPUT_LEN` elements is shown.
+    fn express(&self, solver: &Solver, i: usize, o: Outcome, stop: &std::sync::atomic::AtomicBool) -> Outcome {
+        let Outcome::Unknown(msg) = &o else { return o };
+        if !msg.starts_with(COULD_NOT_EXPRESS) || self.example_leaves.is_empty() {
+            return o;
+        }
+        let mut leaves = self.leaves();
+        leaves.extend(self.example_leaves.iter().cloned());
+        let script = self.header() + &self.body_with(&self.obligations[i], &leaves, &self.example_facts);
+        match run_solver(solver, &script, Limit::Proof, stop) {
+            Ok(Some(out)) => match self.outcome(i, &leaves, &out) {
+                r @ Outcome::Refuted(..) => r,
+                _ => o,
+            },
+            _ => o,
+        }
+    }
+
+    /// The obligations `which` selects, solved in one solver process (each
+    /// between `push` and `pop`, the sorts declared once): the outcome of
+    /// each, `None` for the others. Starting a process takes longer than
+    /// most queries. Everything is `Stopped` once `stop` is set.
+    pub fn solve_all(&self, solver: &Solver, which: impl Fn(usize) -> bool, stop: &std::sync::atomic::AtomicBool) -> Vec<Option<Outcome>> {
+        let n = self.obligations.len();
+        let mut out: Vec<Option<Outcome>> = (0..n).map(|_| None).collect();
+        let todo: Vec<usize> = (0..n).filter(|&i| which(i)).collect();
+        if todo.is_empty() {
+            return out;
+        }
+        let leaves = self.leaves();
+        let queries: Vec<String> = todo.iter().map(|&i| self.body(&self.obligations[i], &leaves)).collect();
+        match run_batch(solver, &self.header(), &queries, stop, |k, text| out[todo[k]] = Some(self.outcome(todo[k], &leaves, text))) {
+            Err(()) => {
+                for &i in &todo {
+                    out[i].get_or_insert(Outcome::Stopped);
                 }
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(2)),
-                    Err(_) => return Ok(None),
+            }
+            // (those the process didn't answer: each on its own)
+            Ok(done) => {
+                for &i in &todo[done..] {
+                    out[i] = Some(self.solve_until(solver, i, stop));
+                }
+                for &i in &todo[..done] {
+                    if let Some(o) = out[i].take() {
+                        out[i] = Some(self.express(solver, i, o, stop));
+                    }
                 }
             }
-            Ok(reader.join().ok())
-        };
-        let out = match run() {
-            Err(()) => return Outcome::Stopped,
-            Ok(None) => return Outcome::Unknown("the solver could not be run".into()),
-            Ok(Some(out)) => out,
-        };
+        }
+        out
+    }
+
+    /// What the solver's answer to obligation `i` says.
+    fn outcome(&self, i: usize, leaves: &[String], out: &str) -> Outcome {
+        let ob = &self.obligations[i];
+        let leaves = leaves.to_vec();
         let first = out.lines().next().unwrap_or("").trim();
         let why = self.why(ob);
         let because = if why.is_empty() { String::new() } else { format!(" (depends on {})", why.join("; ")) };
         match first {
             "unsat" => Outcome::Proven,
             "sat" => {
-                let model = parse_values(&out[first.len()..]);
-                let args: Option<Vec<(String, Expr)>> = self.params.iter().map(|(n, v)| to_literal(self.env, &self.cells, v, &model).map(|x| (n.clone(), x))).collect();
+                let model = data::model_values(&out[first.len()..], &leaves);
+                let args: Option<Vec<(String, Expr)>> = self.params.iter().map(|(n, v)| self.to_literal(v, &model).map(|x| (n.clone(), x))).collect();
                 let shown = |args: &[(String, Expr)]| args.iter().map(|(n, v)| format!("{n} = {}", crate::printer::literal(v))).collect::<Vec<_>>().join(", ");
                 match args {
                     Some(a) => {
                         let s = shown(&a);
                         Outcome::Refuted(a, format!("the solver found a possible counterexample: {s}{because}"))
                     }
-                    None => Outcome::Unknown(format!("the solver found a possible counterexample it could not express{because}")),
+                    None => Outcome::Unknown(format!("{COULD_NOT_EXPRESS}{because}")),
                 }
             }
             _ => Outcome::Unknown(format!("the solver gave up{because}")),
@@ -4241,7 +5089,9 @@ fn str_len_terms(script: &str) -> Vec<String> {
         }
         let term = &t[..end];
         // (a term under a quantifier names its bound variables: left out)
-        let free = !term.contains('"') && term.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.').all(|w| w.is_empty() || w == "str.len" || (w.starts_with('v') && w[1..].chars().all(|c| c.is_ascii_digit())) || w.chars().all(|c| c.is_ascii_digit()));
+        // (a datatype's selectors, between bars, are functions like any other)
+        let plain: String = term.split('|').step_by(2).collect::<Vec<_>>().join(" ");
+        let free = !term.contains('"') && plain.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.').all(|w| w.is_empty() || w == "str.len" || w.strip_prefix("str").is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit())) || (w.starts_with('v') && w[1..].chars().all(|c| c.is_ascii_digit())) || w.chars().all(|c| c.is_ascii_digit()));
         if free && !out.iter().any(|o| o == term) {
             out.push(term.to_string());
         }
@@ -4250,27 +5100,29 @@ fn str_len_terms(script: &str) -> Vec<String> {
     out
 }
 
-/// The unknowns a model must give a value for, to rebuild `v` (the parts made).
-fn leaves_of(cells: &[Cell], v: &Val, out: &mut Vec<String>) {
+/// The terms a model must give a value for, to rebuild `v`.
+fn leaves_of(lists: &[ListInfo], v: &Val, out: &mut Vec<String>) {
     match v {
         Val::Int(t) | Val::Bool(t) | Val::Str(t) => out.push(t.clone()),
-        Val::Tuple(xs) => xs.iter().for_each(|x| leaves_of(cells, x, out)),
-        Val::Rec(_, fs) => fs.iter().for_each(|f| leaves_of(cells, &f.1, out)),
+        Val::Tuple(xs) => xs.iter().for_each(|x| leaves_of(lists, x, out)),
+        Val::Rec(_, fs) => fs.iter().for_each(|f| leaves_of(lists, &f.1, out)),
         Val::Sum { tag, ctors, .. } => {
             out.push(tag.clone());
-            ctors.iter().flat_map(|c| &c.1).for_each(|x| leaves_of(cells, x, out));
+            ctors.iter().flat_map(|c| &c.1).for_each(|x| leaves_of(lists, x, out));
         }
         Val::Union { tag, slots } => {
             out.push(tag.clone());
-            slots.iter().for_each(|s| leaves_of(cells, &s.1, out));
+            slots.iter().for_each(|s| leaves_of(lists, &s.1, out));
         }
-        Val::List { len, .. } => out.push(len.clone()),
-        Val::Distinct(_, x) => leaves_of(cells, x, out),
-        Val::Lazy(id) => {
-            if let Some(x) = &cells[*id].value {
-                leaves_of(cells, x, out)
+        Val::List { len, id } => {
+            out.push(len.clone());
+            // (its first items, to show a short list)
+            if let Gen::Seq(s, _, n) = &lists[*id].source {
+                out.extend((0..INPUT_LEN).map(|k| data::list_at(n, s, &k.to_string())));
             }
         }
+        Val::Distinct(_, x) => leaves_of(lists, x, out),
+        Val::Data { t, .. } => out.push(t.clone()),
         Val::Unit | Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => {}
     }
 }
@@ -4318,45 +5170,54 @@ fn some_literal(env: &Env, t: &TypeExpr, depth: usize) -> Option<Expr> {
     })
 }
 
-/// A parameter's value in a model, as the code that writes it (when it can
-/// be rebuilt: lists only when empty, nothing opaque).
-fn to_literal(env: &Env, cells: &[Cell], v: &Val, m: &HashMap<String, String>) -> Option<Expr> {
-    let to_literal = |env: &Env, v: &Val, m: &HashMap<String, String>| to_literal(env, cells, v, m);
-    Some(match v {
-        Val::Lazy(id) => match &cells[*id].value {
-            Some(x) => to_literal(env, x, m)?,
-            None => some_literal(env, &cells[*id].ty, 0)?,
-        },
-        Val::Int(t) => crate::llvm::native::int_expr(parse_big(m.get(t)?)?),
-        Val::Bool(t) => Expr::Bool(m.get(t)? == "true"),
-        Val::Str(t) => Expr::Str(parse_str(m.get(t)?)?),
-        Val::Unit => Expr::Unit,
-        Val::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?),
-        Val::Rec(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(f, x)| to_literal(env, x, m).map(|y| (Symbol::new(f), y))).collect::<Option<_>>()?)),
-        Val::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![to_literal(env, x, m)?])),
-        Val::List { len, .. } => {
-            if parse_int(m.get(len)?)? != 0 {
-                return None;
+impl Vc<'_> {
+    /// A parameter's value in a model, as the code that writes it (when it
+    /// can be rebuilt: nothing opaque), with the first elements of lists
+    /// (`Vc::input_elems`): a list is shown when the model's length is
+    /// within them.
+    fn to_literal(&self, v: &Val, m: &HashMap<String, Sx>) -> Option<Expr> {
+        let text = |t: &str| m.get(t).map(|x| x.to_string());
+        Some(match v {
+            Val::Data { ty, t } => self.sx_literal(ty, m.get(t)?)?,
+            Val::Int(t) => crate::llvm::native::int_expr(parse_big(&text(t)?)?),
+            Val::Bool(t) => Expr::Bool(text(t)? == "true"),
+            Val::Str(t) => Expr::Str(parse_str(&text(t)?)?),
+            Val::Unit => Expr::Unit,
+            Val::Tuple(xs) => Expr::Tuple(xs.iter().map(|x| self.to_literal(x, m)).collect::<Option<_>>()?),
+            Val::Rec(n, fs) => Expr::Ctor(Symbol::new(n), CtorArgs::Record(fs.iter().map(|(f, x)| self.to_literal(x, m).map(|y| (Symbol::new(f), y))).collect::<Option<_>>()?)),
+            Val::Distinct(_, x) if word_of(v).is_some() => self.to_literal(x, m)?,
+            Val::Distinct(n, x) => Expr::Ctor(Symbol::new(n), CtorArgs::Positional(vec![self.to_literal(x, m)?])),
+            Val::List { len, id } => {
+                let n = parse_int(&text(len)?)?;
+                if n == 0 {
+                    return Some(Expr::List(vec![]));
+                }
+                if let Gen::Seq(s, t, name) = &self.lists[*id].source {
+                    if (n as usize) <= INPUT_LEN && !self.input_elems.contains_key(id) {
+                        return Some(Expr::List((0..n).map(|k| self.sx_literal(t, m.get(&data::list_at(name, s, &k.to_string()))?)).collect::<Option<_>>()?));
+                    }
+                }
+                let xs = self.input_elems.get(id).filter(|xs| (n as usize) <= xs.len())?;
+                Expr::List(xs[..n as usize].iter().map(|x| self.to_literal(x, m)).collect::<Option<_>>()?)
             }
-            Expr::List(vec![])
-        }
-        Val::Sum { ty, args, tag, ctors } => {
-            let k = parse_int(m.get(tag)?)? as usize;
-            let (c, payload) = ctors.get(k)?;
-            let vs = env.variants_of(ty, args)?;
-            let fields: Vec<Expr> = payload.iter().map(|x| to_literal(env, x, m)).collect::<Option<_>>()?;
-            let f = match &vs.get(k)?.1 {
-                _ if fields.is_empty() => CtorArgs::None,
-                Some(names) => CtorArgs::Record(names.iter().copied().zip(fields).collect()),
-                None => CtorArgs::Positional(fields),
-            };
-            Expr::Ctor(Symbol::new(c), f)
-        }
-        // a union value is its active member's value
-        Val::Union { tag, slots } => to_literal(env, &slots.get(parse_int(m.get(tag)?)? as usize)?.1, m)?,
-        // a function can't be shown as a counterexample
-        Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
-    })
+            Val::Sum { ty, args, tag, ctors } => {
+                let k = parse_int(&text(tag)?)? as usize;
+                let (c, payload) = ctors.get(k)?;
+                let vs = self.env.variants_of(ty, args)?;
+                let fields: Vec<Expr> = payload.iter().map(|x| self.to_literal(x, m)).collect::<Option<_>>()?;
+                let f = match &vs.get(k)?.1 {
+                    _ if fields.is_empty() => CtorArgs::None,
+                    Some(names) => CtorArgs::Record(names.iter().copied().zip(fields).collect()),
+                    None => CtorArgs::Positional(fields),
+                };
+                Expr::Ctor(Symbol::new(c), f)
+            }
+            // a union value is its active member's value
+            Val::Union { tag, slots } => self.to_literal(&slots.get(parse_int(&text(tag)?)? as usize)?.1, m)?,
+            // a function can't be shown as a counterexample
+            Val::Absent | Val::Opaque(_) | Val::FnOf { .. } => return None,
+        })
+    }
 }
 
 /// A model's integer, of any size: `42` or `(- 42)`.

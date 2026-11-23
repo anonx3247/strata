@@ -115,6 +115,30 @@ fn field(f: &Field) -> String {
     }
 }
 
+/// `from m use a, b, c`: on one line if it fits, else filled to the width
+/// with the rest indented (`extra`: what goes before it, `pub `).
+fn use_list(head: &str, items: &[String], extra: usize) -> String {
+    let one = format!("{head} {}", items.join(", "));
+    if one.chars().count() + extra <= WIDTH {
+        return one;
+    }
+    let mut out = head.to_string();
+    let mut line = out.chars().count() + extra;
+    for (k, it) in items.iter().enumerate() {
+        let piece = if k + 1 < items.len() { format!("{it},") } else { it.clone() };
+        if line + 1 + piece.chars().count() > WIDTH && k > 0 {
+            out += "\n  ";
+            line = 2;
+        } else {
+            out += " ";
+            line += 1;
+        }
+        out += &piece;
+        line += piece.chars().count();
+    }
+    out
+}
+
 fn ind(n: usize) -> String {
     "  ".repeat(n)
 }
@@ -176,10 +200,10 @@ fn prec(e: &Expr) -> u8 {
             BinOp::Mul | BinOp::Div | BinOp::Mod => 10,
         },
         Expr::Is(..) => 3,
-        Expr::Lambda(..) | Expr::Return(..) | Expr::Range(..) => 0,
+        Expr::Lambda(..) | Expr::Return(..) | Expr::Spawn(..) | Expr::SupervisedSpawn(..) | Expr::Range(..) => 0,
         Expr::Except(..) | Expr::Or(..) if shorthand(e) => 4,
         Expr::Except(..) | Expr::Or(..) => 11,
-        Expr::Un(..) | Expr::Mut(..) => 11,
+        Expr::Un(..) | Expr::Mut(..) | Expr::Await(..) => 11,
         _ => 12,
     }
 }
@@ -205,6 +229,12 @@ fn wrap(e: &Expr, min: u8, d: usize) -> String {
     if prec(e) < min { format!("({s})") } else { s }
 }
 
+/// A called expression: a field in parentheses (`(b.f)(1)` calls the
+/// function in field `f`; `b.f(1)` would be the method `f`).
+fn callee(f: &Expr, d: usize) -> String {
+    if matches!(f, Expr::Field(..)) { format!("({})", expr(f, d)) } else { wrap(f, 12, d) }
+}
+
 fn args(es: &[Expr], d: usize) -> String {
     es.iter()
         .map(|e| match e {
@@ -216,8 +246,11 @@ fn args(es: &[Expr], d: usize) -> String {
         .join(", ")
 }
 
+/// A float literal: its digits (Rust's shortest, never an exponent), with a
+/// point, so it reads back as a `Float` (`1e15` is `1000000000000000.0`).
 pub fn float(f: f64) -> String {
-    if f.fract() == 0.0 && f.abs() < 1e15 { format!("{f:.1}") } else { format!("{f}") }
+    let s = format!("{f}");
+    if s.contains('.') || !f.is_finite() { s } else { s + ".0" }
 }
 
 /// Target line width for rendered code.
@@ -257,10 +290,30 @@ pub fn head(e: &Expr, d: usize) -> String {
 
 /// Whether `e` has a literal with braces outside every delimiter (call
 /// arguments, indexes, lists and parentheses end the parser's restriction).
+/// What a result's handler (`!`, `?`, `except`, `or { }`) applies to: an
+/// `await` without parentheses (`await h except p { … }` is the awaited
+/// result's), anything else as a postfix's operand.
+fn handled(x: &Expr, d: usize) -> String {
+    match x {
+        Expr::Await(_) => expr(x, d),
+        _ => wrap(x, 12, d),
+    }
+}
+
+/// Whether a handler (`!`, `?`, `except`, `or { }`) ends `e` or the chain
+/// of fields, calls and indexes it starts.
+fn handler_on_spine(e: &Expr) -> bool {
+    match e {
+        Expr::Try(..) | Expr::Except(..) | Expr::Or(..) => true,
+        Expr::Field(x, _) | Expr::Method(x, _, _) | Expr::Index(x, _) | Expr::Call(x, _) => handler_on_spine(x),
+        _ => false,
+    }
+}
+
 fn brace_on_spine(e: &Expr) -> bool {
     match e {
         Expr::Ctor(_, CtorArgs::Record(_) | CtorArgs::Update(..)) | Expr::Dict(..) | Expr::Set(..) => true,
-        Expr::Call(x, _) | Expr::Method(x, _, _) | Expr::Field(x, _) | Expr::Index(x, _) | Expr::Un(_, x) | Expr::Is(x, _) | Expr::Mut(x) | Expr::Try(x, _) | Expr::Return(x) | Expr::Lambda(_, x) => brace_on_spine(x),
+        Expr::Call(x, _) | Expr::Method(x, _, _) | Expr::Field(x, _) | Expr::Index(x, _) | Expr::Un(_, x) | Expr::Is(x, _) | Expr::Mut(x) | Expr::Try(x, _) | Expr::Return(x) | Expr::Spawn(x) | Expr::SupervisedSpawn(x) | Expr::Await(x) | Expr::Lambda(_, x) => brace_on_spine(x),
         Expr::Bin(_, l, r) | Expr::Or(l, r) | Expr::Except(l, _, r) => brace_on_spine(l) || brace_on_spine(r),
         Expr::Range(lo, hi, _) => lo.as_deref().is_some_and(brace_on_spine) || hi.as_deref().is_some_and(brace_on_spine),
         _ => false,
@@ -268,9 +321,9 @@ fn brace_on_spine(e: &Expr) -> bool {
 }
 
 /// A name as written: the prelude's methods, which only checked code holds
-/// (`FiniteIterator::std.prelude.len`, in messages), short (`len`).
+/// (`FiniteIterator::core.iter.len`, in messages), short (`len`).
 fn shown(n: &str) -> std::borrow::Cow<'_, str> {
-    if n.contains(crate::types::PRELUDE_MODULE) {
+    if crate::core::CODE.iter().any(|m| n.contains(m)) {
         std::borrow::Cow::Owned(crate::types::shown_name(n))
     } else {
         std::borrow::Cow::Borrowed(n)
@@ -333,7 +386,7 @@ pub fn expr(e: &Expr, d: usize) -> String {
             }
             s
         }
-        Expr::Call(f, es) if !es.is_empty() => format!("{}{}", wrap(f, 12, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
+        Expr::Call(f, es) if !es.is_empty() => format!("{}{}", callee(f, d), broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d)),
         Expr::List(es) if !es.is_empty() => broken("[", es.iter().map(|a| expr(a, d + 1)).collect(), "]", d),
         Expr::Tuple(es) => broken("(", es.iter().map(|a| expr(a, d + 1)).collect(), ")", d),
         Expr::Ctor(c, CtorArgs::Record(fs)) => broken(
@@ -421,7 +474,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
             }));
             format!("{c} {{ {} }}", parts.join(", "))
         }
-        Expr::Call(f, es) => format!("{}({})", wrap(f, 12, d), args(es, d)),
+        Expr::Call(f, es) => format!("{}({})", callee(f, d), args(es, d)),
         Expr::Method(r, m, es) => format!("{}.{}({})", wrap(r, 12, d), shown(m), args(es, d)),
         Expr::Field(r, f) => format!("{}.{f}", wrap(r, 12, d)),
         Expr::Lambda(ps, b) => format!("{} -> {}", lambda_params(ps), expr(b, d)),
@@ -468,11 +521,33 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Mut(x) => format!("mut {}", expr(x, d)),
         // `comptime` takes a unary expression: `comptime (a ?? b)`
         Expr::Comptime(x) => format!("comptime {}", wrap(x, 11, d)),
+        Expr::Spawn(x) => format!("spawn {}", expr(x, d)),
+        Expr::SupervisedSpawn(x) => format!("supervised spawn {}", expr(x, d)),
+        // (a handler on the operand's chain needs parentheses: `await (a!)`,
+        // since `await a!` is `(await a)!`)
+        Expr::Await(x) if handler_on_spine(x) => format!("await ({})", expr(x, d)),
+        Expr::Await(x) => format!("await {}", wrap(x, 11, d)),
+        Expr::Scope(b) => format!("scope {}", block(b, d)),
+        Expr::Select(arms) | Expr::Race(arms) => {
+            let mut out = if matches!(e, Expr::Race(_)) { "race {\n" } else { "select {\n" }.to_string();
+            for a in arms {
+                out += &comments(&a.comments, d + 1);
+                let as_name = a.name.as_ref().map(|n| format!(" as {n}")).unwrap_or_default();
+                // a supervised race arm is `supervised e`
+                let op = match &a.op {
+                    Expr::SupervisedSpawn(x) if matches!(e, Expr::Race(_)) => format!("supervised {}", expr(x, d + 1)),
+                    op => expr(op, d + 1),
+                };
+                out += &format!("{}{op}{as_name} => {},\n", ind(d + 1), expr(&a.body, d + 1));
+            }
+            out + &ind(d) + "}"
+        }
         Expr::Interp(parts) => {
             let mut s = "f\"".to_string();
             for p in parts {
                 match p {
-                    StrPart::Lit(l) => s += &escape(l).replace('{', "{{").replace('}', "}}"),
+                    // a lone `\` before a brace is written `\\`: `\{{` would read as `\{` then `{`
+                    StrPart::Lit(l) => s += &escape(l).replace("\\{", "\\\\{").replace("\\}", "\\\\}").replace('{', "{{").replace('}', "}}"),
                     StrPart::Expr(e, spec) => s += &format!("{{{}{}}}", expr_inline(e, 0), spec.as_ref().map(|f| format!(":{f}")).unwrap_or_default()),
                 }
             }
@@ -509,7 +584,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
         Expr::Set(tys, xs) => collection("Set", tys, &xs.iter().map(|x| expr(x, d)).collect::<Vec<_>>()),
         Expr::Return(x) if **x == Expr::Unit => "return".into(),
         Expr::Return(x) => format!("return {}", expr(x, d)),
-        Expr::Try(x, k) => format!("{}{}", wrap(x, 12, d), if *k == TryKind::Result { "!" } else { "?" }),
+        Expr::Try(x, k) => format!("{}{}", handled(x, d), if *k == TryKind::Result { "!" } else { "?" }),
         Expr::Except(x, _, fb) if shorthand(e) => format!("{} !! {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Or(x, fb) if shorthand(e) => format!("{} ?? {}", wrap(x, 5, d), wrap(fb, 4, d)),
         Expr::Except(_, _, fb) | Expr::Or(_, fb) => {
@@ -519,7 +594,7 @@ fn expr_inline(e: &Expr, d: usize) -> String {
                 Expr::Or(x, _) => (x, "or".to_string()),
                 _ => unreachable!(),
             };
-            let head = format!("{} {keyword}", wrap(x, 12, d));
+            let head = format!("{} {keyword}", handled(x, d));
             // a short fallback stays on the line: `load(p) except { default() }`
             let short = match &**fb {
                 Expr::Block(..) => None,
@@ -541,6 +616,21 @@ fn collection(name: &str, tys: &[TypeExpr], entries: &[String]) -> String {
     } else {
         format!("{name}{targs} {{ {} }}", entries.join(", "))
     }
+}
+
+/// A loop body's `invariant e` clauses, each on its own line under the
+/// header (as a function's `requires`), and the body without them.
+fn loop_clauses(b: &Expr, d: usize) -> (String, Expr) {
+    let Expr::Block(ss, last) = b else { return (String::new(), b.clone()) };
+    let n = ss.iter().take_while(|s| matches!(s, Stmt::Invariant(_))).count();
+    if n == 0 {
+        return (String::new(), b.clone());
+    }
+    let invs = ss[..n].iter().map(|s| match s {
+        Stmt::Invariant(e) => format!("\n{}  invariant {}", ind(d), head(e, d + 1)),
+        _ => unreachable!(),
+    });
+    (invs.collect(), Expr::Block(ss[n..].to_vec(), last.clone()))
 }
 
 /// Render an expression as a `{ ... }` block.
@@ -575,14 +665,25 @@ pub fn block(e: &Expr, d: usize) -> String {
                 }
                 _ => format!("{} = {}", expr(p, d + 1), expr(e, d + 1)),
             },
-            Stmt::While(c, b) => format!("while {} {}", head(c, d + 1), block(b, d + 1)),
-            Stmt::Loop(b) => format!("loop {}", block(b, d + 1)),
+            Stmt::While(c, b) => {
+                let (invs, b) = loop_clauses(b, d + 1);
+                format!("while {}{invs} {}", head(c, d + 1), block(&b, d + 1))
+            }
+            Stmt::Loop(b) => {
+                let (invs, b) = loop_clauses(b, d + 1);
+                format!("loop{invs} {}", block(&b, d + 1))
+            }
             Stmt::Break => "break".into(),
             Stmt::Continue => "continue".into(),
-            Stmt::For(p, it, b) => format!("for {} in {} {}", pat(p), head(it, d + 1), block(b, d + 1)),
+            Stmt::For(p, it, b) => {
+                let (invs, b) = loop_clauses(b, d + 1);
+                format!("for {} in {}{invs} {}", pat(p), head(it, d + 1), block(&b, d + 1))
+            }
             Stmt::ComptimeFor(p, it, b) => format!("comptime for {} in {} {}", pat(p), head(it, d + 1), block(b, d + 1)),
             Stmt::Expr(e) => expr(e, d + 1),
             Stmt::Assert(e) => format!("assert {}", expr(e, d + 1)),
+            // (only first in a loop's body, where `loop_clauses` takes it)
+            Stmt::Invariant(e) => format!("invariant {}", expr(e, d + 1)),
             Stmt::Comment(_) => unreachable!(),
         };
         out += "\n";
@@ -879,15 +980,26 @@ pub fn decl_body(d: &Decl) -> String {
         DeclKind::Trait(t) => trait_decl(t),
         DeclKind::Impl(i) => impl_decl(i),
         DeclKind::Use(u) => match &u.items {
-            None => format!("use {}.*", u.path),
-            // the module only, its names used qualified (`db.open()`)
-            Some(items) if items.is_empty() => format!("use {}", u.path),
-            Some(items) if items.len() == 1 => format!("use {}.{}", u.path, items[0]),
-            Some(items) => format!("use {}.{{{}}}", u.path, crate::symbol::join(items, ", ")),
+            // the module, its names written `time.now()`
+            None => match u.alias {
+                Some(a) => format!("use {} as {a}", u.path),
+                None => format!("use {}", u.path),
+            },
+            Some(items) => {
+                let items: Vec<String> = items.iter().map(|i| match i.alias {
+                    Some(a) => format!("{} as {a}", i.name),
+                    None => i.name.to_string(),
+                }).collect();
+                use_list(&format!("from {} use", u.path), &items, if d.public { 4 } else { 0 })
+            }
         },
         DeclKind::Extern(e) => match &e.item {
+            ExternItem::Fn(f) if e.lang == Lang::Builtin => format!("builtin {}", fn_signature(f)),
             ExternItem::Fn(f) => format!("extern {} {}", e.lang.name(), fn_signature(f)),
-            ExternItem::Type(t) => format!("extern {} type {t}", e.lang.name()),
+            ExternItem::Type(t, ps) if ps.is_empty() && e.lang == Lang::Builtin => format!("builtin type {t}"),
+            ExternItem::Type(t, ps) if e.lang == Lang::Builtin => format!("builtin type {t}[{}]", ps.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")),
+            ExternItem::Type(t, _) => format!("extern {} type {t}", e.lang.name()),
+            ExternItem::Static(n, size) => format!("builtin static {n}: {size}"),
         },
     };
     (if d.public { "pub " } else { "" }).to_string() + &body
@@ -905,5 +1017,22 @@ pub fn type_text(t: &TypeExpr) -> String {
         TypeExpr::Named(n, args) => format!("{n}[{}]", args.iter().map(type_text).collect::<Vec<_>>().join(", ")),
         TypeExpr::Unit => "Unit".into(),
         other => ty(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::parse_expr;
+
+    #[test]
+    fn fstring_with_escaped_braces_round_trips() {
+        // `\{` and `\}` are literal braces; a backslash stored before a brace prints as `\\`
+        for src in [r#"f"a \{ {x} \} b""#, r#"f"{k} = \{ path = \"../{k}\" \}""#, r#"f"\\{x}\\""#] {
+            let e = parse_expr(src).unwrap();
+            let printed = super::expr(&e, 0);
+            let back = parse_expr(&printed).unwrap_or_else(|err| panic!("{printed}: {err:?}"));
+            assert_eq!(super::expr(&back, 0), printed);
+            assert_eq!(back, e, "{src} printed as {printed}");
+        }
     }
 }

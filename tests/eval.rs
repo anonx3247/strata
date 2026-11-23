@@ -1,5 +1,5 @@
-//! `std.ast.eval` runs programs from their stored trees, in Strata, as the
-//! compiled programs run them: for each program of tests/build.rs below, it
+//! `compiler/eval` (the compiler package's `eval` command) runs programs
+//! from their stored trees, in Strata, as the compiled programs run them: for each program of tests/build.rs below, it
 //! prints what the compiled program printed, ends with the same fault or
 //! error, and gives the same exit code (the outputs recorded in
 //! tests/data/build/expected).
@@ -9,54 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const STRATA: &str = env!("CARGO_BIN_EXE_strata");
-
-/// The checker, run as `BASE... -- FILE...`: each file's program run with
-/// the definitions of the base files (the prelude, std), its output then
-/// `--- exit N`, then `===`.
-const CHECKER: &str = r#"use std.io.{Console}
-use std.fs.{Files, Disk}
-use std.process.{Environment, Process}
-use std.ast.binary.{read}
-use std.ast.eval.{run}
-
-fn decls_of(disk: Disk, f: String) -> List[std.ast.Decl] {
-  match disk.read_bytes(f) {
-    Ok(bytes) => match read(bytes) {
-      Ok(img) => img.decls,
-      Err(e) => {
-        print(f"error: {f}: {e}")
-        []
-      },
-    },
-    Err(e) => {
-      print(f"error: {f}: {e}")
-      []
-    },
-  }
-}
-
-fn main(mut console: Console, disk: Disk, process: Process) {
-  args := process.args()
-  mut base := []
-  mut programs := []
-  mut after := false
-  for a in args {
-    if a == "--" {
-      after = true
-    } else if after {
-      programs = push(programs, a)
-    } else {
-      base = base + decls_of(disk, a)
-    }
-  }
-  for f in programs {
-    r := run(base + decls_of(disk, f), ["one", "two words"])
-    mut console.write(r.stdout + r.stderr)
-    print(f"--- exit {r.code}")
-    print("===")
-  }
-}
-"#;
 
 /// std's module files (what a program may `use`).
 fn std_files() -> Vec<PathBuf> {
@@ -103,6 +55,9 @@ fn strata(args: &[&str]) {
     let o = Command::new(STRATA).args(args).output().unwrap();
     assert!(o.status.success(), "strata {args:?}: {}", String::from_utf8_lossy(&o.stderr));
 }
+
+#[path = "common/compiler.rs"]
+mod compiler;
 
 #[path = "common/programs.rs"]
 mod programs;
@@ -159,6 +114,9 @@ fn cases() -> Vec<(String, String, Want)> {
         ("impl-statics-root_builtin_name", json_case::ROOT_BUILTIN_NAME, json_case::ROOT_BUILTIN_NAME_OUTPUT),
         ("impl-statics-builtins", json_case::BUILTINS, json_case::BUILTINS_OUTPUT),
         ("impl-statics-option_option", json_case::OPTION_OPTION, json_case::OPTION_OPTION_OUTPUT),
+        ("impl-statics-refined_more", json_case::REFINED_MORE, json_case::REFINED_MORE_OUTPUT),
+        ("json-program", json_case::PROGRAM, json_case::OUTPUT),
+        ("impl-statics-generic_derive", json_case::GENERIC_DERIVE, json_case::GENERIC_DERIVE_OUTPUT),
         ("impl-statics-refined", json_case::REFINED, json_case::REFINED_OUTPUT),
         ("iterators-iterators", json_case::ITERATORS, json_case::ITERATORS_OUTPUT),
         ("iterators-lazy", json_case::LAZY_ITERATORS, json_case::LAZY_ITERATORS_OUTPUT),
@@ -176,18 +134,13 @@ fn cases() -> Vec<(String, String, Want)> {
 /// Programs the evaluator doesn't run yet, and why.
 const NOT_YET: &[(&str, &str)] = &[
     ("capabilities-files_and_environment", "files: the evaluator gives a program no `Disk` yet"),
-    ("impl-statics-builtins", "`derive Json`, made while compiling"),
-    ("impl-statics-refined", "`derive Json`, made while compiling"),
-    // a type parameter's static method needs the call's types, which the
-    // type checker gives (the front end's next piece)
-    ("impl-statics-self_methods", "`T.zero()`: a type parameter's static method"),
-    ("impl-statics-statics", "`T.zero()`: a type parameter's static method"),
-    ("iterators-iterators", "`T.zero()`: a type parameter's static method"),
-    ("traits-traits_example", "`T.empty()`: a type parameter's static method"),
+    // `map` is overloaded (lists, iterators): the checker leaves the
+    // lambda's parameter open, so `x.padded(n)` doesn't know `x: List[T]`
+    ("impl-statics-self_methods", "`xs.map(x -> x.padded(n))`: the lambda parameter's type"),
 ];
 
 /// The stored programs of tests/data/build.
-const FILES: &[&str] = &["numbers", "lists", "data"];
+const FILES: &[&str] = &["numbers", "lists", "data", "sized"];
 
 #[test]
 fn programs_run_as_compiled() {
@@ -197,10 +150,6 @@ fn programs_run_as_compiled() {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let d = scratch("programs");
-    let checker = d.join("check.strata");
-    save(&checker, CHECKER);
-    let exe = d.join("check");
-    strata(&["build", &checker.to_string_lossy(), "-o", &exe.to_string_lossy()]);
     let prelude = d.join("prelude.strata");
     strata(&["pack", "--prelude", &prelude.to_string_lossy()]);
     let mut programs: Vec<(String, PathBuf, Want)> = FILES.iter().map(|f| (f.to_string(), root.join("tests/data/build").join(format!("{f}.strata")), Want::Recorded)).collect();
@@ -209,8 +158,8 @@ fn programs_run_as_compiled() {
         save(&f, &text);
         programs.push((key, f, want));
     }
-    let mut c = Command::new(&exe);
-    c.arg(&prelude).args(std_files()).arg("--").args(programs.iter().map(|p| &p.1));
+    let mut c = Command::new(compiler::exe());
+    c.arg("eval").arg(&prelude).args(std_files()).arg("--").args(programs.iter().map(|p| &p.1));
     let o = c.output().unwrap();
     assert!(o.status.success(), "the checker failed: {}", String::from_utf8_lossy(&o.stderr));
     let out = String::from_utf8(o.stdout).unwrap();
@@ -225,7 +174,7 @@ fn programs_run_as_compiled() {
             Want::Text(t) => format!("{t}\n--- exit 0\n"),
         };
         if got != want {
-            wrong.push(format!("{key}:\n--- std.ast.eval\n{got}--- compiled\n{want}"));
+            wrong.push(format!("{key}:\n--- compiler/eval\n{got}--- compiled\n{want}"));
         }
     }
     assert_eq!(runs.len(), programs.len() + 1, "{out}");

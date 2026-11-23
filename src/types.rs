@@ -12,6 +12,8 @@ mod env;
 mod exhaustive;
 pub mod ints;
 pub mod reals;
+pub mod sized;
+pub use sized::Width;
 pub use env::Env;
 use exhaustive::*;
 
@@ -31,405 +33,32 @@ pub fn field_owners(tagged: &Program) -> HashMap<String, BTreeSet<String>> {
     FIELD_PROBE.with(|p| p.borrow_mut().take()).unwrap_or_default()
 }
 
-pub const PRELUDE: &str = r#"
-/// How a value is written in code: `Some("hi")`, `Point { x: 1, y: 2 }`,
-/// `[1, 2]`. Every type has it; `impl Debug for T` replaces it.
-trait Debug {
-  fn debug(self) -> String
-}
-
-/// How a value is shown to people: what `print`, f-strings and `to_string`
-/// write. Every type has it: its `debug` (a `String` is its text);
-/// `impl Display for T` replaces it.
-trait Display {
-  fn to_string(self) -> String
-}
-
-/// An optional value.
-type Option[T] =
-  | None
-  | Some(T)
-
-/// The result of an operation that can fail.
-type Result[T, E] =
-  | Ok(T)
-  | Err(E)
-
-
-// Common refinements. They are structural: an `Int` can be passed wherever a
-// `Natural` is expected (checked at the boundary), and a `Positive` is a `Natural`.
-
-/// 0, 1, 2, ...
-type Natural = Int where it >= 0
-/// 1, 2, 3, ...
-type Positive = Int where it > 0
-/// -1, -2, ...
-type Negative = Int where it < 0
-type NonZero = Int where it != 0
-/// A share between 0.0 and 1.0.
-type Probability = Float where 0.0 <= it && it <= 1.0
-type Percentage = Float where 0.0 <= it && it <= 100.0
-/// A list with at least one element.
-type NonEmpty[T] = List[T] where len(it) > 0
-/// A string with at least one character.
-type NonEmptyString = String where it != ""
-
-// Sized integers: `Int` with the range of a machine integer. They are checked
-// like any refinement; a compiler can store each in its own width.
-
-/// -128 ..= 127
-type I8 = Int where -128 <= it && it <= 127
-/// -32768 ..= 32767
-type I16 = Int where -32768 <= it && it <= 32767
-/// -2^31 ..= 2^31 - 1
-type I32 = Int where -2147483648 <= it && it <= 2147483647
-/// -2^63 ..= 2^63 - 1
-type I64 = Int where -9223372036854775808 <= it && it <= 9223372036854775807
-/// 0 ..= 255
-type U8 = Int where 0 <= it && it <= 255
-/// 0 ..= 65535
-type U16 = Int where 0 <= it && it <= 65535
-/// 0 ..= 2^32 - 1
-type U32 = Int where 0 <= it && it <= 4294967295
-/// 0 ..= 2^64 - 1
-type U64 = Int where 0 <= it && it <= 18446744073709551615
-"#;
-
-/// The prelude's definitions that carry code (default methods, impls):
-/// added to every program when it is resolved (`with_prelude_code`), in the
-/// module `std.prelude`, so they are checked, compiled and run as the
-/// program's own, and skipped as the standard library is (by `verify`, the
-/// views). Their names are the prelude's, unqualified.
-pub const PRELUDE_CODE: &str = r#"
-/// What a `for` loop runs over, besides lists, sets and dicts: `next`
-/// gives the elements one at a time, then `None`.
-trait Iterator[T] {
-  fn next(mut self) -> Option[T]
-
-  fn map[B](self, f: (T) -> B) -> Mapped[Self, T, B] {
-    Mapped { inner: self, f: f }
-  }
-
-  fn filter(self, keep: (T) -> Bool) -> Filtered[Self, T] {
-    Filtered { inner: self, keep: keep }
-  }
-
-  /// The first `n` elements (all, if there are fewer): finite, even when
-  /// this iterator isn't.
-  fn take(self, n: Int) -> Taken[Self, T] {
-    Taken { inner: self, left: if n > 0 { n } else { 0 } }
-  }
-
-  /// The elements after the first `n`.
-  fn drop(self, n: Int) -> Dropped[Self, T] {
-    Dropped { inner: self, skip: if n > 0 { n } else { 0 } }
-  }
-}
-
-type Taken[I, T] = { inner: I, left: Natural }
-
-impl[I: Iterator[T], T] Iterator[T] for Taken[I, T] {
-  fn next(mut self) -> Option[T] {
-    if self.left == 0 {
-      return None
-    }
-    self.left -= 1
-    mut self.inner.next()
-  }
-}
-
-/// At most `left` elements (each `next` takes one off): counted on a copy,
-/// without going further.
-impl[I: Iterator[T], T] FiniteIterator[T] for Taken[I, T] {
-  fn len(self) -> Natural {
-    mut n: Natural = 0
-    for _ in self {
-      n += 1
-    }
-    n
-  }
-}
-
-type Dropped[I, T] = { inner: I, skip: Natural }
-
-impl[I: Iterator[T], T] Iterator[T] for Dropped[I, T] {
-  fn next(mut self) -> Option[T] {
-    for _ in 0..self.skip {
-      mut self.inner.next()
-    }
-    self.skip = 0
-    mut self.inner.next()
-  }
-}
-
-impl[I: FiniteIterator[T], T] FiniteIterator[T] for Dropped[I, T] {
-  fn len(self) -> Natural {
-    n := self.inner.len()
-    if n > self.skip { n - self.skip } else { 0 }
-  }
-}
-
-type Mapped[I, A, B] = { inner: I, f: (A) -> B }
-
-impl[I: Iterator[A], A, B] Iterator[B] for Mapped[I, A, B] {
-  fn next(mut self) -> Option[B] {
-    match mut self.inner.next() {
-      Some(x) => Some((self.f)(x)),
-      None => None,
-    }
-  }
-}
-
-type Filtered[I, T] = { inner: I, keep: (T) -> Bool }
-
-impl[I: Iterator[T], T] Iterator[T] for Filtered[I, T] {
-  fn next(mut self) -> Option[T] {
-    loop {
-      match mut self.inner.next() {
-        Some(x) => if (self.keep)(x) { return Some(x) },
-        None => { return None },
-      }
-    }
-    None
-  }
-}
-
-/// An iterator that ends: `len` is how many elements `next` still gives.
-/// A `for` loop over one is shown to end.
-/// `fold` is here, not in `Iterator`: on an unbounded iterator it would never
-/// return. It ends as its loop does, given that `f` ends (checked where the
-/// function passed is written).
-trait FiniteIterator[T]: Iterator[T] {
-  fn len(self) -> Natural
-
-  fn fold[B](self, init: B, f: (B, T) -> B) -> B {
-    mut acc := init
-    for x in self {
-      acc = f(acc, x)
-    }
-    acc
-  }
-
-  /// Element `i` (from 0), if there is one.
-  fn get(self, i: Int) -> Option[T] {
-    mut k := 0
-    for x in self {
-      if k == i {
-        return Some(x)
-      }
-      k += 1
-    }
-    None
-  }
-
-  /// Element `i` (from 0): `it[i]`.
-  fn at(self, i: Int) -> T
-    requires 0 <= i && i < self.len()
-  {
-    match self.get(i) {
-      Some(x) => x,
-      None => self.to_list()[i],
-    }
-  }
-
-  /// The elements from `a` up to (not including) `b`, lazily: `it[a..b]`.
-  fn slice(self, a: Int, b: Int) -> Taken[Dropped[Self, T], T] {
-    self.drop(a).take(b - (if a > 0 { a } else { 0 }))
-  }
-
-  /// The elements, in a list.
-  fn to_list(self) -> List[T] {
-    mut out := []
-    for x in self {
-      out = push(out, x)
-    }
-    out
-  }
-}
-
-/// The elements of a list one at a time, from `at`: what `iter()` gives
-/// on a list, a set (in order) or a dict (its entries, by key).
-type ListIter[T] = { items: List[T], at: Natural }
-
-impl[T] Iterator[T] for ListIter[T] {
-  fn next(mut self) -> Option[T] {
-    if self.at < len(self.items) {
-      x := self.items[self.at]
-      self.at += 1
-      Some(x)
-    } else {
-      None
-    }
-  }
-}
-
-impl[T] FiniteIterator[T] for ListIter[T] {
-  fn len(self) -> Natural {
-    if self.at < len(self.items) { len(self.items) - self.at } else { 0 }
-  }
-}
-
-/// A collection whose elements can be walked as an iterator: `xs.iter()`.
-/// (A list isn't an iterator itself: its `map` and `filter` are the
-/// builtins, which give lists.)
-trait Iterable[T] {
-  fn iter(self) -> ListIter[T]
-}
-
-impl[T] Iterable[T] for List[T] {
-  fn iter(self) -> ListIter[T] {
-    ListIter { items: self, at: 0 }
-  }
-}
-
-impl[T] Iterable[T] for Set[T] {
-  fn iter(self) -> ListIter[T] {
-    ListIter { items: to_list(self), at: 0 }
-  }
-}
-
-impl[K, V] Iterable[(K, V)] for Dict[K, V] {
-  fn iter(self) -> ListIter[(K, V)] {
-    ListIter { items: items(self), at: 0 }
-  }
-}
-
-/// A string's UTF-8 bytes (0 to 255), from byte `at`: `s.bytes()`.
-type Bytes = { text: String, at: Natural }
-
-impl Iterator[Int] for Bytes {
-  fn next(mut self) -> Option[Int] {
-    if self.at < byte_len(self.text) {
-      b := byte_at(self.text, self.at)
-      self.at += 1
-      Some(b)
-    } else {
-      None
-    }
-  }
-}
-
-impl FiniteIterator[Int] for Bytes {
-  fn len(self) -> Natural {
-    if self.at < byte_len(self.text) { byte_len(self.text) - self.at } else { 0 }
-  }
-}
-
-/// A string's code points (Unicode scalar values), from byte `at`:
-/// `s.code_points()`. Each is read once from its UTF-8 bytes.
-type CodePoints = { text: String, at: Natural }
-
-impl Iterator[Int] for CodePoints {
-  fn next(mut self) -> Option[Int] {
-    // from inside a code point's bytes (10xxxxxx), the next one's start
-    while self.at < byte_len(self.text) && byte_at(self.text, self.at) >= 128 && byte_at(self.text, self.at) < 192 {
-      self.at += 1
-    }
-    if self.at >= byte_len(self.text) {
-      return None
-    }
-    lead := byte_at(self.text, self.at)
-    if lead < 128 {
-      self.at += 1
-      return Some(lead)
-    }
-    // 110xxxxx, 1110xxxx or 11110xxx, then 10xxxxxx bytes
-    (n, first) := if lead >= 240 { (4, lead - 240) } else if lead >= 224 { (3, lead - 224) } else { (2, lead - 192) }
-    mut c := first
-    for k in 1..n {
-      c = c * 64 + (byte_at(self.text, self.at + k) - 128)
-    }
-    self.at += n
-    Some(c)
-  }
-}
-
-impl FiniteIterator[Int] for CodePoints {
-  fn len(self) -> Natural {
-    // the bytes that start a code point (not 10xxxxxx)
-    mut n := 0
-    for b in (Bytes { text: self.text, at: self.at }) {
-      if b < 128 || b >= 192 {
-        n += 1
-      }
-    }
-    n
-  }
-}
-
-/// A string's units, each an iterator: its UTF-8 bytes and its code points
-/// (a string is neither itself: the unit is always named). Its graphemes
-/// are `std.unicode`'s.
-trait TextUnits {
-  fn bytes(self) -> Bytes
-  fn code_points(self) -> CodePoints
-}
-
-impl TextUnits for String {
-  fn bytes(self) -> Bytes {
-    Bytes { text: self, at: 0 }
-  }
-
-  fn code_points(self) -> CodePoints {
-    CodePoints { text: self, at: 0 }
-  }
-}
-
-/// `Set { e for x in it }` on a finite iterator (`set(it)` on one).
-fn set_of[T, I: FiniteIterator[T]](it: I) -> Set[T] {
-  set(it.to_list())
-}
-
-/// `join(it, sep)` on a finite iterator of strings.
-fn join_of[I: FiniteIterator[String]](it: I, sep: String) -> String {
-  join(it.to_list(), sep)
-}
-
-/// `Dict { k: v for x in it }` on a finite iterator (`dict(it)` on one).
-fn dict_of[K, V, I: FiniteIterator[(K, V)]](it: I) -> Dict[K, V] {
-  dict(it.to_list())
-}
-
-/// A finite iterator mapped is as long.
-impl[I: FiniteIterator[A], A, B] FiniteIterator[B] for Mapped[I, A, B] {
-  fn len(self) -> Natural {
-    self.inner.len()
-  }
-}
-
-/// A finite iterator filtered: its length is counted, on a copy (the
-/// elements `keep` keeps).
-impl[I: FiniteIterator[T], T] FiniteIterator[T] for Filtered[I, T] {
-  fn len(self) -> Natural {
-    mut n := 0
-    for x in self.inner {
-      if (self.keep)(x) {
-        n += 1
-      }
-    }
-    n
-  }
-}
-"#;
-
 /// The builtins on lists that every iterator has as methods (lazy `map`
 /// and `filter`; `fold` on a `FiniteIterator`): called on an iterator, the
 /// call is its method's. Comprehensions are made of them.
 const ITERATOR_BUILTINS: &[&str] = &["map", "filter", "fold", "len", "get", "at", "slice", "take", "drop"];
 
 /// The built-in types with type arguments, which impls can be written for.
-const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String"];
+const BUILTIN_HEADS: &[&str] = &["List", "Set", "Dict", "String", "Sender", "Receiver"];
 
-/// The module the prelude's code is in, once added to a program.
-pub const PRELUDE_MODULE: &str = "std.prelude";
+/// Whether a module is one of core's code modules (`core.iter`, ...): what
+/// a program gets when it uses it (`with_prelude_code`), checked, compiled
+/// and run as the program's own, and skipped as the standard library is (by
+/// `verify`, the views). Its names are unqualified.
+pub fn is_prelude_module(m: &str) -> bool {
+    crate::core::CODE.contains(&m)
+}
 
 /// A name as messages show it: a prelude trait's method short
-/// (`fold`, not `std.prelude.fold`; `FiniteIterator::len`).
+/// (`fold`, not `core.iter.fold`; `FiniteIterator::len`).
 pub fn shown_name(name: &str) -> String {
-    let mut s = name.replace(&format!("{PRELUDE_MODULE}."), "");
+    let mut s = name.to_string();
+    for m in crate::core::CODE {
+        s = s.replace(&format!("{m}."), "");
+    }
     // a call through a prelude trait, as written (`self.len()`, not `self.FiniteIterator::len()`;
     // `len(..)`, not `FiniteIterator::len(..)`)
-    for t in prelude_traits() {
+    for (t, _) in prelude_traits() {
         s = s.replace(&format!(".{t}::"), ".");
         if let Some(rest) = s.strip_prefix(&format!("{t}::")) {
             s = rest.to_string();
@@ -438,21 +67,22 @@ pub fn shown_name(name: &str) -> String {
     s
 }
 
-/// The prelude's code, parsed once (`PRELUDE_CODE`).
+/// core's code modules (`core.iter`, `core.channel`, ...), read once: each
+/// trait's methods and each function named in its module (`core.iter.len`).
 pub fn prelude_code() -> &'static Program {
     static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
     P.get_or_init(|| {
-        let mut p = crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses");
+        let mut p = crate::core::code();
         for d in &mut p.decls {
-            d.module = Symbol::new(PRELUDE_MODULE);
+            let m = d.module;
             match &mut d.kind {
                 DeclKind::Trait(t) => {
-                    for m in &mut t.methods {
-                        m.decl.name = prelude_method(m.decl.name);
+                    for x in &mut t.methods {
+                        x.decl.name = prelude_method(m, x.decl.name);
                     }
                 }
-                // (named apart from the program's: `std.prelude.set_of`)
-                DeclKind::Fn(f) => f.name = prelude_method(f.name),
+                // (named apart from the program's: `core.iter.set_of`)
+                DeclKind::Fn(f) => f.name = prelude_method(m, f.name),
                 _ => {}
             }
         }
@@ -461,30 +91,28 @@ pub fn prelude_code() -> &'static Program {
     })
 }
 
-/// A method of a prelude trait as named once resolved (`std.prelude.len`),
+/// A method of a prelude trait as named once resolved (`core.iter.len`),
 /// as std's are named in their modules: apart from the builtins of the same
 /// name (`len(xs)` on a list).
-fn prelude_method(m: Symbol) -> Symbol {
-    Symbol::from(format!("{PRELUDE_MODULE}.{m}").as_str())
+fn prelude_method(module: Symbol, m: Symbol) -> Symbol {
+    Symbol::from(format!("{module}.{m}").as_str())
 }
 
-/// The traits of the prelude's code.
-fn prelude_traits() -> &'static [Symbol] {
-    static T: std::sync::OnceLock<Vec<Symbol>> = std::sync::OnceLock::new();
-    T.get_or_init(|| {
-        crate::parser::parse_program(PRELUDE_CODE).expect("prelude code parses").decls.iter().filter_map(|d| if let DeclKind::Trait(t) = &d.kind { Some(t.name) } else { None }).collect()
-    })
+/// The traits of core's code, with their modules.
+fn prelude_traits() -> &'static [(Symbol, Symbol)] {
+    static T: std::sync::OnceLock<Vec<(Symbol, Symbol)>> = std::sync::OnceLock::new();
+    T.get_or_init(|| crate::core::code().decls.iter().filter_map(|d| if let DeclKind::Trait(t) = &d.kind { Some((t.name, d.module)) } else { None }).collect())
 }
 
 /// The methods of each impl of a prelude trait named as the trait's are
-/// (`fn len` in `impl FiniteIterator[Int] for Count` is `std.prelude.len`).
+/// (`fn len` in `impl FiniteIterator[Int] for Count` is `core.iter.len`).
 fn qualify_prelude_impls(p: &mut Program) {
     for d in &mut p.decls {
         if let DeclKind::Impl(i) = &mut d.kind {
-            if prelude_traits().contains(&i.trait_name) {
-                for m in &mut i.methods {
-                    if !m.name.contains('.') {
-                        m.name = prelude_method(m.name);
+            if let Some((_, m)) = prelude_traits().iter().find(|(t, _)| *t == i.trait_name) {
+                for x in &mut i.methods {
+                    if !x.name.contains('.') {
+                        x.name = prelude_method(*m, x.name);
                     }
                 }
             }
@@ -492,13 +120,14 @@ fn qualify_prelude_impls(p: &mut Program) {
     }
 }
 
-/// `p` with the prelude's code after its own definitions, unless it has it
-/// already (resolved before), and its impls of the prelude's traits naming
-/// their methods as the traits do.
+/// `p` with the code of core it uses (`core::needed`) after its own
+/// definitions, unless it has it already (resolved before), and its impls
+/// of the prelude's traits naming their methods as the traits do.
 pub fn with_prelude_code(p: &mut Program) {
-    if !p.decls.iter().any(|d| d.module == PRELUDE_MODULE) {
+    if !p.decls.iter().any(|d| is_prelude_module(&d.module)) {
         qualify_prelude_impls(p);
-        p.decls.extend(prelude_code().decls.iter().cloned());
+        let used = crate::core::needed(p);
+        p.decls.extend(prelude_code().decls.iter().filter(|d| used.contains(d.module.as_str())).cloned());
     }
 }
 
@@ -510,20 +139,52 @@ pub struct Builtin {
     pub params: &'static str,
     pub sig: &'static str,
     pub total: bool,
+    /// its declaration in `core.builtins` (std's host operations have none)
+    pub decl: Option<&'static FnDecl>,
+    /// raw memory (`core.mem`): only core's own modules can call it
+    pub core_only: bool,
 }
 
 impl Builtin {
     pub const fn new(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
-        Builtin { name, params, sig, total: false }
+        Builtin { name, params, sig, total: false, decl: None, core_only: false }
     }
-    pub const fn total(name: &'static str, params: &'static str, sig: &'static str) -> Builtin {
-        Builtin { name, params, sig, total: true }
-    }
+}
+
+/// The builtin functions (`core.builtins`), each signature once, in the
+/// order written: total when they have no `requires` (and fail in no way
+/// not yet written as one, `core::NOT_YET_CONTRACTS`).
+pub fn builtins() -> &'static [Builtin] {
+    static B: std::sync::OnceLock<Vec<Builtin>> = std::sync::OnceLock::new();
+    B.get_or_init(|| {
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        crate::core::builtin_fns()
+            .map(|(module, f)| {
+                let core_only = module == crate::core::MEM;
+                let params: Vec<String> = f.params.iter().map(|p| crate::printer::ty(&p.ty)).collect();
+                let tps: Vec<&str> = f.type_params.iter().map(|t| t.as_str()).collect();
+                Builtin {
+                    name: f.name.as_str(),
+                    params: leak(tps.join(",")),
+                    sig: leak(format!("({}) -> {}", params.join(", "), crate::printer::ty(&f.ret))),
+                    // (raw memory is never total: nothing checks an address)
+                    total: f.requires.is_empty() && !core_only && !crate::core::NOT_YET_CONTRACTS.contains(&f.name.as_str()),
+                    decl: Some(f),
+                    core_only,
+                }
+            })
+            .collect()
+    })
+}
+
+/// Using raw memory (`core.mem`'s `Ptr` and functions) outside core.
+fn core_only_error(name: &str) -> String {
+    format!("`{name}` is core's: only core's modules can use raw memory (`core.mem`)")
 }
 
 /// Whether every overload of the builtin `name` always returns.
 pub fn total_builtin(name: &str) -> bool {
-    let mut all = BUILTINS.iter().filter(|b| b.name == name).peekable();
+    let mut all = builtins().iter().filter(|b| b.name == name).peekable();
     all.peek().is_some() && all.all(|b| b.total)
 }
 
@@ -535,126 +196,19 @@ pub fn union_alias(t: &TypeDecl) -> bool {
     matches!(t.body, TypeBody::Alias(TypeExpr::Union(_))) && !t.distinct && t.refinement.is_none()
 }
 
-/// The types every program has without defining them, by the names code
-/// writes (a tuple is written `(A, B)` and `()` is written so: `Tuple` and
-/// `Unit` are free to name other things).
-pub const BUILTIN_TYPES: [&str; 7] = ["Int", "Float", "Bool", "String", "List", "Set", "Dict"];
-
-pub fn prelude() -> &'static Program {
-    static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
-    P.get_or_init(|| crate::parser::parse_program(PRELUDE).expect("prelude parses"))
+/// The types every program has without defining them (`core.types`'
+/// `builtin type`s), by the names code writes (a tuple is written `(A, B)`
+/// and `()` is written so: `Tuple` and `Unit` are free to name other things).
+pub fn builtin_types() -> &'static [&'static str] {
+    static T: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    T.get_or_init(|| crate::core::builtin_types().iter().map(|(t, _)| t.as_str()).collect())
 }
 
-/// Builtin functions and their type schemes.
-pub const BUILTINS: &[Builtin] = &[
-    Builtin::total("len", "A", "(List[A]) -> Int"),
-    Builtin::total("len", "K,V", "(Dict[K, V]) -> Int"),
-    Builtin::total("len", "A", "(Set[A]) -> Int"),
-    Builtin::total("contains", "A", "(Set[A], A) -> Bool"),
-    Builtin::total("contains", "K,V", "(Dict[K, V], K) -> Bool"),
-    Builtin::total("contains", "", "(String, String) -> Bool"),
-    Builtin::total("get", "K,V", "(Dict[K, V], K) -> Option[V]"),
-    Builtin::total("dict", "K,V", "(List[(K, V)]) -> Dict[K, V]"),
-    Builtin::total("insert", "K,V", "(Dict[K, V], K, V) -> Dict[K, V]"),
-    Builtin::total("insert", "A", "(Set[A], A) -> Set[A]"),
-    Builtin::total("remove", "K,V", "(Dict[K, V], K) -> Dict[K, V]"),
-    Builtin::total("remove", "A", "(Set[A], A) -> Set[A]"),
-    Builtin::total("keys", "K,V", "(Dict[K, V]) -> List[K]"),
-    Builtin::total("values", "K,V", "(Dict[K, V]) -> List[V]"),
-    Builtin::total("items", "K,V", "(Dict[K, V]) -> List[(K, V)]"),
-    Builtin::total("map_values", "K,V,W", "(Dict[K, V], (V) -> W) -> Dict[K, W]"),
-    Builtin::total("set", "A", "(List[A]) -> Set[A]"),
-    Builtin::total("to_list", "A", "(Set[A]) -> List[A]"),
-    Builtin::total("union", "A", "(Set[A], Set[A]) -> Set[A]"),
-    Builtin::total("intersection", "A", "(Set[A], Set[A]) -> Set[A]"),
-    Builtin::total("difference", "A", "(Set[A], Set[A]) -> Set[A]"),
-    Builtin::total("zip", "A,B", "(List[A], List[B]) -> List[(A, B)]"),
-    Builtin::total("enumerate", "A", "(List[A]) -> List[(Int, A)]"),
-    Builtin::total("sort", "A", "(List[A]) -> List[A]"),
-    Builtin::total("sort_by", "A,B", "(List[A], (A) -> B) -> List[A]"),
-    Builtin::total("reverse", "A", "(List[A]) -> List[A]"),
-    Builtin::total("join", "", "(List[String], String) -> String"),
-    Builtin::total("split", "", "(String, String) -> List[String]"),
-    Builtin::total("trim", "", "(String) -> String"),
-    Builtin::total("parse_int", "", "(String) -> Option[Int]"),
-    Builtin::new("parse_float", "", "(String) -> Option[Float]"),
-    Builtin::new("float", "", "(Int) -> Float"),
-    // the IEEE 754 bits of a float, from 0 to 2^64 - 1, and back (`None` for a NaN's)
-    Builtin::total("float_bits", "", "(Float) -> Int"),
-    Builtin::total("float_from_bits", "", "(Int) -> Option[Float]"),
-    Builtin::new("floor", "", "(Float) -> Int"),
-    Builtin::new("ceil", "", "(Float) -> Int"),
-    Builtin::new("round", "", "(Float) -> Int"),
-    Builtin::new("sqrt", "", "(Float) -> Float"),
-    // the operations on floats without their fault: `None` where the result
-    // isn't a finite number (for code that can't rule that out, as an
-    // evaluator of other programs)
-    Builtin::total("checked_add", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_sub", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_mul", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_div", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_rem", "", "(Float, Float) -> Option[Float]"),
-    Builtin::total("checked_sqrt", "", "(Float) -> Option[Float]"),
-    Builtin::total("checked_floor", "", "(Float) -> Option[Int]"),
-    Builtin::total("checked_ceil", "", "(Float) -> Option[Int]"),
-    Builtin::total("checked_round", "", "(Float) -> Option[Int]"),
-    Builtin::total("map", "A,B", "(List[A], (A) -> B) -> List[B]"),
-    Builtin::total("filter", "A", "(List[A], (A) -> Bool) -> List[A]"),
-    Builtin::total("fold", "A,B", "(List[A], B, (B, A) -> B) -> B"),
-    Builtin::total("all", "A", "(List[A], (A) -> Bool) -> Bool"),
-    Builtin::total("any", "A", "(List[A], (A) -> Bool) -> Bool"),
-    Builtin::total("contains", "A", "(List[A], A) -> Bool"),
-    Builtin::total("push", "A", "(List[A], A) -> List[A]"),
-    Builtin::total("take", "A", "(List[A], Int) -> List[A]"),
-    Builtin::total("drop", "A", "(List[A], Int) -> List[A]"),
-    Builtin::total("find", "A", "(List[A], (A) -> Bool) -> Option[A]"),
-    Builtin::total("count", "A", "(List[A], (A) -> Bool) -> Int"),
-    Builtin::total("get", "A", "(List[A], Int) -> Option[A]"),
-    // `xs[i]`: fails unless `0 <= i < len(xs)`
-    Builtin::new("at", "A", "(List[A], Int) -> A"),
-    Builtin::total("sum", "", "(List[Int]) -> Int"),
-    Builtin::total("sum", "", "(List[Float]) -> Float"),
-    Builtin::new("range", "", "(Int, Int) -> List[Int]"),
-    Builtin::total("abs", "", "(Int) -> Int"),
-    Builtin::total("abs", "", "(Float) -> Float"),
-    Builtin::total("min", "", "(Int, Int) -> Int"),
-    Builtin::total("min", "", "(Float, Float) -> Float"),
-    Builtin::total("max", "", "(Int, Int) -> Int"),
-    Builtin::total("max", "", "(Float, Float) -> Float"),
-    Builtin::new("matches", "", "(String, String) -> Bool"),
-    Builtin::total("starts_with", "", "(String, String) -> Bool"),
-    // strings are UTF-8: positions in them are byte offsets (`index_of`,
-    // `byte_slice`); counting and indexing name a unit (`s.graphemes()[i]`)
-    Builtin::new("ends_with", "", "(String, String) -> Bool"),
-    Builtin::new("chars", "", "(String) -> List[String]"),
-    Builtin::new("slice", "A", "(List[A], Int, Int) -> List[A]"),
-    // the byte offset of the first match ("" is found at 0)
-    Builtin::new("index_of", "", "(String, String) -> Option[Int]"),
-    // the bytes from offset `a` to `b`, clamped to the string; an offset inside a
-    // character moves back to its start
-    Builtin::total("byte_slice", "", "(String, Int, Int) -> String"),
-    Builtin::total("replace", "", "(String, String, String) -> String"),
-    Builtin::new("lines", "", "(String) -> List[String]"),
-    Builtin::total("repeat", "", "(String, Int) -> String"),
-    Builtin::total("reverse", "", "(String) -> String"),
-    Builtin::new("to_upper", "", "(String) -> String"),
-    Builtin::new("to_lower", "", "(String) -> String"),
-    Builtin::new("is_digit", "", "(String) -> Bool"),
-    Builtin::new("is_alpha", "", "(String) -> Bool"),
-    Builtin::new("is_space", "", "(String) -> Bool"),
-    Builtin::new("ord", "", "(String) -> Int"),
-    // a string's UTF-8 bytes, what `s.bytes()` / `s.code_points()` read (the prelude's)
-    Builtin::total("byte_len", "", "(String) -> Int"),
-    Builtin::new("byte_at", "", "(String, Int) -> Int"),
-    Builtin::new("chr", "", "(Int) -> String"),
-    Builtin::total("to_string", "A", "(A) -> String"),
-    Builtin::total("debug", "A", "(A) -> String"),
-    // the value as compact JSON, as `strata run` writes it
-    Builtin::total("to_json", "A", "(A) -> String"),
-    // a line of output, shown as by `to_string`: on the terminal under `strata run`,
-    // into the test's own buffer under `strata test`, nowhere under `verify`
-    Builtin::new("print", "A", "(A) -> ()"),
-];
+/// The types and traits every program names (`core.types`), read once.
+pub fn prelude() -> &'static Program {
+    static P: std::sync::OnceLock<Program> = std::sync::OnceLock::new();
+    P.get_or_init(crate::core::types)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ty {
@@ -741,6 +295,9 @@ pub enum Target {
     /// module's method of the same name (`console.write(s)` with `Files`
     /// imported after `Console`). Written as `Trait::method`.
     Other(String, String),
+    /// An integer literal of a sized type: written as its conversion,
+    /// `to_u32(5)`, so what runs and what is proven see the type.
+    Sized(Width),
 }
 
 /// A type as passed at runtime: a type with its arguments (`List[Int]`),
@@ -903,7 +460,7 @@ pub fn check_resolved(mut r: crate::resolve::Resolution) -> Checked {
     let compiled = rooted(&r.program);
     // (before a rewrite moves the expressions the types are keyed by)
     annotate_lambdas(&mut r.program, &types);
-    if !needs_rewrite(&env) {
+    if !needs_rewrite(&env) && !targets.iter().any(|(_, t)| matches!(t, Target::Sized(_))) {
         let (env, _) = Env::build(&r.program);
         return Checked { report, program: r.program, env, compiled };
     }
@@ -947,7 +504,7 @@ fn needs_rewrite(env: &Env) -> bool {
     // a trait method named like a builtin (`Files.remove`) may mean the builtin
     // or two modules' traits share a method name (`Console.write`, `Files.write`)
     let mut shorts: Vec<&str> = env.traits.values().flat_map(|t| t.methods.iter().map(|m| crate::names::short(&m.decl.name))).collect();
-    let like_builtin = shorts.iter().any(|s| BUILTINS.iter().any(|b| b.name == *s));
+    let like_builtin = shorts.iter().any(|s| builtins().iter().any(|b| b.name == *s));
     shorts.sort();
     let across = shorts.windows(2).any(|w| w[0] == w[1]);
     !(env.inherent.is_empty() && !shared && !statics && !like_builtin && !across)
@@ -1031,6 +588,13 @@ fn rewrite_node(e: &mut Expr, t: Option<&Target>, types: &mut HashMap<usize, Ty>
             (Target::Other(tr, mq), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(trait_call(tr, mq))),
             (Target::Builtin(b), Expr::Method(_, m, _)) => *m = Symbol::from(b.as_str()),
             (Target::Builtin(b), Expr::Call(f, _)) => **f = Expr::Var(Symbol::from(b.as_str())),
+            (Target::Sized(w), Expr::Int(_) | Expr::BigInt(_) | Expr::Un(UnOp::Neg, _)) => {
+                let lit = std::mem::replace(e, Expr::Unit);
+                *e = Expr::Call(Box::new(Expr::Var(Symbol::from(w.to_fn().as_str()))), vec![lit]);
+                if let Expr::Call(_, args) = &*e {
+                    types.insert(addr(&args[0]), Ty::Int);
+                }
+            }
             _ => {}
         }
     }
@@ -1136,6 +700,12 @@ impl<F: Fn() -> String> Label for Lazy<F> {
 
 struct Checker<'a> {
     env: &'a Env,
+    /// checking one of core's own definitions: it may use raw memory (`core.mem`)
+    in_core: bool,
+    /// checking a function of core.rt (the allocator, which allocates
+    /// nothing): each arithmetic operation met and its type, refused on
+    /// `Int` (a big integer past 2^62), `String` or `List` once known
+    core_rt: Option<Vec<(&'static str, Ty)>>,
     subst: Vec<Option<Ty>>,
     scopes: Vec<HashMap<Symbol, Ty>>,
     rigid: BTreeSet<Symbol>,
@@ -1167,8 +737,15 @@ struct Checker<'a> {
     pending: Vec<(Ty, String, Vec<Ty>, String)>,
     /// Scopes below this index belong outside the closure being checked.
     lambda_floor: usize,
+    /// Inside a `scope` (and no closure or `spawn` since): the index of its
+    /// first variable scope; a `spawn` needs one.
+    task_floor: Option<usize>,
+    /// Checking a `spawn`'s expression: `return`, `!` and `?` can't leave it.
+    in_spawn: bool,
     /// How many loops enclose the code being checked (for `break`/`continue`).
     loops: usize,
+    /// The body of the loop being checked (by node): where `invariant` may be written.
+    loop_body: usize,
     /// Written types of immutable variables, for the refinements a `match`
     /// can rely on (`n: Positive`); scopes hold `written:x` -> index here.
     written: Vec<TypeExpr>,
@@ -1497,7 +1074,16 @@ impl<'a> Checker<'a> {
                     "Bool" => Ty::Bool,
                     "String" => Ty::Str,
                     "Unit" => Ty::Unit,
+                    s if largs.is_empty() && Width::of(s).is_some() => Ty::Con(n.sym(), vec![]),
                     "List" if largs.len() == 1 => Ty::Con("List".into(), largs),
+                    "Sender" if largs.len() == 1 => Ty::Con("Sender".into(), largs),
+                    "Receiver" if largs.len() == 1 => Ty::Con("Receiver".into(), largs),
+                    "Ptr" if largs.is_empty() => {
+                        if !self.in_core {
+                            self.err(core_only_error("Ptr"));
+                        }
+                        Ty::Con("Ptr".into(), vec![])
+                    }
                     _ => match self.env.types.get(&n.sym()) {
                         Some(td) => {
                             if td.params.len() != largs.len() {
@@ -1981,17 +1567,40 @@ impl<'a> Checker<'a> {
         self.scopes.pop();
     }
 
+    /// A `builtin fn`'s signature: its contracts are about its parameters
+    /// (`requires 0 <= i && i < len(xs)`).
+    fn check_builtin_fn(&mut self, f: &FnDecl) {
+        self.rigid.extend(f.type_params.iter().cloned());
+        self.scopes.push(HashMap::default());
+        for p in &f.params {
+            let t = self.lower(&p.ty, &HashMap::default());
+            self.bind(p.name, t);
+        }
+        let ret = self.lower(&f.ret, &HashMap::default());
+        for r in &f.requires {
+            let t = self.infer(r);
+            self.expect(&Ty::Bool, &t, "requires clause");
+        }
+        self.scopes.push(HashMap::default());
+        self.bind(("it").sym(), ret);
+        for en in &f.ensures {
+            let t = self.infer(en);
+            self.expect(&Ty::Bool, &t, "ensures clause");
+        }
+        self.scopes.pop();
+        self.scopes.pop();
+    }
+
     /// Whether a type crosses the C ABI: a sized integer, `Float`, `Bool`,
     /// `String` (copied each way), `()`, or an `extern c type` handle. A `mut`
     /// parameter is an out-pointer, so it can't be a `String` or `()`.
     fn ffi_type(&self, t: &TypeExpr, mutable: bool) -> Result<(), String> {
-        const SIZED: [&str; 8] = ["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"];
         let shown = crate::printer::ty(t);
         match t {
             TypeExpr::Unit if !mutable => Ok(()),
             TypeExpr::Named(n, args) if args.is_empty() => {
                 let n = n.as_str();
-                if SIZED.contains(&n) || n == "Float" || n == "Bool" || self.env.externs.contains_key(&n.sym()) {
+                if Width::of(n).is_some() || n == "Float" || n == "Bool" || self.env.externs.contains_key(&n.sym()) {
                     Ok(())
                 } else if n == "String" && !mutable {
                     Ok(())
@@ -2066,6 +1675,13 @@ impl<'a> Checker<'a> {
     fn global_fn(&mut self, name: &str) -> Option<Ty> {
         // the environment outlives the checker: borrow from it, don't copy
         let env = self.env;
+        // core's `builtin static`: its block's address
+        if env.statics.contains_key(&name.sym()) {
+            if !self.in_core {
+                self.err(core_only_error(crate::names::short(name)));
+            }
+            return Some(Ty::Con("Ptr".into(), vec![]));
+        }
         if let Some(f) = env.fns.get(&name.sym()) {
             let vars: HashMap<Symbol, Ty> = f.type_params.iter().map(|p| (p.clone(), self.fresh())).collect();
             let fty = self.lower(&Self::fn_scheme(&f), &vars);
@@ -2089,7 +1705,7 @@ impl<'a> Checker<'a> {
             let tn = tr.name.clone();
             return Some(self.trait_method(name, &tn));
         }
-        if self.env.is_method(name.sym()) {
+        if self.env.is_method_on_receiver(name.sym()) {
             let short = crate::names::short(&name);
             self.err(format!("which `{short}` runs depends on the type of the value it is called on (several types or traits have one): call it on a value, or pass a lambda such as `x -> x.{short}()`"));
             return Some(self.fresh());
@@ -2100,9 +1716,17 @@ impl<'a> Checker<'a> {
     /// The type of the builtin `name` (or std's host operation), whatever else
     /// the name means.
     fn builtin_fn(&mut self, name: &str) -> Option<Ty> {
-        let Builtin { params: ps, sig, .. } = BUILTINS.iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        let Builtin { params: ps, sig, core_only, .. } = builtins().iter().chain(crate::stdlib::HOST).find(|b| b.name == name)?;
+        if *core_only && !self.in_core {
+            self.err(core_only_error(name));
+        }
         let ps: Vec<Symbol> = ps.split(',').filter(|s| !s.is_empty()).map(Symbol::from).collect();
-        Some(self.instantiate(&ps, &parse_type_str(sig)))
+        // (its signature's `Ptr` is said once, by the call)
+        let outer = self.in_core;
+        self.in_core = outer || *core_only;
+        let t = self.instantiate(&ps, &parse_type_str(sig));
+        self.in_core = outer;
+        Some(t)
     }
 
     /// A method name means the method of that name among the traits of the
@@ -2228,7 +1852,7 @@ impl<'a> Checker<'a> {
             self.pending.truncate(snap.1);
             return None;
         }
-        let f = prelude_method(Symbol::from(target));
+        let f = prelude_method(Symbol::new("core.iter"), Symbol::from(target));
         self.targets.push((site, Target::Own(f.to_string())));
         let ft = self.global_fn(&f)?;
         Some(self.call_with(ft, args, &Lazy(|| format!("call to `{n}`")), &[]))
@@ -2284,12 +1908,12 @@ impl<'a> Checker<'a> {
         // A trait method named like a built-in one (`find`) is the trait's only
         // on a receiver whose type implements it: on a list, the built-in
         // (decided below, by the receiver's traits).
-        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method(m.sym()) && BUILTINS.iter().any(|b| b.name == m);
+        let builtin_too = dotted && self.lookup(m.sym()).is_none() && self.env.is_method_on_receiver(m.sym()) && builtins().iter().any(|b| b.name == m);
         if !builtin_too && (self.lookup(m.sym()).is_some() || self.env.fns.contains_key(&Symbol::new(m))) {
             if !dotted || !all.first().is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if !builtin_too && (split_trait_call(m).is_some() || !self.env.is_method(m.sym())) {
+        } else if !builtin_too && (split_trait_call(m).is_some() || !self.env.is_method_on_receiver(m.sym())) {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -2335,6 +1959,8 @@ impl<'a> Checker<'a> {
                     if let Some(imp) = env.inherent.get(h) {
                         if let Some(f) = imp.methods.iter().find(|x| short(&x.name) == sm && crate::resolve::takes_self(x)) {
                             self.targets.push((site, Target::Own(crate::resolve::static_name(h, &f.name))));
+                            // its `mut` parameters, `mut self` included, say so at the call
+                            self.check_mut_params(&f.params, &sm, all, recv_marked);
                             let ft = self.own_method_ty(&imp, &f);
                             let muts: Vec<Option<TypeExpr>> = f.params.iter().map(|p| p.mutable.then(|| p.ty.clone())).collect();
                             return Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &muts));
@@ -2362,7 +1988,7 @@ impl<'a> Checker<'a> {
                 let muts = self.mut_mask(&mq);
                 Some(self.call_with(ft, all, &Lazy(|| format!("call to `{sm}`")), &muts))
             }
-            [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && BUILTINS.iter().any(|b| b.name == sm) => {
+            [] if head.as_deref().is_some_and(|h| ["Int", "Float", "Bool", "String", "List", "Dict", "Set"].contains(&h)) && builtins().iter().any(|b| b.name == sm) => {
                 self.targets.push((site, Target::Builtin(sm.clone())));
                 if let Some(t) = self.overloaded(sm.sym(), all) {
                     return Some(t);
@@ -2402,7 +2028,7 @@ impl<'a> Checker<'a> {
             if !dotted || !recv.is_some_and(|r| self.has_own_method(r, m)) {
                 return None;
             }
-        } else if !self.env.is_method(m.sym()) || self.env.method_contract(m).is_some() {
+        } else if !(self.env.is_method_on_receiver(m.sym())) || self.env.method_contract(m).is_some() {
             return None;
         }
         let short = |q: &str| crate::names::short(q).to_string();
@@ -2880,15 +2506,237 @@ impl<'a> Checker<'a> {
         }
         let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
         let loops = std::mem::take(&mut self.loops);
+        // (a lambda in a `scope` may spawn into it: a comprehension's body is
+        // one; one holding a handle can't leave the scope, by its type)
+        let tasks = (self.task_floor, std::mem::take(&mut self.in_spawn));
         let r = self.fresh();
         let outer = self.ret.replace(r.clone());
         let bt = self.infer(body);
         self.expect(&r, &bt, "lambda body");
         self.ret = outer;
         self.loops = loops;
+        (self.task_floor, self.in_spawn) = tasks;
         self.lambda_floor = floor;
         self.scopes.pop();
         Ty::Fn(pts, Box::new(r))
+    }
+
+    /// Whether a type holds a channel's sender anywhere.
+    fn holds_sender(&self, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Con(n, args) => n == "Sender" || args.iter().any(|a| self.holds_sender(a)),
+            Ty::Union(ms) => ms.iter().any(|m| self.holds_sender(m)),
+            _ => false,
+        }
+    }
+
+    /// Whether a type holds a task's handle anywhere.
+    fn holds_task(&self, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Con(n, args) => n == "Task" || args.iter().any(|a| self.holds_task(a)),
+            Ty::Fn(ps, r) => ps.iter().any(|p| self.holds_task(p)) || self.holds_task(&r),
+            Ty::Union(ms) => ms.iter().any(|m| self.holds_task(m)),
+            _ => false,
+        }
+    }
+
+    /// `spawn e`: `e` checked as a closure's body (its captures are copies,
+    /// it can't change outer variables), in a task of the enclosing `scope`.
+    fn spawn(&mut self, body: &Expr) -> Ty {
+        if self.task_floor.is_none() {
+            self.err("`spawn` outside a `scope`: tasks are started in a `scope { … }`, which waits for them (a function that starts tasks opens its own)");
+        }
+        self.scopes.push(HashMap::default());
+        let floor = std::mem::replace(&mut self.lambda_floor, self.scopes.len() - 1);
+        let loops = std::mem::take(&mut self.loops);
+        let tasks = (self.task_floor.take(), std::mem::replace(&mut self.in_spawn, true));
+        let outer = self.ret.take();
+        let t = self.infer(body);
+        self.ret = outer;
+        // each sender it captures is this task's copy, to close
+        let mut seen = HashSet::default();
+        for x in free_vars(body) {
+            if !seen.insert(x) {
+                continue;
+            }
+            let Some(idx) = self.scopes.iter().rposition(|s| s.contains_key(&x)) else { continue };
+            if idx >= self.scopes.len() - 1 {
+                continue;
+            }
+            let xt = self.resolve(&self.scopes[idx][&x].clone());
+            match &xt {
+                Ty::Con(n, _) if n == "Sender" => {
+                    if !closes(body, x) {
+                        self.err(format!("the task holds a copy of `{x}` and never closes it: call `{x}.close()` in it when it is done sending"));
+                    }
+                }
+                _ if self.holds_sender(&xt) => {
+                    self.err(format!("a task (a `spawn`, a `race` arm) can capture a sender only on its own (a variable holding it): `{x}` holds one inside"));
+                }
+                _ => {}
+            }
+        }
+        self.loops = loops;
+        (self.task_floor, self.in_spawn) = tasks;
+        self.lambda_floor = floor;
+        self.scopes.pop();
+        if self.holds_task(&t) {
+            self.err("a task can't give back another task's handle: await it in the task");
+        }
+        Ty::Con("Task".into(), vec![t])
+    }
+
+    /// `select { op as x => body, … }`: each `op` is `rx.recv()` (`x` an
+    /// `Option`), `tx.send(v)` (no result) or `await h` (`x` the result).
+    fn select(&mut self, arms: &[SelectArm], expected: Option<&Ty>) -> Ty {
+        if arms.is_empty() {
+            self.err("a `select` needs at least one arm");
+        }
+        let mut rt: Option<Ty> = None;
+        for a in arms {
+            let got: Option<Ty> = match &a.op {
+                Expr::Method(r, m, args) if m == "recv" && args.is_empty() => {
+                    let t = self.infer(r);
+                    let el = self.fresh();
+                    self.expect(&Ty::Con("Receiver".into(), vec![el.clone()]), &t, "`recv` in a `select`");
+                    Some(Ty::Con("Option".into(), vec![el]))
+                }
+                // a timer: `clock.after(d)`, `d` from the select's start (std.time)
+                Expr::Method(c, m, args) if m == "after" && args.len() == 1 => {
+                    let ct = self.infer(c);
+                    // its time is that clock's (`now`): the system's, or a stand-in
+                    if self.satisfies(&ct, "std.time.Clock", &[], 0).is_err() {
+                        let shown = self.show(&ct);
+                        self.err(format!("an `after` arm waits on a clock: `{shown}` doesn't implement `Clock` (std.time)"));
+                    }
+                    let want = Ty::Con("std.time.Duration".into(), vec![]);
+                    let dt = self.infer_with(&args[0], Some(&want));
+                    self.expect(&want, &dt, "the time an `after` arm waits");
+                    if a.name.is_some() {
+                        self.err("an `after` arm gives nothing to name: drop its `as`");
+                    }
+                    None
+                }
+                Expr::Method(s, m, args) if m == "send" && args.len() == 1 => {
+                    let t = self.infer(s);
+                    let el = self.fresh();
+                    self.expect(&Ty::Con("Sender".into(), vec![el.clone()]), &t, "`send` in a `select`");
+                    let vt = self.infer_with(&args[0], Some(&el));
+                    self.expect(&el, &vt, "the value sent");
+                    if a.name.is_some() {
+                        self.err("a `send` arm gives nothing to name: drop its `as`");
+                    }
+                    None
+                }
+                Expr::Await(h) => {
+                    let t = self.infer(h);
+                    let r = self.fresh();
+                    self.expect(&Ty::Con("Task".into(), vec![r.clone()]), &t, "`await` in a `select`");
+                    Some(r)
+                }
+                _ => {
+                    self.err("a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`");
+                    self.infer(&a.op);
+                    None
+                }
+            };
+            self.scopes.push(HashMap::default());
+            if let (Some(n), Some(t)) = (a.name, got) {
+                self.bind(n, t);
+            }
+            let bt = self.infer_at(&a.body, expected);
+            rt = Some(match rt {
+                Some(r) if expected.is_some() => {
+                    self.expect(&r, &bt, "select arm");
+                    r
+                }
+                Some(r) => self.join_union(&r, &bt, "select arms"),
+                None => bt,
+            });
+            self.scopes.pop();
+        }
+        rt.unwrap_or_else(|| self.fresh())
+    }
+
+    /// `race { e as x => body, … }`: each `e` runs as a task of the race's
+    /// own (checked as a `spawn`'s body), `x` its result; the bodies as a
+    /// `select`'s arms.
+    fn race(&mut self, arms: &[SelectArm], expected: Option<&Ty>) -> Ty {
+        if arms.is_empty() {
+            self.err("a `race` needs at least one arm");
+        }
+        let outer = self.task_floor.replace(self.scopes.len());
+        let results: Vec<Ty> = arms
+            .iter()
+            .map(|a| {
+                // `supervised e`: the arm's task is `e`'s, its result a `Result`
+                let (op, supervised) = match &a.op {
+                    Expr::SupervisedSpawn(x) => (&**x, true),
+                    op => (op, false),
+                };
+                let t = match self.spawn(op) {
+                    Ty::Con(_, mut r) => r.remove(0),
+                    t => t,
+                };
+                if supervised { Ty::Con("Result".into(), vec![t, Ty::Con("Panic".into(), vec![])]) } else { t }
+            })
+            .collect();
+        self.task_floor = outer;
+        let mut rt: Option<Ty> = None;
+        for (a, t) in arms.iter().zip(results) {
+            self.scopes.push(HashMap::default());
+            if let Some(n) = a.name {
+                self.bind(n, t);
+            }
+            let bt = self.infer_at(&a.body, expected);
+            rt = Some(match rt {
+                Some(r) if expected.is_some() => {
+                    self.expect(&r, &bt, "race arm");
+                    r
+                }
+                Some(r) => self.join_union(&r, &bt, "race arms"),
+                None => bt,
+            });
+            self.scopes.pop();
+        }
+        rt.unwrap_or_else(|| self.fresh())
+    }
+
+    /// A sender made in this block (`(tx, rx) := channel(…)`) must be closed
+    /// in it: otherwise its receivers wait forever. (A `spawn`'s copy is its
+    /// own task's to close: one inside a `spawn` doesn't count.)
+    fn check_senders_closed(&mut self, stmts: &[Stmt], last: &Expr) {
+        for (i, s) in stmts.iter().enumerate() {
+            let Stmt::Let(Pattern::Tuple(ps), _, Expr::Call(f, _)) = s else { continue };
+            let (Expr::Var(c), Some(Pattern::Bind(tx))) = (&**f, ps.first()) else { continue };
+            if c != "channel" || self.lookup(c.sym()).is_some() {
+                continue;
+            }
+            let rest = stmts[i + 1..].iter().map(|s| Expr::Block(vec![s.clone()], Box::new(Expr::Unit)));
+            if !rest.chain(std::iter::once(last.clone())).any(|e| closes(&e, *tx)) {
+                self.err(format!("`{tx}` is never closed here, so its receivers would wait forever: call `{tx}.close()` when this task is done sending (each task holding it closes its own)"));
+            }
+        }
+    }
+
+    /// `await h`: the result of a task, or of each task of a tuple or list of handles.
+    fn awaited(&mut self, h: &Expr) -> Ty {
+        let t = self.infer(h);
+        match self.resolve(&t) {
+            Ty::Con(n, a) if n == "Task" && a.len() == 1 => a[0].clone(),
+            Ty::Con(n, a) if n == "Tuple" && !a.is_empty() && a.iter().all(|x| matches!(self.resolve(x), Ty::Con(m, _) if m == "Task")) => {
+                Ty::Con("Tuple".into(), a.iter().map(|x| match self.resolve(x) { Ty::Con(_, b) => b[0].clone(), _ => unreachable!() }).collect())
+            }
+            Ty::Con(n, a) if n == "List" && a.len() == 1 && matches!(self.resolve(&a[0]), Ty::Con(m, _) if m == "Task") => {
+                let Ty::Con(_, b) = self.resolve(&a[0]) else { unreachable!() };
+                Ty::Con("List".into(), vec![b[0].clone()])
+            }
+            other => {
+                let shown = self.show(&other);
+                self.err(format!("`await` takes a task's handle (what `spawn` gives), or a tuple or list of them; found `{shown}`"));
+                self.fresh()
+            }
+        }
     }
 
     fn record_hole(&mut self, name: &str, t: Ty) {
@@ -2942,10 +2790,35 @@ impl<'a> Checker<'a> {
 
     fn infer_node(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
         match e {
-            Expr::Int(_) | Expr::BigInt(_) => Ty::Int,
+            Expr::Int(_) | Expr::BigInt(_) => self.int_literal(e, expected),
             Expr::Float(_) => Ty::Float,
             Expr::Tuple(es) => Ty::Con("Tuple".into(), es.iter().map(|e| self.infer(e)).collect()),
             Expr::Comptime(x) => self.infer_at(x, expected),
+            Expr::Spawn(x) => self.spawn(x),
+            // a supervised task's panic is its own: awaiting it gives a `Result`
+            Expr::SupervisedSpawn(x) => match self.spawn(x) {
+                Ty::Con(_, mut r) => Ty::Con("Task".into(), vec![Ty::Con("Result".into(), vec![r.remove(0), Ty::Con("Panic".into(), vec![])])]),
+                t => t,
+            },
+            Expr::Select(arms) => self.select(arms, expected),
+            Expr::Race(arms) => self.race(arms, expected),
+            Expr::Await(x) => self.awaited(x),
+            Expr::Scope(b) => {
+                let outer = self.task_floor.replace(self.scopes.len());
+                // `scope { …; spawn e }`: the last task's handle isn't its value
+                let t = if ends_in_spawn(b) {
+                    self.infer(b);
+                    Ty::Unit
+                } else {
+                    self.infer_at(b, expected)
+                };
+                self.task_floor = outer;
+                if self.holds_task(&t) {
+                    let shown = self.show(&t);
+                    self.err(format!("a task's handle can't leave its `scope` (its result is `{shown}`): await it inside"));
+                }
+                t
+            }
             Expr::Str(_) => Ty::Str,
             Expr::Bool(_) => Ty::Bool,
             Expr::Unit => Ty::Unit,
@@ -2961,6 +2834,10 @@ impl<'a> Checker<'a> {
             }
             Expr::Var(x) => {
                 if let Some(t) = self.lookup(x.sym()) {
+                    let idx = self.scopes.iter().rposition(|s| s.contains_key(&x.sym())).unwrap_or(0);
+                    if idx < self.lambda_floor && self.holds_task(&t) {
+                        self.err(format!("a closure or `spawn` can't hold `{x}`, a task's handle: await it where it was spawned"));
+                    }
                     return t;
                 }
                 if let Some(t) = self.global_fn(x) {
@@ -3234,8 +3111,25 @@ impl<'a> Checker<'a> {
             }
             Expr::Lambda(ps, body) => self.lambda(ps, None, body),
             Expr::Bin(op, l, r) => {
-                let (lt, rt) = (self.infer(l), self.infer(r));
                 use BinOp::*;
+                // an integer literal beside a sized integer is one (`x + 1`), and so
+                // are the operands of arithmetic whose result is to be one
+                let lit = |e: &Expr| matches!(e, Expr::Int(_) | Expr::BigInt(_));
+                let want = match op {
+                    Eq | Ne | Lt | Le | Gt | Ge | And | Or | Implies => None,
+                    _ => expected.map(|t| self.resolve(t)).filter(|t| Width::of_ty(t).is_some()),
+                };
+                let (lt, rt) = if lit(l) && !lit(r) {
+                    let rt = self.infer_with(r, want.as_ref());
+                    (self.infer_with(l, Some(&rt)), rt)
+                } else {
+                    let lt = self.infer_with(l, want.as_ref());
+                    let rt = if lit(r) { self.infer_with(r, Some(&lt)) } else { self.infer_with(r, want.as_ref()) };
+                    (lt, rt)
+                };
+                if let (Some(a), Add | Sub | Mul | Div | Mod | Shl) = (&mut self.core_rt, op) {
+                    a.push((op.symbol(), lt.clone()));
+                }
                 match op {
                     // `+` also joins strings and lists
                     Add if [&lt, &rt].iter().any(|t| joinable(&self.resolve(t))) => {
@@ -3259,18 +3153,30 @@ impl<'a> Checker<'a> {
                         self.expect(&Ty::Bool, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
                         Ty::Bool
                     }
-                    // on integers only (a refined one, `U32`, is an `Int`)
+                    // on integers only: `Int`, or a sized one (both the same)
                     BitAnd | BitOr | BitXor | Shl | Shr => {
+                        if let Some(t) = self.sized_operands(&lt, &rt, op) {
+                            return t;
+                        }
                         self.expect(&Ty::Int, &lt, Lazy(|| format!("left of `{}`", op.symbol())));
                         self.expect(&Ty::Int, &rt, Lazy(|| format!("right of `{}`", op.symbol())));
                         Ty::Int
                     }
                 }
             }
+            // a negative literal of a sized type (`-2^63`, beyond 64 bits once negated)
+            Expr::Un(UnOp::Neg, x) if matches!(&**x, Expr::Int(_) | Expr::BigInt(_)) && expected.is_some_and(|t| Width::of_ty(&self.resolve(t)).is_some()) => {
+                self.infer(x);
+                self.int_literal(e, expected)
+            }
             Expr::Un(UnOp::Neg, x) => {
                 let t = self.infer(x);
+                if let (Some(a), false) = (&mut self.core_rt, matches!(&**x, Expr::Int(_) | Expr::BigInt(_))) {
+                    a.push(("-", t.clone()));
+                }
                 match self.resolve(&t) {
                     Ty::Int | Ty::Float => {}
+                    s if Width::of_ty(&s).is_some() => {}
                     Ty::Var(_) => self.expect(&Ty::Int, &t, "operand of `-`"),
                     other => self.err(format!("operand of `-` must be Int or Float, found `{}`", show_ty(&other))),
                 }
@@ -3374,8 +3280,11 @@ impl<'a> Checker<'a> {
                 rt.unwrap_or_else(|| self.fresh())
             }
             Expr::Block(stmts, last) => {
+                self.check_senders_closed(stmts, last);
                 self.scopes.push(HashMap::default());
+                let mut leading = true;
                 for s in stmts {
+                    leading &= matches!(s, Stmt::Invariant(_));
                     match s {
                         // written out (and checked) where the derived method is specialized
                         Stmt::ComptimeFor(..) => {}
@@ -3414,6 +3323,7 @@ impl<'a> Checker<'a> {
                             let pt = self.end_narrowing(place).unwrap_or_else(|| self.infer(place));
                             let et = self.infer_with(e, Some(&pt));
                             self.expect(&pt, &et, "assignment");
+                            self.check_task_escape(place, &et);
                             // a literal that breaks the variable's declared refinement
                             if let Expr::Var(x) = place {
                                 if let Some(w) = self.written_of(x) {
@@ -3427,13 +3337,22 @@ impl<'a> Checker<'a> {
                             let ct = self.infer(c);
                             self.expect(&Ty::Bool, &ct, "while condition");
                             self.loops += 1;
+                            self.loop_body = addr(b);
                             self.infer(b);
                             self.loops -= 1;
                         }
                         Stmt::Loop(b) => {
                             self.loops += 1;
+                            self.loop_body = addr(b);
                             self.infer(b);
                             self.loops -= 1;
+                        }
+                        Stmt::Invariant(x) => {
+                            if self.loop_body != addr(e) || !leading {
+                                self.err(format!("`invariant {}` is written between a loop's header and its body", crate::printer::expr(x, 0)));
+                            }
+                            let t = self.infer(x);
+                            self.expect(&Ty::Bool, &t, "invariant");
                         }
                         Stmt::Break | Stmt::Continue => {
                             if self.loops == 0 {
@@ -3467,9 +3386,25 @@ impl<'a> Checker<'a> {
                                     self.fresh()
                                 }
                             };
+                            // (the loop's variable isn't in scope in its invariants: they hold between elements too)
+                            let bound = pattern_binds(p);
+                            let mut named = None;
+                            for x in loop_invariants(b) {
+                                crate::ast::walk(x, |y| {
+                                    if let Expr::Var(v) = y {
+                                        if named.is_none() && bound.contains(v) {
+                                            named = Some(*v);
+                                        }
+                                    }
+                                });
+                            }
+                            if let Some(x) = named {
+                                self.err(format!("an invariant of `for {} in …` can't name the loop's variable `{x}`: it holds before the first element and after the last too", crate::printer::pat(p)));
+                            }
                             self.scopes.push(HashMap::default());
                             self.pattern(p, &el);
                             self.loops += 1;
+                            self.loop_body = addr(b);
                             self.infer(b);
                             self.loops -= 1;
                             self.scopes.pop();
@@ -3504,6 +3439,10 @@ impl<'a> Checker<'a> {
                     Some(r) => {
                         let t = self.infer_with(x, Some(&r));
                         self.expect(&r, &t, "`return` value");
+                    }
+                    None if self.in_spawn => {
+                        self.err("`return` can't leave a task (a `spawn`, a `race` arm): the expression is the task's result (move the code into a function to return early)");
+                        self.infer(x);
                     }
                     None => {
                         self.err("`return` outside a function");
@@ -3546,6 +3485,7 @@ impl<'a> Checker<'a> {
                             self.err(format!("`{op}` returns {what} early, so the result type must be `{want}`, found `{shown}` (handle it here with `except`)"));
                         }
                     }
+                    None if self.in_spawn => self.err(format!("`{op}` can't return from a task (a `spawn`, a `race` arm): handle the {ty_name} with `except` or `match`, or give it back as the task's result")),
                     None => self.err(format!("`{op}` outside a function: handle the {ty_name} with `except` or `match`")),
                 }
                 inner
@@ -3636,6 +3576,22 @@ impl<'a> Checker<'a> {
             self.err(format!("cannot {what} `{x}`: it is not mutable (declare it with `mut {x} := …`, or make it a `mut` parameter)"));
         } else if idx < self.lambda_floor {
             self.err(format!("a closure cannot change `{x}`, which belongs to the enclosing function"));
+        } else if self.task_floor.is_some_and(|f| idx < f) && self.scopes[idx].get(&x.sym()).is_some_and(|t| self.holds_task(&t.clone())) {
+            self.err(format!("`{x}` is declared outside the `scope`, so a task's handle can't be stored in it"));
+        }
+    }
+
+    /// After `place = e` with `e` of type `t`: a handle can't go into a
+    /// variable declared outside the innermost `scope`.
+    fn check_task_escape(&mut self, place: &Expr, t: &Ty) {
+        let mut root = place;
+        while let Expr::Field(r, _) = root {
+            root = r;
+        }
+        let (Expr::Var(x), Some(f)) = (root, self.task_floor) else { return };
+        let idx = self.scopes.iter().rposition(|s| s.contains_key(&x.sym()));
+        if idx.is_some_and(|i| i < f) && self.holds_task(t) {
+            self.err(format!("`{x}` is declared outside the `scope`, so a task's handle can't be stored in it"));
         }
     }
 
@@ -3660,6 +3616,11 @@ impl<'a> Checker<'a> {
             }
             return;
         };
+        self.check_mut_params(&params, callee, args, recv);
+    }
+
+    /// `check_mut_args` with the callee's parameters known.
+    fn check_mut_params(&mut self, params: &[Param], callee: &str, args: &[&Expr], recv: Option<bool>) {
         for (i, (p, a)) in params.iter().zip(args).enumerate() {
             let receiver = i == 0 && recv.is_some();
             let marked = if receiver { recv == Some(true) } else { marks_arg(a) };
@@ -3691,6 +3652,9 @@ impl<'a> Checker<'a> {
     /// Arithmetic and comparison: both sides the same numeric type, no implicit
     /// Int/Float mixing. Unknown operands default to Int.
     fn numeric(&mut self, lt: &Ty, rt: &Ty, op: &BinOp) {
+        if self.sized_operands(lt, rt, op).is_some() {
+            return;
+        }
         self.expect(lt, rt, Lazy(|| format!("`{}` operands", op.symbol())));
         match self.resolve(lt) {
             Ty::Int | Ty::Float => {}
@@ -3699,13 +3663,53 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Operands of which one is a sized integer: the other must be of the same
+    /// type (no conversion is implicit). `None` when neither is one.
+    fn sized_operands(&mut self, lt: &Ty, rt: &Ty, op: &BinOp) -> Option<Ty> {
+        let (l, r) = (self.resolve(lt), self.resolve(rt));
+        let w = Width::of_ty(&l).or(Width::of_ty(&r))?;
+        if matches!(l, Ty::Var(_)) || matches!(r, Ty::Var(_)) {
+            self.expect(lt, rt, Lazy(|| format!("`{}` operands", op.symbol())));
+        } else if l != r {
+            let n = w.name().to_lowercase();
+            self.err(format!(
+                "`{}` operands: `{}` and `{}` don't mix: convert one first (`x.to_int()`, `n.to_{n}()`, `n.wrap_{n}()`)",
+                op.symbol(),
+                show_ty(&l),
+                show_ty(&r)
+            ));
+        }
+        Some(Ty::Con(Symbol::from(w.name()), vec![]))
+    }
+
+    /// An integer literal: of the sized type its place expects (which it must
+    /// fit; it becomes a conversion, `to_u32(5)`), else an `Int`.
+    fn int_literal(&mut self, e: &Expr, expected: Option<&Ty>) -> Ty {
+        let Some(w) = expected.and_then(|t| Width::of_ty(&self.resolve(t))) else { return Ty::Int };
+        let n = match e {
+            Expr::Int(n) => Some(*n as i128),
+            Expr::BigInt(d) => d.parse::<i128>().ok(),
+            Expr::Un(UnOp::Neg, x) => match &**x {
+                Expr::Int(n) => Some(-(*n as i128)),
+                Expr::BigInt(d) => d.parse::<i128>().ok().map(|n| -n),
+                _ => None,
+            },
+            _ => None,
+        };
+        if !n.is_some_and(|n| w.holds(n)) {
+            self.err(format!("`{}` doesn't fit in `{}` ({})", crate::printer::expr(e, 0), w.name(), w.range()));
+        }
+        self.targets.push((e as *const Expr as usize, Target::Sized(w)));
+        Ty::Con(Symbol::from(w.name()), vec![])
+    }
+
     /// Builtins with several signatures (`len`, `contains`, `get`, ...): pick the
     /// first whose parameters unify with the argument types.
     fn overloaded(&mut self, name: Symbol, args: &[&Expr]) -> Option<Ty> {
         if self.lookup(name).is_some() || self.env.fns.contains_key(&name.sym()) {
             return None;
         }
-        let cands: Vec<_> = BUILTINS.iter().filter(|b| b.name == name).collect();
+        let cands: Vec<_> = builtins().iter().filter(|b| b.name == name).collect();
         if cands.len() < 2 {
             return None;
         }
@@ -3827,6 +3831,13 @@ impl<'a> Checker<'a> {
                 (t.clone(), P::Any)
             }
             Pattern::Int(n) => {
+                // a sized integer's literal
+                if let Some(w) = Width::of_ty(&self.resolve(t)) {
+                    if !w.holds(*n as i128) {
+                        self.err(format!("`{n}` doesn't fit in `{}` ({})", w.name(), w.range()));
+                    }
+                    return (t.clone(), P::Ints(ints::point(*n as i128)));
+                }
                 self.expect(t, &Ty::Int, "pattern");
                 (Ty::Int, P::Ints(ints::point(*n as i128)))
             }
@@ -3920,7 +3931,7 @@ impl<'a> Checker<'a> {
                     Refn::Ints(s) => P::Ints(s),
                     Refn::Lens(s) => P::Lens(s),
                     Refn::Reals(r) => P::Reals(r),
-                    Refn::Opaque => P::Lit,
+                    Refn::Opaque => P::Cond,
                 };
                 (pt, set)
             }
@@ -4183,7 +4194,7 @@ impl<'a> Checker<'a> {
             Ty::Con(n, _) if n == "List" => ints::of_len_pred(pred).map(P::Lens),
             _ => None,
         };
-        set.unwrap_or(P::Lit)
+        set.unwrap_or(P::Cond)
     }
 
     /// The values a written type leaves out, as a set (for `match` coverage):
@@ -4285,7 +4296,8 @@ pub fn show_ty(t: &Ty) -> String {
         Ty::Bool => "Bool".into(),
         Ty::Str => "String".into(),
         Ty::Unit => "()".into(),
-        Ty::Var(v) => format!("?T{v}"),
+        // a type not worked out yet: `_` (its number means nothing to the reader)
+        Ty::Var(_) => "_".into(),
         Ty::Rigid(n) => n.to_string(),
         Ty::Con(n, a) if a.is_empty() => n.to_string(),
         Ty::Con(n, a) => format!("{n}[{}]", a.iter().map(show_ty).collect::<Vec<_>>().join(", ")),
@@ -4315,6 +4327,8 @@ impl<'a> Checker<'a> {
     fn new(env: &'a Env, decl: String) -> Self {
         Checker {
             env,
+            in_core: false,
+            core_rt: None,
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
             rigid: BTreeSet::new(),
@@ -4333,7 +4347,10 @@ impl<'a> Checker<'a> {
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
+            task_floor: None,
+            in_spawn: false,
             loops: 0,
+            loop_body: 0,
             ret: None,
             written: Vec::new(),
             targets: Vec::new(),
@@ -4462,6 +4479,42 @@ fn check_lowering(prog: &mut Program, env: &Env, record_types: bool) -> (Vec<Dia
     (errors, holes, targets, types)
 }
 
+/// The names a pattern binds.
+fn pattern_binds(p: &Pattern) -> Vec<Symbol> {
+    fn go(p: &Pattern, out: &mut Vec<Symbol>) {
+        match p {
+            Pattern::Bind(x) => out.push(*x),
+            Pattern::List(ps, rest) => {
+                ps.iter().for_each(|p| go(p, out));
+                out.extend(*rest);
+            }
+            Pattern::Tuple(ps) | Pattern::Or(ps) => ps.iter().for_each(|p| go(p, out)),
+            Pattern::Ctor(_, CtorPat::Positional(ps) | CtorPat::Type(ps)) => ps.iter().for_each(|p| go(p, out)),
+            Pattern::Ctor(_, CtorPat::Record(fs, _)) => fs.iter().for_each(|(_, p)| go(p, out)),
+            Pattern::For(a, b, _) => {
+                go(a, out);
+                go(b, out);
+            }
+            _ => {}
+        }
+    }
+    let mut out = vec![];
+    go(p, &mut out);
+    out
+}
+
+/// A loop body's `invariant` clauses (its first statements).
+pub fn loop_invariants(body: &Expr) -> impl Iterator<Item = &Expr> {
+    let ss: &[Stmt] = match body {
+        Expr::Block(ss, _) => ss,
+        _ => &[],
+    };
+    ss.iter().map_while(|s| match s {
+        Stmt::Invariant(x) => Some(x),
+        _ => None,
+    })
+}
+
 /// Each `for p in xs { body }` whose subject (by node) is in `fors`, as
 /// `{ mut $iter_N := xs; loop { match mut $iter_N.next() { Some(p) => body, None => break } } }`.
 /// The rest of the language (compiler, prover, termination) sees an ordinary loop.
@@ -4481,11 +4534,79 @@ fn lower_iterator_fors(prog: &mut Program, fors: &HashMap<usize, bool>) {
                     Arm { comments: vec![], pat: Pattern::Ctor(Symbol::from("Some"), CtorPat::Positional(vec![p])), body },
                     Arm { comments: vec![], pat: Pattern::Ctor(Symbol::from("None"), CtorPat::None), body: Expr::Block(vec![Stmt::Break], Box::new(Expr::Unit)) },
                 ];
-                let looped = Stmt::Loop(Expr::Match(Box::new(next), None, arms));
+                // (the body's invariants stay first in the loop's body)
+                let invs: Vec<Stmt> = loop_invariants(&arms[0].body).map(|x| Stmt::Invariant(x.clone())).collect();
+                let mut arms = arms;
+                if let Expr::Block(ss, _) = &mut arms[0].body {
+                    ss.drain(..invs.len());
+                }
+                let m = Expr::Match(Box::new(next), None, arms);
+                let looped = Stmt::Loop(if invs.is_empty() { m } else { Expr::Block(invs, Box::new(m)) });
                 *s = Stmt::Expr(Expr::Block(vec![Stmt::Var(it, None, xs), looped], Box::new(Expr::Unit)));
             }
         });
     }
+}
+
+/// How the errors of core.rt's functions that would allocate start: core.rt
+/// is the allocator (and reference counting), so it makes no objects.
+const CORE_RT_ALLOCATES: &str = "core.rt can't allocate (it is the allocator): ";
+
+/// What in a function of core.rt would allocate, each where it is: lists,
+/// tuples and constructors made at run time (a constant's is built once),
+/// dicts, sets, closures, strings put together, ranges, comprehensions,
+/// tasks, `?`, and calls to anything but core.rt's functions, core.mem's and
+/// the conversions between integers. (`Int` arithmetic is refused once its
+/// types are known, in `infer`.)
+fn core_rt_allocations(f: &FnDecl) -> Vec<String> {
+    // a literal, or a list, tuple or constructor of them: one constant block
+    fn constant(e: &Expr) -> bool {
+        match e {
+            Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Unit => true,
+            Expr::Un(UnOp::Neg, x) => matches!(&**x, Expr::Int(_) | Expr::Float(_)),
+            Expr::List(xs) | Expr::Tuple(xs) => !xs.is_empty() && xs.iter().all(constant),
+            Expr::Ctor(_, CtorArgs::None) => true,
+            Expr::Ctor(_, CtorArgs::Positional(xs)) => xs.iter().all(constant),
+            Expr::Ctor(_, CtorArgs::Record(fs)) => fs.iter().all(|(_, x)| constant(x)),
+            _ => false,
+        }
+    }
+    let callable = |n: &str| {
+        let short = crate::names::short(n);
+        builtins().iter().any(|b| b.core_only && b.name == short) || crate::types::sized::conversion(short).is_some() || crate::core::owns("core.rt", n)
+    };
+    let mut out = vec![];
+    let mut kind = DeclKind::Fn(f.clone());
+    crate::ast::decl_all_exprs_mut(&mut kind, |e| {
+        let e: &Expr = e;
+        let what = match e {
+            Expr::List(_) | Expr::Tuple(_) | Expr::Ctor(..) if constant(e) => return,
+            Expr::List(_) => "a list made at run time".to_string(),
+            Expr::Tuple(_) => "a tuple made at run time".into(),
+            Expr::Ctor(c, _) => format!("`{}` made at run time", crate::names::short(c)),
+            Expr::Dict(..) => "a dict".into(),
+            Expr::Set(..) => "a set".into(),
+            Expr::Lambda(..) => "a closure".into(),
+            Expr::Interp(_) => "a string put together".into(),
+            Expr::Range(..) => "a range".into(),
+            Expr::Comp(..) => "a comprehension".into(),
+            Expr::Spawn(_) | Expr::SupervisedSpawn(_) | Expr::Scope(_) | Expr::Await(_) | Expr::Select(_) | Expr::Race(_) => "a task".into(),
+            Expr::Mock(_) => "a mock".into(),
+            Expr::Try(..) => "`?`".into(),
+            Expr::Except(..) => "`except`".into(),
+            Expr::BigInt(_) => "a big integer".into(),
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Var(n) if callable(n) => return,
+                Expr::Var(n) => format!("a call to `{}` (core.rt calls only its own functions, core.mem's and the conversions between integers)", crate::names::short(n)),
+                _ => "a call to a function value".into(),
+            },
+            Expr::Method(_, m, _) if crate::types::sized::conversion(m.as_str()).is_some() => return,
+            Expr::Method(_, m, _) => format!("a call to `{m}` (core.rt calls only its own functions, core.mem's and the conversions between integers)"),
+            _ => return,
+        };
+        out.push(format!("{CORE_RT_ALLOCATES}{what}"));
+    });
+    out
 }
 
 /// Check every declaration of a resolved program (see `Decided`).
@@ -4500,6 +4621,8 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
         }
         let mut c = Checker {
             env: &env,
+            in_core: crate::core::owns(&d.module, &d.name()),
+            core_rt: { (d.name().strip_prefix("core.rt.").is_some_and(|n| !n.contains('.')) && matches!(d.kind, DeclKind::Fn(_)) && crate::core::owns(&d.module, &d.name())).then(Vec::new) },
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
                 rigid: BTreeSet::new(),
@@ -4518,7 +4641,10 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
             bounds: HashMap::default(),
             pending: Vec::new(),
             lambda_floor: 0,
+            task_floor: None,
+            in_spawn: false,
             loops: 0,
+            loop_body: 0,
             ret: None,
             written: Vec::new(),
             targets: Vec::new(),
@@ -4617,7 +4743,21 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
                 }
             }
             DeclKind::Fn(f) => {
+                if c.core_rt.is_some() {
+                    for m in core_rt_allocations(f) {
+                        c.err(m);
+                    }
+                }
                 c.check_fn(f);
+                for (op, t) in c.core_rt.take().unwrap_or_default() {
+                    let what = match c.resolve(&t) {
+                        Ty::Int => format!("`{op}` on `Int` (a big integer past 2^62): compute with a machine integer (`I64`)"),
+                        Ty::Str => format!("`{op}` on `String` (a new one)"),
+                        Ty::Con(n, _) if n == "List" => format!("`{op}` on `List` (a new one)"),
+                        _ => continue,
+                    };
+                    c.err(format!("{CORE_RT_ALLOCATES}{what}"));
+                }
             }
             DeclKind::Trait(t) => {
                 c.rigid = t.params.iter().cloned().collect();
@@ -4780,6 +4920,14 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
             // its functions are checked as the type's own methods (`resolve` makes them an `impl`)
             DeclKind::Capability(_) => {}
             DeclKind::Use(_) => {}
+            DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin => {
+                if !c.in_core {
+                    c.err(format!("`builtin` definitions are only in `core`: `{}` is what the compiler provides, declared there", crate::names::short(&d.name())));
+                }
+                if let ExternItem::Fn(f) = &e.item {
+                    c.check_builtin_fn(f);
+                }
+            }
             DeclKind::Extern(e) => {
                 let kw = format!("extern {}", e.lang.name());
                 if d.public {
@@ -4968,4 +5116,56 @@ pub fn ty_head(t: &Ty) -> Option<Symbol> {
         Ty::Con(h, _) => h.clone(),
         _ => return None,
     })
+}
+
+/// Whether `e` calls `x.close()` (outside any `spawn` or `race` arm's left
+/// side in it: that would close the other task's copy).
+fn closes(e: &Expr, x: Symbol) -> bool {
+    struct Closes(Symbol, bool);
+    impl crate::ast::Visit for Closes {
+        fn expr(&mut self, e: &Expr) {
+            match e {
+                Expr::Spawn(_) | Expr::SupervisedSpawn(_) => return,
+                // a race arm's left side is a task of its own
+                Expr::Race(arms) => {
+                    arms.iter().for_each(|a| self.expr(&a.body));
+                    return;
+                }
+                Expr::Method(r, m, args) if m == "close" && args.is_empty() && matches!(&**r, Expr::Var(v) if *v == self.0) => self.1 = true,
+                _ => {}
+            }
+            if !self.1 {
+                crate::ast::walk_expr(self, e)
+            }
+        }
+    }
+    let mut c = Closes(x, false);
+    crate::ast::Visit::expr(&mut c, e);
+    c.1
+}
+
+/// The variables an expression mentions.
+fn free_vars(e: &Expr) -> Vec<Symbol> {
+    struct Vars(Vec<Symbol>);
+    impl crate::ast::Visit for Vars {
+        fn expr(&mut self, e: &Expr) {
+            if let Expr::Var(x) = e {
+                self.0.push(*x);
+            }
+            crate::ast::walk_expr(self, e)
+        }
+    }
+    let mut v = Vars(vec![]);
+    crate::ast::Visit::expr(&mut v, e);
+    v.0
+}
+
+/// Whether a block's value is a `spawn` (`scope { spawn e }`, whose value is
+/// then `()`).
+pub fn ends_in_spawn(b: &Expr) -> bool {
+    match b {
+        Expr::Block(_, last) => ends_in_spawn(last),
+        Expr::Spawn(_) | Expr::SupervisedSpawn(_) => true,
+        _ => false,
+    }
 }

@@ -17,24 +17,22 @@ use std::sync::OnceLock;
 pub const NAME: &str = "std";
 
 /// Its module files (binary, docs/binary-format.md); their modules are named `std.<path>`.
-const FILES: &[(&str, &[u8])] = &[
+pub const FILES: &[(&str, &[u8])] = &[
     ("io.strata", include_bytes!("../std/io.strata")),
     ("fs.strata", include_bytes!("../std/fs.strata")),
     ("process.strata", include_bytes!("../std/process.strata")),
+    ("time.strata", include_bytes!("../std/time.strata")),
     ("cli.strata", include_bytes!("../std/cli.strata")),
     ("web.strata", include_bytes!("../std/web.strata")),
     ("http.strata", include_bytes!("../std/http.strata")),
     ("typing.strata", include_bytes!("../std/typing.strata")),
     ("json.strata", include_bytes!("../std/json.strata")),
+    ("toml.strata", include_bytes!("../std/toml.strata")),
     ("code.strata", include_bytes!("../std/code.strata")),
     ("unicode_tables.strata", include_bytes!("../std/unicode_tables.strata")),
     ("unicode.strata", include_bytes!("../std/unicode.strata")),
     ("regex.strata", include_bytes!("../std/regex.strata")),
     ("utf8.strata", include_bytes!("../std/utf8.strata")),
-    ("ast.strata", include_bytes!("../std/ast.strata")),
-    ("ast/binary.strata", include_bytes!("../std/ast/binary.strata")),
-    ("ast/text.strata", include_bytes!("../std/ast/text.strata")),
-    ("ast/eval.strata", include_bytes!("../std/ast/eval.strata")),
 ];
 
 /// Native operations, callable only from `std`.
@@ -52,6 +50,15 @@ pub const HOST: &[Builtin] = &[
     Builtin::new("host_remove", "", "(String) -> Result[(), (String, String)]"),
     Builtin::new("host_args", "", "() -> List[String]"),
     Builtin::new("host_env_var", "", "(String) -> Option[String]"),
+    // runs a program (no shell) with its arguments in a folder (`""`: the current one):
+    // `[exit code as decimal text, stdout, stderr]`, or the failure to start it
+    Builtin::new("host_run", "", "(String, List[String], String) -> Result[List[String], (String, String)]"),
+    // the monotonic clock, in nanoseconds; waiting (a task that is cancelled stops at once)
+    Builtin::new("host_now", "", "() -> Int"),
+    Builtin::new("host_sleep", "", "(Int) -> ()"),
+    // a `VirtualClock`'s: its run's own time, moving by itself
+    Builtin::new("host_virtual_now", "", "() -> Int"),
+    Builtin::new("host_virtual_sleep", "", "(Int) -> ()"),
     Builtin::new("host_code_version", "", "() -> String"),
     Builtin::new("host_code_snapshot", "", "() -> Result[std.code.Snapshot, String]"),
 ];
@@ -62,6 +69,25 @@ pub const HOST: &[Builtin] = &[
 
 pub fn is_host(name: &str) -> bool {
     HOST.iter().any(|h| h.name == name)
+}
+
+/// Whether a package is built into strata (`std`, and `core` below it): its
+/// modules are named after it (`std/io.strata` is `std.io`, `core/types.strata`
+/// is `core.types`), and its changes are git's alone (no strata.log).
+pub fn builtin_package(name: &str) -> bool {
+    name == NAME || name == crate::core::NAME
+}
+
+/// Module `m` of the built-in package `pkg` as named everywhere: `io` is
+/// `std.io`, the root module `std`.
+pub fn package_module(pkg: &str, m: &str) -> String {
+    if m.is_empty() || m == "main" {
+        pkg.to_string()
+    } else if m == pkg || m.starts_with(&format!("{pkg}.")) {
+        m.to_string()
+    } else {
+        format!("{pkg}.{m}")
+    }
 }
 
 /// Whether a module belongs to the standard library.
@@ -99,16 +125,41 @@ fn run_time_pattern(d: &crate::ast::DeclKind) -> bool {
     found
 }
 
+/// Whether a definition names something of std in full (`std.json.parse`,
+/// `x: std.io.Console`): with std in scope, the resolver then says which
+/// `use` it needs.
+fn names_std(k: &crate::ast::DeclKind) -> bool {
+    use crate::ast::{Expr, TypeExpr, Visit};
+    struct Find(bool);
+    impl Visit for Find {
+        fn expr(&mut self, e: &Expr) {
+            if let Expr::Var(x) = e {
+                self.0 |= x.as_str() == NAME || x.starts_with("std.");
+            }
+            crate::ast::walk_expr(self, e)
+        }
+        fn ty(&mut self, t: &TypeExpr) {
+            if let TypeExpr::Named(n, _) = t {
+                self.0 |= n.starts_with("std.");
+            }
+            crate::ast::walk_ty(self, t)
+        }
+    }
+    let mut f = Find(false);
+    crate::ast::walk_decl(&mut f, k);
+    f.0
+}
+
 /// `p` with the standard library added after its own definitions, if it uses
 /// it and does not already contain it (when `std/` itself is being checked).
 pub fn with_std(p: &Program) -> Option<Program> {
     use crate::ast::DeclKind;
     // (`matches` is std.regex's, compiled; `s.graphemes()` std.unicode's)
-    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path))) || p.decls.iter().any(|d| run_time_pattern(&d.kind));
+    let uses = p.decls.iter().any(|d| matches!(&d.kind, DeclKind::Use(u) if is_std(&u.path))) || p.decls.iter().any(|d| run_time_pattern(&d.kind) || names_std(&d.kind));
     // a resolved program has it already, under qualified names in the root module
     let has_std = p.decls.iter().any(|d| {
         // (the prelude's code is added to every program: it says nothing about std)
-        (is_std(&d.module) && d.module != crate::types::PRELUDE_MODULE)
+        (is_std(&d.module) && !crate::types::is_prelude_module(&d.module))
             || match &d.kind {
                 DeclKind::Type(t) => is_std(&t.name),
                 DeclKind::Trait(t) => is_std(&t.name),
@@ -133,7 +184,7 @@ pub fn regex_value(name: &str, args: Vec<crate::ast::Expr>) -> Result<crate::ast
     use std::cell::RefCell;
     use std::collections::HashMap;
     thread_local! {
-        static STD: Option<Program> = crate::parser::parse_program("use std.regex.*\n").ok().map(|p| crate::resolve::resolve(&p).program);
+        static STD: Option<Program> = crate::parser::parse_program("use std.regex\n").ok().map(|p| crate::resolve::resolve(&p).program);
         static DONE: RefCell<HashMap<String, Result<Expr, String>>> = Default::default();
     }
     let call = Expr::Call(Box::new(Expr::Var(Symbol::new(&format!("std.regex.{name}")))), args);

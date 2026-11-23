@@ -1,12 +1,12 @@
-//! The syntax tree as a `std.ast` value, written in Strata syntax: what
-//! `debug` prints for the same tree decoded by `std.ast.binary`. Names follow
-//! `std/ast.strata` (`IntLit`, `pre` / `post`, …), which mirrors `ast.rs`
+//! The syntax tree as a `compiler/ast` value, written in Strata syntax: what
+//! `debug` prints for the same tree decoded by `compiler/binary`. Names follow
+//! `compiler/ast.strata` (`IntLit`, `pre` / `post`, …), which mirrors `ast.rs`
 //! node for node. `strata header FILE --tree` prints it; the tests compare it
 //! with what the Strata decoder reads from every module file.
 
 use crate::ast::*;
 
-/// A definition as a `std.ast.Decl` value.
+/// A definition as a `Decl` value (`compiler/ast`).
 pub fn decl(d: &Decl) -> String {
     let kind = match &d.kind {
         DeclKind::Type(t) => tag("TypeDef", type_decl(t)),
@@ -14,14 +14,26 @@ pub fn decl(d: &Decl) -> String {
         DeclKind::Test(t) => tag("TestDef", rec("TestDecl", &[("name", s(&t.name)), ("params", list(&t.params, param)), ("body", expr(&t.body))])),
         DeclKind::Trait(t) => tag("TraitDef", trait_decl(t)),
         DeclKind::Impl(i) => tag("ImplDef", impl_decl(i)),
-        DeclKind::Use(u) => tag("UseDef", rec("UseDecl", &[("path", s(&u.path)), ("items", opt(&u.items, |xs| strs(xs)))])),
+        DeclKind::Use(u) => tag(
+            "UseDef",
+            rec(
+                "UseDecl",
+                &[
+                    ("path", s(&u.path)),
+                    ("alias", opt(&u.alias, |a| s(a))),
+                    ("items", opt(&u.items, |xs| list(xs, |i| rec("UseItem", &[("name", s(&i.name)), ("alias", opt(&i.alias, |a| s(a)))])))),
+                ],
+            ),
+        ),
         DeclKind::Extern(e) => {
             let item = match &e.item {
                 ExternItem::Fn(f) => tag("ExternFn", fn_decl(f)),
-                ExternItem::Type(t) => tag("ExternType", s(t)),
+                ExternItem::Type(t, ps) => format!("ExternType({}, {})", s(t), strs(ps)),
+                ExternItem::Static(n, size) => format!("ExternStatic({}, {size})", s(n)),
             };
             let lang = match e.lang {
                 Lang::C => "C".to_string(),
+                Lang::Builtin => "Builtin".to_string(),
             };
             tag("ExternDef", rec("ExternDecl", &[("lang", lang), ("item", item)]))
         }
@@ -240,6 +252,7 @@ fn stmt(st: &Stmt) -> String {
         Stmt::Assert(e) => tag("Assert", expr(e)),
         Stmt::Comment(ls) => tag("Comment", strs(ls)),
         Stmt::ComptimeFor(p, xs, b) => three("ComptimeFor", p, xs, b),
+        Stmt::Invariant(e) => tag("Invariant", expr(e)),
     }
 }
 
@@ -366,6 +379,18 @@ fn expr(e: &Expr) -> String {
         Expr::Set(tys, xs) => rec("SetExpr", &[("types", list(tys, ty)), ("elems", exprs(xs))]),
         Expr::Or(x, fb) => rec("Fallback", &[("value", expr(x)), ("fallback", expr(fb))]),
         Expr::Comptime(x) => tag("Comptime", expr(x)),
+        Expr::Scope(x) => tag("Scope", expr(x)),
+        Expr::Spawn(x) => tag("Spawn", expr(x)),
+        Expr::SupervisedSpawn(x) => tag("SupervisedSpawn", expr(x)),
+        Expr::Await(x) => tag("Await", expr(x)),
+        Expr::Select(arms) => {
+            let arm = |a: &SelectArm| rec("SelectArm", &[("comments", strs(&a.comments)), ("op", expr(&a.op)), ("name", opt(&a.name, |n| s(n))), ("body", expr(&a.body))]);
+            tag("Select", list(arms, arm))
+        }
+        Expr::Race(arms) => {
+            let arm = |a: &SelectArm| rec("SelectArm", &[("comments", strs(&a.comments)), ("op", expr(&a.op)), ("name", opt(&a.name, |n| s(n))), ("body", expr(&a.body))]);
+            tag("Race", list(arms, arm))
+        }
     }
 }
 

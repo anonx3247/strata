@@ -4,6 +4,17 @@ use crate::*;
 
 /// `strata check`.
 pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
+    if let Some(dir) = crate::core::dir_of(args.val("--file")) {
+        let rep = crate::core::check(&dir);
+        print_errors(&rep);
+        if rep.ok() {
+            println!("ok: core checks");
+        }
+        return Ok(rep.ok());
+    }
+    if args.flag("--strata") {
+        return super::compare::check_strata(args.val("--file").unwrap_or("."));
+    }
     let src = load(&args)?;
     let rep = full_check(src.program());
     if json_out {
@@ -14,6 +25,9 @@ pub fn check(args: &Args, json_out: bool) -> Result<bool, String> {
         if rep.ok() {
             println!("ok: {n} definitions check ({} open holes)", rep.holes.len());
         }
+    }
+    if args.flag("--compare") {
+        return super::compare::compare(args.val("--file").unwrap_or("."), &rep);
     }
     Ok(rep.ok())
 }
@@ -51,29 +65,53 @@ pub fn holes(args: &Args, json_out: bool) -> Result<bool, String> {
 
 /// `strata verify`.
 pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
+    // `--strata`: fuzz drivers from compiler/codegen (a script's)
+    if args.flag("--strata") {
+        if let Some(f) = args.val("--file") {
+            let _ = crate::cmd::compare::FUZZ_SCRIPT.set(f.to_string());
+        }
+    }
     let src = load(&args)?;
+    let how = Verifying { file: args.val("--file"), only: None, quiet: false, json: json_out };
+    Ok(verify_source(args, &src, &how)?.0)
+}
+
+/// How `verify_source` runs: for `strata verify`, or before `build`.
+pub struct Verifying<'a> {
+    /// The script's path (where its caches go), or the package's folder.
+    pub file: Option<&'a str>,
+    /// Only these definitions (by qualified name); else the command's selection.
+    pub only: Option<std::collections::BTreeSet<String>>,
+    /// Print nothing: the caller reports (`build`).
+    pub quiet: bool,
+    pub json: bool,
+}
+
+/// Verify `src` (what `how` selects), keep the verdicts and proofs, and
+/// report them (unless quiet). Whether nothing failed, and each verdict.
+pub fn verify_source(args: &Args, src: &Source, how: &Verifying) -> Result<(bool, Vec<(String, verify::Verdict, bool)>), String> {
+    let json_out = how.json;
     let p = src.program();
     let types::Checked { report: rep, program: resolved, env, compiled } = full_checked(p);
     if !rep.ok() {
         print_errors(&rep);
-        return Ok(false);
+        return Ok((false, vec![]));
     }
     let cases: usize = args.val("--cases").unwrap_or("200").parse().map_err(|_| "bad --cases")?;
     let seed: u64 = args.val("--seed").unwrap_or("1").parse().map_err(|_| "bad --seed")?;
-    let names = view::select(p, args.pos.get(1).map(|s| s.as_str()));
-    let mut cache = match &src {
-        Source::Db(cb) => cb.load_verdicts(),
-        _ => HashMap::default(),
+    let selected = how.only.is_some() || args.pos.get(1).is_some();
+    let names = match &how.only {
+        Some(only) => only.clone(),
+        None => view::select(p, args.pos.get(1).map(|s| s.as_str()))?,
     };
+    // the proofs so far (a package's in its `.strata/`, a script's in ~/.cache/strata/scripts)
+    let proofs_at = proofs_dir(src, how.file);
     let mut all_ok = true;
     let mut results = Vec::new();
-    // what is fuzzed, compiled, all in one module (`--jit` says why when something can't be)
-    let chosen: Vec<bool> = p.decls.iter().map(|d| names.contains(&d.qname())).collect();
-    jit_fuzzers(&compiled, &env, &chosen, args.flag("--jit"));
     let solver = smt::solver();
     let solver_bin = solver.as_ref();
     // with a selection, termination is analysed for what the selected code reaches
-    let roots: Option<crate::fx::HashSet<String>> = args.pos.get(1).map(|_| {
+    let roots: Option<crate::fx::HashSet<String>> = selected.then(|| {
         let mut rs = crate::fx::HashSet::default();
         for (orig, d) in p.decls.iter().zip(&resolved.decls) {
             if !names.contains(&orig.qname()) {
@@ -111,7 +149,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     let cross_check: usize = args.val("--cross-check").unwrap_or("20").parse().map_err(|_| "bad --cross-check")?;
     let require: Vec<String> = args.val("--require").map(|r| r.split(',').map(|s| s.trim().to_string()).collect()).unwrap_or_default();
     // the package's `[verify]` rules apply too
-    let policy = package::find(std::path::Path::new(args.val("--file").unwrap_or("."))).ok().flatten().map(|p| p.verify).unwrap_or_default();
+    let policy = package::find(std::path::Path::new(how.file.unwrap_or("."))).ok().flatten().map(|p| p.verify).unwrap_or_default();
     let mut module_of: HashMap<String, String> = HashMap::default();
     for r in &require {
         if !["proven", "terminates", "no-recursion"].contains(&r.as_str()) {
@@ -127,7 +165,24 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
                 }
             }
         }
-        return Ok(true);
+        return Ok((true, vec![]));
+    }
+    if args.flag("--obligations") {
+        // the solver's answer to each obligation, nothing run (compared with
+        // `compiler smt`, the verifier written in Strata: tests/smt.rs)
+        let Some(bin) = solver_bin else { return Err("no SMT solver was found (install z3)".into()) };
+        for (orig, d) in p.decls.iter().zip(&resolved.decls) {
+            if let (true, DeclKind::Fn(f)) = (names.contains(&orig.qname()), &d.kind) {
+                if f.params.iter().any(|p| p.comptime) {
+                    continue;
+                }
+                println!("fn {}", f.name);
+                for line in verify::obligation_outcomes(&env, f, transparent, bin) {
+                    println!("  {line}");
+                }
+            }
+        }
+        return Ok((true, vec![]));
     }
     let closures = store::Closures::new(p);
     // results depend on the solver: it is part of the cache key
@@ -135,7 +190,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     // every check to make, by definition: (label, cache key, how), with the
     // definition's key and module; run in parallel below, reported in order
     type Job<'a> = Box<dyn Fn() -> verify::Verdict + Send + Sync + 'a>;
-    let mut defs: Vec<(String, String, Vec<(String, String, Job)>)> = vec![];
+    let mut defs: Vec<(usize, String, String, String, Vec<(String, String, Job)>)> = vec![];
     for (i, (orig, d)) in p.decls.iter().zip(&resolved.decls).enumerate() {
         if !names.contains(&orig.qname()) {
             continue;
@@ -186,7 +241,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
                     let key = verify::wrapper_name(i, crate::names::short(&mname));
                     let own = imp.methods.iter().find(|x| x.name == mname);
                     // a default of the prelude's traits (`map` on any iterator) is library code
-                    if own.is_none() && mname.as_str().starts_with(&format!("{}.", types::PRELUDE_MODULE)) {
+                    if own.is_none() && crate::core::CODE.iter().any(|m| mname.as_str().starts_with(&format!("{m}."))) {
                         continue;
                     }
                     let decl = own.or(if m.default { Some(&m.decl) } else { None });
@@ -201,45 +256,88 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
                 }
                 for law in &tr.laws {
                     let key = verify::wrapper_name(i, &format!("law.{}", law.name));
-                    jobs.push((format!("law {} for {ty}", law.name), format!("{base}:law:{}:{cases}", law.name), Box::new(move || verify::check_law(imp, law, &key, cases, seed))));
+                    let label = format!("law {} for {ty}", law.name);
+                    let n = cc(&label);
+                    let wrapper = verify::law_wrapper(env, imp, i, law);
+                    jobs.push((label, format!("{base}:law:{}:{cases}:{n}:{skey}", law.name), Box::new(move || verify::check_law(env, imp, &wrapper, law, &key, solver_bin, transparent, cases, n, seed))));
                 }
             }
             _ => {}
         }
-        defs.push((base, orig.module.to_string(), jobs));
+        defs.push((i, base, orig.module.to_string(), orig.qname(), jobs));
     }
-    // the checks not cached, on as many threads as there are cores: each
+    // verdicts kept from earlier runs (by this compiler, with these
+    // settings), unless --no-cache
+    let race = !args.flag("--no-race");
+    let solver_path = solver.as_ref().map(|s| s.bin.as_str()).unwrap_or("");
+    // std built into strata is part of every program but std itself, whose
+    // closures cover it
+    let is_std = p.decls.iter().any(|d| crate::stdlib::is_std(&d.module) && !types::is_prelude_module(&d.module));
+    let std = if is_std { "" } else { verify::std_hash() };
+    let kept = verdicts_at(src, how.file).with_settings(&format!("seed {seed} race {race} solver {solver_path} {skey} std {std}"));
+    let mut found: Vec<Option<verify::Verdict>> =
+        defs.iter().flat_map(|d| &d.4).map(|j| if args.flag("--no-cache") { None } else { kept.get_check(&j.0, &j.1) }).collect();
+    // what is fuzzed, compiled, all in one module (`--jit` says why when
+    // something can't be): only the definitions with a check to run
+    let mut chosen = vec![false; p.decls.len()];
+    let mut at = 0;
+    for (i, _, _, _, jobs) in &defs {
+        chosen[*i] = found[at..at + jobs.len()].iter().any(|v| v.is_none());
+        at += jobs.len();
+    }
+    if chosen.contains(&true) {
+        jit_fuzzers(&compiled, &env, &chosen, args.flag("--jit"));
+    }
+    // the checks not kept, on as many threads as there are cores: each
     // solver query is a process of its own
-    let force = args.flag("--force");
-    let fresh: Vec<bool> = defs.iter().flat_map(|d| &d.2).map(|j| force || !cache.contains_key(&j.1)).collect();
-    let todo: Vec<&Job> = defs.iter().flat_map(|d| &d.2).zip(&fresh).filter(|(_, f)| **f).map(|(j, _)| &j.2).collect();
-    let mut made = crate::par::map(&todo, |job| job()).into_iter();
-    let mut fresh = fresh.into_iter();
-    for (base, module, jobs) in defs {
+    let todo: Vec<&(String, String, Job)> = defs.iter().flat_map(|d| &d.4).zip(&found).filter(|(_, v)| v.is_none()).map(|(j, _)| j).collect();
+    let made = crate::par::map(&todo, |(label, key, job)| {
+        let v = job();
+        kept.put_check(label, key, &v);
+        v
+    });
+    // what `build` leaves out: each function's proven checks, for its code as it is now
+    let mut proofs = proofs_at.as_deref().map(store::load_proofs).unwrap_or_default();
+    let mut made = made.into_iter();
+    let mut found = found.iter_mut();
+    for (_, base, module, qname, jobs) in defs {
+        // verified as it is now (`build` verifies what isn't)
+        proofs.verified.insert(qname.clone(), base.clone());
         let mut worst: Option<verify::Verdict> = None;
-        for (label, key, _) in jobs {
-            let (verdict, cached) = match fresh.next() {
-                Some(false) => (cache[&key].clone(), true),
-                _ => (made.next().expect("a verdict per check"), false),
+        for (label, _, _) in jobs {
+            let (verdict, cached) = match found.next().and_then(|v| v.take()) {
+                Some(v) => (v, true),
+                None => (made.next().expect("a verdict per check"), false),
             };
             let verdict = verdict.with_termination(analysis.status.get(&label).cloned());
-            cache.insert(key.clone(), verdict.clone());
             if matches!(verdict, verify::Verdict::Counterexample { .. }) {
                 all_ok = false;
             }
             if worst.as_ref().map_or(true, |w| verdict.rank() > w.rank()) {
                 worst = Some(verdict.clone());
             }
+            match &verdict {
+                verify::Verdict::Proven { checks, given, .. } => {
+                    let proven = checks.iter().chain(given).cloned().collect();
+                    proofs.functions.insert(label.clone(), store::Proved { decl: qname.clone(), hash: base.clone(), proven, open: vec![] });
+                }
+                verify::Verdict::Fuzzed { checks, open, .. } if !checks.is_empty() => {
+                    proofs.functions.insert(label.clone(), store::Proved { decl: qname.clone(), hash: base.clone(), proven: checks.clone(), open: open.clone() });
+                }
+                _ => {
+                    proofs.functions.remove(&label);
+                }
+            }
             module_of.insert(label.clone(), module.clone());
             results.push((label, verdict, cached));
         }
         // the viewer shows one status per definition
         if let Some(w) = worst {
-            cache.insert(base, w);
+            kept.put(&base, &w);
         }
     }
-    if let Source::Db(cb) = &src {
-        cb.save_verdicts(&cache);
+    if let Some(d) = &proofs_at {
+        store::save_proofs(d, &proofs);
     }
     // the project's policy
     let mut violations = vec![];
@@ -282,10 +380,13 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     if !violations.is_empty() {
         all_ok = false;
     }
+    if how.quiet {
+        return Ok((all_ok, results));
+    }
     if json_out {
         let out: Vec<_> = results.iter().map(|(n, v, c)| json!({"fn": n.strip_prefix(crate::resolve::ROOT_FN).unwrap_or(n), "cached": c, "verdict": v})).collect();
         println!("{}", serde_json::to_string_pretty(&out).unwrap());
-        return Ok(all_ok);
+        return Ok((all_ok, results));
     }
     for (n, v, cached) in &results {
         // (a root function named like a builtin is `main$get` once resolved)
@@ -335,7 +436,7 @@ pub fn verify(args: &Args, json_out: bool) -> Result<bool, String> {
     for v in &violations {
         println!("policy: {v}");
     }
-    Ok(all_ok)
+    Ok((all_ok, results))
 }
 
 /// Compile a fuzz driver for each function `verify` may fuzz (not what
@@ -390,7 +491,12 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
     let mut failed = HashMap::default();
     // a target that can't be compiled is named in the error: leave it out and
     // compile the others again (one more compile per such target, not one per target)
-    let mut first = llvm::compile_fuzz(&prog, &targets);
+    // (`verify --strata`: compiler/codegen's drivers, for a script)
+    let fuzz = |targets: &[llvm::FuzzTarget]| match crate::cmd::compare::FUZZ_SCRIPT.get() {
+        Some(file) => crate::cmd::compare::fuzz_ir(file, &prog, targets),
+        None => llvm::compile_fuzz(&prog, targets),
+    };
+    let mut first = fuzz(&targets);
     while let Err(e) = &first {
         let Some(i) = targets.iter().position(|t| e.contains(&format!("can't compile the fuzzing of `{}`", t.name))) else { break };
         let t = targets.remove(i);
@@ -398,7 +504,7 @@ fn jit_fuzzers(resolved: &Program, env: &types::Env, chosen: &[bool], say_why: b
             eprintln!("note: `{}` can't be fuzzed: {e}", t.name);
         }
         failed.insert(t.name.clone(), format!("it can't be compiled yet: {e}"));
-        first = llvm::compile_fuzz(&prog, &targets);
+        first = fuzz(&targets);
     }
     let ir = match first {
         Ok(made) => Some(made),

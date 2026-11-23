@@ -15,6 +15,8 @@
 #define _GNU_SOURCE  // pthread_getattr_np
 #endif
 #include <dirent.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <errno.h>
 #include <math.h>
@@ -24,8 +26,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
+#include <spawn.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 // A string: its length in bytes, then its UTF-8 bytes (not NUL-terminated).
@@ -48,8 +53,19 @@ static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Ru
 #define usable_size malloc_usable_size
 #endif
 
-
+#ifndef STRATA_CORE_RT
 static int64_t allocated, freed;
+static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+// While a task runs (`spawn`), threads may hold the same objects, so counts
+// change atomically; with none alive, they don't. Either way a count of 1
+// means only this thread can see the object. Set before the first task's
+// thread starts and cleared after the last one is joined, so it never
+// changes while another thread reads it.
+static int threaded;
+static int live_tasks;
+#define THREADED __atomic_load_n(&threaded, __ATOMIC_RELAXED)
 
 // With STRATA_MEMORY=check, freed objects are kept, filled with garbage and
 // marked, so that touching one again stops the program instead of reading
@@ -57,12 +73,60 @@ static int64_t allocated, freed;
 static _Bool checking;
 #define FREED INT64_MIN
 
-// In check mode, every object made (to list those still alive at the end).
-static int64_t **made;
-static int64_t nmade, capmade;
+// Whether counts must go through `strata_dup` / `strata_release`: while
+// tasks run (atomic counts) or in check mode. The compiled code reads it and
+// otherwise updates counts itself (`strata.dup`, `strata.release` in the IR).
+int32_t strata_slow_counts;
+
+void strata_memory_threaded(_Bool on);
+
+static void set_threaded(int v) {
+  __atomic_store_n(&threaded, v, __ATOMIC_RELAXED);
+  __atomic_store_n(&strata_slow_counts, v || checking, __ATOMIC_RELAXED);
+#ifdef STRATA_CORE_RT
+  strata_memory_threaded(v);
+#endif
+}
 
 // The count word of an object.
 static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
+
+// A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
+// memory ends the program, as for any allocation.
+void *strata_raw_alloc(int64_t n) {
+  void *p = malloc(n > 0 ? (size_t)n : 1);
+  if (!p) {
+    fputs("fault (Limit): out of memory\n", stderr);
+    exit(101);
+  }
+  return p;
+}
+
+// Stops the program (core.mem's `raw_fail`): memory used wrongly.
+_Noreturn void strata_raw_fail(Str *m) {
+  fflush(stdout);
+  fprintf(stderr, "%.*s\n", (int)m->len, m->bytes);
+  abort();
+}
+
+// How many bytes a raw block holds (core.mem's `raw_size`).
+int64_t strata_raw_size(void *p) { return (int64_t)usable_size(p); }
+
+// A reserved range of addresses, zeroed, paged in as it is touched (core.mem's
+// `raw_reserve`); NULL when the system refuses it.
+void *strata_raw_reserve(int64_t n) {
+  void *r = n > 0 ? mmap(NULL, (size_t)n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0) : MAP_FAILED;
+  return r == MAP_FAILED ? NULL : r;
+}
+
+// The runtime written in Strata (core/rt.strata) replaces these when it is
+// linked in (`STRATA_CORE_RT`: every executable, and strata itself from the
+// second stage of its build on); without it, as when strata is first built,
+// they are C.
+#ifndef STRATA_CORE_RT
+// In check mode, every object made (to list those still alive at the end).
+static int64_t **made;
+static int64_t nmade, capmade;
 
 static _Noreturn void freed_again(const char *what) {
   fflush(stdout);
@@ -70,18 +134,88 @@ static _Noreturn void freed_again(const char *what) {
   abort();
 }
 
+// Small objects (with their count word, at most OBJECT_MAX bytes: most are
+// Options, tuples, records, list headers and short strings) come from free
+// lists, one per size class (16-byte steps), carved from 64 KB chunks of
+// one reserved range of addresses; `strata_free` knows them by their
+// address, and each chunk's class from `chunk_class`. Much cheaper than
+// malloc and free for objects made and dropped all the time. The lists are
+// shared by all threads, behind a spinlock (one atomic exchange when no
+// other thread wants it). Bigger objects, and every object in check mode
+// (whose freed objects are kept and marked), are malloc's.
+#define OBJECT_MAX 256
+#define CLASSES (OBJECT_MAX / 16 + 1)
+#define CHUNK ((size_t)1 << 16)
+#define REGION ((size_t)1 << 34)
+static char *region, *region_next;
+static uint8_t chunk_class[REGION / CHUNK];
+static void *free_list[CLASSES];
+static int small_lock;
+
+static void small_lock_take(void) {
+  while (__atomic_exchange_n(&small_lock, 1, __ATOMIC_ACQUIRE))
+    while (__atomic_load_n(&small_lock, __ATOMIC_RELAXED)) {}
+}
+
+static void small_lock_give(void) { __atomic_store_n(&small_lock, 0, __ATOMIC_RELEASE); }
+
+static int in_region(void *c) { return region && (char *)c >= region && (char *)c < region + REGION; }
+
+// A block of class `k` (16 * k bytes), or NULL when the region is used up
+// (or couldn't be reserved): malloc's then.
+static int64_t *small_alloc(int k) {
+  small_lock_take();
+  void *b = free_list[k];
+  if (!b) {
+    if (!region) {
+      void *r = mmap(NULL, REGION, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+      region_next = region = r == MAP_FAILED ? NULL : r;
+    }
+    if (!region || region_next + CHUNK > region + REGION) {
+      small_lock_give();
+      return NULL;
+    }
+    char *chunk = region_next;
+    region_next += CHUNK;
+    chunk_class[(size_t)(chunk - region) / CHUNK] = (uint8_t)k;
+    size_t size = (size_t)k * 16;
+    // the chunk's blocks, linked through their first word
+    for (char *q = chunk + CHUNK - size - (CHUNK % size); q >= chunk; q -= size) {
+      *(void **)q = b;
+      b = q;
+    }
+  }
+  free_list[k] = *(void **)b;
+  small_lock_give();
+  return b;
+}
+
+static void small_free(int64_t *c) {
+  int k = chunk_class[(size_t)((char *)c - region) / CHUNK];
+  small_lock_take();
+  *(void **)c = free_list[k];
+  free_list[k] = c;
+  small_lock_give();
+}
+
 // A new object of `n` bytes, held once.
 void *strata_alloc(int64_t n) {
-  int64_t *c = malloc((size_t)n + 8);
+  int64_t *c = NULL;
+  if (!checking && n + 8 <= OBJECT_MAX) c = small_alloc((int)((n + 8 + 15) / 16));
+  if (!c) c = malloc((size_t)n + 8);
   if (!c) {
     fputs("fault (Limit): out of memory\n", stderr);
     exit(101);
   }
   *c = 1;
-  allocated++;
+  int th = THREADED;
+  if (th) __atomic_fetch_add(&allocated, 1, __ATOMIC_RELAXED);
+  else allocated++;
   if (checking) {
+    if (th) pthread_mutex_lock(&made_lock);
     if (nmade == capmade) made = realloc(made, (size_t)(capmade = capmade ? capmade * 2 : 1024) * sizeof *made);
     made[nmade++] = c;
+    if (th) pthread_mutex_unlock(&made_lock);
   }
   return c + 1;
 }
@@ -89,6 +223,12 @@ void *strata_alloc(int64_t n) {
 // One more holder of `p`.
 void strata_dup(void *p) {
   int64_t *c = count_of(p);
+  if (THREADED) {
+    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
+    if (v > 0) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
+    else if (v == FREED) freed_again("dup");
+    return;
+  }
   if (*c > 0) ++*c;
   else if (*c == FREED) freed_again("dup");
 }
@@ -97,14 +237,24 @@ void strata_dup(void *p) {
 // drops what the object holds and frees it.
 _Bool strata_release(void *p) {
   int64_t *c = count_of(p);
+  if (THREADED) {
+    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
+    if (v == FREED) freed_again("drop");
+    return v > 0 && __atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) == 0;
+  }
   if (*c == FREED) freed_again("drop");
   return *c > 0 && --*c == 0;
 }
 
 // Give an object's memory back (its contents already dropped).
 void strata_free(void *p) {
-  freed++;
+  if (THREADED) __atomic_fetch_add(&freed, 1, __ATOMIC_RELAXED);
+  else freed++;
   int64_t *c = count_of(p);
+  if (in_region(c)) {
+    small_free(c);
+    return;
+  }
   if (checking) {
     memset(p, 0xDB, usable_size(c) - 8);
     *c = FREED;
@@ -113,23 +263,44 @@ void strata_free(void *p) {
   free(c);
 }
 
+
+// Whether `p` has a single holder, so it may be changed in place.
+_Bool strata_unique(void *p) { return THREADED ? __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE) == 1 : *count_of(p) == 1; }
+#else
+void *strata_alloc(int64_t n);
+void strata_dup(void *p);
+_Bool strata_release(void *p);
+void strata_free(void *p);
+_Bool strata_unique(void *p);
+// core.rt's tallies and the objects made in check mode (count words)
+int64_t strata_memory_allocated(void);
+int64_t strata_memory_freed(void);
+int64_t *strata_memory_made(int64_t i);
+void strata_memory_start(_Bool check);
+void strata_memory_threaded(_Bool on);
+#endif
+
 // A string has nothing in it to drop.
 static void str_drop(void *s) {
   if (strata_release(s)) strata_free(s);
 }
-
-// Whether `p` has a single holder, so it may be changed in place.
-_Bool strata_unique(void *p) { return *count_of(p) == 1; }
 
 // With STRATA_MEMORY set, how many objects the program made and freed.
 // In check mode, the first few still alive: their count, size and first
 // word (a block's tag, a string's or a list's length), as text if it reads
 // as a string.
 static void memory_stats(void) {
+#ifdef STRATA_CORE_RT
+  int64_t allocated = strata_memory_allocated(), freed = strata_memory_freed();
+#endif
   fprintf(stderr, "memory: %lld allocated, %lld freed, %lld live\n", (long long)allocated, (long long)freed, (long long)(allocated - freed));
   int shown = 0;
+#ifdef STRATA_CORE_RT
+  for (int64_t i = 0, *c; (c = strata_memory_made(i)) && shown < 20; i++) {
+#else
   for (int64_t i = 0; i < nmade && shown < 20; i++) {
     int64_t *c = made[i];
+#endif
     if (*c == FREED) continue;
     shown++;
     size_t size = usable_size(c) - 8;
@@ -199,31 +370,39 @@ int64_t strata_str_len(Str *s) {
 // (`down (95846 times)`), so a deep one costs nothing to keep; only the
 // first FRAMES runs are kept.
 #define FRAMES 4096
-static _Thread_local Str *frames[FRAMES];
-static _Thread_local int64_t counts[FRAMES];
-static _Thread_local int64_t runs;  // runs in use, counting those past FRAMES
+// (one thread-local, so entering and leaving look it up once: on macOS
+// each thread-local is a call to find)
+static _Thread_local struct {
+  int64_t runs;  // runs in use, counting those past FRAMES
+  Str *frames[FRAMES];
+  int64_t counts[FRAMES];
+} calls;
 
 void strata_enter(Str *name) {
-  if (runs > 0 && runs <= FRAMES && frames[runs - 1] == name) {
-    counts[runs - 1]++;
+  __typeof__(calls) *c = &calls;
+  int64_t r = c->runs;
+  if (r > 0 && r <= FRAMES && c->frames[r - 1] == name) {
+    c->counts[r - 1]++;
     return;
   }
-  if (runs < FRAMES) {
-    frames[runs] = name;
-    counts[runs] = 1;
+  if (r < FRAMES) {
+    c->frames[r] = name;
+    c->counts[r] = 1;
   }
-  runs++;
+  c->runs = r + 1;
 }
 
 void strata_leave(void) {
-  if (runs <= FRAMES && --counts[runs - 1] > 0) return;
-  runs--;
+  __typeof__(calls) *c = &calls;
+  int64_t r = c->runs;
+  if (r <= FRAMES && --c->counts[r - 1] > 0) return;
+  c->runs = r - 1;
 }
 
 // The call stack as `strata run` shows it ("" when empty): as the
 // `names::show_stack`, four or more calls in a row of one function
 // are one entry.
-static char *stack_text(void) {
+static char *stack_from(Str **frames, int64_t *counts, int64_t runs) {
   size_t n = 16;
   for (int64_t i = 0; i < runs && i < FRAMES; i++) n += ((size_t)frames[i]->len + 4) * (counts[i] < 4 ? (size_t)counts[i] : 1) + 32;
   char *t = malloc(n), *p = t;
@@ -237,8 +416,10 @@ static char *stack_text(void) {
   return t;
 }
 
+static char *stack_text(void) { return stack_from(calls.frames, calls.counts, calls.runs); }
+
 static void print_stack(void) {
-  if (runs == 0) return;
+  if (calls.runs == 0) return;
   char *t = stack_text();
   fprintf(stderr, "    stack: %s\n", t);
   free(t);
@@ -273,14 +454,100 @@ static void keep_printed(const char *b, size_t n) {
 // Run test `f`: 0 when it got to its end, 1 after a fault (then
 // `strata_test_fault` says which). Each starts as the interpreter's: no
 // call stack, the generators' numbers from the start, nothing printed.
+static void forget_senders(void);
+
+// A run inside `strata_test` (a test, a fuzz case): a panic there fails it
+// instead of ending the process. Its tasks share it: once one of them
+// panics, every thread of the run is cancelled (it stops at its next wait),
+// and the end of the task's scope raises the panic in the test's thread.
+//
+// A supervised task (`spawn supervised e`) is such a boundary too, for
+// itself and the tasks below it: its first panic is recorded (kind, message,
+// call stack), every thread inside stops, and the task's result is
+// `Err(Panic { … })`. Inside one, a panic returns and the code leaves as a
+// cancelled task does, dropping what it holds: one in compiled code
+// (`strata_panic`), and one the runtime finds in a builtin (`soft_fault`: a
+// division by zero, a negative shift, `sqrt` of a negative number, ...: the
+// builtin gives back a harmless value, and the compiled code leaves right
+// after the call). Only a stack overflow and running out of memory still
+// jump out (`strata_fault`), leaving what the task's frames held allocated.
+typedef struct Contained {
+  int32_t panicked;
+  _Bool supervised;
+  int32_t kind;     // the first panic (a supervised boundary's)
+  Str *msg;
+  char *stack;
+} Contained;
+static _Thread_local Contained *contained;
+
+// (see "knowing when every thread of a run waits", below)
+struct Timeline;
+struct Task;
+typedef struct Waiter {
+  int64_t gen;           // `wake_gen` when it began to wait; -1: not waiting
+  const char *what;      // the wait it is in
+  _Bool timed;           // its wait ends by itself (a real clock's deadline)
+  struct Timeline *vt;   // a `VirtualClock`'s time it waits on, and the deadline
+  int64_t vdeadline;
+  Str **frames;          // its call stack (its thread's; NULL before it runs)
+  int64_t *counts, *runs;
+  struct Task *task;     // NULL: the run's first thread
+  const char *origin;    // where its task was spawned, if known
+  struct Waiter *next, **back;
+} Waiter;
+
+typedef struct Run {
+  Waiter *first, **tail;  // in the order they started
+  Contained *test;       // the test's boundary (NULL: the program)
+  struct Timeline *vtime;  // its `VirtualClock`'s time (made at its first use)
+  Waiter root;           // its first thread's
+} Run;
+
+static int64_t wake_gen;  // under `chan_lock`
+static _Thread_local Run *my_run;
+static _Thread_local Waiter *me;
+
+static void add_waiter(Run *r, Waiter *w) {
+  if (!r->tail) r->tail = &r->first;
+  w->gen = -1;
+  w->next = NULL;
+  w->back = r->tail;
+  *r->tail = w;
+  r->tail = &w->next;
+}
+
+static void remove_waiter(Run *r, Waiter *w) {
+  *w->back = w->next;
+  if (w->next) w->next->back = w->back;
+  else r->tail = w->back;
+}
+
+
+// Cancellations pending (tasks told to stop, runs that panicked): while it
+// is 0, compiled code doesn't look further (`cancel_point` in llvm.rs).
+int32_t strata_cancel_any;
+
 int32_t strata_test(void (*f)(void)) {
   sigjmp_buf here;
   catch_overflow();
-  runs = 0;
+  calls.runs = 0;
   rng = test_seed;
+  forget_senders();
   printed_len = 0;
   if (printed) printed[0] = 0;
   capturing = 1;
+  Contained run = {0}, *outer = contained;
+  contained = &run;
+  // its own run: its threads' waits are counted apart from the program's
+  Run trun = {0}, *outer_run = my_run;
+  Waiter *outer_me = me;
+  trun.test = &run;
+  trun.root.frames = calls.frames;
+  trun.root.counts = calls.counts;
+  trun.root.runs = &calls.runs;
+  add_waiter(&trun, &trun.root);
+  my_run = &trun;
+  me = &trun.root;
   trap = &here;
   int32_t r = 1;
   if (sigsetjmp(here, 1) == 0) {
@@ -289,6 +556,19 @@ int32_t strata_test(void (*f)(void)) {
   }
   trap = NULL;
   capturing = 0;
+  contained = outer;
+  my_run = outer_run;
+  me = outer_me;
+  // a panic of the run itself (a deadlock): the test fails with it
+  free(trun.vtime);
+  if (r == 0 && run.panicked && run.msg) {
+    r = 1;
+    fault_kind = run.kind;
+    fault_msg = run.msg;
+    free(fault_stack);
+    fault_stack = run.stack;
+  }
+  if (run.panicked) __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
   return r;
 }
 
@@ -368,18 +648,1011 @@ const char *strata_test_stack(void) { return fault_stack ? fault_stack : ""; }
 const char *strata_test_printed(void) { return printed ? printed : ""; }
 
 // A fault: its kind, then 256 if the interpreter shows no call stack for it.
-_Noreturn void strata_fault(int32_t kind, Str *msg) {
+static void finish_open_scopes(void);
+struct Contained;
+static void panic_contained(struct Contained *c);
+static void record_panic(struct Contained *c, int32_t kind, Str *msg, char *stack);
+static char *panic_stack(void);
+
+// A fault: of this thread (`task_stack` NULL), or of a task it started
+// (raised here by `await` or the end of its scope), whose call stack then
+// follows this thread's. Caught by a trap (a test, a task), every task this
+// thread started finishes first.
+static _Thread_local char *task_origin;  // where this thread's task was spawned
+
+static _Noreturn void fault_at(int32_t kind, Str *msg, char *task_stack) {
+  char *stack = NULL;
+  if (!(kind & 256)) {
+    char *here = stack_text();
+    if (!task_stack && task_origin && !trap) {
+      // a panic in a task, ending the program: where it was spawned, then where it is
+      stack = malloc(strlen(task_origin) + strlen(here) + 16);
+      sprintf(stack, "%s%sspawn%s%s", task_origin, *task_origin ? " -> " : "", *here ? " -> " : "", here);
+      free(here);
+    } else if (task_stack) {
+      stack = malloc(strlen(here) + strlen(task_stack) + 16);
+      sprintf(stack, "%s%sspawn%s%s", here, *here ? " -> " : "", *task_stack ? " -> " : "", task_stack);
+      free(here);
+    } else {
+      stack = here;
+    }
+  }
+  free(task_stack);
   if (trap) {
+    // (a test's tasks stop, rather than wait for what won't come; a
+    // supervised task's panic is kept for its result)
+    if (contained && contained->supervised) record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
+    else if (contained) panic_contained(contained);
+    finish_open_scopes();
     fault_kind = kind;
     fault_msg = msg;
     free(fault_stack);
-    fault_stack = kind & 256 ? NULL : stack_text();
+    fault_stack = stack;
     siglongjmp(*trap, 1);
   }
+  // a panic ends the program, whichever thread it is in (the first to
+  // panic reports; another waits for the end)
+  static int32_t ending;
+  if (__atomic_exchange_n(&ending, 1, __ATOMIC_ACQ_REL)) for (;;) pause();
+  flockfile(stdout);  // (no other thread prints after this)
   fflush(stdout);
   fprintf(stderr, "fault (%s): %.*s\n", KINDS[kind & 255], (int)msg->len, msg->bytes);
-  if (!(kind & 256)) print_stack();
+  if (stack && *stack) fprintf(stderr, "    stack: %s\n", stack);
   exit(101);
+}
+
+_Noreturn void strata_fault(int32_t kind, Str *msg) { fault_at(kind, msg, NULL); }
+
+// ---- tasks (`scope`, `spawn`, `await`) ----
+//
+// A task runs on a thread of its own. Its closure (holding what it
+// captured) and its result belong to its scope: the end of the scope waits
+// for every task, then drops them. A panic in a task ends the program, as
+// anywhere; inside a test it fails the test (see `Contained`).
+//
+// Cancelling a task (a `race`'s losers) stops it at its next wait: `send`,
+// `recv`, `select` and `await` give up, and the compiled code leaves each
+// function as `return` would, dropping what it holds (`cancel_point` in
+// llvm.rs), so nothing runs after the wait and nothing leaks. A task is
+// cancelled when it or a task above it (the one that spawned it, ...) is.
+
+#define TASK_STACK ((size_t)64 << 20)
+
+// Channels, and tasks' ends, under one lock: what changes wakes every
+// waiter, which looks again (simple; a lock per channel can come later).
+static pthread_mutex_t chan_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t chan_cond = PTHREAD_COND_INITIALIZER;
+
+typedef struct Channel {
+  int64_t cap;               // room for values waiting (0: a send waits for its receiver)
+  int64_t *items;            // a ring of slots
+  int64_t head, len, size;
+  int64_t senders;           // copies of the sender not closed yet: one per task holding it
+  int64_t sent, taken;       // values sent and received so far
+  int64_t waiting;           // receivers waiting (an unbuffered send in a `select` can go)
+  void (*drop)(int64_t);     // drops a value left in it (NULL: nothing to drop)
+} Channel;
+
+// The senders this thread holds a copy of and hasn't closed: the channels
+// it made, or a task's shares (`strata_spawn`).
+static _Thread_local Channel **held;
+static _Thread_local int64_t nheld, capheld;
+
+static void hold_sender(Channel *c) {
+  if (nheld == capheld) held = realloc(held, (size_t)(capheld = capheld ? capheld * 2 : 8) * sizeof *held);
+  held[nheld++] = c;
+}
+
+static _Bool holds_sender(Channel *c) {
+  for (int64_t i = 0; i < nheld; i++)
+    if (held[i] == c) return 1;
+  return 0;
+}
+
+// A test starts holding none.
+static void forget_senders(void) { nheld = 0; }
+
+// Whether this thread held `c`, which it no longer does.
+static _Bool unhold_sender(Channel *c) {
+  for (int64_t i = 0; i < nheld; i++)
+    if (held[i] == c) {
+      held[i] = held[--nheld];
+      return 1;
+    }
+  return 0;
+}
+
+// ---- knowing when every thread of a run waits ----
+//
+// A run is the program, or one `strata test` or fuzz case: its first thread
+// and every task started under it. Each has a `Waiter` in its run's list,
+// from its `spawn` to its end. A thread about to wait in a Strata wait (a
+// `recv`, `send`, `select`, `await`, the end of a `scope`, a sleep) says so
+// under `chan_lock` (`wait_begin`), and stops saying so when it wakes
+// (`wait_end`). Every wake-up of `chan_cond` (`wake_all`) moves `wake_gen`
+// on, so a thread woken but not yet running again doesn't count as waiting.
+// When the last thread of a run starts to wait and no wait ends by itself (a
+// real clock's deadline), nothing can happen any more: a virtual clock's time
+// jumps to its next deadline (`stuck`), or, if none waits on one, that is a
+// deadlock, a panic. Host I/O (the console, files) isn't a wait here: a
+// thread in it can still go on by itself.
+// Wake every waiter (holding `chan_lock`): something they wait on may have changed.
+static void wake_all(void) {
+  wake_gen++;
+  pthread_cond_broadcast(&chan_cond);
+}
+
+// This thread's run: the program's is made at its first wait or `spawn`.
+static Run *this_run(void) {
+  if (!my_run) {
+    Run *r = calloc(1, sizeof *r);
+    r->root.frames = calls.frames;
+    r->root.counts = calls.counts;
+    r->root.runs = &calls.runs;
+    add_waiter(r, &r->root);
+    my_run = r;
+    me = &r->root;
+  }
+  return my_run;
+}
+
+static _Bool stuck(void);
+
+// About to wait (holding `chan_lock`), on what is `what` names and, for a
+// `VirtualClock`, its time and deadline: 0 when it shouldn't (it was the last
+// thread to wait, and a virtual clock's time moved, or the run deadlocked
+// in a test: it looks again).
+static _Bool wait_begin_v(const char *what, struct Timeline *vt, int64_t vdeadline) {
+  this_run();
+  me->gen = wake_gen;
+  me->what = what;
+  me->timed = 0;
+  me->vt = vt;
+  me->vdeadline = vdeadline;
+  return !stuck();
+}
+
+static _Bool wait_begin(const char *what) { return wait_begin_v(what, NULL, 0); }
+
+// About to wait for a real clock's deadline (or a short while): it ends by itself.
+static void timed_begin(const char *what) {
+  this_run();
+  me->gen = wake_gen;
+  me->what = what;
+  me->timed = 1;
+  me->vt = NULL;
+}
+
+static void wait_end(void) {
+  if (me) me->gen = -1;
+}
+
+// One wait on `chan_cond` (holding `chan_lock`), counted.
+#define WAIT(what) \
+  do { \
+    if (wait_begin(what)) pthread_cond_wait(&chan_cond, &chan_lock); \
+    wait_end(); \
+  } while (0)
+
+typedef struct Task {
+  pthread_t thread;
+  void *clo;                  // the closure: its function, its drop, ...
+  void (*run)(void *, void *);  // calls the closure, stores the result
+  void (*drop)(void *);       // drops a stored result (NULL: nothing to drop)
+  int64_t out;                // the result (every compiled value fits)
+  _Bool joined, faulted, capturing, counting;
+  int32_t kind;
+  Str *msg;
+  char *stack, *printed;
+  size_t printed_len;
+  uint64_t seed;
+  int64_t steps, *given;
+  Channel **shares;           // the senders it holds a copy of
+  int64_t nshares;
+  _Bool done;                 // finished (set under `chan_lock`, for `select`)
+  int32_t cancel;             // told to stop (counted in `strata_cancel_any`)
+  _Bool unwound;              // stopped by a cancellation: no result
+  struct Task *parent;        // the task that spawned it (NULL: the main thread)
+  Contained *contained;       // the boundary it runs in (a test, a supervised task), if any
+  void (*fail)(void *, Str *, Str *, Str *);  // a supervised task's: stores `Err(Panic { … })`
+  Contained boundary;         // a supervised task's own
+  char *origin;               // the call stack where it was spawned
+  Run *run_of;                // the run it belongs to
+  Waiter w;                   // its place in that run's list
+  struct Task *next;
+} Task;
+
+typedef struct TaskScope {
+  Task *first, *last;
+  struct TaskScope *up;
+} TaskScope;
+
+static _Thread_local TaskScope *open_scopes;
+static _Thread_local Task *self_task;  // the task this thread runs (NULL: the main thread)
+static _Thread_local _Bool unwound;    // the last function left by a cancellation
+static void free_alt_stack(void);
+
+// Whether this thread should stop at its next wait.
+_Bool strata_cancelled(void) {
+  if (contained && __atomic_load_n(&contained->panicked, __ATOMIC_RELAXED)) return 1;
+  for (Task *t = self_task; t; t = t->parent)
+    if (__atomic_load_n(&t->cancel, __ATOMIC_RELAXED)) return 1;
+  return 0;
+}
+
+// The compiled code left a function because of a cancellation.
+void strata_unwound(void) { unwound = 1; }
+
+// ---- waiting for input, cancellably ----
+//
+// A host read (stdin's `read_line`; a socket's, with std.net) can wait for
+// ever, outside `chan_lock`'s condition variable. A thread that can be
+// cancelled (a task's, or a test's) waits for its descriptor with `poll`,
+// together with a wake pipe of its own; a cancellation writes a byte to the
+// pipe of every thread waiting so (`wake_readers`), which looks again: if it
+// was cancelled the read gives up and the compiled code leaves
+// (`cancel_point`), as after any other wait. Only threads in such a wait are
+// woken, and code that doesn't wait for input pays nothing.
+
+typedef struct Reader {
+  int wake[2];  // the pipe: read end, write end (both non-blocking)
+  struct Reader *next, *prev;
+} Reader;
+static Reader *readers;                // threads waiting for input (under `chan_lock`)
+static _Thread_local Reader *my_reader;  // this thread's pipe, made at its first wait
+
+// Wake every thread waiting for input (under `chan_lock`).
+static void wake_readers(void) {
+  for (Reader *r = readers; r; r = r->next) {
+    char b = 1;
+    if (write(r->wake[1], &b, 1) < 0) { /* full: a wake is already pending */ }
+  }
+}
+
+static void unlink_reader(Reader *r) {
+  if (r->prev) r->prev->next = r->next;
+  else readers = r->next;
+  if (r->next) r->next->prev = r->prev;
+  r->next = r->prev = NULL;
+}
+
+// Wait until `fd` can be read from (or is at its end, or failed: the read
+// says which): 1; or until this thread is cancelled: 0. A thread nothing can
+// cancel (the main thread outside a test) doesn't wait here: 1 at once.
+static _Bool wait_readable(int fd) {
+  if (!self_task && !contained) return 1;
+  if (!my_reader) {
+    Reader *r = calloc(1, sizeof *r);
+    if (!r || pipe(r->wake) != 0) {
+      free(r);
+      return 1;  // no pipe: an uncancellable wait, as before
+    }
+    for (int i = 0; i < 2; i++) {
+      fcntl(r->wake[i], F_SETFL, fcntl(r->wake[i], F_GETFL) | O_NONBLOCK);
+      fcntl(r->wake[i], F_SETFD, FD_CLOEXEC);
+    }
+    my_reader = r;
+  }
+  for (;;) {
+    pthread_mutex_lock(&chan_lock);
+    if (strata_cancelled()) {
+      pthread_mutex_unlock(&chan_lock);
+      return 0;
+    }
+    my_reader->next = readers;
+    if (readers) readers->prev = my_reader;
+    readers = my_reader;
+    pthread_mutex_unlock(&chan_lock);
+    struct pollfd p[2] = {{.fd = fd, .events = POLLIN}, {.fd = my_reader->wake[0], .events = POLLIN}};
+    int n = poll(p, 2, -1);
+    pthread_mutex_lock(&chan_lock);
+    unlink_reader(my_reader);
+    pthread_mutex_unlock(&chan_lock);
+    char drain[64];
+    while (read(my_reader->wake[0], drain, sizeof drain) > 0) {}
+    if (n < 0 && errno != EINTR) return 1;  // let the read report it
+    if (n > 0 && p[0].revents) return 1;
+    // woken (by a cancellation, maybe another thread's) or interrupted: look again
+  }
+}
+
+// A thread's pipe, closed when its task ends.
+static void forget_reader(void) {
+  if (!my_reader) return;
+  close(my_reader->wake[0]);
+  close(my_reader->wake[1]);
+  free(my_reader);
+  my_reader = NULL;
+}
+
+// Tell a task to stop (under `chan_lock`; waiters are woken by the caller,
+// except those waiting for input, woken here).
+static void cancel_task(Task *t) {
+  if (t->done || t->cancel) return;
+  __atomic_store_n(&t->cancel, 1, __ATOMIC_RELAXED);
+  __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+  wake_readers();
+}
+
+// A race's losers: every task of the scope not finished yet.
+void strata_scope_cancel(TaskScope *s) {
+  pthread_mutex_lock(&chan_lock);
+  for (Task *t = s->first; t; t = t->next) cancel_task(t);
+  wake_all();
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// A panic inside a boundary (a test, a supervised task): every thread
+// inside stops; the first panic's kind, message and stack are kept (the
+// strings are the boundary's; `msg` NULL: not known here).
+static void record_panic(Contained *c, int32_t kind, Str *msg, char *stack) {
+  pthread_mutex_lock(&chan_lock);
+  if (!c->panicked) {
+    c->panicked = 1;
+    c->kind = kind;
+    c->msg = msg;
+    c->stack = stack;
+    __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+    wake_readers();
+  } else {
+    free(stack);
+  }
+  wake_all();
+  pthread_mutex_unlock(&chan_lock);
+}
+
+static void panic_contained(Contained *c) { record_panic(c, 4, NULL, NULL); }
+
+// Where a panic happened, from `main` through each `spawn`.
+static char *panic_stack(void) {
+  char *here = stack_text();
+  if (!task_origin) return here;
+  char *s = malloc(strlen(task_origin) + strlen(here) + 16);
+  sprintf(s, "%s%sspawn%s%s", task_origin, *task_origin ? " -> " : "", *here ? " -> " : "", here);
+  free(here);
+  return s;
+}
+
+// A panic in compiled code: inside a supervised task it is the task's
+// (recorded; the code then leaves its functions, see `fault` in llvm.rs);
+// anywhere else it ends the program, or the test, as `strata_fault`.
+void strata_panic(int32_t kind, Str *msg) {
+  if (contained && contained->supervised) {
+    record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
+    return;
+  }
+  fault_at(kind, msg, NULL);
+}
+
+// A panic a builtin finds (a division by zero, `ord` of a long string, ...):
+// inside a supervised task it is the task's, recorded, and this returns 1:
+// the builtin then gives back a harmless value (0, an empty string), which
+// the compiled code never uses, since it checks for the panic right after
+// the call (`soft_faults` in llvm.rs) and leaves. Anywhere else it ends the
+// program, or the test, as `strata_fault`.
+static _Bool soft_fault(int32_t kind, Str *msg) {
+  if (contained && contained->supervised) {
+    record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
+    return 1;
+  }
+  fault_at(kind, msg, NULL);
+}
+
+// The empty string a builtin gives back after a contained panic: a
+// constant (a count of 0), never freed.
+static int64_t no_str_words[2] = {0, 0};
+#define NO_STR ((Str *)&no_str_words[1])
+
+// Whether the function just called was left by a cancellation or a
+// supervised task's panic (it gave no result).
+_Bool strata_was_unwound(void) { return unwound; }
+
+static void *task_main(void *arg) {
+  Task *t = arg;
+  catch_overflow();
+  rng = t->seed;
+  capturing = t->capturing;
+  counting = t->counting;
+  steps = t->steps;
+  given = t->given;
+  for (int64_t i = 0; i < t->nshares; i++) hold_sender(t->shares[i]);
+  self_task = t;
+  contained = t->contained;
+  task_origin = t->origin;
+  unwound = 0;
+  pthread_mutex_lock(&chan_lock);
+  my_run = t->run_of;
+  me = &t->w;
+  t->w.frames = calls.frames;
+  t->w.counts = calls.counts;
+  t->w.runs = &calls.runs;
+  pthread_mutex_unlock(&chan_lock);
+  // outside a test a panic ends the program (no trap); inside one it ends the task
+  sigjmp_buf here;
+  trap = contained ? &here : NULL;
+  if (!contained || sigsetjmp(here, 1) == 0) {
+    t->run(t->clo, &t->out);
+    t->unwound = unwound;
+  } else if (!t->fail) {
+    t->faulted = 1;
+    t->kind = fault_kind;
+    t->msg = fault_msg;
+    t->stack = fault_stack;
+    fault_stack = NULL;
+    panic_contained(contained);
+  }
+  trap = NULL;
+  // a supervised task that panicked: its result is the panic
+  _Bool died = t->fail && t->boundary.panicked;
+  t->printed = printed;
+  t->printed_len = printed_len;
+  printed = NULL;
+  printed_len = printed_cap = 0;
+  // a copy of a sender it didn't close is closed now (its receivers would
+  // wait forever), and that is a panic, unless the task was cancelled
+  pthread_mutex_lock(&chan_lock);
+  _Bool unclosed = nheld > 0 && !t->unwound && !died;
+  for (int64_t i = 0; i < nheld; i++) held[i]->senders--;
+  t->done = 1;
+  remove_waiter(t->run_of, &t->w);
+  me = NULL;
+  my_run = NULL;
+  wake_all();
+  pthread_mutex_unlock(&chan_lock);
+  free(held);
+  held = NULL;
+  nheld = capheld = 0;
+  if (died) {
+    Contained *b = &t->boundary;
+    Str *msg = b->msg ? b->msg : str_c("a task below it panicked");
+    t->fail(&t->out, str_c(KINDS[b->kind & 255]), msg, str_c(b->stack ? b->stack : ""));
+    free(b->stack);
+    t->unwound = 0;
+    __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+  } else if (unclosed && !t->faulted) {
+    Str *m = str_c("a task ended without closing its copy of a sender (`tx.close()`)");
+    if (!contained) fault_at(4, m, NULL);
+    t->faulted = 1;
+    t->kind = 4;
+    t->msg = m;
+    t->stack = strdup("");
+    panic_contained(contained);
+  }
+  self_task = NULL;
+  contained = NULL;
+  task_origin = NULL;
+  forget_reader();
+  free_alt_stack();
+  return NULL;
+}
+
+void *strata_scope_begin(void) {
+  TaskScope *s = calloc(1, sizeof *s);
+  if (!s) strata_fault(6, str_c("out of memory"));
+  s->up = open_scopes;
+  open_scopes = s;
+  return s;
+}
+
+// A task of the innermost scope open on this thread: the checker allows a
+// `spawn` only inside a `scope` (a lambda's included, as a comprehension's
+// body, which runs there).
+void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
+  TaskScope *s = open_scopes;
+  if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
+  Task *t = calloc(1, sizeof *t);
+  if (!t) strata_fault(6, str_c("out of memory"));
+  t->clo = clo;
+  t->run = run;
+  t->drop = drop;
+  // the task's numbers: from this thread's, so a run repeats
+  rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+  t->seed = rng ^ (rng >> 29);
+  t->capturing = capturing;
+  t->counting = counting;
+  t->steps = steps;
+  t->given = given;
+  t->parent = self_task;
+  t->contained = contained;
+  if (fail) {
+    t->fail = fail;
+    t->boundary.supervised = 1;
+    t->contained = &t->boundary;
+  }
+  {
+    // for a panic's call stack: this task's origin, then where it is
+    char *here = stack_text();
+    if (task_origin) {
+      t->origin = malloc(strlen(task_origin) + strlen(here) + 16);
+      sprintf(t->origin, "%s%sspawn%s%s", task_origin, *task_origin ? " -> " : "", *here ? " -> " : "", here);
+      free(here);
+    } else {
+      t->origin = here;
+    }
+  }
+  // a copy of each sender it captured that this thread still holds: the
+  // task's, to close (one this thread closed stays closed for it too)
+  if (nshares) {
+    t->shares = malloc((size_t)nshares * sizeof *shares);
+    pthread_mutex_lock(&chan_lock);
+    for (int64_t i = 0; i < nshares; i++)
+      if (holds_sender(shares[i])) {
+        shares[i]->senders++;
+        t->shares[t->nshares++] = shares[i];
+      }
+    pthread_mutex_unlock(&chan_lock);
+  }
+  if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(1);
+  // counted in its run from now: a task not started yet isn't waiting
+  pthread_mutex_lock(&chan_lock);
+  t->run_of = this_run();
+  t->w.task = t;
+  t->w.origin = t->origin;
+  add_waiter(t->run_of, &t->w);
+  pthread_mutex_unlock(&chan_lock);
+  pthread_attr_t a;
+  pthread_attr_init(&a);
+  pthread_attr_setstacksize(&a, TASK_STACK);
+  int failed = pthread_create(&t->thread, &a, task_main, t);
+  pthread_attr_destroy(&a);
+  if (failed) {
+    if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(0);
+    t->joined = 1;
+    t->faulted = 1;
+    t->kind = 6;
+    t->msg = str_c("no thread for a task (too many at once)");
+    pthread_mutex_lock(&chan_lock);
+    t->done = 1;
+    remove_waiter(t->run_of, &t->w);
+    wake_all();
+    pthread_mutex_unlock(&chan_lock);
+    for (int64_t i = 0; i < t->nshares; i++) {
+      pthread_mutex_lock(&chan_lock);
+      t->shares[i]->senders--;
+      wake_all();
+      pthread_mutex_unlock(&chan_lock);
+    }
+  }
+  if (s->last) s->last->next = t;
+  else s->first = t;
+  s->last = t;
+  return t;
+}
+
+static void join(Task *t) {
+  if (t->joined) return;
+  pthread_join(t->thread, NULL);
+  t->joined = 1;
+  if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(0);
+  if (t->printed) {
+    if (capturing) keep_printed(t->printed, t->printed_len);
+    free(t->printed);
+    t->printed = NULL;
+  }
+}
+
+// Drop a finished scope's tasks: each result, closure and record.
+static void release_scope(TaskScope *s) {
+  for (Task *t = s->first, *next; t; t = next) {
+    next = t->next;
+    if (!t->faulted && !t->unwound && t->drop) t->drop(&t->out);
+    if (t->cancel) __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+    free(t->origin);
+    if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
+    free(t->stack);
+    free(t->shares);
+    free(t);
+  }
+  free(s);
+}
+
+void strata_scope_end(TaskScope *s) {
+  // (a wait like the others: its tasks may all be waiting too)
+  if (s->first) {
+    pthread_mutex_lock(&chan_lock);
+    for (;;) {
+      Task *t = s->first;
+      while (t && t->done) t = t->next;
+      if (!t) break;
+      WAIT("the end of a `scope`");
+    }
+    pthread_mutex_unlock(&chan_lock);
+  }
+  for (Task *t = s->first; t; t = t->next) join(t);
+  open_scopes = s->up;
+  for (Task *t = s->first; t; t = t->next) {
+    // (inside a supervised task the panic is its own: the code leaves, cancelled)
+    if (t->faulted && !(contained && contained->supervised)) {
+      Str *msg = t->msg;
+      int32_t kind = t->kind;
+      char *st = t->stack;
+      t->stack = NULL;
+      release_scope(s);
+      fault_at(kind, msg, st ? st : strdup(""));
+    }
+  }
+  release_scope(s);
+}
+
+// The task's result, once it has finished; NULL if this task was cancelled
+// while it waited (the compiled code then leaves: `cancel_point`).
+void *strata_await(Task *t) {
+  pthread_mutex_lock(&chan_lock);
+  while (!t->done && !strata_cancelled()) WAIT("`await`");
+  _Bool given_up = !t->done;
+  pthread_mutex_unlock(&chan_lock);
+  if (given_up) return NULL;
+  join(t);
+  // inside a supervised task, a panic below it is its own: it leaves (cancelled)
+  if (t->faulted && contained && contained->supervised) return NULL;
+  if (t->faulted) {
+    char *st = t->stack;
+    t->stack = NULL;
+    fault_at(t->kind, t->msg, st ? st : strdup(""));
+  }
+  return &t->out;
+}
+
+// ---- channels (`channel()`, `send`, `recv`, `close`, `select`) ----
+//
+// A channel holds what was sent (moved in as slots) until it is received
+// (moved out). It has ended once every copy of its sender is closed: then
+// `recv` gives the values left, then nothing.
+
+static void push_item(Channel *c, int64_t v) {
+  if (c->len == c->size) {
+    int64_t size = c->size ? c->size * 2 : 4, *items = malloc((size_t)size * sizeof *items);
+    for (int64_t i = 0; i < c->len; i++) items[i] = c->items[(c->head + i) % c->size];
+    free(c->items);
+    c->items = items;
+    c->head = 0;
+    c->size = size;
+  }
+  c->items[(c->head + c->len++) % c->size] = v;
+  c->sent++;
+}
+
+static int64_t pop_item(Channel *c) {
+  int64_t v = c->items[c->head];
+  c->head = (c->head + 1) % c->size;
+  c->len--;
+  c->taken++;
+  return v;
+}
+
+// A new channel, held twice (its sender and its receiver), and a copy of
+// its sender for this thread.
+Channel *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
+  if (cap < 0 && soft_fault(4, str_c("a channel's buffer can't be negative"))) return NULL;
+  Channel *c = strata_alloc(sizeof(Channel));
+  memset(c, 0, sizeof *c);
+  *count_of(c) = 2;
+  c->cap = cap;
+  c->drop = drop;
+  c->senders = 1;
+  hold_sender(c);
+  return c;
+}
+
+// One end fewer: the last drops what is still in it.
+void strata_channel_drop(Channel *c) {
+  if (!strata_release(c)) return;
+  if (c->drop)
+    for (int64_t i = 0; i < c->len; i++) c->drop(c->items[(c->head + i) % c->size]);
+  free(c->items);
+  strata_free(c);
+}
+
+void strata_channel_send(Channel *c, int64_t v) {
+  pthread_mutex_lock(&chan_lock);
+  if (c->senders == 0) {
+    pthread_mutex_unlock(&chan_lock);
+    if (c->drop) c->drop(v);
+    soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+    return;
+  }
+  while (c->cap > 0 && c->len >= c->cap && !strata_cancelled()) WAIT("`send` (the channel is full)");
+  if (c->cap > 0 && c->len >= c->cap) {
+    // cancelled while it waited: nothing sent
+    pthread_mutex_unlock(&chan_lock);
+    if (c->drop) c->drop(v);
+    return;
+  }
+  push_item(c, v);
+  int64_t mine = c->sent;
+  wake_all();
+  // unbuffered: until a receiver took it
+  while (c->cap == 0 && c->taken < mine && !strata_cancelled()) WAIT("`send` (no one has taken it)");
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// The next value (into `out`), or 0 once the channel has ended and is empty.
+_Bool strata_channel_recv(Channel *c, int64_t *out) {
+  pthread_mutex_lock(&chan_lock);
+  c->waiting++;
+  wake_all();
+  _Bool stop = 0;
+  while (c->len == 0 && c->senders > 0 && !(stop = strata_cancelled())) WAIT("`recv`");
+  c->waiting--;
+  _Bool got = c->len > 0 && !stop;
+  if (got) *out = pop_item(c);
+  wake_all();
+  pthread_mutex_unlock(&chan_lock);
+  return got;
+}
+
+void strata_channel_close(Channel *c) {
+  if (!unhold_sender(c)) {
+    soft_fault(4, str_c("`close` of a sender this task doesn't hold, or has closed already"));
+    return;
+  }
+  pthread_mutex_lock(&chan_lock);
+  c->senders--;
+  wake_all();
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// ---- the clock (std.time) ----
+//
+// Monotonic time in nanoseconds. Waiting for it is a wait like a `recv`:
+// under `chan_lock`, on `chan_cond` with a deadline, so a cancellation wakes
+// it and it gives up at once.
+
+static int64_t mono_ns(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
+}
+
+// Wait on `chan_cond` (holding `chan_lock`) until woken or `deadline`
+// (monotonic) has come. `pthread_cond_timedwait` takes the wall clock.
+static void wait_until(int64_t deadline) {
+  int64_t left = deadline - mono_ns();
+  if (left <= 0) return;
+  struct timespec now, at;
+  clock_gettime(CLOCK_REALTIME, &now);
+  int64_t abs = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec + left;
+  at.tv_sec = abs / 1000000000;
+  at.tv_nsec = abs % 1000000000;
+  pthread_cond_timedwait(&chan_cond, &chan_lock, &at);
+}
+
+int64_t strata_host_now(void) { return mono_ns(); }
+
+void strata_host_sleep(int64_t ns) {
+  int64_t deadline = mono_ns() + ns;
+  pthread_mutex_lock(&chan_lock);
+  while (mono_ns() < deadline && !strata_cancelled()) {
+    timed_begin("`sleep`");
+    wait_until(deadline);
+    wait_end();
+  }
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// ---- virtual time (std.time.VirtualClock) ----
+//
+// A run's own time (`Timeline`), at 0 when it starts (each test has its
+// own), shared by its tasks: it moves by itself, to the nearest deadline
+// waited on, when every thread of the run waits (`stuck`), which wakes the
+// sleepers and the `select`s with one of its timers. The capability holds
+// nothing: its methods find the run's time here. Read and moved under
+// `chan_lock`; not counted (it lives as long as its run).
+
+typedef struct Timeline {
+  int64_t now;  // nanoseconds from the run's start
+} Timeline;
+
+Timeline *strata_virtual_timeline(void) {
+  pthread_mutex_lock(&chan_lock);
+  Run *r = this_run();
+  if (!r->vtime) r->vtime = calloc(1, sizeof(Timeline));
+  Timeline *t = r->vtime;
+  pthread_mutex_unlock(&chan_lock);
+  return t;
+}
+
+int64_t strata_virtual_now(void) {
+  Timeline *t = strata_virtual_timeline();
+  pthread_mutex_lock(&chan_lock);
+  int64_t v = t->now;
+  pthread_mutex_unlock(&chan_lock);
+  return v;
+}
+
+// Wait until the run's time has moved `ns` past now; a cancelled task stops at once.
+void strata_virtual_sleep(int64_t ns) {
+  Timeline *t = strata_virtual_timeline();
+  pthread_mutex_lock(&chan_lock);
+  int64_t deadline = t->now + ns;
+  while (t->now < deadline && !strata_cancelled()) {
+    if (wait_begin_v("a `VirtualClock`'s `sleep`", t, deadline)) pthread_cond_wait(&chan_cond, &chan_lock);
+    wait_end();
+  }
+  pthread_mutex_unlock(&chan_lock);
+}
+
+// What a `select` arm waits on: kind 0 `recv` (`ok` says whether a value
+// came, into `slot`), 1 `send` (of `slot`), 2 `await` (a task), 3 a timer of
+// the system clock (`clock.after(d)`: `slot` is its deadline, monotonic
+// nanoseconds), 4 a timer of another clock (`slot` is 1 once that clock said
+// its deadline has passed: the compiled code asks the clock, `strata_select`
+// gives -2 when it should ask again), 5 a timer of a `VirtualClock` (`target`
+// the run's `Timeline`, `slot` its deadline in that time: moving the time wakes it).
+typedef struct {
+  int64_t kind;
+  void *target;
+  int64_t slot, ok;
+} SelectOp;
+
+// Wait until one of `ops` can happen, do it, and say which. Arms are looked
+// at from a different one each time (from this thread's numbers), so none
+// is starved.
+int64_t strata_select(SelectOp *ops, int64_t n) {
+  pthread_mutex_lock(&chan_lock);
+  if (strata_cancelled()) goto give_up;
+  for (int64_t i = 0; i < n; i++)
+    if (ops[i].kind == 1 && ((Channel *)ops[i].target)->senders == 0) {
+      pthread_mutex_unlock(&chan_lock);
+      soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
+      // (contained: nothing happened, as for a cancelled `select`)
+      for (int64_t k = 0; k < n; k++) {
+        Channel *c = ops[k].target;
+        if (ops[k].kind == 1 && c->drop) c->drop(ops[k].slot);
+      }
+      return -1;
+    }
+  rng = rng * 6364136223846793005ULL + 1442695040888963407ULL;
+  int64_t start = (int64_t)((rng >> 33) % (uint64_t)n);
+  // the first of the system clock's deadlines; whether another clock's
+  // timer needs asking again (then this wait is short)
+  int64_t first = INT64_MAX;
+  _Bool other_clocks = 0;
+  for (int64_t i = 0; i < n; i++) {
+    if (ops[i].kind == 3 && ops[i].slot < first) first = ops[i].slot;
+    if (ops[i].kind == 4) other_clocks = 1;
+  }
+  for (int64_t i = 0; i < n; i++)
+    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting++;
+  wake_all();
+  int64_t chosen = -1;
+  while (chosen < 0) {
+    for (int64_t k = 0; k < n && chosen < 0; k++) {
+      int64_t i = (start + k) % n;
+      SelectOp *op = &ops[i];
+      if (op->kind == 0) {
+        Channel *c = op->target;
+        if (c->len > 0) {
+          op->slot = pop_item(c);
+          op->ok = 1;
+          chosen = i;
+        } else if (c->senders == 0) {
+          op->ok = 0;
+          chosen = i;
+        }
+      } else if (op->kind == 1) {
+        Channel *c = op->target;
+        if ((c->cap > 0 && c->len < c->cap) || (c->cap == 0 && c->waiting > c->len)) {
+          push_item(c, op->slot);
+          chosen = i;
+        }
+      } else if (op->kind == 2) {
+        if (((Task *)op->target)->done) chosen = i;
+      } else if (op->kind == 5) {
+        if (((Timeline *)op->target)->now >= op->slot) chosen = i;
+      } else if (op->kind == 3 ? mono_ns() >= op->slot : op->slot != 0) {
+        chosen = i;
+      }
+    }
+    if (chosen < 0) {
+      if (strata_cancelled()) break;
+      if (other_clocks) {
+        // another clock's time may have moved: wait a little, then let the
+        // compiled code ask it again
+        int64_t soon = mono_ns() + 1000000;
+        timed_begin("`select`");
+        wait_until(first < soon ? first : soon);
+        wait_end();
+        chosen = -2;
+        break;
+      }
+      if (first == INT64_MAX) {
+        // a `VirtualClock`'s timer: the nearest (its time may jump to it)
+        Timeline *vt = NULL;
+        int64_t vd = 0;
+        for (int64_t i = 0; i < n; i++) {
+          Timeline *tl = ops[i].target;
+          if (ops[i].kind == 5 && (!vt || ops[i].slot - tl->now < vd - vt->now)) {
+            vt = tl;
+            vd = ops[i].slot;
+          }
+        }
+        if (wait_begin_v("`select`", vt, vd)) pthread_cond_wait(&chan_cond, &chan_lock);
+        wait_end();
+      } else {
+        timed_begin("`select`");
+        wait_until(first);
+        wait_end();
+      }
+    }
+  }
+  for (int64_t i = 0; i < n; i++)
+    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
+  wake_all();
+  if (chosen >= 0 || chosen == -2) {
+    pthread_mutex_unlock(&chan_lock);
+    return chosen;
+  }
+give_up:
+  // cancelled while it waited: nothing happened; the values its sends held are dropped
+  pthread_mutex_unlock(&chan_lock);
+  for (int64_t i = 0; i < n; i++) {
+    Channel *c = ops[i].target;
+    if (ops[i].kind == 1 && c->drop) c->drop(ops[i].slot);
+  }
+  return -1;
+}
+
+// The last thread of its run is about to wait (holding `chan_lock`): if every
+// thread of the run waits and none of their waits ends by itself, a virtual
+// clock moves to its nearest deadline (1: look again), or the run is
+// deadlocked: a panic (the program ends; a test fails, its tasks stop).
+static _Bool stuck(void) {
+  Run *r = my_run;
+  Waiter *next = NULL;
+  for (Waiter *w = r->first; w; w = w->next) {
+    if (w->gen != wake_gen || w->timed) return 0;
+    if (w->vt && (!next || w->vdeadline - w->vt->now < next->vdeadline - next->vt->now)) next = w;
+  }
+  if (next) {
+    if (next->vdeadline > next->vt->now) next->vt->now = next->vdeadline;
+    wake_all();
+    return 1;
+  }
+  // what each thread waits on, and where
+  size_t cap = 256, len = 0;
+  char *m = malloc(cap);
+  len = (size_t)snprintf(m, cap, "deadlock: every task is waiting, so none can go on:");
+  for (Waiter *w = r->first; w; w = w->next) {
+    char *st = w->frames ? stack_from(w->frames, w->counts, *w->runs) : strdup("");
+    const char *o = w->origin ? w->origin : "";
+    size_t need = strlen(st) + strlen(o) + strlen(w->what) + 64;
+    if (len + need >= cap) m = realloc(m, cap = (len + need) * 2);
+    len += (size_t)sprintf(m + len, "%s %s waits in %s, at %s%s%s%s", w == r->first ? "" : ";", w->task ? "a task" : (r->test ? "the test" : "main"), w->what,
+                           o, *o ? " -> spawn" : "", *o && *st ? " -> " : "", *st ? st : (*o ? "" : "its start"));
+    free(st);
+  }
+  Str *msg = str_c(m);
+  free(m);
+  if (r->test) {
+    // the test fails with it: its tasks stop, and so does its thread
+    Contained *c = r->test;
+    if (!c->panicked) {
+      c->panicked = 1;
+      c->kind = 4;
+      c->msg = msg;
+      c->stack = strdup("");
+      __atomic_add_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
+    }
+    for (Waiter *w = r->first; w; w = w->next)
+      if (w->task) cancel_task(w->task);
+    wake_all();
+    wake_readers();
+    return 1;
+  }
+  pthread_mutex_unlock(&chan_lock);
+  trap = NULL;
+  fault_at(4 | 256, msg, NULL);
+}
+
+// After a fault caught by a trap: the tasks of every scope still open finish.
+static void finish_open_scopes(void) {
+  while (open_scopes) {
+    TaskScope *s = open_scopes;
+    for (Task *t = s->first; t; t = t->next) join(t);
+    open_scopes = s->up;
+    release_scope(s);
+  }
 }
 
 // ---- integers ----
@@ -615,8 +1888,9 @@ int64_t strata_int_abs(int64_t a) {
   return int_of(x);
 }
 
-int64_t strata_div(int64_t a, int64_t b) {
-  if (b == 0) strata_fault(4, str_c("division by zero"));
+// `a / b` for a `b` that isn't 0: what `verify` proved (`no division by
+// zero`), so the compiled code calls this without the check.
+int64_t strata_div_nz(int64_t a, int64_t b) {
   if (!is_big(a) && !is_big(b)) {
     // Euclidean: the remainder is never negative
     int64_t q = a / b, r = a % b;
@@ -631,8 +1905,13 @@ int64_t strata_div(int64_t a, int64_t b) {
   return q;
 }
 
-int64_t strata_mod(int64_t a, int64_t b) {
-  if (b == 0) strata_fault(4, str_c("division by zero"));
+int64_t strata_div(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return strata_div_nz(a, b);
+}
+
+// `a % b` for a `b` that isn't 0 (see `strata_div_nz`).
+int64_t strata_mod_nz(int64_t a, int64_t b) {
   if (!is_big(a) && !is_big(b)) {
     if (b == -1) return 0;
     int64_t r = a % b;
@@ -645,6 +1924,11 @@ int64_t strata_mod(int64_t a, int64_t b) {
   free(x.d), free(y.d);
   strata_int_drop(q);
   return r;
+}
+
+int64_t strata_mod(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return strata_mod_nz(a, b);
 }
 
 // ---- bits: `&`, `|`, `^`, `<<`, `>>` ----
@@ -698,10 +1982,12 @@ int64_t strata_int_and(int64_t a, int64_t b) { return bit_op(a, b, AND); }
 int64_t strata_int_or(int64_t a, int64_t b) { return bit_op(a, b, OR); }
 int64_t strata_int_xor(int64_t a, int64_t b) { return bit_op(a, b, XOR); }
 
-// The shift `n` as a count of bits; a negative one is a fault.
+// The shift `n` as a count of bits; a negative one is a fault (-1 after a
+// contained one).
 static int64_t shift_of(int64_t n, const char *op) {
   if (n < 0 || (is_big(n) && big_at(n)->sign < 0)) {
-    strata_fault(4, strata_concat(str_c(op), str_c(" by a negative number of bits")));
+    soft_fault(4, strata_concat_owned(str_c(op), str_c(" by a negative number of bits")));
+    return -1;
   }
   return is_big(n) ? INT64_MAX : n;
 }
@@ -709,8 +1995,8 @@ static int64_t shift_of(int64_t n, const char *op) {
 // `a << n`: `a` times 2^n.
 int64_t strata_shl(int64_t a, int64_t n) {
   int64_t k = shift_of(n, "`<<`");
-  if (a == 0) return 0;
-  if (k > ((int64_t)1 << 32)) strata_fault(6, str_c("`<<` by more than 2^32 bits"));
+  if (k < 0 || a == 0) return 0;
+  if (k > ((int64_t)1 << 32) && soft_fault(6, str_c("`<<` by more than 2^32 bits"))) return 0;
   if (!is_big(a) && k < 62) {
     int64_t lim = (int64_t)1 << (62 - k);
     if (a > -lim && a < lim) return a * ((int64_t)1 << k);
@@ -815,7 +2101,8 @@ double strata_int_to_float(int64_t v) {
   free(x.d);
   if (!isfinite(d)) {
     Str *m = big_show(v);
-    strata_fault(4, strata_concat(m, str_c(" is too large for a Float")));
+    soft_fault(4, strata_concat_owned(m, str_c(" is too large for a Float")));
+    return 0.0;
   }
   return x.sign < 0 ? -d : d;
 }
@@ -832,18 +2119,6 @@ Str *strata_show_int(int64_t n) {
   return str_c((snprintf(buf, sizeof buf, "%lld", (long long)n), buf));
 }
 
-// An `Int` in JSON, as the interpreter writes it: a number while it fits
-// in 64 bits, else its digits as a string.
-Str *strata_json_int(int64_t n) {
-  Str *d = strata_show_int(n);
-  if (!is_big(n)) return d;
-  Big *b = big_at(n);
-  uint64_t m = b->n <= 2 ? b->d[0] | (b->n > 1 ? (uint64_t)b->d[1] << 32 : 0) : UINT64_MAX;
-  if (b->n <= 2 && m <= (uint64_t)INT64_MAX + (b->sign < 0)) return d;
-  Str *q = strata_concat_owned(strata_concat_owned(str_c("\""), d), str_c("\""));
-  return q;
-}
-
 // A 64-bit integer as an `Int` (a big integer when it isn't small).
 int64_t strata_int_from_i64(int64_t raw) {
   if (!is_big(raw)) return raw;
@@ -852,6 +2127,58 @@ int64_t strata_int_from_i64(int64_t raw) {
   x.d[x.n++] = (uint32_t)m;
   if (m >> 32) x.d[x.n++] = (uint32_t)(m >> 32);
   return int_of(x);
+}
+
+// ---- sized integers (`I8` … `U64`) ----
+//
+// Compiled inline but for these: an operation is `Int`'s, then the result
+// modulo 2^bits. The generated code passes a signed type's value sign-extended
+// to 64 bits, an unsigned one's zero-extended, and truncates the result.
+
+// Euclidean `/` and `%` (the remainder is never negative), as `Int`'s.
+int64_t strata_word_div(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  if (b == 0) return 0;
+  if (b == -1) return (int64_t)((uint64_t)0 - (uint64_t)a);
+  int64_t q = a / b, r = a % b;
+  if (r < 0) q = b > 0 ? q - 1 : q + 1;
+  return q;
+}
+
+int64_t strata_word_mod(int64_t a, int64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  if (b == 0 || b == -1) return 0;
+  int64_t r = a % b;
+  if (r < 0) r = b > 0 ? r + b : r - b;
+  return r;
+}
+
+uint64_t strata_uword_div(uint64_t a, uint64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return b == 0 ? 0 : a / b;
+}
+
+uint64_t strata_uword_mod(uint64_t a, uint64_t b) {
+  if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
+  return b == 0 ? 0 : a % b;
+}
+
+// A shift of a signed type by a negative number of bits, as `Int`'s.
+void strata_word_shift_fault(Str *op) {
+  soft_fault(4, strata_concat_owned((strata_dup(op), op), str_c(" by a negative number of bits")));
+}
+
+int64_t strata_int_bits(int64_t v);
+
+// `to_u32(n)` and the like: `n`'s low 64 bits, when `n` is in lo ..= hi
+// (both `Int`s); else a fault naming the type.
+int64_t strata_int_fit(int64_t n, int64_t lo, int64_t hi, Str *ty) {
+  if (strata_int_cmp(lo, n) > 0 || strata_int_cmp(n, hi) > 0) {
+    Str *m = strata_concat_owned(strata_concat_owned(strata_concat_owned(str_c("`"), strata_show_int(n)), str_c("` doesn't fit in `")), (strata_dup(ty), ty));
+    soft_fault(4, strata_concat_owned(m, str_c("`")));
+    return 0;
+  }
+  return strata_int_bits(n);
 }
 
 // ---- foreign calls (`extern c`) ----
@@ -881,7 +2208,10 @@ int64_t strata_int_from_u64(uint64_t raw) {
 char *strata_cstr(Str *s, Str *callee) {
   if (memchr(s->bytes, 0, (size_t)s->len)) {
     Str *m = strata_concat_owned(strata_concat_owned(str_c("a string passed to `"), (strata_dup(callee), callee)), str_c("` holds a NUL character, which C would read as its end"));
-    strata_fault(4, m);
+    soft_fault(4, m);
+    char *e = malloc(1);  // (contained: the call is still made, then the code leaves)
+    if (e) *e = 0;
+    return e;
   }
   char *c = malloc((size_t)s->len + 1);
   if (!c) {
@@ -899,7 +2229,8 @@ void strata_cstr_free(char *c) { free(c); }
 Str *strata_str_from_c(const char *c, Str *callee) {
   if (!c) {
     Str *m = strata_concat_owned(strata_concat_owned(str_c("`"), (strata_dup(callee), callee)), str_c("` returned NULL for a `String`"));
-    strata_fault(4, m);
+    soft_fault(4, m);
+    return NO_STR;
   }
   return str_c(c);
 }
@@ -1049,31 +2380,6 @@ static Str *show_float_plain(double x) {
 
 Str *strata_show_bool(_Bool b) { return str_c(b ? "true" : "false"); }
 
-// A string as JSON (quoted, escaped), for fault messages.
-Str *strata_json_str(Str *s) {
-  Str *o = str_alloc(s->len * 6 + 2);
-  char *p = o->bytes;
-  *p++ = '"';
-  for (int64_t i = 0; i < s->len; i++) {
-    unsigned char c = (unsigned char)s->bytes[i];
-    switch (c) {
-    case '"': p += sprintf(p, "\\\""); break;
-    case '\\': p += sprintf(p, "\\\\"); break;
-    case '\n': p += sprintf(p, "\\n"); break;
-    case '\r': p += sprintf(p, "\\r"); break;
-    case '\t': p += sprintf(p, "\\t"); break;
-    case '\b': p += sprintf(p, "\\b"); break;
-    case '\f': p += sprintf(p, "\\f"); break;
-    default:
-      if (c < 0x20) p += sprintf(p, "\\u%04x", c);
-      else *p++ = (char)c;
-    }
-  }
-  *p++ = '"';
-  o->len = p - o->bytes;
-  return o;
-}
-
 // A string as `Debug` writes it: a Strata string literal, escaped as the
 // printer escapes (\n, \t, \", and a backslash that would start one).
 Str *strata_debug_str(Str *s) {
@@ -1097,14 +2403,18 @@ Str *strata_debug_str(Str *s) {
 // A float operation's result must be finite (no NaN or infinity).
 double strata_finite(double r, double a, double b, Str *op) {
   if (isfinite(r)) return r;
-  Str *m = strata_concat(strata_concat(strata_concat(show_float_plain(a), str_c(" ")), op), str_c(" "));
-  strata_fault(4, strata_concat(strata_concat(m, show_float_plain(b)), str_c(" is not a finite number")));
+  // (`op` is the caller's: not consumed)
+  Str *head = strata_concat_owned(show_float_plain(a), str_c(" ")), *m = strata_concat(head, op);
+  str_drop(head);
+  m = strata_concat_owned(m, str_c(" "));
+  soft_fault(4, strata_concat_owned(strata_concat_owned(m, show_float_plain(b)), str_c(" is not a finite number")));
+  return 0.0;
 }
 
 // `floor`, `ceil`, `round` of `x` gave `r`, a whole number: as an Int
 // (exactly, a big integer when it isn't small).
 int64_t strata_float_to_int(double r, double x) {
-  if (!isfinite(r)) strata_fault(4, strata_concat(show_float_plain(x), str_c(" is not a whole number")));
+  if (!isfinite(r) && soft_fault(4, strata_concat_owned(show_float_plain(x), str_c(" is not a whole number")))) return 0;
   if (r >= -4611686018427387904.0 && r < 4611686018427387904.0) return (int64_t)r;
   int e;
   double m = frexp(fabs(r), &e);  // |r| = m * 2^e, 0.5 <= m < 1
@@ -1122,7 +2432,8 @@ int64_t strata_float_to_int(double r, double x) {
 
 double strata_sqrt(double x) {
   if (x >= 0) return sqrt(x);
-  strata_fault(4, strata_concat(str_c("sqrt of negative number "), show_float_plain(x)));
+  soft_fault(4, strata_concat_owned(str_c("sqrt of negative number "), show_float_plain(x)));
+  return 0.0;
 }
 
 // ---- lists ----
@@ -1199,6 +2510,47 @@ List *strata_list_push(List *xs, int64_t x, int64_t counted) {
   return l;
 }
 
+// Whether a list can be changed in place: its header and its buffer held
+// once (by what is about to be replaced by the change), the buffer all its own.
+_Bool strata_list_owned(List *xs) {
+  return strata_unique(xs) && strata_unique(xs->buf) && xs->off == 0 && xs->len == xs->buf->used;
+}
+
+// In an owned list (`strata_list_owned`): element `i` replaced by `x` (held
+// already); the old one returned, for the caller to drop.
+int64_t strata_list_put(List *xs, int64_t i, int64_t x) {
+  int64_t old = xs->buf->data[i];
+  xs->buf->data[i] = x;
+  return old;
+}
+
+// In an owned list: `x` (held already) inserted before element `i`.
+void strata_list_insert(List *xs, int64_t i, int64_t x) {
+  Buf *b = xs->buf;
+  if (b->used == b->cap) {
+    Buf *n = buf_new(b->cap * 2 + 1);
+    memcpy(n->data, b->data, (size_t)b->used * 8);
+    n->used = b->used;
+    strata_free(b);
+    xs->buf = b = n;
+  }
+  memmove(b->data + i + 1, b->data + i, (size_t)(b->used - i) * 8);
+  b->data[i] = x;
+  b->used++;
+  xs->len++;
+}
+
+// In an owned list: element `i` taken out (the rest moved down) and
+// returned, for the caller to drop.
+int64_t strata_list_remove_at(List *xs, int64_t i) {
+  Buf *b = xs->buf;
+  int64_t old = b->data[i];
+  memmove(b->data + i, b->data + i + 1, (size_t)(b->used - i - 1) * 8);
+  b->used--;
+  xs->len--;
+  return old;
+}
+
 // Add `x` to a list nothing else holds yet (one the runtime is making).
 static List *append(List *l, int64_t x) {
   Buf *b = l->buf;
@@ -1258,8 +2610,10 @@ void strata_print(Str *s) {
     keep_printed("\n", 1);
     return;
   }
+  flockfile(stdout);
   fwrite(s->bytes, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
+  funlockfile(stdout);
 }
 
 // ---- the system (the `host_*` operations of std) ----
@@ -1294,9 +2648,17 @@ static void on_segv(int sig, siginfo_t *info, void *ctx) {
 
 // Once per thread: the thread's stack (the JIT runs on strata's own, larger
 // than the process's limit) and a stack for the handler.
+static _Thread_local char *alt;
+
+static void free_alt_stack(void) {
+  stack_t off = {.ss_flags = SS_DISABLE};
+  sigaltstack(&off, NULL);
+  free(alt);
+  alt = NULL;
+}
+
 static void catch_overflow(void) {
   if (stack_hi) return;
-  static _Thread_local char *alt;
   if (!alt) alt = malloc(65536);
   stack_t ss = {.ss_sp = alt, .ss_size = 65536, .ss_flags = 0};
   sigaltstack(&ss, NULL);
@@ -1324,7 +2686,7 @@ static void catch_overflow(void) {
 
 // The program's arguments, without its name; a closed pipe ends it quietly.
 void strata_init(int32_t argc, char **argv) {
-  runs = 0;
+  calls.runs = 0;
   rng = 7;
   catch_overflow();
   prog_argc = argc > 0 ? argc - 1 : 0;
@@ -1332,11 +2694,16 @@ void strata_init(int32_t argc, char **argv) {
   if (argc > 0 && argv[0]) prog_name = argv[0];
   signal(SIGPIPE, SIG_IGN);
   // (what compile-time code made before, in this process, isn't the program's)
-  allocated = freed = 0;
-  nmade = 0;
   static _Bool registered;
   const char *m = getenv("STRATA_MEMORY");
   checking = m && !strcmp(m, "check");
+#ifdef STRATA_CORE_RT
+  strata_memory_start(checking);
+#else
+  allocated = freed = 0;
+  nmade = 0;
+#endif
+  set_threaded(THREADED);
   if (m && !registered) registered = 1, atexit(memory_stats);
 }
 
@@ -1395,15 +2762,65 @@ void strata_host_write(int64_t fd, Str *text) {
   }
 }
 
-// A line without its end, or NULL at the end of the input.
+// Whether `f` has input read from its descriptor and not taken yet (then a
+// `getc` doesn't wait). Platforms whose `FILE` we can't look into say no:
+// a line already buffered there waits for more input (or the end) first.
+static _Bool input_buffered(FILE *f) {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+  return f->_r > 0;
+#elif defined(__GLIBC__)
+  return f->_IO_read_ptr < f->_IO_read_end;
+#else
+  (void)f;
+  return 0;
+#endif
+}
+
+// A line without its end, or NULL at the end of the input. In a task (or a
+// test) it can be cancelled while it waits: NULL then too, and the compiled
+// code leaves (`cancel_point`); what it had read of the line is dropped.
 Str *strata_host_read_line(void) {
-  size_t cap = 0;
-  char *line = NULL;
-  ssize_t n = getline(&line, &cap, stdin);
-  if (n <= 0) return NULL;
+  if (!self_task && !contained) {
+    size_t cap = 0;
+    char *line = NULL;
+    ssize_t n = getline(&line, &cap, stdin);
+    if (n <= 0) {
+      free(line);
+      return NULL;
+    }
+    if (n > 0 && line[n - 1] == '\n') n--;
+    if (n > 0 && line[n - 1] == '\r') n--;
+    Str *s = str_from(line, n);
+    free(line);
+    return s;
+  }
+  // a character at a time from stdin's buffer; before each refill, a
+  // cancellable wait for the descriptor (the refill then takes what is there)
+  size_t cap = 128, n = 0;
+  char *line = malloc(cap);
+  int c = EOF;
+  // (stdin isn't locked across the wait: another task reading it would be
+  // stuck on the lock, where it can't be cancelled)
+  for (;;) {
+    if (!input_buffered(stdin) && !wait_readable(fileno(stdin))) {
+      free(line);
+      return NULL;
+    }
+    c = getc(stdin);
+    if (c == EOF) break;
+    if (n + 1 >= cap) line = realloc(line, cap *= 2);
+    line[n++] = (char)c;
+    if (c == '\n') break;
+  }
+  if (n == 0 && c == EOF) {
+    free(line);
+    return NULL;
+  }
   if (n > 0 && line[n - 1] == '\n') n--;
   if (n > 0 && line[n - 1] == '\r') n--;
-  return str_from(line, n);
+  Str *s = str_from(line, (int64_t)n);
+  free(line);
+  return s;
 }
 
 Str *strata_host_read_file(Str *path, Str **kind, Str **msg) {
@@ -1529,6 +2946,99 @@ Str *strata_host_env_var(Str *name) {
 
 int64_t strata_pid(void) { return (int64_t)getpid(); }
 
+// Runs a program (looked up in PATH, never through a shell) with its
+// arguments in a working directory (`""`: this process's), its standard input
+// empty, and waits: `[exit code, stdout, stderr]` (the code as decimal text; a
+// program killed by a signal gives 128 + the signal, as shells do), or NULL and
+// the failure when it can't be started.
+static Str *read_all_into(char **b, size_t *n, size_t *cap, int fd) {
+  char tmp[65536];
+  ssize_t r = read(fd, tmp, sizeof tmp);
+  if (r <= 0) return NULL;
+  if (*n + (size_t)r > *cap) *b = realloc(*b, *cap = (*n + (size_t)r) * 2);
+  memcpy(*b + *n, tmp, (size_t)r);
+  *n += (size_t)r;
+  return (Str *)1;
+}
+
+List *strata_host_run(Str *program, List *args, Str *dir, Str **kind, Str **msg) {
+  int64_t argc = args->len;
+  char **argv = calloc((size_t)argc + 2, sizeof(char *));
+  argv[0] = strndup(program->bytes, (size_t)program->len);
+  for (int64_t i = 0; i < argc; i++) {
+    Str *a = (Str *)(intptr_t)args->buf->data[args->off + i];
+    argv[i + 1] = strndup(a->bytes, (size_t)a->len);
+  }
+  int out[2], err[2];
+  if (pipe(out) != 0) { os_error(kind, msg); return NULL; }
+  if (pipe(err) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); return NULL; }
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+  posix_spawn_file_actions_adddup2(&fa, err[1], 2);
+  posix_spawn_file_actions_addclose(&fa, out[0]);
+  posix_spawn_file_actions_addclose(&fa, err[0]);
+  posix_spawn_file_actions_addclose(&fa, out[1]);
+  posix_spawn_file_actions_addclose(&fa, err[1]);
+  char *d = dir->len ? strndup(dir->bytes, (size_t)dir->len) : NULL;
+  if (d) posix_spawn_file_actions_addchdir_np(&fa, d);
+  extern char **environ;
+  pid_t pid;
+  int e = posix_spawnp(&pid, argv[0], &fa, NULL, argv, environ);
+  posix_spawn_file_actions_destroy(&fa);
+  close(out[1]);
+  close(err[1]);
+  for (int64_t i = 0; i <= argc; i++) free(argv[i]);
+  free(argv);
+  if (e != 0) {
+    close(out[0]);
+    close(err[0]);
+    errno = e;
+    os_error(kind, msg);
+    char buf[600];
+    snprintf(buf, sizeof buf, "can't run `%.*s`%s%s: %.*s", (int)program->len, program->bytes,
+             d ? " in " : "", d ? d : "", (int)(*msg)->len, (*msg)->bytes);
+    free(d);
+    // (the OS's message, now inside the fuller one)
+    str_drop(*msg);
+    *msg = str_c(buf);
+    return NULL;
+  }
+  free(d);
+  char *ob = NULL, *eb = NULL;
+  size_t on = 0, oc = 0, en = 0, ec = 0;
+  struct pollfd fds[2] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}};
+  int open_fds = 2;
+  while (open_fds > 0) {
+    if (poll(fds, 2, -1) < 0) {
+      if (errno == EINTR) continue;
+      break;
+    }
+    for (int k = 0; k < 2; k++) {
+      if (fds[k].fd < 0 || !(fds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+      if (!(k == 0 ? read_all_into(&ob, &on, &oc, fds[k].fd) : read_all_into(&eb, &en, &ec, fds[k].fd))) {
+        close(fds[k].fd);
+        fds[k].fd = -1;
+        open_fds--;
+      }
+    }
+  }
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+  int code = WIFEXITED(status) ? WEXITSTATUS(status) : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+  char cbuf[24];
+  snprintf(cbuf, sizeof cbuf, "%d", code);
+  List *l = strata_list_new(3);
+  l = append(l, (int64_t)(intptr_t)str_c(cbuf));
+  l = append(l, (int64_t)(intptr_t)str_from(ob ? ob : "", (int64_t)on));
+  l = append(l, (int64_t)(intptr_t)str_from(eb ? eb : "", (int64_t)en));
+  free(ob);
+  free(eb);
+  return l;
+}
+
+
 // ---- strings ----
 //
 // The string built-ins (`interp::Interp::builtin`). Strings are UTF-8 and
@@ -1575,7 +3085,7 @@ static int64_t find_from(Str *s, Str *sub, int64_t from) {
 static List *push_str(List *l, Str *s) { return append(l, (int64_t)(intptr_t)s); }
 
 List *strata_str_split(Str *s, Str *sep) {
-  if (sep->len == 0) strata_fault(4, str_c("split: empty separator"));
+  if (sep->len == 0 && soft_fault(4, str_c("split: empty separator"))) return strata_list_new(0);
   List *l = strata_list_new(4);
   int64_t start = 0, at;
   while ((at = find_from(s, sep, start)) >= 0) {
@@ -1675,7 +3185,8 @@ Str *strata_str_at_or_fault(Str *s, int64_t k) {
   if (c) return c;
   char buf[96];
   snprintf(buf, sizeof buf, "index %lld out of range (length %lld)", (long long)k, (long long)strata_str_len(s));
-  strata_fault(4, str_c(buf));
+  soft_fault(4, str_c(buf));
+  return NO_STR;
 }
 
 // Characters `a` to `b`, clamped to the string (as in Python).
@@ -1692,7 +3203,7 @@ Str *strata_str_slice(Str *s, int64_t a, int64_t b) {
 }
 
 Str *strata_str_replace(Str *s, Str *from, Str *to) {
-  if (from->len == 0) strata_fault(4, str_c("replace: empty pattern"));
+  if (from->len == 0 && soft_fault(4, str_c("replace: empty pattern"))) return NO_STR;
   Str *out = str_from("", 0);
   int64_t start = 0, at;
   while ((at = find_from(s, from, start)) >= 0) {
@@ -1711,7 +3222,8 @@ Str *strata_str_repeat(Str *s, int64_t n) {
   if (n < 0) {
     char buf[64];
     snprintf(buf, sizeof buf, "repeat: negative count %lld", (long long)n);
-    strata_fault(4, str_c(buf));
+    soft_fault(4, str_c(buf));
+    return NO_STR;
   }
   if (s->len > 0 && n > (INT64_MAX - 64) / s->len) {
     fputs("fault (Limit): out of memory\n", stderr);
@@ -1823,7 +3335,8 @@ int64_t strata_str_ord(Str *s) {
     int32_t c = utf8_at(s, 0, &n);
     if (n == s->len) return c;
   }
-  strata_fault(4, strata_concat(str_c("ord needs a single character, got "), debug_str(s)));
+  soft_fault(4, strata_concat_owned(str_c("ord needs a single character, got "), debug_str(s)));
+  return 0;
 }
 
 // A string's length in UTF-8 bytes, and its byte `i` (0 to 255): what the
@@ -1834,7 +3347,8 @@ int64_t strata_str_byte_at(Str *s, int64_t i) {
   if (i < 0 || i >= s->len) {
     char buf[96];
     snprintf(buf, sizeof buf, "byte %lld out of range (%lld bytes)", (long long)i, (long long)s->len);
-    strata_fault(4, str_c(buf));
+    soft_fault(4, str_c(buf));
+    return 0;
   }
   return (unsigned char)s->bytes[i];
 }
@@ -1843,7 +3357,8 @@ Str *strata_str_chr(int64_t c) {
   if (c < 0 || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)) {
     char buf[64];
     snprintf(buf, sizeof buf, "chr: %lld is not a character", (long long)c);
-    strata_fault(4, str_c(buf));
+    soft_fault(4, str_c(buf));
+    return NO_STR;
   }
   char b[4];
   return str_from(b, utf8_put((int32_t)c, b));

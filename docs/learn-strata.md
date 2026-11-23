@@ -99,7 +99,9 @@ fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n {
 }
 
 // The prelude has: Natural, Positive, Negative, NonZero, Probability,
-// Percentage, NonEmpty[T], NonEmptyString, and I8..I64 / U8..U64.
+// Percentage, NonEmpty[T], NonEmptyString. I8..I64 / U8..U64 are machine
+// integers of their own (wrapping arithmetic, no mixing with Int: convert
+// with `x.to_int()`, `n.to_u8()`, `n.wrap_u8()`).
 // `type Name = String` alone is an error: add `where`, or use `distinct`.
 
 // A distinct type is nominal: it never mixes with its base or other types.
@@ -506,7 +508,52 @@ fn collatz(n: Positive) -> Natural
   }
 }
 
-// ─── 14. Tests ─────────────────────────────────────────────────────────────
+// A `while` loop ends when a bound goes down on every pass. `verify` infers
+// simple loop invariants; `invariant` states one it can't find (checked at
+// the loop's head when the code runs, and proven by `verify`).
+fn triangle(n: Natural) -> Natural
+  ensures 2 * it == n * (n + 1) {
+  mut acc: Natural = 0
+  mut i: Natural = 0
+  while i < n
+    invariant 2 * acc == i * (i + 1) {
+    i += 1
+    acc += i
+  }
+  acc
+}
+
+// ─── 14. Tasks: work in parallel, without `async` ────────────────────────────
+// `spawn e` runs `e` in a task of the enclosing `scope`, which ends once all
+// its tasks have. `await` gives a task's result (a tuple's, a list's).
+// Functions aren't marked: any function may block, inside a task or not.
+fn squares(xs: List[Int]) -> List[Int] {
+  scope {
+    await [spawn x * x for x in xs]
+  }
+}
+
+// Tasks pass values through channels (`channel(n)` holds n waiting values).
+// Each task holding the sender closes it; `for` over the receiver stops then.
+fn summed(xs: List[Int]) -> Int {
+  (tx, rx) := channel(4)
+  scope {
+    spawn {
+      for x in xs {
+        tx.send(x)
+      }
+      tx.close()
+    }
+    tx.close()
+    mut acc := 0
+    for v in rx {
+      acc += v
+    }
+    acc
+  }
+}
+
+// ─── 15. Tests ───────────────────────────────────────────────────────────────
 test "orders" {
   l := Line { sku: "TEA-7", qty: 2, unit_price: 450 }
   assert line_total(l) == 900
@@ -515,6 +562,9 @@ test "orders" {
   assert combine_all([Money { cents: 1 }, Money { cents: 2 }]) == Money { cents: 3 }
   assert Item.new("tea").priced(42).summary() == "tea: 42c"
   assert receipt(Item.new("cup")) == "cup: 0c"
+  assert triangle(4) == 10
+  assert squares([1, 2, 3]) == [1, 4, 9]
+  assert summed([1, 2, 3]) == 6
 }
 
 test "a mocked capability" {
@@ -542,7 +592,7 @@ test "a mocked capability" {
 - **Empty literals need a type when nothing says it**: `let xs: List[Money] = []`, `Dict[String, Int] {}`.
 - **Indexing is checked**: `xs[i]` faults when `i` is out of range, and `verify` tries to prove it isn't. There are no negative indices (`xs[len(xs) - 1]`); use `get(xs, i)` for an `Option`.
 - **`print(x)` is for convenience.** Code whose output matters takes a `Console` (`std.io`), so tests can record it.
-- Not in the language (yet): shared references, exceptions, null, implicit effects, generators, async, macros, inheritance.
+- Not in the language (yet): shared references, exceptions, null, implicit effects, generators, `async` functions (tasks need none), macros, inheritance.
 
 ## Modules and packages
 
@@ -557,7 +607,7 @@ pub fn ship(mut db: Db, id: OrderId) -> Result[Order, ShipError] { ... }
 fn helper() -> Int { ... }             // private to shop.orders
 
 // billing.strata
-use shop.orders.{Order, ship}          // or `use shop.orders.*`, or `shop.orders.ship(x)`
+from shop.orders use Order, ship      // or `use shop.orders`, then `orders.ship(x)`
 ```
 
 ## Programs
@@ -565,8 +615,8 @@ use shop.orders.{Order, ship}          // or `use shop.orders.*`, or `shop.order
 `main` asks for what it needs by type and `strata run` passes it in: a command-line options record, `Console` (`std.io`, chosen by the environment), and capabilities it names: `Disk` (`std.fs`, a `Files`), `Process` (`std.process`, an `Environment`), `Codebase` (`std.code`, a `Code`: the codebase itself, as the tools see it), or the program's own. It returns `()`, an `ExitCode`, or a `Result` of either (an `Err` exits with 1).
 
 ```rust
-use std.cli.CommandLine
-use std.io.Console
+from std.cli use CommandLine
+from std.io use Console
 
 /// Greet people by name.
 type Options = {
@@ -578,7 +628,7 @@ type Options = {
   names: List[String] = [],                        // the positional arguments
 }
 
-impl CommandLine for Options {}                    // --help comes from the /// comments
+derive CommandLine for Options                     // --help comes from the /// comments
 
 fn main(opts: Options, mut console: Console) {
   for name in opts.names {
@@ -589,7 +639,7 @@ fn main(opts: Options, mut console: Console) {
 }
 ```
 
-Tests pass stand-ins instead of the real capabilities: `recorder(input)` / `printed(r)` for a `Console`, `mem_files([(path, text)])` for `Files`, `fake_environment(args, vars)`, or `mock Trait`. Nothing but `strata run` and `strata serve` reaches the real terminal, disk or network.
+Tests pass stand-ins instead of the real capabilities: `recorder(input)` / `printed(r)` for a `Console`, `mem_files([(path, text)])` for `Files`, `fake_environment(args, vars)`, or `mock Trait`. Only `main` (under `strata run`, `strata serve`, or as a built executable) and a test that names a capability reach the real terminal, disk or network.
 
 The standard library is written in Strata and needs no dependency: `std.io`, `std.fs`, `std.process`, `std.cli`, `std.http` (`Request`, `Response`, `Router`: `app.get("/users/:id", handler)`, `req.param("id")`) and `std.web` (`Html[M]` as values: `div([class("x")], [text("hi")])`, `on_click(msg)`). A web server defines `fn handle(req: Request) -> Response`; an app defines `init() -> Model`, `update(model, msg) -> Model` and `view(model) -> Html[Msg]` (the Elm architecture). Both run with `strata serve`. See `examples/hello`, `wc`, `page`, `counter`, `todos`. `strata builtins` lists every builtin with its signature.
 
@@ -604,9 +654,9 @@ strata verify [NAME]          # prove contracts with Z3/cvc5, fuzz the rest, sho
 strata verify NAME --checks   # …listing every check and how it was settled
 strata holes                  # each ?hole: goal type, what's in scope, what it must satisfy
 strata run [PATH] -- ARGS     # run main
-strata run FN '[JSON args]'   # call one function; args are checked against the types (--trace)
+strata run FN 'ARGS'         # call one function; args written as code, checked against the types (--trace)
 strata serve [PATH]           # run `handle` or an app (init/update/view) on http://127.0.0.1:8000
-strata build [PATH] -o OUT    # native executable through LLVM (part of the language so far)
+strata build [PATH] -o OUT    # native executable through LLVM
 strata builtins               # every builtin and prelude type
 ```
 
@@ -630,6 +680,6 @@ strata ui                             # live viewer in the browser (http://127.0
 
 An `edit` that breaks code elsewhere turns each broken use into a hole (`?pending_1`, …) and opens a pending change: fill them with more `edit`s, then `strata done` (or `strata abort`). In a git repository every recorded change is also a commit.
 
-**Before pushing:** `strata ci` (everything checks, exports exist, every module file is exactly as strata writes it; `--fix` rewrites them). `strata setup-git` makes `git diff` show `.strata` files as text and merge them definition by definition. `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if `ci` passes.
+Code is stored only in binary form, and a saved file is checked, so there is nothing to re-check before pushing; `strata upgrade` rewrites every file in the current form after a change to the format. `strata setup-git` makes `git diff` show `.strata` files as text and merge them definition by definition. `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if everything checks.
 
 **A good loop for an agent:** read with `view --level 1` and `holes`; write definitions; `check`; `test`; `verify` the functions you touched, and when one fails, read the counterexample, then fix the code or strengthen the contract (`requires`, a refinement) until it is proven.
