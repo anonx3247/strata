@@ -76,9 +76,11 @@ pub fn build(args: &Args) -> Result<bool, String> {
     let out = args.val("-o").map(String::from).unwrap_or(name);
     let dir = std::env::temp_dir().join(format!("strata-build-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let (ll, rt) = (dir.join("program.ll"), dir.join("runtime.c"));
+    let (ll, rt, core_rt) = (dir.join("program.ll"), dir.join("runtime.c"), dir.join("core_rt.ll"));
     std::fs::write(&ll, &ir).map_err(|e| e.to_string())?;
     std::fs::write(&rt, llvm::RUNTIME).map_err(|e| e.to_string())?;
+    // the runtime written in Strata, in place of the C runtime's versions
+    std::fs::write(&core_rt, llvm::compile_core_rt()?).map_err(|e| e.to_string())?;
     let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
     // `--release`: the program and the runtime optimized together (-O2,
     // `-flto`: the runtime's small functions inlined into the program; a
@@ -90,6 +92,8 @@ pub fn build(args: &Args) -> Result<bool, String> {
             .args([if release { "-O2" } else { "-O0" }, "-Wno-override-module", "-o", &out])
             .args(lto.then_some("-flto"))
             .arg(&ll)
+            .arg(&core_rt)
+            .arg("-DSTRATA_CORE_RT")
             .arg(&rt)
             // std's precompiled code, linked in (always statically: an executable stands alone)
             .args(llvm::jit::std_library().map(|l| l.object.clone()))
@@ -113,4 +117,31 @@ pub fn build(args: &Args) -> Result<bool, String> {
         eprintln!("built {out}");
     }
     Ok(true)
+}
+
+/// `strata build-core [-o FILE]`: core.rt as LLVM IR (`llvm::compile_core_rt`),
+/// stamped with the hash of the core files it was made from, which build.rs
+/// compares before linking it (`core_stamp`).
+pub fn build_core(args: &Args) -> Result<bool, String> {
+    let ir = format!("; core.rt {}\n{}", core_stamp(), llvm::compile_core_rt()?);
+    match args.val("-o") {
+        Some(out) => std::fs::write(out, &ir).map_err(|e| format!("{out}: {e}"))?,
+        None => print!("{ir}"),
+    }
+    Ok(true)
+}
+
+/// FNV-1a over core.rt's and core.mem's module files, as build.rs computes it
+/// from the files on disk: whether a core_rt.ll still matches them.
+pub fn core_stamp() -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for (f, bytes) in crate::core::FILES {
+        if *f == "rt.strata" || *f == "mem.strata" {
+            for b in bytes.iter() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+    }
+    format!("{h:016x}")
 }

@@ -848,13 +848,15 @@ impl Bin for ExternItem {
             ExternItem::Fn(f) => put!(w, 0, f),
             ExternItem::Type(t, ps) if ps.is_empty() => put!(w, 1, t),
             ExternItem::Type(t, ps) => put!(w, 2, t, ps),
+            ExternItem::Static(n, size) => put!(w, 3, n, size),
         }
     }
     fn dec(r: &mut Reader) -> Result<Self, String> {
-        Ok(match r.tag("extern item", 2)? {
+        Ok(match r.tag("extern item", 3)? {
             0 => ExternItem::Fn(Bin::dec(r)?),
             1 => ExternItem::Type(Bin::dec(r)?, vec![]),
-            _ => ExternItem::Type(Bin::dec(r)?, Bin::dec(r)?),
+            2 => ExternItem::Type(Bin::dec(r)?, Bin::dec(r)?),
+            _ => ExternItem::Static(Bin::dec(r)?, Bin::dec(r)?),
         })
     }
 }

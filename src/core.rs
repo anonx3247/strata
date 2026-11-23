@@ -30,6 +30,7 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("channel.strata", include_bytes!("../core/channel.strata")),
     ("text.strata", include_bytes!("../core/text.strata")),
     ("task.strata", include_bytes!("../core/task.strata")),
+    ("rt.strata", include_bytes!("../core/rt.strata")),
 ];
 
 /// The modules of code a program gets when it uses them (`needed`):
@@ -140,7 +141,7 @@ fn triggers(m: &str) -> std::collections::HashSet<String> {
                 ExternItem::Fn(f) => {
                     out.insert(f.name.to_string());
                 }
-                ExternItem::Type(t, _) => {
+                ExternItem::Type(t, _) | ExternItem::Static(t, _) => {
                     out.insert(t.to_string());
                 }
             },
@@ -190,7 +191,7 @@ pub fn builtin_types() -> &'static [(Symbol, Vec<Symbol>)] {
             .filter_map(|d| match &d.kind {
                 DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
                     ExternItem::Type(t, ps) => Some((*t, ps.clone())),
-                    ExternItem::Fn(_) => None,
+                    ExternItem::Fn(_) | ExternItem::Static(..) => None,
                 },
                 _ => None,
             })
@@ -205,7 +206,7 @@ pub fn builtin_fns() -> impl Iterator<Item = (Symbol, &'static crate::ast::FnDec
     FILES.iter().flat_map(|(f, _)| module(f)).filter_map(|d| match &d.kind {
         DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
             ExternItem::Fn(f) => Some((d.module, f)),
-            ExternItem::Type(..) => None,
+            ExternItem::Type(..) | ExternItem::Static(..) => None,
         },
         _ => None,
     })
@@ -231,6 +232,11 @@ pub fn owns(module: &str, name: &str) -> bool {
         }
     };
     is_core(&module) && FILES.iter().any(|(f, _)| module_of(f) == module && crate::core::module(f).iter().any(|d| d.name() == short))
+}
+
+/// A core module's definitions (by its file, `rt.strata`), as written.
+pub fn module_decls(file: &str) -> Vec<Decl> {
+    module(file).to_vec()
 }
 
 /// `core.mem` for `mem.strata`.
@@ -276,9 +282,13 @@ pub fn check(dir: &std::path::Path) -> crate::types::CheckReport {
     rep
 }
 
-/// core's own tests (`test` blocks in its modules), as a program.
+/// core's own tests (`test` blocks in its modules), as a program, with
+/// the functions of the modules programs don't get by themselves (core.rt's).
 pub fn tests() -> Program {
-    let decls = FILES.iter().flat_map(|(f, _)| module(f).iter().filter(|d| matches!(d.kind, DeclKind::Test(_))).cloned()).collect();
+    let decls = FILES
+        .iter()
+        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (*f == "rt.strata" && (!is_builtin(d) || matches!(&d.kind, DeclKind::Extern(e) if matches!(e.item, ExternItem::Static(..)))))).cloned())
+        .collect();
     Program { decls }
 }
 

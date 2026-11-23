@@ -188,6 +188,10 @@ Running:
                                can't be compiled yet fails, saying why); --with-deps: also
                                those of what it imports (std, dependencies), which are
                                otherwise tested on their own
+  build-core [-o FILE]         compile core.rt (the runtime written in Strata) to LLVM IR for
+                               the C runtime: the second stage of building strata itself
+                               (tools/bootstrap.sh writes it to target/core_rt.ll, which
+                               build.rs then links instead of the C versions)
   build [PATH] [-o OUT] [--emit-llvm] [--all-checks] [--no-verify] [--release]
                                compile the program to a native executable, through LLVM
                                (unoptimized, -O0, unless --release: -O2 and the runtime
@@ -402,6 +406,7 @@ fn run() -> Result<bool, String> {
         "serve" => cmd::serve_program(&args),
         "test" => cmd::run_tests(&args),
         "build" => cmd::build(&args),
+        "build-core" => cmd::build_core(&args),
         other => Err(format!("unknown command `{other}` (try `strata help`)")),
     }
 }

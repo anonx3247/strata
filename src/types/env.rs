@@ -23,6 +23,8 @@ pub struct Env {
     pub externs: HashMap<Symbol, Lang>,
     /// Capabilities (`capability Sqlite { ... }`): only the runtime makes them.
     pub capabilities: HashSet<Symbol>,
+    /// core's `builtin static` blocks, by name: their sizes in bytes.
+    pub statics: HashMap<Symbol, i64>,
     /// Where each type is defined, in the order the program defines them
     /// (the prelude's first).
     pub type_order: HashMap<Symbol, usize>,
@@ -50,6 +52,7 @@ impl Env {
             checked_params: HashMap::default(),
             externs: HashMap::default(),
             capabilities: HashSet::default(),
+            statics: HashMap::default(),
             type_order: HashMap::default(),
         };
         let mut errs = Vec::new();
@@ -120,6 +123,7 @@ impl Env {
                 }
                 // what the compiler provides (core's `builtin fn` / `builtin type`):
                 // known through the builtins' tables, not as definitions
+                DeclKind::Extern(ExternDecl { lang: crate::ast::Lang::Builtin, item: ExternItem::Static(n, size) }) => env.statics.insert(*n, *size).is_some(),
                 DeclKind::Extern(e) if e.lang == crate::ast::Lang::Builtin => false,
                 DeclKind::Extern(e) => match &e.item {
                     // a signature only: the body is foreign
@@ -129,6 +133,7 @@ impl Env {
                     }
                     // a nominal type with no constructor and nothing inside (a sum with no
                     // variants): a handle only foreign code makes
+                    ExternItem::Static(..) => false,
                     ExternItem::Type(t, _) => {
                         env.externs.insert(*t, e.lang);
                         let td = TypeDecl { distinct: false, name: *t, params: vec![], body: TypeBody::Sum(vec![]), refinement: None, mock: false };

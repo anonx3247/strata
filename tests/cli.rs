@@ -6395,7 +6395,7 @@ fn core_mem_is_core_only() {
     let core = core.to_str().unwrap();
     // core's own tests use it
     let (ok, out) = strata(&["--file", core, "test"], &d, None);
-    assert!(ok && out.contains("✓ core.mem: a block holds the words and bytes stored in it") && out.contains("2 passed"), "{out}");
+    assert!(ok && out.contains("✓ core.mem: a block holds the words and bytes stored in it") && out.contains(" 0 failed"), "{out}");
     // anywhere else it is refused, its type included
     let src = "fn main() {\n  p := raw_alloc(8)\n  store_i64(p, 0, 1)\n}\n\nfn keep(p: Ptr) -> Ptr {\n  p\n}\n";
     let (_, out) = strata(&["--file", "x.strata", "edit"], &d, Some(src));
@@ -6413,4 +6413,39 @@ fn core_mem_is_core_only() {
     save_module(&p, "core.mem", "pub fn grab() -> Int {\n  load_i64(raw_alloc(8), 0)\n}\n");
     let (ok, out) = strata(&["--file", "p", "check"], &d, None);
     assert!(!ok && out.contains("`raw_alloc` is core's"), "{out}");
+}
+
+/// core.rt, the runtime written in Strata: `strata build-core` compiles it
+/// for the C runtime (its `strata_...` functions under their C names),
+/// stamped with the core files it was made from; its tests run with core's.
+#[test]
+fn core_rt_is_compiled_for_the_c_runtime() {
+    let d = tmp("core_rt");
+    let (ok, out) = strata(&["build-core"], &d, None);
+    assert!(ok && out.starts_with("; core.rt ") && out.contains("define zeroext i1 @strata_unique(ptr %a0)"), "{out}");
+    // the runtime's own declaration of it is left out (it is defined here)
+    assert!(!out.contains("declare i1 @strata_unique"), "{out}");
+    // the same every time (the bootstrap's second stage compares them)
+    let (_, again) = strata(&["build-core"], &d, None);
+    assert_eq!(out, again);
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("core");
+    let (ok, out) = strata(&["--file", core.to_str().unwrap(), "test"], &d, None);
+    assert!(ok && out.contains("✓ core.rt: an object held once is unique"), "{out}");
+}
+
+/// `builtin static NAME: BYTES`: a block of zeroed memory, one per program,
+/// its name a `Ptr` to it: core's runtime state, declared only in core.
+#[test]
+fn builtin_statics_are_core_state() {
+    let d = tmp("core_static");
+    let src = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n";
+    let (_, out) = strata(&["--file", "x.strata", "edit"], &d, Some(src));
+    assert!(out.contains("`builtin` definitions are only in `core`: `mine`"), "{out}");
+    let (ok, out) = strata(&["--file", "x.strata", "render"], &d, None);
+    assert!(ok && out == src, "{out}");
+    let (ok, out) = strata(&["--file", "y.strata", "edit"], &d, Some("builtin static s: big\n"));
+    assert!(!ok && out.contains("`builtin static s` needs its size in bytes"), "{out}");
+    let core = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("core");
+    let (ok, out) = strata(&["--file", core.to_str().unwrap(), "test"], &d, None);
+    assert!(ok && out.contains("✓ core.rt: a static block is one per program, zeroed at the start"), "{out}");
 }
