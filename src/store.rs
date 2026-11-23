@@ -802,8 +802,9 @@ pub const LOG: &str = "strata.log";
 /// Where a module's file is, relative to its package: `shop.orders` is
 /// `shop/orders.strata`, the root module `main.strata`.
 pub fn module_path(m: &str) -> PathBuf {
-    // inside `std/` itself, `std.io` is `io.strata` (and `core.types` is `types.strata` in `core/`)
-    let m = m.strip_prefix("std.").or_else(|| m.strip_prefix("core.")).unwrap_or(if m == crate::stdlib::NAME || m == crate::core::NAME { "" } else { m });
+    // inside `std/` itself, `std.io` is `io.strata` (core's files are named by
+    // `core::file_of`: a package's own module `core` is `core.strata`)
+    let m = m.strip_prefix("std.").unwrap_or(if m == crate::stdlib::NAME { "" } else { m });
     if m.is_empty() { PathBuf::from("main.strata") } else { PathBuf::from(format!("{}.strata", m.replace('.', "/"))) }
 }
 

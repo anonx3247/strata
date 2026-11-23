@@ -146,8 +146,20 @@ fn call(args: &Args, p: &Program, env: &types::Env, name: &str, raw: &str) -> Re
 /// `strata test`: each `test` block, compiled; a test that can't be
 /// compiled yet fails, saying why.
 pub fn run_tests(args: &Args) -> Result<bool, String> {
-    let src = load(&args)?;
-    let p = src.program();
+    // `strata --file core test`: core's own tests (core.mem's), with core as
+    // this strata is built with it
+    let core_tests;
+    let src;
+    let p = match crate::core::dir_of(args.val("--file")) {
+        Some(_) => {
+            core_tests = crate::core::tests();
+            &core_tests
+        }
+        None => {
+            src = load(&args)?;
+            src.program()
+        }
+    };
     let rep = full_checked(p).report;
     if !rep.ok() {
         print_errors(&rep);
