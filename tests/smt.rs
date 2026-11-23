@@ -114,6 +114,8 @@ fn same(file: &Path, cache: &Path) -> (usize, usize) {
 /// slices, `+`, list patterns, element types, lambdas passed to `map`,
 /// `filter`, `all`, `any`, `find`; the builtins on lists, strings and
 /// numbers.
+/// Step 4: `while` (invariants inferred and written), `for` over lists,
+/// `loop`, `break`, `continue`.
 #[test]
 fn smt_outcomes_as_in_rust() {
     if !have_z3() {
@@ -125,6 +127,7 @@ fn smt_outcomes_as_in_rust() {
         ("step1", include_str!("data/smt/step1.st")),
         ("step2", include_str!("data/smt/step2.st")),
         ("step3", include_str!("data/smt/step3.st")),
+        ("step4", include_str!("data/smt/step4.st")),
     ] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
