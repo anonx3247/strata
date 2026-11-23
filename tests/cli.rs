@@ -559,7 +559,8 @@ fn inputs_from_the_solver_meet_narrow_types() {
     let d = tmp("solver-inputs");
     save(&d.join("s.strata"), "type Steps = List[Int] where len(it) >= 3 && all(1..len(it), i -> it[i] == it[i - 1] + 1)\nfn last(xs: Steps) -> Int\n  ensures it == xs[0] + 2\n{\n  xs[len(xs) - 1]\n}\nfn first(xs: Steps) -> Int\n  ensures it == xs[1] - 1\n{\n  xs[0]\n}\n");
     let (ok, out) = strata(&["--file", "s.strata", "verify"], &d, None);
-    assert!(!ok && out.contains("✗ last") && out.contains("found by the fuzzer, on inputs from the solver"), "{out}");
+    // (the solver shows it, a list of four; else the fuzzer, on inputs from the solver)
+    assert!(!ok && out.contains("✗ last") && (out.contains("found by the fuzzer, on inputs from the solver") || out.contains("found by the solver")), "{out}");
     assert!(out.contains("✓ first"), "{out}");
 }
 
@@ -1648,7 +1649,7 @@ fn traits_laws_and_distinct_types() {
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
     let (ok, out) = strata(&["--file", &ex, "verify"], &d, None);
-    assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("~ law associative for Money"), "{out}");
+    assert!(!ok && out.contains("law `associative` does not hold for `Midpoint`") && out.contains("✓ law associative for Money"), "{out}");
     assert!(passed(&out, "combine_all") && passed(&out, "receipt"), "bounded generics checked at an implementing type: {out}");
     save(&d.join("e.strata"),
         "type Name = String\n\
