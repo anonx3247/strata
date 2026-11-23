@@ -176,7 +176,7 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
             // written back as `strata render` writes it (names as short as
             // the module's imports allow): std's and the package's other
             // modules give the names
-            "render" => ([vec!["written".into()], std_files(), siblings(unit), vec!["--".into(), unit.clone()]].concat(), if module.is_empty() { vec!["--file".into(), file.clone(), "render".into()] } else { vec!["--file".into(), file.clone(), "render".into(), module.clone()] }),
+            "render" => ([vec!["written".into()], std_files(), siblings(unit), vec!["--".into(), unit.clone()]].concat(), if module.is_empty() { vec!["--file".into(), file.clone(), "render".into(), "--rust".into()] } else { vec!["--file".into(), file.clone(), "render".into(), module.clone(), "--rust".into()] }),
             _ => {
                 let prelude = scratch.join("prelude.strata");
                 let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -187,14 +187,24 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 let p = prelude.to_string_lossy().into_owned();
                 (
                     [vec!["eval".into(), p], std_files(), vec!["--".into(), unit.clone(), "--program".into(), program_name.clone()], program_args.clone()].concat(),
-                    [["--file", &file, "run", "--"].map(String::from).to_vec(), program_args.clone()].concat(),
+                    [["--file", &file, "run", "--rust", "--"].map(String::from).to_vec(), program_args.clone()].concat(),
                 )
             }
         };
         let mut ours = strata_lines(run_compiler(&exe, &theirs)?);
         if cmd == "run" {
-            // `OUTPUT…`, `--- exit N`, `===`
+            // `OUTPUT…`, `--- stderr`, `ERRORS…`, `--- exit N`, `===`; run
+            // on its own, the errors go to stderr (marked with a NUL here)
             ours.retain(|l| l != "===");
+            if let Some(at) = ours.iter().position(|l| l == "--- stderr") {
+                ours.remove(at);
+                if !compare {
+                    let last = ours.len().saturating_sub(1);
+                    for l in &mut ours[at..last] {
+                        l.insert(0, '\0');
+                    }
+                }
+            }
             if let Some(l) = ours.pop() {
                 ours.push(format!("exit: {}", l.trim_start_matches("--- exit ")));
             }
@@ -302,10 +312,21 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                     all_ours.extend(ours.into_iter().map(tag));
                 }
                 if !compare {
-                    for l in &all_ours {
-                        println!("{l}");
+                    // what the evaluator doesn't run yet: Rust's, by default
+                    if cmd == "run" && !args.flag("--strata") && all_ours.iter().any(|l| l.contains("isn't run by this evaluator") || l.contains("which this evaluator can't give")) {
+                        return Err(NOT_COVERED.into());
                     }
-                    return Ok(code.is_none_or(|c| c == "exit: 0"));
+                    for l in &all_ours {
+                        match l.strip_prefix('\0') {
+                            Some(e) => eprintln!("{e}"),
+                            None => println!("{l}"),
+                        }
+                    }
+                    // the program's own exit code
+                    if let Some(n) = code.as_deref().and_then(|c| c.strip_prefix("exit: ")).and_then(|n| n.parse::<i32>().ok()).filter(|n| *n != 0) {
+                        std::process::exit(n);
+                    }
+                    return Ok(true);
                 }
                 Ok(report(all_rust, all_ours, "lines"))
             }
@@ -319,6 +340,32 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
 /// default).
 pub fn available() -> bool {
     compiler_dir().is_some()
+}
+
+/// The marker of a run the Strata side can't give (`command` returns it as
+/// its error, before printing anything, so Rust's runs instead).
+const NOT_COVERED: &str = "not covered by compiler/";
+
+/// Whether `render` or `run` as given is the Strata side's by default: a
+/// whole script rendered with no view's options; a program's `main` run
+/// (`run [PATH] [-- ARGS]`, no `--trace`).
+pub fn covers_by_default(args: &crate::Args, cmd: &str) -> bool {
+    if !available() {
+        return false;
+    }
+    match cmd {
+        "render" => {
+            let file = args.val("--file");
+            args.pos.len() == 1
+                && file.is_some_and(|f| Path::new(f).is_file())
+                && !["--split", "--members", "--level", "--prelude", "--text", "--tree", "--mocks", "--json"].iter().any(|f| args.flags.contains_key(*f))
+        }
+        "run" => {
+            let path = args.pos.get(1).map(|s| s.as_str()).or(args.val("--file"));
+            args.pos.len() <= 2 && path.is_some_and(|p| Path::new(p).exists()) && !args.flag("--trace")
+        }
+        _ => false,
+    }
 }
 
 /// The compiler package: `STRATA_COMPILER`, else a `compiler/` folder (with
