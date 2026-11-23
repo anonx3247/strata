@@ -123,9 +123,6 @@ fn report(mut rust: Vec<String>, mut strata: Vec<String>, what: &str) -> bool {
 pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     let file = args.val("--file").map(String::from).or_else(|| args.pos.get(1).cloned()).ok_or(format!("{cmd} --strata/--compare: give a script (--file F)"))?;
     let package = Path::new(&file).is_dir();
-    if package && cmd == "build" {
-        return Err("build --strata/--compare covers a script (one file) for now, not a folder or package".into());
-    }
     if cmd == "render" && args.pos.len() > 1 {
         return Err("render --strata/--compare renders a whole script, not chosen definitions".into());
     }
@@ -139,6 +136,14 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     };
     let compare = args.flag("--compare");
     let (exe, std) = compiler()?;
+    // `run --strata --jit`: compiled by compiler/codegen and run by the
+    // compiler's JIT (`compiler jit`), its output and exit code the program's
+    if cmd == "run" && args.flag("--jit") && !compare {
+        let root = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.to_path_buf())).ok_or("no repository around compiler/")?;
+        let path = Path::new(&file).canonicalize().map_err(|e| format!("{file}: {e}"))?;
+        let status = Command::new(&exe).current_dir(root).arg("jit").arg(path).arg("--").args(&program_args).status().map_err(|e| e.to_string())?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
     let std_files = || -> Vec<String> {
         let mut out = vec![];
         let mut todo: Vec<PathBuf> = std.iter().cloned().collect();
@@ -229,10 +234,75 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
     };
     let result = (|| -> Result<bool, String> {
         match cmd {
+            // the tests' IR from `compiler codegen --tests` (`strata.test.N`, each
+            // after a line naming it), run as `strata test` runs its own
+            "test" => {
+                let ir = run_compiler(&exe, &["codegen".into(), "--tests".into(), file.clone()])?;
+                let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
+                if !missing.is_empty() {
+                    return Err(format!("compiler/codegen doesn't cover these tests yet:\n{}", missing.join("\n")));
+                }
+                let names: Vec<String> = ir.lines().filter_map(|l| l.strip_prefix("; test ")).map(|l| l.split_once(": ").map(|x| x.1.to_string()).unwrap_or_default()).collect();
+                let filter = if args.val("--file").is_some() { args.pos.get(1).cloned().unwrap_or_default() } else { String::new() };
+                let which: Vec<usize> = (0..names.len()).filter(|&i| names[i].contains(&filter)).collect();
+                let runs = crate::llvm::jit::run_tests(&ir, &which)?;
+                let (mut pass, mut fail, mut ours) = (0, 0, vec![]);
+                for (&i, r) in which.iter().zip(runs) {
+                    match r.fault {
+                        None => {
+                            pass += 1;
+                            ours.push(format!("✓ {}", names[i]));
+                        }
+                        Some((kind, msg, stack)) => {
+                            fail += 1;
+                            ours.push(format!("✗ {}", names[i]));
+                            ours.push(format!("    {kind}: {msg}"));
+                            if !stack.is_empty() {
+                                ours.push(format!("    stack: {stack}"));
+                            }
+                            if !r.printed.is_empty() {
+                                ours.push("    printed:".into());
+                                ours.extend(r.printed.lines().map(|l| format!("      {l}")));
+                            }
+                        }
+                    }
+                }
+                ours.push(String::new());
+                ours.push(format!("{pass} passed, {fail} failed"));
+                if !compare {
+                    for l in &ours {
+                        println!("{l}");
+                    }
+                    return Ok(fail == 0);
+                }
+                let mut rust_args = vec!["--file".to_string(), file.clone(), "test".to_string()];
+                if !filter.is_empty() {
+                    rust_args.push(filter);
+                }
+                let o = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).args(&rust_args).output().map_err(|e| e.to_string())?;
+                let rust: Vec<String> = String::from_utf8_lossy(&o.stdout).lines().map(String::from).collect();
+                Ok(report(rust, ours, "lines"))
+            }
             "build" => {
                 let runtime = compiler_dir().and_then(|d| d.canonicalize().ok()).and_then(|d| Some(d.parent()?.join("src/llvm/runtime.c"))).filter(|r| r.is_file()).ok_or("build --strata/--compare needs the repository's src/llvm/runtime.c beside compiler/")?;
                 let ll = scratch.join("program.ll");
-                let ir = run_compiler(&exe, &["codegen".into(), file.clone()])?;
+                // the checks `verify` proved, left out as `strata build` leaves
+                // them out (what changed since verified first; `--all-checks`
+                // keeps them all, `--no-verify` uses what was proven before)
+                // (a package's: not yet, its checks all kept)
+                let proven = scratch.join("proofs.txt");
+                let facts = if package {
+                    String::new()
+                } else {
+                    let src = crate::Source::File(crate::read_sources(&file)?);
+                    if !args.flag("--all-checks") && !args.flag("--no-verify") {
+                        crate::cmd::verify_first(args, &src, Some(&file))?;
+                    }
+                    let proofs = crate::proofs_for(&src, Some(&file), args);
+                    crate::llvm::proofs_text(src.program(), &proofs)
+                };
+                fs::write(&proven, facts).map_err(|e| e.to_string())?;
+                let ir = run_compiler(&exe, &["codegen".into(), "--proofs".into(), proven.to_string_lossy().into_owned(), file.clone()])?;
                 let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
                 if !missing.is_empty() {
                     return Err(format!("compiler/codegen doesn't cover this program yet:\n{}", missing.join("\n")));
@@ -240,7 +310,10 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 fs::write(&ll, ir).map_err(|e| e.to_string())?;
                 let ours = if compare { scratch.join("strata") } else { PathBuf::from(args.val("-o").map(String::from).unwrap_or_else(|| Path::new(&file).file_stem().unwrap().to_string_lossy().into_owned())) };
                 let cc = std::env::var("STRATA_CC").unwrap_or_else(|_| "clang".into());
-                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
+                // a package's own C (`[native]`), for its `extern c` declarations
+                let mut native = crate::package::find(Path::new(&file)).ok().flatten().map(|p| p.native.clang_args(&p.dir)).unwrap_or_default();
+                native.retain(|a| a != "-lm");
+                let o = Command::new(&cc).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).args(&native).arg("-lm").output().map_err(|e| format!("running {cc}: {e}"))?;
                 if !o.status.success() {
                     return Err(format!("{cc} refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr).trim()));
                 }
@@ -447,3 +520,31 @@ fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
         }
     }
 }
+
+/// The script `verify --strata` fuzzes with compiler/codegen's drivers.
+pub static FUZZ_SCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// `verify --strata`'s fuzz drivers: compiler/codegen's (`codegen --fuzz`,
+/// `strata.fuzz.N` for target N) of the script `file`, with the shapes their
+/// arguments are read back by (as `llvm::compile_fuzz` gives them). A target
+/// the Strata side can't compile (a method's wrapper) makes it an error, so
+/// the caller compiles that one with Rust.
+pub fn fuzz_ir(file: &str, prog: &crate::ast::Program, targets: &[crate::llvm::FuzzTarget]) -> Result<(String, Vec<Vec<crate::llvm::Shape>>, crate::llvm::Shapes), String> {
+    let (exe, _) = compiler()?;
+    let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
+    let ir = run_compiler(&exe, &["codegen".into(), "--fuzz".into(), names.join(","), file.to_string()])?;
+    let missing: Vec<&str> = ir.lines().filter(|l| l.starts_with("error:")).collect();
+    if !missing.is_empty() {
+        let first = targets.iter().find(|t| missing.iter().any(|m| m.contains(&format!("`{}`", t.name)))).or(targets.first());
+        return Err(format!("can't compile the fuzzing of `{}`: {}", first.map(|t| t.name.as_str()).unwrap_or(""), missing.join("; ")));
+    }
+    let types: Vec<crate::ast::TypeExpr> = targets.iter().flat_map(|t| t.params.iter().map(|p| p.1.clone())).collect();
+    let (mut all, named) = crate::llvm::shapes_of(prog, &types)?;
+    let mut per = vec![];
+    for t in targets {
+        let rest = all.split_off(t.params.len().min(all.len()));
+        per.push(std::mem::replace(&mut all, rest));
+    }
+    Ok((ir, per, named))
+}
+

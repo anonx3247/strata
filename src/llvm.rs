@@ -356,6 +356,50 @@ pub fn compile_proven(prog: &Program, entry: &str, proofs: HashMap<String, Proof
     Ok((r?, out, kept))
 }
 
+/// What `compiler codegen` leaves out (`strata build --strata`), one fact a
+/// line, tab-separated: each of the program's own functions' checks as
+/// `verify` left them (`proven F CHECK`, `open F CHECK`), and the entry
+/// checks every call of `F` proves, as `compile` leaves them out
+/// (`proven_at_calls`): `entry F argument P`, `entry F requires I` (its
+/// `I`th precondition).
+pub fn proofs_text(prog: &Program, proofs: &HashMap<String, Proofs>) -> String {
+    let mut out = String::new();
+    let refs = Refs::of(prog);
+    let mut names: Vec<&String> = proofs.keys().filter(|f| refs.own.contains(*f)).collect();
+    names.sort();
+    for f in names {
+        for (what, es) in [("proven", &proofs[f].proven), ("open", &proofs[f].open)] {
+            for e in es {
+                writeln!(out, "{what}\t{f}\t{e}").unwrap();
+            }
+        }
+    }
+    let at_calls = |name: &str, key: &str| {
+        name != "main"
+            && !refs.elsewhere.contains(name)
+            && !refs.methods.contains(crate::names::short(name))
+            && refs.callers.get(name).is_some_and(|cs| cs.iter().all(|g| proofs.get(g).is_some_and(|p| p.proven.iter().any(|e| same_check(e, key)) && !p.open.iter().any(|e| same_check(e, key)))))
+    };
+    for d in &prog.decls {
+        let DeclKind::Fn(f) = &d.kind else { continue };
+        let name = f.name.to_string();
+        if !refs.own.contains(&name) {
+            continue;
+        }
+        for p in &f.params {
+            if at_calls(&name, &crate::types::shown_name(&format!("argument `{}` of `{name}`", p.name))) {
+                writeln!(out, "entry\t{name}\targument {}", p.name).unwrap();
+            }
+        }
+        for (i, r) in f.requires.iter().enumerate() {
+            if at_calls(&name, &crate::types::shown_name(&format!("precondition of `{name}`: requires {}", crate::printer::expr(r, 0)))) {
+                writeln!(out, "entry\t{name}\trequires {i}").unwrap();
+            }
+        }
+    }
+    out
+}
+
 /// `f` compiling without tracing: compile-time code made while a traced
 /// program compiles (a literal pattern's matcher) is the compiler's work,
 /// not the program's.

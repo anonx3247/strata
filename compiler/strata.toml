@@ -6,3 +6,6 @@
 # (`strata --file compiler run -- lex FILE`), which the tests compare with
 # the Rust front end; later `strata` will run it as its front end.
 name = "compiler"
+
+[native]
+sources = ["c/jit.c", "/opt/homebrew/opt/llvm/lib/libLLVM-C.dylib"]
