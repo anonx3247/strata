@@ -156,7 +156,7 @@ fn written_as_rendered() {
     let mut wrong = vec![];
     let mut cases: Vec<(PathBuf, Vec<String>, String)> = vec![];
     for f in module_files() {
-        let want = run(&["--file", &f.to_string_lossy(), "render"]);
+        let want = run(&["--file", &f.to_string_lossy(), "render", "--rust"]);
         cases.push((f, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), want));
     }
     // unions written as the named ones (`named_unions`), which the
@@ -165,7 +165,7 @@ fn written_as_rendered() {
     let mut c = Command::new(STRATA).args(["--file", &unions.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(b"/// a circle\ntype Circle = { r: Float }\n/// a square\ntype Square = { s: Float }\ntype Dot = { at: Int }\ntype Shape = Circle | Square\ntype Pair[A, B] = List[A] | Option[B]\nfn area(s: Circle | Square) -> Float { 0.0 }\nfn any(s: Square | Circle | Dot) -> Int { 0 }\nfn pair(p: List[Int] | Option[String]) -> Int { 0 }\n").unwrap();
     assert!(c.wait_with_output().unwrap().status.success());
-    let rendered = run(&["--file", &unions.to_string_lossy(), "render"]);
+    let rendered = run(&["--file", &unions.to_string_lossy(), "render", "--rust"]);
     assert!(rendered.contains("fn area(s: Shape)") && rendered.contains("Shape | Dot") && rendered.contains("Pair[Int, String]"), "{rendered}");
     cases.push((unions, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), rendered));
     // and, without docs, the members shown inside their union (`members_view`)
@@ -173,7 +173,7 @@ fn written_as_rendered() {
     let mut c = Command::new(STRATA).args(["--file", &inline.to_string_lossy(), "edit"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(b"type Circle = { r: Float }\ntype Dot\ntype Square = { s: Float }\nimpl Square { fn area(self) -> Float { 0.0 } }\ntype Shape = Circle | Dot | Square\n").unwrap();
     assert!(c.wait_with_output().unwrap().status.success());
-    let rendered = run(&["--file", &inline.to_string_lossy(), "render"]);
+    let rendered = run(&["--file", &inline.to_string_lossy(), "render", "--rust"]);
     assert!(rendered.contains("| Circle { r: Float }"), "{rendered}");
     cases.push((inline, std_files.iter().map(|p| p.to_string_lossy().into_owned()).collect(), rendered));
     for (f, m) in package_modules(&root.join("std"), "std.") {

@@ -76,20 +76,25 @@ fn same(file: &Path, cache: &Path) -> (usize, usize) {
     (fns.len(), all)
 }
 
+/// Each step's program: every function of it is covered, and agrees.
 /// Step 1: integers, booleans and strings, their refinements, operators,
-/// `if`, blocks, variables, `assert`, `return` and calls through contracts;
-/// every function of the program is covered.
+/// `if`, blocks, variables, `assert`, `return` and calls through contracts.
+/// Step 2: records, sums (`Option`, `Result`), tuples and distinct types as
+/// datatypes; constructors, fields, updates, `match` and patterns, `is`,
+/// `!` / `?`, `except` / `??`.
 #[test]
 fn smt_outcomes_as_in_rust() {
     if !have_z3() {
         eprintln!("skipped: no z3");
         return;
     }
-    let dir = scratch("step1");
-    let file = dir.join("step1.strata");
-    save(&file, include_str!("data/smt/step1.st"));
-    let (covered, all) = same(&file, &dir);
-    assert_eq!(covered, all, "every function is covered");
+    let dir = scratch("steps");
+    for (name, text) in [("step1", include_str!("data/smt/step1.st")), ("step2", include_str!("data/smt/step2.st"))] {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let (covered, all) = same(&file, &dir);
+        assert_eq!(covered, all, "{name}: every function is covered");
+    }
 }
 
 /// The repository's scripts: the functions `compiler/smt` covers agree.
