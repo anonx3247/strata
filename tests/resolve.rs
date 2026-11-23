@@ -333,7 +333,7 @@ fn dependency_rules() {
     // spare's failing test is left out, and with it everything else of spare
     assert_eq!(check("app", &[]), "");
     let out = check("app", &["--with-deps"]);
-    assert_eq!(out.trim(), "error in test \"broken\": test parameter `n: Int`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`");
+    assert_eq!(out.trim(), "error in test \"json.spare: broken\": test parameter `n: Int`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`");
     // a module the package doesn't reach isn't read: not even when it isn't a module file
     std::fs::write(json.join("spare.strata"), "not a module file").unwrap();
     assert_eq!(check("app", &[]), "");

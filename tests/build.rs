@@ -560,6 +560,14 @@ fn memory_is_freed() {
     assert!(String::from_utf8_lossy(&ir.stdout).contains("@strata_unique(ptr"), "no assignment in place");
     let (out, code) = case(&d, "in_place", IN_PLACE);
     assert!(code == 0 && out.ends_with("done\n"), "{out}");
+    // dictionaries and sets changed in place by `x = insert(x, …)` when
+    // nothing else holds them, copied when something does
+    let f = d.join("insert_in_place.strata");
+    save(&f, INSERT_IN_PLACE);
+    let ir = Command::new(env!("CARGO_BIN_EXE_strata")).arg("build").arg(&f).arg("--emit-llvm").output().unwrap();
+    assert!(String::from_utf8_lossy(&ir.stdout).contains("@strata_list_owned(ptr"), "no insertion in place");
+    let (out, code) = case(&d, "insert_in_place", INSERT_IN_PLACE);
+    assert!(code == 0 && out.ends_with("done\n"), "{out}");
     let chain = "type Chain = | End | Link(Int, Chain)\nfn main() { mut c: Chain = End mut i := 0 while i < 1000000 { c = Link(i, c) i += 1 } match c { Link(x, _) => print(x), End => print(0) } }\n";
     // natively only: the interpreter takes minutes on this loop
     let f = d.join("chain.strata");
@@ -2160,6 +2168,68 @@ fn main() {
     c.x = 10
     d := P { x: 1, y: 2 }
     print(f\"{c.x} {d.x}\")
+    print(\"done\")
+}
+";
+
+/// Dictionaries and sets updated by `x = insert(x, …)`, and the values that
+/// must not change with them.
+const INSERT_IN_PLACE: &str = "type Entry = { name: String, n: Int }
+
+type State = { seen: Set[Int], names: Dict[String, Entry], count: Int }
+
+fn note(mut s: State, k: String, n: Int) {
+    s.names = insert(s.names, k, Entry { name: k + \"!\", n })
+    s.seen = s.seen.insert(n)
+    s.count += 1
+}
+
+fn main() {
+    mut d := Dict[String, Int] {}
+    mut i := 0
+    while i < 2000 {
+        d = insert(d, \"k\" + to_string(i % 700), i)
+        i += 1
+    }
+    (k5, k699) := (\"k5\", \"k699\")
+    print(f\"{len(d)} {get(d, k5) ?? -9} {get(d, k699) ?? -9}\")
+    // a copy keeps its value
+    old := d
+    d = insert(d, \"new\", -1)
+    d = insert(d, \"k5\", 5)
+    new := \"new\"
+    print(f\"{len(old)} {len(d)} {get(old, k5) ?? -9} {get(d, k5) ?? -9} {contains(old, new)}\")
+    // so does one in a list
+    ds := [d]
+    d = insert(d, \"later\", 0)
+    print(f\"{len(ds[0])} {len(d)}\")
+    // a constant dictionary
+    mut c := Dict[String, Int] { \"a\": 1, \"b\": 2 }
+    c = insert(c, \"c\", 3)
+    c = insert(c, \"a\", 10)
+    e := Dict[String, Int] { \"a\": 1, \"b\": 2 }
+    print(f\"{c} {e}\")
+    // a value mentioning the dictionary itself
+    mut dd := Dict[String, Int] { \"x\": 1 }
+    dd = insert(dd, \"size\", len(dd))
+    dd = insert(dd, \"size2\", len(dd))
+    print(dd)
+    // sets, through a variable and a method call
+    mut seen := Set[Int] {}
+    for n in [5, 3, 9, 3, 1, 5, 7] {
+        seen = insert(seen, n)
+        seen = seen.insert(n * 100)
+    }
+    print(seen)
+    // fields of a record, through a `mut` parameter
+    mut s := State { seen: Set[Int] {}, names: Dict[String, Entry] {}, count: 0 }
+    for w in [\"b\", \"a\", \"c\", \"a\"] {
+        note(mut s, w, len(w.bytes()) + s.count)
+    }
+    t := s
+    note(mut s, \"z\", 99)
+    a := get(s.names, \"a\") ?? Entry { name: \"?\", n: -9 }
+    print(f\"{s.count} {len(s.names)} {a.name} {a.n} {s.seen} {t.count} {len(t.names)}\")
     print(\"done\")
 }
 ";

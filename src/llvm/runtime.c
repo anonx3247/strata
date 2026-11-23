@@ -2308,6 +2308,36 @@ List *strata_list_push(List *xs, int64_t x, int64_t counted) {
   return l;
 }
 
+// Whether a list can be changed in place: its header and its buffer held
+// once (by what is about to be replaced by the change), the buffer all its own.
+_Bool strata_list_owned(List *xs) {
+  return strata_unique(xs) && strata_unique(xs->buf) && xs->off == 0 && xs->len == xs->buf->used;
+}
+
+// In an owned list (`strata_list_owned`): element `i` replaced by `x` (held
+// already); the old one returned, for the caller to drop.
+int64_t strata_list_put(List *xs, int64_t i, int64_t x) {
+  int64_t old = xs->buf->data[i];
+  xs->buf->data[i] = x;
+  return old;
+}
+
+// In an owned list: `x` (held already) inserted before element `i`.
+void strata_list_insert(List *xs, int64_t i, int64_t x) {
+  Buf *b = xs->buf;
+  if (b->used == b->cap) {
+    Buf *n = buf_new(b->cap * 2 + 1);
+    memcpy(n->data, b->data, (size_t)b->used * 8);
+    n->used = b->used;
+    strata_free(b);
+    xs->buf = b = n;
+  }
+  memmove(b->data + i + 1, b->data + i, (size_t)(b->used - i) * 8);
+  b->data[i] = x;
+  b->used++;
+  xs->len++;
+}
+
 // Add `x` to a list nothing else holds yet (one the runtime is making).
 static List *append(List *l, int64_t x) {
   Buf *b = l->buf;

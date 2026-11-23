@@ -42,6 +42,15 @@ fn outcome(exe: &Path) -> (String, String, Option<i32>) {
     (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned(), o.status.code())
 }
 
+/// What the runtime's memory check (`STRATA_MEMORY=check`: a freed object
+/// used aborts) says at the end of a run: `memory: N allocated, N freed, 0 live`.
+fn memory(exe: &Path) -> String {
+    let o = Command::new(exe).env("STRATA_MEMORY", "check").output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(o.status.success() && !err.contains("of a freed object"), "{}: {err}", exe.display());
+    err.lines().find(|l| l.starts_with("memory: ")).unwrap_or_default().to_string()
+}
+
 /// The program at `file` built by Rust and by Strata: their outcomes.
 fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), (String, String, Option<i32>)) {
     let rust = dir.join(format!("{name}-rust"));
@@ -55,11 +64,17 @@ fn both(dir: &Path, name: &str, file: &Path) -> ((String, String, Option<i32>), 
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/llvm/runtime.c");
     let o = Command::new(cc()).args(["-O2", "-Wno-override-module", "-o"]).arg(&ours).arg(&ll).arg(&runtime).arg("-lm").output().unwrap();
     assert!(o.status.success(), "{name}: clang refused compiler/codegen's IR: {}", String::from_utf8_lossy(&o.stderr));
-    (outcome(&rust), outcome(&ours))
+    let (r, o) = (outcome(&rust), outcome(&ours));
+    // a program that ends normally frees everything it made
+    if r.2 == Some(0) {
+        let m = memory(&ours);
+        assert!(m.ends_with(" 0 live"), "{name}: compiler/codegen's build leaks: {m}");
+    }
+    (r, o)
 }
 
 /// Programs of the constructs compiled so far (step 1: scalars, functions,
-/// control flow; step 2: records, sums, tuples, `match`), each ending as it ends
+/// control flow; step 2: records, sums, tuples, `match`; step 3: counting), each ending as it ends
 /// (normally, with an exit code, or with a fault).
 const PROGRAMS: &[(&str, &str)] = &[
     (
@@ -469,6 +484,107 @@ fn main() -> Int {
     p := Point { x: 1, y: 2 }
     assert p == Point { ..p, y: 3 }
     code
+}
+",
+    ),    (
+        "counting",
+        "type Node = { name: String, size: Int, kids: Tree }
+
+type Tree = Empty | Branch(Node, Tree)
+
+fn label(n: Int) -> String {
+    if n % 3 == 0 {
+        return f\"fizz{n}\"
+    }
+    \"n\" + f\"{n}\"
+}
+
+fn build(n: Int) -> Tree {
+    mut t := Empty
+    mut i := 0
+    while i < n {
+        i += 1
+        if i == 4 {
+            continue
+        }
+        t = Branch(Node { name: label(i), size: (1 << 70) + i, kids: Empty }, t)
+        if i > 7 {
+            break
+        }
+    }
+    t
+}
+
+fn first_big(t: Tree) -> String {
+    mut cur := t
+    loop {
+        match cur {
+            Empty => return \"none\",
+            Branch(n, rest) => {
+                if n.size > (1 << 70) + 6 {
+                    return n.name
+                }
+                cur = rest
+            },
+        }
+    }
+    \"unreachable\"
+}
+
+fn names(t: Tree) -> String {
+    match t {
+        Empty => \"\",
+        Branch(Node { name, .. }, Empty) => name,
+        Branch(n, rest) => n.name + \",\" + names(rest),
+    }
+}
+
+fn pick(x: (String, Int)) -> String {
+    match x {
+        (s, 0) | (s, 1) => s + \"!\",
+        (_, n) => f\"{n}\",
+    }
+}
+
+fn main() {
+    t := build(20)
+    print(names(t))
+    print(first_big(t))
+    mut s := \"a\"
+    mut k := 0
+    while k < 5 {
+        s = s + label(k)
+        k += 1
+    }
+    print(s)
+    print(pick((\"x\" + \"y\", 1)))
+    print(pick((\"x\", 7)))
+    big := { (1 << 80) * 3 }
+    print(big)
+    shadow := \"one\"
+    shadow := shadow + \"two\"
+    print(shadow)
+    p := { n := Node { name: \"inner\" + \"!\", size: 1, kids: build(2) }
+        n.kids }
+    print(p)
+    print(if names(p) == \"n2,n1\" { \"yes\" + \"!\" } else { \"no\" })
+}
+",
+    ),    (
+        "held_operand",
+        "type Box = { label: String }
+
+fn both(a: Box, n: Int) -> String {
+    f\"{a.label} {n}\"
+}
+
+fn main() {
+    mut b := Box { label: \"first\" + \"!\" }
+    print(both(b, {
+        b = Box { label: \"second\" }
+        1
+    }))
+    print(b)
 }
 ",
     ),
