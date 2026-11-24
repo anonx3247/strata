@@ -16,7 +16,7 @@
 set -eu
 
 root=$(pwd)
-strata=${STRATA:-$root/target/release/strata}
+strata=${STRATA:-$root/target/strata}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/cache-portable.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 

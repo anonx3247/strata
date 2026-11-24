@@ -1056,17 +1056,16 @@ function drawTree(el, roots, fast) {
     await typeCode($('#std-code'), F.std.src, alive, { fast: fast || k === 1, ms: 30 });
     if (k === 0) { $('#std-term').innerHTML = '<span class="o-dim">→ run it</span>'; return; }
     await typeTerm($('#std-term'), F.std.run_out, alive, { fast });
-    if (alive()) $('#std-term').insertAdjacentHTML('beforeend', '<span class="term-line o-dim">\n// the same tree as Rust\'s regex-syntax: tests/regex.rs\n// checks the two agree on curated and random patterns</span>');
+    if (alive()) $('#std-term').insertAdjacentHTML('beforeend', '<span class="term-line o-dim">\n// the same tree as Rust\'s regex-syntax: the curated\n// patterns are recorded in tests/data/regex-curated.out</span>');
   };
 }
 
 $('#start-cmds').innerHTML = [
-  ['cargo build --release', ''], ['alias strata=$PWD/target/release/strata', ''],
+  ['curl -fsSL https://strata-lang.dev/install.sh | sh', ''],
   ['strata --file examples/math.strata verify', 'prove what can be proven, fuzz the rest'],
   ['strata run examples/wc -- README.md', 'a program, compiled on the JIT'],
   ['strata init && strata add examples/orders.strata', 'a package: every change checked and logged'],
   ['strata holes', 'what is left to implement'],
-  ['strata ui', 'the live viewer, on http://127.0.0.1:7777'],
 ].map(([c, n]) => cmdLine(c).replace('</span></span>', `</span>${n ? `  <span class="c">// ${esc(n)}</span>` : ''}</span>`)).join('');
 
 // ───────────────────────── start: from the address, if it names a slide ─────────────────────────

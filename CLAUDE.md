@@ -2,34 +2,17 @@
 
 Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the README and `docs/` describe what is built.
 
+Strata is written in Strata: the `strata` command is the `compiler/` package, built by a `strata` before it. There is no Rust any more (the last Rust implementation is the tag `last-rust`).
+
 ## Conventions
 
-- Commit each step (the user wants every change tracked) and push to `origin main` (github.com/anonx3247/strata, private).
-- There is no CI (user's call, until the compiler changes rarely): before every push, run the targeted tests and `strata verify 'module.*'` for the modules you change. std must stay proven (its precompiled library leaves out the checks inside its functions): for a std module, `strata --file std verify 'std.module.*' --require proven`; for a change to the prover, the test `std_is_proven`.
-- Keep the compiler written in Strata (`compiler/`) at feature parity with the Rust one. A change to the
-  Rust lexer, parser, printer, resolver, type checker or evaluator (new syntax, a new kind of definition or
-  expression, a new error) goes into the matching `compiler/` module in the same PR, with its test
-  (tests/lex.rs, parse.rs, ast.rs, resolve.rs, check.rs, eval.rs compare the two). Edit it with
-  `strata --file compiler/ edit MODULE` (start from `strata --file compiler render MODULE`).
-- Testing after Rust (docs/testing.md): the cargo tests are being ported to golden-output cases in `tests/cases`, run by `strata run tools/check -- --strata target/release/strata NAME…` (filters by case name), and to proofs and `test` blocks. A new CLI behaviour gets a case there too.
-- Never run the whole test suite. Run only the tests for what you are
-  changing, by name: `cargo test --release --test cli <filter>` (or `--lib <filter>` for unit tests), with
-  filters matching the feature (`verify`, `json`, `regex`, …) plus any test you add; they must pass before
-  every commit. Check that the examples still round-trip:
-  `strata --file F render > a.st; strata --file b.strata edit < a.st; strata --file b.strata render | diff - a.st`.
-- `strata build` and `strata test --file F` use compiler/codegen (the code generator written in Strata) by
-  default, falling back to `llvm.rs` where it doesn't cover a program yet (with a `note:`); `--rust` or
-  `STRATA_BACKEND=rust` asks for `llvm.rs`. `strata verify` is the Strata verifier (`compiler verify`), and so
-  is what `build` and `run` leave out; `--rust` or `STRATA_BACKEND=rust` asks for Rust's. Cargo's tests run with
-  `STRATA_BACKEND=rust` (.cargo/config.toml), so they keep checking `llvm.rs` and Rust's verifier. The first default build
-  after a change to `compiler/` or `std/` rebuilds the compiler package (about 2 minutes, cached).
-- `.strata` files are binary module files (docs/binary-format.md): write code with `strata edit` (or
-  `strata --file F edit < text` outside a package), read it with `strata render`. A change to the tree
-  re-encodes the repository's files ("Changing the format" in that doc); the format version stays 1 until
-  the format is settled (user's call), so don't bump it.
-- Verify UI changes with headless Chrome screenshots:
-  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars --window-size=1700,1000 --virtual-time-budget=4000 --screenshot=out.png "http://127.0.0.1:PORT/#level=1&sel=model.run_worker"`.
-  Start `strata ui --file examples/tasks --port PORT` in the background, and kill **only that port** afterwards (`kill $(lsof -ti tcp:PORT)`); the user may have their own viewers running.
-  Viewer errors show in the page banner.
-  To check hover: start Chrome with `--headless=new --remote-debugging-port=9333 --user-data-dir=<scratch>`, then a small Node 22 script (built-in `WebSocket`, Chrome DevTools protocol) opens the page, sends `Input.dispatchMouseEvent` (`mouseMoved`) over an `a.ref`, and calls `Page.captureScreenshot`. Kill only that port afterwards.
-- macOS: no `timeout` command (use `perl -e 'alarm N; exec @ARGV' cmd`), and BSD `sed`.
+- Commit each step (the user wants every change tracked) and push to `origin main` (github.com/anonx3247/strata).
+- Build: `tools/bootstrap.sh` builds `target/strata` with itself (a fixed point: stage A by the seed, stage B by A, the same bytes; else stage C). The seed is `STRATA_SEED`, else a `strata` on the PATH, else the latest release (downloaded). It needs LLVM 23, zstd and clang (`brew install llvm zstd`) and lld's libraries (`tools/build-lld.sh`, into `target/lld`). While iterating, one stage is enough: `STRATA_HOME=$PWD target/strata build compiler --no-verify --release -o target/dev/strata` (about 80 s), then test with `target/dev/strata`; run the full bootstrap before a PR.
+- There is no CI (user's call): before every push, run the cases for what you changed and `strata verify` the functions you changed by name (`strata --file compiler verify 'codegen.lower'`; never a whole package for a partial change). std must stay proven (its precompiled library leaves out the checks inside its functions): for a changed std function, `strata --file std verify 'std.module.fn' --require proven`.
+- Tests: the golden-output cases in `tests/cases`, run by `tools/check` (docs/testing.md): `strata run tools/check -- --strata target/strata NAME…` runs the cases whose names hold those words (`build-`, `cli-verify`, `codegen-`), `--jobs N` (default 4), `--keep` keeps a failed case's folder, `--bless` rewrites golden files. Never run the whole suite while iterating: run the cases for what you are changing, plus any case you add; they must pass before every commit. Prefer proofs to example tests (contracts, refinements and laws proven by `verify`).
+- `.strata` files are binary module files (docs/binary-format.md): read them with `strata --file F render` (a package's module: `strata --file compiler render codegen`), write them with `strata --file F edit < text` (a package's module: `strata --file compiler edit codegen < text`). `edit` replaces or adds the definitions it is given, by name, doc comments included (give a definition with its `///` lines, or they are dropped); it never deletes (`--rm NAME`); an import line given replaces that import. Check the examples still round-trip: `strata --file F render > a.st; strata --file b.strata edit < a.st; strata --file b.strata render | diff - a.st`. A change to the tree re-encodes the repository's files ("Changing the format" in that doc, `strata upgrade`); the format version stays 1 until the format is settled (user's call), so don't bump it.
+- Merging branches: `strata setup-git` makes git merge `.strata` files definition by definition (`strata merge-file`); after a merge, check each module's imports survived and `cd compiler && strata check` passes.
+- Releases: `tools/release.sh` assembles `target/release-dist/strata-macos-arm64.tar.gz` (the compiler from `target/strata`, core, std, the runtime and std precompiled, z3, the shipped cache); `tools/release-check.sh` checks it as a Mac without developer tools would run it. `site/install.sh` installs the latest GitHub release.
+- Layout: `compiler/` (the `strata` command, in Strata, with `compiler/c/`: the JIT, LLVM and lld glue), `runtime/` (the C runtime, `runtime.c`, and the prelude compiled with every program, `prelude.strata`), `core/`, `std/`, `tools/`, `tests/cases` (with `tests/data`), `docs/`, `docs-site/` and `site/` (strata-lang.dev).
+- Verify UI changes (the site) with headless Chrome screenshots: `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars --window-size=1700,1000 --virtual-time-budget=4000 --screenshot=out.png "http://127.0.0.1:PORT/"`; serve `site/` with `python3 -m http.server PORT` in the background, and kill **only that port** afterwards (`kill $(lsof -ti tcp:PORT)`).
+- Run long commands under a time limit (macOS has no `timeout`: `perl -e 'alarm N; exec @ARGV' cmd`), and BSD `sed`.
