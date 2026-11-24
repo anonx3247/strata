@@ -45,6 +45,17 @@ the runtime's `std.process` runs leaked their pipes into each other's
 programs, and its `std.fs` calls shared one buffer for the path (fixed in
 runtime.c; `build-parallel_io` checks both).
 
+## Reproducible builds
+
+`tools/reproducible.sh [PACKAGE] [FLAGS…]` (default `compiler --no-verify
+--release`, with `$STRATA` or `target/strata`) builds a package with an
+empty cache, then again with only its compile-time values, std's library and
+core.rt kept, and checks the two executables are the same bytes: what a
+process ran before compiling (the JIT, for compile-time values) must not
+change the objects it makes. About a minute for compiler/; run it with a
+change to the toolchain (compiler/c/). The bootstrap's fixed point
+(`tools/bootstrap.sh`) depends on it.
+
 ## Where the cargo tests went
 
 Category (a): compares the Rust implementation with the Strata one; leaves
