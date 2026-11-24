@@ -1,0 +1,19 @@
+# cli.rs: generators_read_disjunctive_refinements: without a solver
+# everything is fuzzed: values of `Far` are generated, not rejected
+[[step]]
+save = "g.strata"
+text = '''
+type Far = Int where it > 1000000 || it < -1000000
+
+fn half(x: Far) -> Int
+  ensures it != 0
+{
+  x / 2
+}
+'''
+
+[[step]]
+strata = ["--file", "g.strata", "verify"]
+env = { STRATA_SOLVER = "$TMP/no-solver" }
+any_code = true
+has = ["fuzzed: 200 cases"]

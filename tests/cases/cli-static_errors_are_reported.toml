@@ -1,0 +1,23 @@
+# cli.rs: static_errors_are_reported
+[[step]]
+strata = ["render", "--file", "$ROOT/examples/orders.strata"]
+capture = "bad.st"
+
+[[step]]
+write = "bad.st"
+append = true
+text = '''
+
+fn status(o: Order) -> String { match o { Pending { .. } => "p", Shipped { .. } => "s" } }
+fn sneaky(id: OrderId) -> Bool { id.load(id) is Some }
+fn bad_qty() -> Line { Line { sku: "x", qty: 1200, unit_price: 5 } }
+'''
+
+[[step]]
+save = "bad.strata"
+from_tmp = "bad.st"
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["`Cancelled` is not covered", "`String` does not implement `Db`", "refinement violated at compile time"]

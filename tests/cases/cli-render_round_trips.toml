@@ -1,0 +1,12 @@
+# cli.rs: render_round_trips
+[[step]]
+strata = ["--file", "$ROOT/examples/orders.strata", "render"]
+capture = "r1.st"
+
+[[step]]
+save = "r1.strata"
+from_tmp = "r1.st"
+
+[[step]]
+strata = ["--file", "r1.strata", "render"]
+out_file = "r1.st"

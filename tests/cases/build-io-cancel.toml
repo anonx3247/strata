@@ -1,0 +1,21 @@
+# build.rs: reads_are_cancelled (the case whose input ends; the one whose
+# standard input stays open needs a pipe held open, which the harness
+# doesn't make)
+[[step]]
+save = "lines.strata"
+from = "lines.st"
+
+[[step]]
+strata = ["build", "lines.strata", "-o", "lines"]
+
+[[step]]
+run = ["./lines"]
+text = "first\nsecond\n"
+memory = true
+out = "first | second | the end of the input\n"
+
+[[step]]
+strata = ["run", "lines.strata"]
+text = "first\nsecond\n"
+memory = true
+out = "first | second | the end of the input\n"

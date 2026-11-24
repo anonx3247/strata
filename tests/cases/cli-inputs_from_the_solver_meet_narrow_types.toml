@@ -1,0 +1,11 @@
+# cli.rs: inputs_from_the_solver_meet_narrow_types: a type random values
+# rarely meet gets its inputs from the solver: the bug, only on lists longer
+# than three, is found
+[[step]]
+save = "s.strata"
+text = "type Steps = List[Int] where len(it) >= 3 && all(1..len(it), i -> it[i] == it[i - 1] + 1)\nfn last(xs: Steps) -> Int\n  ensures it == xs[0] + 2\n{\n  xs[len(xs) - 1]\n}\nfn first(xs: Steps) -> Int\n  ensures it == xs[1] - 1\n{\n  xs[0]\n}\n"
+
+[[step]]
+strata = ["--file", "s.strata", "verify"]
+fails = true
+has = ["✗ last", "found by the ", "✓ first"]

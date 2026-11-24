@@ -1,0 +1,47 @@
+# cli.rs: package_verify_policies
+[[step]]
+write = "strata.toml"
+text = "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"lib\"]\nproven = [\"lib\"]\n"
+
+[[step]]
+module = "lib"
+into = "$TMP/"
+text = '''
+pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }
+pub fn spin(n: Int) -> Int {
+  mut k := n
+  loop {
+    if k == 1 { break }
+    k = k - 1
+  }
+  k
+}
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/"
+text = "from lib use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n"
+
+[[step]]
+strata = ["--file", ".", "verify", "--cases", "20"]
+fails = true
+has = ["policy: `lib.fact` is recursive (strata.toml [verify])", "policy: `lib.spin` may not terminate"]
+# no_recursion covers only `lib`
+lacks = ["`fib` is recursive"]
+
+# --smt shows the termination queries too
+[[step]]
+strata = ["--file", ".", "verify", "fib", "--smt"]
+any_code = true
+has = ["termination: measure (n) goes down at recursive call 1", "termination: measure (n) goes down at recursive call 2"]
+
+# a rule must name a module of the package
+[[step]]
+write = "strata.toml"
+text = "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n"
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["[verify] proven names `nope`, which is not a module of this package"]

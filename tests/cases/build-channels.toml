@@ -1,0 +1,44 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "channels.strata"
+from = "channels.st"
+
+[[step]]
+strata = ["build", "channels.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/channels-channels.out"
+
+[[step]]
+strata = ["run", "channels.strata"]
+memory = true
+golden = "tests/data/build/expected/channels-channels.out"
+
+[[step]]
+save = "ended.strata"
+from = "ended.st"
+
+[[step]]
+strata = ["build", "ended.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/channels-ended.out"
+
+[[step]]
+save = "unclosed.strata"
+from = "unclosed.st"
+
+[[step]]
+strata = ["build", "unclosed.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/channels-unclosed.out"

@@ -1,0 +1,51 @@
+# cli.rs: smt_models_string_builtins
+[[step]]
+save = "s.strata"
+text = '''
+fn head(s: String, n: Natural) -> String ensures byte_len(it) <= n && byte_len(it) <= byte_len(s) { byte_slice(s, 0, n) }
+fn bad_head(s: String, n: Int) -> String ensures byte_len(it) == n { byte_slice(s, 0, n) }
+fn tail(s: String) -> String ensures byte_len(it) <= byte_len(s) { byte_slice(s, 1, byte_len(s)) }
+fn back(s: String) -> String ensures it == "" { byte_slice(s, 5, 2) }
+fn n_chars(s: String) -> Bool ensures it { len(chars(s)) == len(s.code_points()) }
+fn bytes_bound(s: String) -> Bool ensures it { len(s.code_points()) <= len(s.bytes()) }
+fn find(s: String, p: String) -> Int ensures it <= byte_len(s) { match index_of(s, p) { Some(i) => i + byte_len(p), None => 0 } }
+fn bad_find(s: String, p: String) -> Natural ensures it < byte_len(s) { match index_of(s, p) { Some(i) => i, None => 0 } }
+fn empty_found(s: String) -> Bool ensures it { index_of(s, "") == Some(0) }
+fn shown(n: Int) -> String ensures n < 0 ==> starts_with(it, "-") { to_string(n) }
+fn shown_len(n: Int where 10 <= it && it <= 99) -> String ensures len(it.code_points()) == 2 { to_string(n) }
+fn bad_shown(n: Int) -> String ensures len(it.code_points()) <= 2 { to_string(n) }
+fn parsed() -> Bool ensures it { parse_int("-17") == Some(0 - 17) && parse_int("abc") is None && parse_int("") is None }
+fn round_trip(n: Int) -> Bool ensures it { parse_int(to_string(n)) == Some(n) }
+fn bad_parsed(s: String) -> Bool ensures it { parse_int(s) is None }
+fn spaced() -> Bool ensures it { parse_int(" 7") == Some(7) }
+fn digits(s: String where is_digit(it)) -> Int ensures it >= 0 { parse_int(s) or { 0 } }
+fn ends(s: String) -> Bool ensures it { ends_with(s + ".txt", ".txt") }
+fn bad_ends(s: String) -> Bool ensures it { ends_with(s, ".txt") }
+fn rep() -> Bool ensures it { replace("aaa", "aa", "b") == "ba" }
+fn bad_rep() -> Bool ensures it { replace("aaa", "aa", "b") == "bb" }
+fn empty_rep(s: String, p: String) -> String { replace(s, p, "b") }
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "verify", "--cases", "20", "--no-race"]
+fails = true
+has = [
+  "✓ head ", "✓ tail ", "✓ back ", "✓ n_chars ", "✓ bytes_bound ", "✓ find ", "✓ empty_found ", "✓ shown ", "✓ shown_len ", "✓ parsed ", "✓ digits ", "✓ ends ", "✓ rep ",
+  "✗ bad_head ", "✗ bad_find ", "✗ bad_shown ", "✗ bad_parsed ", "✗ bad_ends ", "✗ bad_rep ",
+  "~ spaced",
+]
+lacks = ["✗ round_trip", "✗ empty_rep"]
+
+# a big offset is clamped like any other, and one inside a character moves
+# back to its start
+[[step]]
+save = "b.strata"
+text = "fn s(t: String) -> String { byte_slice(t, 0, 99999999999999999999) }\nfn m(t: String) -> String { byte_slice(t, 0, 2) }\n"
+
+[[step]]
+strata = ["--file", "b.strata", "run", "s", "\"abc\""]
+has = ["\"abc\""]
+
+[[step]]
+strata = ["--file", "b.strata", "run", "m", "\"aé\""]
+has = ["\"a\""]

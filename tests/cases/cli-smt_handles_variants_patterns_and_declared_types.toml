@@ -1,0 +1,57 @@
+# cli.rs: smt_handles_variants_patterns_and_declared_types
+[[step]]
+save = "p.strata"
+text = '''
+type Shape =
+  | Square { side: Positive }
+  | Circle { radius: Positive }
+fn area(s: Shape) -> Positive { match s { Square { side } => side * side, Circle { radius } => 3 * radius * radius } }
+fn grow(c: Circle) -> Circle { Circle { radius: c.radius + 1 } }
+fn small(n: Int) -> Natural { match n { 0 | 1 | 2 => n, where it < 0 => 0, _ => 3 } }
+fn bad_small(n: Int) -> Natural { match n { 0 | 1 | -2 => n, _ => 3 } }
+fn countdown(start: Natural) -> Natural {
+  mut k: Natural = start
+  while k > 0 {
+    k = k - 1
+  }
+  k
+}
+fn bad_countdown(start: Natural) -> Int {
+  mut k: Natural = start
+  k = k - 1
+  k
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+fails = true
+has = ["✓ area ", "✓ grow ", "✓ small ", "✓ countdown ", "✗ bad_small", "input:   -2\n", "✗ bad_countdown", "assigning `k`: -1 does not satisfy `Natural`"]
+
+# what a `mut` argument held before the call is forgotten, field or not
+[[step]]
+save = "m.strata"
+text = '''
+type Box = { n: Int }
+fn bump(mut x: Int) { x = x - 5 }
+fn stale(a: Natural) -> Natural {
+  mut x := a
+  bump(mut x)
+  x
+}
+fn stale_field(a: Natural) -> Natural {
+  mut b := Box { n: a }
+  bump(mut b.n)
+  b.n
+}
+fn fine(a: Natural) -> Natural {
+  mut x := a
+  bump(mut x)
+  a
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "verify", "--cases", "20"]
+fails = true
+has = ["✗ stale ", "✗ stale_field", "✓ fine"]

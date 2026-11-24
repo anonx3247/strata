@@ -1,0 +1,156 @@
+# cli.rs: proven_checks_are_left_out_of_builds: `build` verifies what changed
+# since it was last verified, then leaves out the runtime checks proven;
+# `--all-checks` keeps them all; an unproven caller keeps the callee's;
+# `--no-verify` uses only proofs of the code as it is. (A check left in shows
+# as its message in the executable.)
+[[step]]
+save = "t.strata"
+text = '''
+fn triangle(n: Natural) -> Natural
+  ensures 2 * it == n * (n + 1)
+{
+  mut total: Natural = 0
+  mut i: Natural = 0
+  while i < n
+    invariant 2 * total == i * (i + 1)
+  {
+    i += 1
+    total += i
+  }
+  total
+}
+fn first(xs: List[Natural]) -> Natural
+  requires len(xs) > 0
+{
+  xs[0]
+}
+fn main() {
+  print(triangle(10))
+  print(first([4, 5]))
+}
+'''
+
+# not verified yet: `build` does it first, then not again
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "fast"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["verified 3 changed: 3 proven", "runtime checks left out (proven by `strata verify`), 0 kept"]
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "fast"]
+env = { STRATA_CACHE = "$TMP/cache" }
+lacks = ["verified"]
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "slow", "--all-checks"]
+env = { STRATA_CACHE = "$TMP/cache" }
+
+[[step]]
+run = ["grep", "-c", "-e", "postcondition of `triangle`", "-e", "invariant failed: 2 \\* total == i \\* (i + 1)", "-e", "precondition of `first`", "fast"]
+code = 1
+
+[[step]]
+run = ["grep", "-qF", "postcondition of `triangle`", "slow"]
+
+[[step]]
+run = ["grep", "-qF", "invariant failed: 2 * total == i * (i + 1)", "slow"]
+
+[[step]]
+run = ["grep", "-qF", "precondition of `first`", "slow"]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["55", "4"]
+
+# a caller that doesn't prove the call keeps the callee's entry check
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+env = { STRATA_CACHE = "$TMP/cache" }
+text = '''
+fn triangle(n: Natural) -> Natural
+  ensures 2 * it == n * (n + 1)
+{
+  mut total: Natural = 0
+  mut i: Natural = 0
+  while i < n
+    invariant 2 * total == i * (i + 1)
+  {
+    i += 1
+    total += i
+  }
+  total
+}
+fn first(xs: List[Natural]) -> Natural
+  requires len(xs) > 0
+{
+  xs[0]
+}
+fn main() {
+  print(triangle(10))
+  print(first([4, 5]))
+}
+fn risky(xs: List[Natural]) -> Natural {
+  first(xs)
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "mixed"]
+env = { STRATA_CACHE = "$TMP/cache" }
+
+[[step]]
+run = ["grep", "-qF", "precondition of `first`", "mixed"]
+
+[[step]]
+run = ["grep", "-qF", "postcondition of `triangle`", "mixed"]
+code = 1
+
+# changed code: its old proofs don't count (--no-verify), and a build
+# verifies it again
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+env = { STRATA_CACHE = "$TMP/cache" }
+text = '''
+fn triangle(n: Natural) -> Natural
+  ensures 2 * it == n * (n + 1)
+{
+  mut total: Natural = 0
+  mut i: Natural = 0
+  while i < n
+    invariant 2 * total == i * (i + 1)
+  {
+    i += 1
+    total += i + 0
+  }
+  total
+}
+fn first(xs: List[Natural]) -> Natural
+  requires len(xs) > 0
+{
+  xs[0]
+}
+fn main() {
+  print(triangle(10))
+  print(first([4, 5]))
+}
+fn risky(xs: List[Natural]) -> Natural {
+  first(xs)
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "stale", "--no-verify"]
+env = { STRATA_CACHE = "$TMP/cache" }
+
+[[step]]
+run = ["grep", "-qF", "postcondition of `triangle`", "stale"]
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "again"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["verified 2 changed"]
+
+[[step]]
+run = ["grep", "-qF", "postcondition of `triangle`", "again"]
+code = 1

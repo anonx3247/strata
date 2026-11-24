@@ -1,0 +1,58 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "fields.strata"
+from = "fields.st"
+
+[[step]]
+strata = ["build", "fields.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/small-gaps-fields.out"
+
+[[step]]
+save = "trait_equality.strata"
+from = "trait_equality.st"
+
+[[step]]
+strata = ["build", "trait_equality.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/small-gaps-trait_equality.out"
+
+# a fault's call stack, built and on the JIT
+[[step]]
+save = "stack.strata"
+from = "stack.st"
+
+[[step]]
+strata = ["build", "stack.strata", "-o", "stack"]
+
+[[step]]
+run = ["./stack"]
+any_code = true
+has = ["    stack: main -> Thing.describe -> inner -> half\n"]
+
+[[step]]
+strata = ["run", "stack.strata"]
+any_code = true
+has = ["    stack: main -> Thing.describe -> inner -> half\n"]
+
+# running out of stack is a fault, not a crash
+[[step]]
+save = "deep.strata"
+from = "deep.st"
+
+[[step]]
+strata = ["build", "deep.strata", "-o", "deep"]
+
+[[step]]
+run = ["./deep"]
+code = 101
+has = ["fault (Limit): stack overflow"]

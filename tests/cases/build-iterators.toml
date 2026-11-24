@@ -1,0 +1,74 @@
+# build.rs: for_over_iterators_compiles (outputs recorded from json.rs's
+# expected texts)
+
+[[step]]
+save = "iterators.strata"
+from = "iterators.st"
+
+[[step]]
+strata = ["build", "iterators.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/iterators-iterators.out"
+
+[[step]]
+save = "lazy.strata"
+from = "lazy.st"
+
+[[step]]
+strata = ["build", "lazy.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/iterators-lazy.out"
+
+[[step]]
+save = "comps.strata"
+from = "comps.st"
+
+[[step]]
+strata = ["build", "comps.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/iterators-comps.out"
+
+[[step]]
+save = "collections.strata"
+from = "collections.st"
+
+[[step]]
+strata = ["build", "collections.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/iterators-collections.out"
+
+[[step]]
+save = "units.strata"
+from = "units.st"
+
+[[step]]
+strata = ["build", "units.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/iterators-units.out"
+
+[[step]]
+save = "indexing.strata"
+from = "indexing.st"
+
+[[step]]
+strata = ["build", "indexing.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/iterators-indexing.out"

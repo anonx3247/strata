@@ -1,0 +1,41 @@
+# cli.rs: values_are_datatypes_in_the_prover: records and sums are SMT
+# datatypes: a value is never one of its own parts, equal values have equal
+# parts, a pattern three levels deep is read through selectors
+[[step]]
+save = "b.strata"
+text = '''
+type Tree = Leaf | Node { left: Tree, value: Int, right: Tree }
+
+fn not_own_child(t: Tree) -> Bool
+  ensures it
+{
+  match t {
+    Leaf => true,
+    Node { left, .. } => t != left,
+  }
+}
+
+fn same_left(a: Tree, b: Tree) -> Bool
+  requires a == b
+  ensures it
+{
+  match (a, b) {
+    (Node { left: l1, .. }, Node { left: l2, .. }) => l1 == l2,
+    _ => true,
+  }
+}
+
+fn grand(t: Tree) -> Int
+  requires match t { Node { left: Node { left: Node { value, .. }, .. }, .. } => value > 0, _ => false }
+  ensures it > 0
+{
+  match t {
+    Node { left: Node { left: Node { value, .. }, .. }, .. } => value,
+    _ => 1,
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--no-race"]
+has = ["✓ not_own_child", "✓ same_left", "✓ grand"]

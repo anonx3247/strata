@@ -1,0 +1,14 @@
+# build.rs: what_is_not_compiled_yet_is_named
+[[step]]
+save = "many.strata"
+from = "many.st"
+
+[[step]]
+strata = ["build", "many.strata", "--emit-llvm"]
+fails = true
+has = ["can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet"]
+
+[[step]]
+strata = ["run", "many.strata"]
+fails = true
+has = ["the program can't be compiled yet: can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet"]

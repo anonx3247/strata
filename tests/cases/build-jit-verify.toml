@@ -1,0 +1,17 @@
+# build.rs: verify_fuzzes_compiled (no solver: everything is fuzzed)
+[[step]]
+save = "v.strata"
+from = "v.st"
+
+[[step]]
+strata = ["verify", "--file", "v.strata"]
+env = { STRATA_SOLVER = "none" }
+any_code = true
+lacks = ["note:"]
+has = [
+  "✗ pieces                   Refinement violation (found by the fuzzer)",
+  "result of `pieces`: 0 does not satisfy `Positive`",
+  "✗ loops                    Limit violation (found by the fuzzer)",
+  "too many steps (stack: loops)",
+  "~ fine                     fuzzed: 200 cases, 0 discarded",
+]

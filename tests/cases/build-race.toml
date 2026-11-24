@@ -1,0 +1,20 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "race.strata"
+from = "race.st"
+
+[[step]]
+strata = ["build", "race.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/race-race.out"
+
+[[step]]
+strata = ["run", "race.strata"]
+memory = true
+golden = "tests/data/build/expected/race-race.out"

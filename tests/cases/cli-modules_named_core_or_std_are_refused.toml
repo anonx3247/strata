@@ -1,0 +1,66 @@
+# cli.rs: modules_named_core_or_std_are_refused: `core` and `std` are the
+# language's own packages: a module named like them (or below them) is an
+# error of the Strata checker
+
+[[step]]
+write = "core/strata.toml"
+text = "name = \"pk\"\n"
+
+[[step]]
+module = "util"
+into = "$TMP/core/"
+text = "pub fn one() -> Int {\n  1\n}\n"
+
+[[step]]
+run = ["mkdir", "-p", "core/core"]
+
+[[step]]
+run = ["mv", "core/util.strata", "core/core.strata"]
+
+[[step]]
+strata = ["--file", ".", "check", "--strata"]
+dir = "core"
+fails = true
+has = ["module `core` is named like the built-in package `core`"]
+
+[[step]]
+write = "std/strata.toml"
+text = "name = \"pk\"\n"
+
+[[step]]
+module = "util"
+into = "$TMP/std/"
+text = "pub fn one() -> Int {\n  1\n}\n"
+
+[[step]]
+run = ["mkdir", "-p", "std/core"]
+
+[[step]]
+run = ["mv", "std/util.strata", "std/std.strata"]
+
+[[step]]
+strata = ["--file", ".", "check", "--strata"]
+dir = "std"
+fails = true
+has = ["module `std` is named like the built-in package `std`"]
+
+[[step]]
+write = "core-text/strata.toml"
+text = "name = \"pk\"\n"
+
+[[step]]
+module = "util"
+into = "$TMP/core-text/"
+text = "pub fn one() -> Int {\n  1\n}\n"
+
+[[step]]
+run = ["mkdir", "-p", "core-text/core"]
+
+[[step]]
+run = ["mv", "core-text/util.strata", "core-text/core/text.strata"]
+
+[[step]]
+strata = ["--file", ".", "check", "--strata"]
+dir = "core-text"
+fails = true
+has = ["module `core.text` is named like the built-in package `core`"]

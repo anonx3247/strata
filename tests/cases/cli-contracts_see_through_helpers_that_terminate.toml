@@ -1,0 +1,17 @@
+# cli.rs: contracts_see_through_helpers_that_terminate
+[[step]]
+save = "h.strata"
+text = '''
+fn small(n: Int) -> Bool { 0 <= n && n < 10 }
+type Digit = Int where small(it)
+fn zero() -> Digit { 0 }
+fn ten() -> Digit { 10 }
+fn up(n: Int) -> Bool { if n > 100 { true } else { up(n + 1) } }
+type Odd = Int where up(it)
+fn odd() -> Odd { 1 }
+'''
+
+[[step]]
+strata = ["--file", "h.strata", "verify", "zero,ten,odd", "--cases", "20", "--no-race"]
+any_code = true
+has = ["✓ zero", "proven", "✗ ten", "found by the solver", "~ odd", "the result of `up` (only its contract is known)"]

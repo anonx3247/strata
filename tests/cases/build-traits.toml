@@ -1,0 +1,75 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "default_methods.strata"
+from = "default_methods.st"
+
+[[step]]
+strata = ["build", "default_methods.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/traits-default_methods.out"
+
+[[step]]
+save = "generic_traits.strata"
+from = "generic_traits.st"
+
+[[step]]
+strata = ["build", "generic_traits.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/traits-generic_traits.out"
+
+[[step]]
+save = "method_type_params.strata"
+from = "method_type_params.st"
+
+[[step]]
+strata = ["build", "method_type_params.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/traits-method_type_params.out"
+
+[[step]]
+save = "trait_ensures.strata"
+from = "trait_ensures.st"
+
+[[step]]
+strata = ["build", "trait_ensures.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/traits-trait_ensures.out"
+
+[[step]]
+save = "traits_example.strata"
+from = "traits_example.st"
+
+[[step]]
+strata = ["build", "traits_example.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/traits-traits_example.out"
+
+[[step]]
+save = "variant_impls.strata"
+from = "variant_impls.st"
+
+[[step]]
+strata = ["build", "variant_impls.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/traits-variant_impls.out"

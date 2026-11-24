@@ -1,0 +1,76 @@
+# cli.rs: a_break_leaves_the_loop_in_its_own_state
+[[step]]
+save = "t.strata"
+text = '''
+fn early() -> Int
+  ensures it >= 10
+{
+  mut i: Int = 0
+  while i < 10 {
+    if i == 3 { break }
+    i += 1
+  }
+  i
+}
+fn no_break() -> Int
+  ensures it >= 10
+{
+  mut i: Int = 0
+  while i < 10 { i += 1 }
+  i
+}
+fn two_exits(n: Int) -> Int
+  ensures it == 1 || it == 2 || it >= 5
+{
+  mut r: Int = 0
+  while r < 5 {
+    if n > 0 {
+      r = 1
+      break
+    }
+    if n < -3 {
+      r = 2
+      break
+    }
+    r += 1
+  }
+  r
+}
+fn found(n: Natural) -> Int
+  ensures it == 7
+{
+  mut k: Int = 0
+  loop {
+    k = n
+    if k > 3 {
+      k = 7
+      break
+    }
+  }
+  k
+}
+fn inner_break(xs: List[Int]) -> Int
+  ensures it >= 4
+{
+  mut i: Int = 0
+  while i < 4 {
+    for x in xs {
+      if x > 0 { break }
+    }
+    i += 1
+  }
+  i
+}
+fn after_forever(n: Int) -> Int
+  ensures it == 0
+{
+  mut k: Int = n
+  loop { k = k + 1 }
+  k
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--cases", "20", "--no-race"]
+fails = true
+has = ["✗ early", "(found by the solver)", "it = 3", "✓ no_break ", "✓ two_exits ", "✓ found ", "✓ inner_break ", "✓ after_forever "]

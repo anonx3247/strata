@@ -1,0 +1,15 @@
+# build.rs: recursion_runs_until_the_stack_is_out
+[[step]]
+save = "deep.strata"
+from = "deep.st"
+
+[[step]]
+strata = ["run", "deep.strata"]
+code = 101
+stdout = "20000\n20000\n"
+has = ["fault (Limit): stack overflow (recursion too deep)\n    stack: main -> down (", " times)\n"]
+
+[[step]]
+strata = ["test", "--file", "deep.strata"]
+fails = true
+has = ["✗ runaway\n    Limit: stack overflow (recursion too deep)\n    stack: down (", "0 passed, 1 failed"]

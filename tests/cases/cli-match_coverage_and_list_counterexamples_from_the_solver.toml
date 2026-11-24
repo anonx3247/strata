@@ -1,0 +1,36 @@
+# cli.rs: match_coverage_and_list_counterexamples_from_the_solver: arms whose
+# conditions the checker can't decide: the prover shows some arm matches; a
+# counterexample with a non-empty list
+[[step]]
+save = "b.strata"
+text = '''
+fn even(n: Int) -> Bool { n % 2 == 0 }
+
+fn parity(n: Int) -> String {
+  match n {
+    where even(it) => "even",
+    where !even(it) => "odd",
+  }
+}
+
+fn broken(n: Int) -> String {
+  match n {
+    where even(it) => "even",
+    where it % 3 == 0 => "three",
+  }
+}
+
+type Point = { x: Int, y: Int }
+
+fn sum_x(ps: List[Point]) -> Int
+  requires len(ps) >= 2
+  ensures it != 7
+{
+  ps[0].x + ps[1].x
+}
+'''
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--no-race"]
+any_code = true
+has = ["✓ parity", "✗ broken", "no match arm for", "found by the solver", "✗ sum_x", "[Point {"]

@@ -1,0 +1,45 @@
+# build.rs: the_jit_runs_tests_as_the_interpreter: `strata test` reports, compiled
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/bank.strata"]
+golden = "tests/data/build/expected/tests-bank.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/builtins.strata"]
+golden = "tests/data/build/expected/tests-builtins.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/math.strata"]
+golden = "tests/data/build/expected/tests-math.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/orders.strata"]
+golden = "tests/data/build/expected/tests-orders.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/traits.strata"]
+golden = "tests/data/build/expected/tests-traits.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/tasks"]
+golden = "tests/data/build/expected/tests-tasks.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/todos"]
+golden = "tests/data/build/expected/tests-todos.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/wc"]
+golden = "tests/data/build/expected/tests-wc.out"
+
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/page"]
+golden = "tests/data/build/expected/tests-page.out"
+
+[[step]]
+save = "t.strata"
+from = "t.st"
+
+[[step]]
+strata = ["test", "--file", "t.strata"]
+golden = "tests/data/build/expected/tests-failing.out"

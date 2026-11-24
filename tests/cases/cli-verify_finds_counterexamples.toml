@@ -1,0 +1,18 @@
+# cli.rs: verify_finds_counterexamples
+[[step]]
+strata = ["render", "--file", "$ROOT/examples/orders.strata"]
+capture = "bug.st"
+
+[[step]]
+write = "bug.st"
+append = true
+text = "fn promo(amount: Cents, coupon: Int) -> Cents requires coupon >= 0 { amount - coupon }\n"
+
+[[step]]
+save = "bug.strata"
+from_tmp = "bug.st"
+
+[[step]]
+strata = ["--file", "bug.strata", "verify", "promo"]
+fails = true
+has = ["does not satisfy `Cents`"]

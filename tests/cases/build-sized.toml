@@ -1,0 +1,9 @@
+# build.rs: sized_integers_wrap_in_their_widths
+
+[[step]]
+strata = ["build", "$ROOT/tests/data/build/sized.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/sized.out"
