@@ -18,7 +18,7 @@ extra="dyld_stub_binder ___bzero ___stack_chk_fail ___stack_chk_guard ___chkstk_
   _pow _cbrt _hypot _fmod _remainder _round _trunc _ceil _floor _sqrt _fabs _fmin _fmax _frexp _ldexp
   _modf _nan _copysign _lround _llround _rint _nearbyint _fma
   _memcpy _memmove _memset _memcmp _memchr _strlen _strcmp _strncmp _strchr _strrchr _strstr _strdup
-  _strndup _strerror _strtod _strtol _strtoll _strtoul _strtoull _atoi _snprintf _sprintf _printf
+  _strndup _strerror _strerror_r _strtod _strtol _strtoll _strtoul _strtoull _atoi _snprintf _sprintf _printf
   _fprintf _puts _putchar _fputs _fputc _fwrite _fread _fflush _fopen _fclose _getc _getline
   _malloc _calloc _realloc _free _malloc_size _posix_memalign _abort _exit __exit _atexit _qsort
   _getenv _setenv _unsetenv _environ _open _close _read _write _lseek _stat _fstat _lstat _unlink
