@@ -86,12 +86,12 @@ has = ["@strata_unique(ptr"]
 
 [[step]]
 strata = ["build", "insert_in_place.strata", "--emit-llvm"]
-has = ["@strata_list_owned(ptr"]
+has = ["@strata_tbl_owned(ptr", "@strata_tbl_add(ptr"]
 
 [[step]]
 strata = ["build", "more_in_place.strata", "--emit-llvm"]
 counts = { " = alloca [" = 4 }
-has = ["@strata_list_remove_at(ptr"]
+has = ["@strata_tbl_remove_at(ptr"]
 
 # a chain too long to drop recursively
 [[step]]
