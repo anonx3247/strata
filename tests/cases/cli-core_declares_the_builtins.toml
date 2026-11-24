@@ -6,14 +6,14 @@ strata = ["--file", "$ROOT/core", "check"]
 has = ["ok: core checks"]
 
 [[step]]
-strata = ["--file", "$ROOT/core", "render", "builtins"]
+strata = ["--file", "$ROOT/core", "view", "builtins"]
 has = ['''
 builtin fn at[A](xs: List[A], i: Int) -> A
   requires 0 <= i && i < len(xs)
 ''']
 
 [[step]]
-strata = ["--file", "$ROOT/core", "render", "types"]
+strata = ["--file", "$ROOT/core", "view", "types"]
 has = ["builtin type Dict[K, V]\n", "type Option[T] ="]
 
 # `strata builtins` lists core's
@@ -34,7 +34,7 @@ any_code = true
 has = ["`builtin` definitions are only in `core`: `first`", "`builtin` definitions are only in `core`: `Pair`"]
 
 [[step]]
-strata = ["--file", "x.strata", "render"]
+strata = ["--file", "x.strata", "view", "main"]
 stdout = '''
 builtin type Pair[A, B]
 

@@ -1,5 +1,5 @@
 3
-fault (Assert): assertion failed: p == Point { ..p, y: 3 } (left of == = Point { x: 1, y: 2 }, right = Point { x: 1, y: 3 })
+fault (Assert): assertion failed: p == Point { ..p, y: 3 } (left: Point { x: 1, y: 2 }, right: Point { x: 1, y: 3 })
     stack: main
 
 --- exit 101

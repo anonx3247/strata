@@ -38,7 +38,7 @@ test "skus" {
 strata = ["rename", "Line.sku", "code"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["type Line = { code: String, qty: Int }", "type Order = { sku: String", "l.code + \"/\" + o.sku", "o.lines.map(l -> l.code)", "Line { code: sku, .. } => Line { ..l, code: sku + \"!\" }", "Line { code: \"a\", qty: 1 }", "Order { sku: \"o\"", "fix(l).code == \"a!\""]
 
 [[step]]
@@ -83,7 +83,7 @@ dir = "e"
 has = ["renamed A.tag → A.label, B.tag → B.label", "updated 1 definition that refers to them: tag_of"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 dir = "e"
 has = ["type A = { label: String, n: Int }", "type B = { label: String }", "x.label"]
 

@@ -5,7 +5,7 @@ save = "e.strata"
 text = "fn s() -> String {\n  \"a\tb\\\\n\"\n}\n"
 
 [[step]]
-strata = ["--file", "e.strata", "render"]
+strata = ["--file", "e.strata", "view", "main"]
 has = ["\"a\\tb\\\\n\""]
 
 [[step]]

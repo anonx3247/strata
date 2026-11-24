@@ -26,7 +26,7 @@ strata = ["--file", "fstrings.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "fstrings.strata", "render"]
+strata = ["--file", "fstrings.strata", "view", "main"]
 capture = "fstrings.st"
 
 [[step]]
@@ -34,7 +34,7 @@ save = "fstrings-r.strata"
 from_tmp = "fstrings.st"
 
 [[step]]
-strata = ["--file", "fstrings-r.strata", "render"]
+strata = ["--file", "fstrings-r.strata", "view", "main"]
 out_file = "fstrings.st"
 
 [[step]]
