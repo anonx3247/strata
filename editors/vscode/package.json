@@ -1,0 +1,29 @@
+{
+  "name": "strata",
+  "displayName": "Strata",
+  "description": "Syntax highlighting for Strata's text form (.st)",
+  "version": "0.1.0",
+  "publisher": "strata-lang",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/anonx3247/strata" },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "strata",
+        "aliases": ["Strata", "strata"],
+        "extensions": [".st"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "strata",
+        "scopeName": "source.strata",
+        "path": "./syntaxes/strata.tmLanguage.json",
+        "embeddedLanguages": { "meta.embedded.interpolation.strata": "strata" }
+      }
+    ]
+  }
+}
