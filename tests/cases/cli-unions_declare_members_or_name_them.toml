@@ -46,7 +46,7 @@ strata = ["run", "u.strata"]
 stdout = "3\n4\n0\ndown 3\nshape\n[Quiet, Loud]\n"
 
 [[step]]
-strata = ["--file", "u.strata", "render"]
+strata = ["--file", "u.strata", "view", "main"]
 has = ['''
 type Shape =
   | Circle { r: Int }
@@ -55,5 +55,5 @@ type Shape =
 ''']
 
 [[step]]
-strata = ["--file", "u.strata", "render", "--members", "separate"]
+strata = ["--file", "u.strata", "view", "main", "--members", "separate"]
 has = ["type Circle = { r: Int }\n", "type Shape = Circle | Square | Dot\n"]

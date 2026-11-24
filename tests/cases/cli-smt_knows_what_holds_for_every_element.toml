@@ -1,6 +1,6 @@
 # cli.rs: smt_knows_what_holds_for_every_element (tests/data/elements.strata)
 [[step]]
-strata = ["render", "--file", "$ROOT/tests/data/elements.strata"]
+strata = ["view", "main", "--file", "$ROOT/tests/data/elements.strata"]
 capture = "e.st"
 
 [[step]]

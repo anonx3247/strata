@@ -1,7 +1,7 @@
 # cli.rs: every_example_round_trips_through_render
 
 [[step]]
-strata = ["--file", "$ROOT/examples/bank.strata", "render"]
+strata = ["--file", "$ROOT/examples/bank.strata", "view", "main"]
 capture = "bank.st"
 
 [[step]]
@@ -9,14 +9,14 @@ save = "bank.strata"
 from_tmp = "bank.st"
 
 [[step]]
-strata = ["--file", "bank.strata", "render"]
+strata = ["--file", "bank.strata", "view", "main"]
 out_file = "bank.st"
 
 [[step]]
 strata = ["--file", "bank.strata", "test"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/orders.strata", "render"]
+strata = ["--file", "$ROOT/examples/orders.strata", "view", "main"]
 capture = "orders.st"
 
 [[step]]
@@ -24,14 +24,14 @@ save = "orders.strata"
 from_tmp = "orders.st"
 
 [[step]]
-strata = ["--file", "orders.strata", "render"]
+strata = ["--file", "orders.strata", "view", "main"]
 out_file = "orders.st"
 
 [[step]]
 strata = ["--file", "orders.strata", "test"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/builtins.strata", "render"]
+strata = ["--file", "$ROOT/examples/builtins.strata", "view", "main"]
 capture = "builtins.st"
 
 [[step]]
@@ -39,14 +39,14 @@ save = "builtins.strata"
 from_tmp = "builtins.st"
 
 [[step]]
-strata = ["--file", "builtins.strata", "render"]
+strata = ["--file", "builtins.strata", "view", "main"]
 out_file = "builtins.st"
 
 [[step]]
 strata = ["--file", "builtins.strata", "test"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/traits.strata", "render"]
+strata = ["--file", "$ROOT/examples/traits.strata", "view", "main"]
 capture = "traits.st"
 
 [[step]]
@@ -54,7 +54,7 @@ save = "traits.strata"
 from_tmp = "traits.st"
 
 [[step]]
-strata = ["--file", "traits.strata", "render"]
+strata = ["--file", "traits.strata", "view", "main"]
 out_file = "traits.st"
 
 [[step]]
@@ -63,7 +63,7 @@ strata = ["--file", "traits.strata", "test"]
 # a package: one file per module; the text read back in, module by module,
 # prints the same
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "--split", "t1"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "--split", "t1"]
 
 [[step]]
 run = ["mkdir", "-p", "t2"]
@@ -88,7 +88,7 @@ save = "t2/sim.strata"
 from_tmp = "t1/sim.st"
 
 [[step]]
-strata = ["--file", "t2", "render", "--split", "t3"]
+strata = ["--file", "t2", "view", "--split", "t3"]
 
 [[step]]
 run = ["diff", "t1/model.st", "t3/model.st"]

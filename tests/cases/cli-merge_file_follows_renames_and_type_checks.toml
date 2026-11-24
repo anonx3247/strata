@@ -47,7 +47,7 @@ dir = "rename"
 has = ["ours renamed area → rect_area; applied to theirs"]
 
 [[step]]
-run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" view main --file a.strata; else cat a.strata; fi"]
 dir = "rename"
 has = ["rect_area(s, s) * 2"]
 lacks = [" area(", "fn area"]
@@ -99,7 +99,7 @@ strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
 dir = "rename-edit"
 
 [[step]]
-run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" view main --file a.strata; else cat a.strata; fi"]
 dir = "rename-edit"
 has = ["rect_area(s, s) * 2", "h * w"]
 lacks = [" area("]

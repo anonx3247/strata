@@ -78,11 +78,11 @@ has = ["Item.new ", "Item.describe ", "Item.describe (Describe)", "Item.describe
 lacks = ["✗"]
 
 [[step]]
-strata = ["render", "--file", "o.strata"]
+strata = ["view", "main", "--file", "o.strata"]
 capture = "o.st"
 
 [[step]]
-strata = ["--file", "o.strata", "render"]
+strata = ["--file", "o.strata", "view", "main"]
 out_file = "o.st"
 
 [[step]]

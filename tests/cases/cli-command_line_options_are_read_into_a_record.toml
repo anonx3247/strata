@@ -128,5 +128,5 @@ has = ["`Opts.pairs` is a `List[(Int, Int)]`"]
 
 # field docs round-trip
 [[step]]
-strata = ["--file", "tool", "render", "main"]
+strata = ["--file", "tool", "view", "main"]
 has = ["  /// How many copies.\n  copies: Positive,"]

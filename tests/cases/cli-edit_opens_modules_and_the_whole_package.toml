@@ -40,7 +40,7 @@ has = ["changed"]
 run = ["sh", "-c", "test $(wc -l < whole/files) -eq 2 && grep -q 'main.st' whole/files && grep -q 'shop/orders.st' whole/files"]
 
 [[step]]
-strata = ["render", "shop.orders"]
+strata = ["view", "shop.orders"]
 dir = "pkg"
 has = ["12"]
 
@@ -68,7 +68,7 @@ run = ["cat", "module/seen1.st"]
 stdout = "pub fn price() -> Int {\n  12\n}\n"
 
 [[step]]
-strata = ["render", "shop.orders"]
+strata = ["view", "shop.orders"]
 dir = "pkg"
 has = ["15"]
 
@@ -93,7 +93,7 @@ env = { "EDITOR" = "sh '$TMP/new/editor.sh'" }
 has = ["added"]
 
 [[step]]
-strata = ["render", "shop.tax"]
+strata = ["view", "shop.tax"]
 dir = "pkg"
 has = ["pub fn tax"]
 

@@ -112,5 +112,5 @@ fails = true
 has = ["only a variable or a field can be `mut`"]
 
 [[step]]
-strata = ["--file", "c.strata", "render"]
+strata = ["--file", "c.strata", "view", "main"]
 has = ["restock(mut l, 1)"]

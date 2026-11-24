@@ -24,7 +24,7 @@ text = "use db\n\nfn main() {\n  print(db.length(\"abc\"))\n}\n"
 
 # the text round-trips
 [[step]]
-strata = ["--file", "p", "render", "db"]
+strata = ["--file", "p", "view", "db"]
 stdout = '''
 /// An open database.
 extern c type Sqlite3

@@ -50,7 +50,7 @@ fn label(s: Status) -> String {
 '''
 
 [[step]]
-strata = ["--file", "c.strata", "render"]
+strata = ["--file", "c.strata", "view", "main"]
 capture = "r1.st"
 has = ['''
 // file header
@@ -74,7 +74,7 @@ save = "r1.strata"
 from_tmp = "r1.st"
 
 [[step]]
-strata = ["--file", "r1.strata", "render"]
+strata = ["--file", "r1.strata", "view", "main"]
 out_file = "r1.st"
 
 [[step]]

@@ -23,20 +23,20 @@ has = ["module model:", "uses "]
 
 # rendered back as text, module by module, it is the package's text
 [[step]]
-strata = ["--file", "tasks.strata", "render", "--split", "out"]
+strata = ["--file", "tasks.strata", "view", "--split", "out"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "model"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "model"]
 out_file = "out/model.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "memory"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "memory"]
 out_file = "out/memory.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "print"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "print"]
 out_file = "out/print.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "sim"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "sim"]
 out_file = "out/sim.st"
