@@ -56,6 +56,13 @@ extern "C" {
 // Profiling (c/jit.c): every function defined keeps its frame pointer.
 void toolchain_frame_pointers(LLVMModuleRef mod);
 
+// -O0's machine code by fast instruction selection (c/jit.c).
+void toolchain_fast_isel(void);
+
+// The IR text as a module, in a context of its own (c/ir.c): 0, else 1
+// and why.
+int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
+
 // `--timings` (c/driver.c): where a phase begins and ends.
 int32_t timings_begin(const char *name);
 int32_t timings_end(const char *name);
@@ -82,17 +89,13 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
   LLVMInitializeAArch64TargetMC();
   LLVMInitializeAArch64AsmPrinter();
   LLVMInitializeAArch64AsmParser();
-  LLVMContextRef ctx = LLVMContextCreate();
-  LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata");
+  toolchain_fast_isel();
+  LLVMContextRef ctx;
   LLVMModuleRef mod;
   char *msg = nullptr;
-  timings_begin("LLVM: parse IR");
-  LLVMBool rejected = LLVMParseIRInContext(ctx, buf, &mod, &msg);
-  timings_end("LLVM: parse IR");
-  if (rejected) {
+  if (toolchain_module(ir, &ctx, &mod, &msg)) {
     std::string m = std::string("LLVM rejected the generated IR: ") + (msg ? msg : "");
     LLVMDisposeMessage(msg);
-    LLVMContextDispose(ctx);
     return fail(m);
   }
   const char *triple = TRIPLE;

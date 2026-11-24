@@ -7,7 +7,7 @@ Strata is written in Strata: the `strata` command is the `compiler/` package, bu
 | File | What it is |
 |---|---|
 | `compiler/` | the `strata` command: the front end, the checker, the verifier, the code generator, the codebase commands and the driver, module by module below |
-| `compiler/c/` | the C the compiler links in: `jit.c` (LLVM's JIT, running compiled code in memory), `toolchain.cpp` (LLVM: IR to objects; lld: linking), `driver.c`, `cache.c`, and `libSystem.tbd` (the stub of macOS's libSystem executables link against) |
+| `compiler/c/` | the C the compiler links in: `jit.c` (LLVM's JIT, running compiled code in memory), `ir.c` (codegen's IR text built in LLVM through its C API), `toolchain.cpp` (LLVM: IR to objects; lld: linking), `driver.c`, `cache.c`, and `libSystem.tbd` (the stub of macOS's libSystem executables link against) |
 | `runtime/runtime.c` | the C runtime compiled code links with: reference counting, big integers, printing, tasks and channels, the host's I/O; `core.rt` replaces its allocator and string, integer and list functions with Strata's (`-DSTRATA_CORE_RT`) |
 | `runtime/prelude.strata` | the built-ins of lists (and `keys`, `values`, `map_values` over a dictionary's entries), `lines`, and the string built-ins written over `byte_len` / `byte_at` / `byte_slice`: compiled with every program |
 | `core/` | `core`: the builtin types and functions (`builtin type`, `builtin fn` with their `requires`), the types and traits every program names, the code modules (`core.iter`, `core.channel`, `core.text`, `core.task`) and raw memory (`core.mem`, only for core's own modules) and compiled values read back (`core.values`' `Raw`, for core and packages with `[values] read = true`) |
@@ -39,7 +39,7 @@ A name may have several signatures (`len` of a list, a dict or a set): the first
 
 ## Compiling
 
-`strata build` compiles a program to an executable through LLVM: compiler/codegen writes LLVM IR as text, LLVM (linked into `strata`) compiles it to an object, and lld links it with the runtime and std's precompiled library. `--emit-llvm` prints the IR instead. A program compiler/codegen can't compile yet is an error that says why.
+`strata build` compiles a program to an executable through LLVM: compiler/codegen writes LLVM IR as text, `compiler/c/ir.c` builds it in LLVM (linked into `strata`) through LLVM's C API (LLVM's own reader of IR text only for what it doesn't know: it is several times slower), LLVM compiles it to an object (at -O0 with fast instruction selection), and lld links it with the runtime and std's precompiled library. `--emit-llvm` prints the IR instead. A program compiler/codegen can't compile yet is an error that says why.
 
 Programs are compiled unoptimized (`-O0`), which is fastest to build; `--release` compiles at `-O2` and merges the runtime into the executable (`-flto`). `run` and `test` take `--release` too. Compile-time code and the probes that confirm counterexamples are always unoptimized (they run once), `verify`'s fuzzing always optimized (its cases run many times), and std's precompiled library is built once at `-O2`.
 
@@ -74,7 +74,7 @@ A fault prints the call stack as `strata run` does (`    stack: main -> inner ->
 
 `strata run` compiles the same IR in memory with LLVM's libraries and runs it (the JIT: compiler/codegen's IR, run by the compiler's own JIT, with std's precompiled library and a package's `[native]` C loaded), so a program runs at native speed without a build step (`fib(32)`: 26 ms, compilation included). What can't be compiled yet is an error that says why (there is no interpreter). `strata run f [ARGS]` calls one function, compiled: its arguments, written as code (`'"abc", 3'`), go into a function that calls it, checked with the program, and its result is printed as code (the compiled call hands over its `debug` text), and `--trace` has compiled code print each call and return. Compile-time code runs on the JIT too: in a `derive`, and `comptime e` anywhere else, whose value is computed while compiling and written into the program as a constant (`re := comptime parse("[a-z]+")` never calls `parse` when the program runs). `e` may use definitions, not the variables around it. In the compiler written in Strata (`compiler codegen`, which `build` uses), `comptime e` is compiled by compiler/codegen and run by the compiler's own JIT in its process, within 5,000,000 steps, and its value is read back from memory by its type (codegen's `read_back`, core.values) and written in with that type; what codegen can't compile yet, and the small pieces of a derive's code, run on compiler/eval.
 
-Both ways share one code generator (the IR as text, which LLVM parses for the JIT) and one runtime (`runtime/runtime.c`, linked into `strata` for the JIT, and with the program by `strata build`; a release ships it precompiled).
+Both ways share one code generator (the IR as text, which `compiler/c/ir.c` builds in LLVM for the JIT too) and one runtime (`runtime/runtime.c`, linked into `strata` for the JIT, and with the program by `strata build`; a release ships it precompiled).
 
 ## The compiler in Strata (`compiler/`)
 
