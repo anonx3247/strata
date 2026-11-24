@@ -245,3 +245,88 @@ const char *cache_self_hash(void) {
 
 // This process's id (the run's scratch folders are named by it).
 int64_t cache_pid(void) { return (int64_t)getpid(); }
+
+// ---- SHA-256 for compiler/cache and compiler/binary ----
+//
+// Keys and definitions' hashes, as 64 hex digits: macOS's CommonCrypto
+// (CC_SHA256, which uses the CPU's SHA instructions), the code above
+// elsewhere. A string is hashed as its bytes; definitions' bytes come as
+// hex (a `String` can't hold a NUL for C), two digits a byte.
+
+#ifdef __APPLE__
+#include <CommonCrypto/CommonDigest.h>
+#endif
+
+static _Thread_local char digest_hex[65];
+
+static const char *digest_of(const unsigned char *p, size_t n) {
+#ifdef __APPLE__
+  unsigned char d[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256_CTX c;
+  CC_SHA256_Init(&c);
+  // (CC_LONG is 32 bits: in parts)
+  while (n > 0) {
+    CC_LONG k = n > (1u << 30) ? (1u << 30) : (CC_LONG)n;
+    CC_SHA256_Update(&c, p, k);
+    p += k;
+    n -= k;
+  }
+  CC_SHA256_Final(d, &c);
+  static const char digits[] = "0123456789abcdef";
+  for (int i = 0; i < 32; i++) {
+    digest_hex[2 * i] = digits[d[i] >> 4];
+    digest_hex[2 * i + 1] = digits[d[i] & 15];
+  }
+  digest_hex[64] = 0;
+#else
+  sha256_state s;
+  sha256_init(&s);
+  sha256_update(&s, p, n);
+  sha256_hex(&s, digest_hex);
+#endif
+  return digest_hex;
+}
+
+// The SHA-256 of the string `s`'s bytes.
+const char *cache_sha256_text(const char *s) { return digest_of((const unsigned char *)s, strlen(s)); }
+
+static int hex_digit(char c) {
+  return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0;
+}
+
+// The SHA-256 of the bytes written in hex in `hex` (two digits a byte).
+const char *binary_sha256_hex_bytes(const char *hex) {
+  size_t n = strlen(hex) / 2;
+  unsigned char small[4096];
+  unsigned char *b = n <= sizeof small ? small : malloc(n);
+  if (!b) return "";
+  for (size_t i = 0; i < n; i++) b[i] = (unsigned char)(hex_digit(hex[2 * i]) << 4 | hex_digit(hex[2 * i + 1]));
+  const char *r = digest_of(b, n);
+  if (b != small) free(b);
+  return r;
+}
+
+// The SHA-256 of the bytes of the file at `path`, "" when it can't be read.
+const char *cache_sha256_file(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return "";
+  size_t cap = 1 << 16, n = 0, k;
+  unsigned char *b = malloc(cap);
+  while (b && (k = fread(b + n, 1, cap - n, f)) > 0) {
+    n += k;
+    if (n == cap) {
+      unsigned char *g = realloc(b, cap *= 2);
+      if (!g) free(b);
+      b = g;
+    }
+  }
+  int bad = !b || ferror(f);
+  fclose(f);
+  if (bad) {
+    free(b);
+    return "";
+  }
+  const char *r = digest_of(b, n);
+  free(b);
+  return r;
+}
