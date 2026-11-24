@@ -258,13 +258,13 @@ fn verify_chooses_checks_and_rules_as_in_rust() {
     let dir = scratch("choose");
     let pkg = dir.join("pol");
     std::fs::create_dir_all(&pkg).unwrap();
-    std::fs::write(pkg.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
-    save(&pkg.join("core.strata"), "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
-    save(&pkg.join("main.strata"), "from core use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
+    std::fs::write(pkg.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"lib\"]\nproven = [\"lib\"]\n").unwrap();
+    save(&pkg.join("lib.strata"), "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
+    save(&pkg.join("main.strata"), "from lib use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
     let bad = dir.join("bad.strata");
     std::fs::write(dir.join("bad.st"), "fn f(x: Int) -> Int {\n  x + \"a\"\n}\n").unwrap();
     let _ = Command::new(STRATA).args(["--file", &bad.to_string_lossy(), "edit"]).stdin(std::fs::File::open(dir.join("bad.st")).unwrap()).output().unwrap();
-    for (file, chosen) in [(&pkg, None), (&pkg, Some("core.fact")), (&pkg, Some("core")), (&pkg, Some("fi*")), (&pkg, Some("nope")), (&bad, None)] {
+    for (file, chosen) in [(&pkg, None), (&pkg, Some("lib.fact")), (&pkg, Some("lib")), (&pkg, Some("fi*")), (&pkg, Some("nope")), (&bad, None)] {
         let mut rust_args = vec!["--file".to_string(), file.to_string_lossy().into_owned(), "verify".into(), "--no-race".into(), "--no-cache".into(), "--cases".into(), "20".into()];
         let mut ours_args = vec!["verify".to_string(), "--no-cache".into(), "--cases".into(), "20".into()];
         if let Some(c) = chosen {

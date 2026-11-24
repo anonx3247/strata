@@ -6,7 +6,7 @@ Four modules, one per file, which use each other only through their public contr
 
 | Module | What it holds |
 |---|---|
-| `core` | the model (`Task`, `TaskResult`, `TaskPolicy`), the `Producer` / `Worker` / `Queue` traits, and the `run_producer` / `run_worker` / `drain` entrypoints |
+| `model` | the model (`Task`, `TaskResult`, `TaskPolicy`), the `Producer` / `Worker` / `Queue` traits, and the `run_producer` / `run_worker` / `drain` entrypoints |
 | `memory` | the in-memory backend: a `MemQueue` value implementing `Queue`, with the reference SQLite semantics and invariants |
 | `print` | the reference's example task family and its `demo` entrypoint |
 | `sim` | model-based verification (`simulate`) and the reference test suite |
@@ -15,7 +15,7 @@ Four modules, one per file, which use each other only through their public contr
 strata --file examples/tasks test                 # the reference test suite
 strata --file examples/tasks run print.demo       # producer + worker entrypoints
 strata --file examples/tasks verify               # contracts + model-based simulation
-strata --file examples/tasks interface core       # what the other modules can use
+strata --file examples/tasks interface model       # what the other modules can use
 strata ui --file examples/tasks                   # browse it
 ```
 

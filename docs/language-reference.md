@@ -59,7 +59,7 @@ The type is always named, so which implementation runs is always clear. A generi
 ## Modules
 
 - **A file is a module.** In a folder, each `.strata` file (a binary module file) is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `render MODULE` prints one module as text, and `render --split DIR` writes the codebase's text out one `.st` file per module. A view that spans several modules (`view a,b`) labels each group with a `// ── module m` comment. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit m` targets a module, and `view module:m` shows one.
-- `examples/tasks/` is now four modules (`core`, `memory`, `print`, `sim`) that use each other only through their contracts.
+- `examples/tasks/` is now four modules (`model`, `memory`, `print`, `sim`) that use each other only through their contracts.
 
 ## Mutation
 
