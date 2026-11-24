@@ -94,9 +94,10 @@ programs that `run` prints nothing for (`cli-comparing_with_a_bare_constructor_i
 `cli-command_line_options_are_read_into_a_record`, `cli-commands_run_programs`,
 `cli-run_a_binary_file`), built programs that leak or crash
 (`build-clock`: 1 object left; `build-capabilities`: signal 11), field
-refinements not checked on assignment (`build-data`, `build-dyn`), fault
-messages that name `Graphemes.at` without its module, `core`'s tests not
-found by `--file core test`, the Strata verifier's solver flags and missing
+refinements not checked on assignment (`build-data`, `build-dyn`,
+`cli-procedural_mutation_is_explicit`), a run that crashes
+(`cli-self_arguments_on_trait_values`: signal 10), fault messages that name
+`Graphemes.at` without its module, test names without their module
+(`✓ a block holds…` for `✓ core.mem: a block holds…`), the Strata verifier's solver flags and missing
 summary line (`cli-solver_flags_follow_the_solver`,
-`cli-example_checks_tests_and_verifies`), and checker gaps (`cli-self_arguments_on_trait_values`,
-`cli-shared_method_names_across_modules`, `cli-procedural_mutation_is_explicit`).
+`cli-example_checks_tests_and_verifies`).
