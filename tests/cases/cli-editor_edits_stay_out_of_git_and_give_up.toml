@@ -1,0 +1,117 @@
+# `strata edit` through $EDITOR: its files are outside the package, so the
+# commit doesn't take them (they were committed, `.strata/edit/main.st`, and
+# the next commit deleted them); an editor that saves a rejected text again
+# stops it with the errors (one alternating between two rejected texts
+# reopened forever); an error of several lines is marked on each of them
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+run = ["mkdir", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+strata = ["edit"]
+dir = "pkg"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount / 10
+}
+'''
+
+[[step]]
+write = "v/good.st"
+text = "fn tax(amount: Int) -> Int {\n  amount / 5\n}\n"
+
+[[step]]
+write = "v/bad1.st"
+text = "fn tax(amount: Int) -> Int {\n  amount + true\n}\n"
+
+[[step]]
+write = "v/bad2.st"
+text = "fn tax(amount: Int) -> Int {\n  len(true)\n}\n"
+
+# the editor saves the text of `v/$NAME.st`, or the two bad ones in turn
+[[step]]
+write = "v/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/v/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/v/count'
+cp "$1" '$TMP/v/seen'$n.st
+case "$1" in '$TMP'/*) echo inside > '$TMP/v/where';; esac
+if [ "$NAME" = alternate ]; then cp '$TMP/v/bad'$(( n % 2 + 1 )).st "$1"; else cp '$TMP/v/'$NAME.st "$1"; fi
+'''
+
+[[step]]
+strata = ["edit", "tax", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/v/editor.sh'", "NAME" = "good" }
+has = ["changed", "committed to git"]
+
+# nothing left behind, nothing of the editor's committed
+[[step]]
+run = ["git", "status", "--porcelain", "--untracked-files=all", "--", "."]
+dir = "pkg"
+out = ""
+
+[[step]]
+run = ["git", "ls-files"]
+dir = "pkg"
+out = "main.strata\nstrata.log\nstrata.toml\n"
+
+[[step]]
+run = ["test", "!", "-e", "pkg/.strata/edit"]
+
+[[step]]
+run = ["test", "!", "-e", "v/where"]
+
+[[step]]
+run = ["rm", "v/count"]
+
+# the same rejected text saved twice: given up, with its errors, exit 1
+[[step]]
+strata = ["edit", "tax", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/v/editor.sh'", "NAME" = "bad1" }
+fails = true
+counts = { "error in tax: `+` operands" = 2 }
+has = ["gave up: the text saved was rejected before"]
+
+[[step]]
+run = ["cat", "v/count"]
+out = "2\n"
+
+[[step]]
+run = ["rm", "v/count"]
+
+# two rejected texts in turn: given up when one comes back
+[[step]]
+strata = ["edit", "tax", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/v/editor.sh'", "NAME" = "alternate" }
+fails = true
+has = ["gave up: the text saved was rejected before"]
+
+[[step]]
+run = ["cat", "v/count"]
+out = "3\n"
+
+# the error of `len(true)` is three lines: each is marked in the buffer
+[[step]]
+run = ["cat", "v/seen2.st"]
+has = ["// ✗ error in tax: no version of `len` accepts (Bool); available:\n// ✗   len(List[A]) -> Int\n"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "pkg"
+has = ["amount / 5"]

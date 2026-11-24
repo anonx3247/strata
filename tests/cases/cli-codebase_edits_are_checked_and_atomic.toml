@@ -28,5 +28,5 @@ has = ["it is now a hole, in a pending change", "was: total(lines)"]
 strata = ["abort"]
 
 [[step]]
-strata = ["render"]
+strata = ["view", "main"]
 has = ["fn total(lines: NonEmpty[Line])"]

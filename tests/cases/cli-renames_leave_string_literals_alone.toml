@@ -19,5 +19,5 @@ fn label() -> String {
 strata = ["rename", "greet", "welcome", "--no-commit"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["fn welcome()", "\"greet\""]

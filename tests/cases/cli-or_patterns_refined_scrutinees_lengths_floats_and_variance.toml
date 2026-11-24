@@ -38,7 +38,7 @@ strata = ["--file", "or.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "or.strata", "render"]
+strata = ["--file", "or.strata", "view", "main"]
 capture = "or.st"
 
 [[step]]
@@ -46,7 +46,7 @@ save = "or-r.strata"
 from_tmp = "or.st"
 
 [[step]]
-strata = ["--file", "or-r.strata", "render"]
+strata = ["--file", "or-r.strata", "view", "main"]
 out_file = "or.st"
 
 [[step]]
@@ -101,7 +101,7 @@ strata = ["--file", "dom.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "dom.strata", "render"]
+strata = ["--file", "dom.strata", "view", "main"]
 capture = "dom.st"
 
 [[step]]
@@ -109,7 +109,7 @@ save = "dom-r.strata"
 from_tmp = "dom.st"
 
 [[step]]
-strata = ["--file", "dom-r.strata", "render"]
+strata = ["--file", "dom-r.strata", "view", "main"]
 out_file = "dom.st"
 
 [[step]]

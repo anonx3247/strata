@@ -3,9 +3,9 @@
 Strata code is stored as its syntax tree, not its text, in a binary format of our own: a `.strata` file is a **module file** (`main.strata`, `shop/orders.strata`), or a whole program in one **bundle** file. Text is a view of it.
 
 - **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text: a `.strata` file that holds text is refused.
-- **Text comes out through the views.** `strata render` prints a module, `render --split DIR` writes one text file per module (`shop/orders.st`), and `view` shows it.
+- **Text comes out through `view`.** `strata view MODULE` prints a module as stored (imports first), `view --split DIR` writes one text file per module (`shop/orders.st`), and `view SELECTOR --level 0|1|2` shows definitions at a level of detail.
 - `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that runs trees (`compiler/eval`).
-- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `compiler/ast` value, one per line, and `--text` as the printer writes it, as stored (references qualified: `render` shows them shortened).
+- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `compiler/ast` value, one per line, and `--text` as the printer writes it, as stored (references qualified: `view` shows them shortened).
 - In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
 
 The format is written by hand, with no serialization library, so that Strata can read and write it itself: `compiler/binary` does (in Strata, on the tree `compiler/ast`, hashes included, with its own SHA-256); every module file of the repository round-trips through it (`cli-every_example_round_trips_through_render`). This page is its specification; the two are kept in step.
@@ -246,7 +246,7 @@ the definition:
 
 The code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Until the format is settled, `VERSION` stays `1`: there is nothing to stay compatible with. Convert the files in the same change:
 
-1. with the strata of before the change, write each file's text: `strata render --file F > F.st` (`render --split DIR` for a package);
+1. with the strata of before the change, write each file's text: `strata view main --file F > F.st` (`view --split DIR` for a package; a strata from before `view` printed modules: `render`);
 2. make the change and build;
 3. read the text back in: `strata --file F edit < F.st` for a script, `strata --file PKG/ edit MODULE < M.st` for each module of a package (the standard library first: its modules are `std.io`, …; the compiled prelude, `runtime/prelude.strata`, is module `strata.compiled`);
 4. `strata upgrade` rewrites every package and script of the repository in the current form, bringing the headers' dependency lists up to date (it prints each file it rewrites).
