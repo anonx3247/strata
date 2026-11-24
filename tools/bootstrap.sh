@@ -11,6 +11,8 @@
 #    Rust strata (or STRATA_SEED, a strata built before, which skips step 1);
 #    stage A = the seed's build of compiler/ (by compiler/codegen); stage B =
 #    stage A's build of it. A and B must be the same bytes (a fixed point);
+#    when the seed is an older strata (A and B differ), stage C = B's build
+#    of it must be B's bytes instead;
 #    B is target/strata.
 set -e
 cd "$(dirname "$0")/.."
@@ -36,10 +38,17 @@ fi
 # linker signs an executable under its file's name. `--release`: optimized,
 # as builds are unoptimized by default.)
 export STRATA_HOME=$root
-mkdir -p target/stage-a target/stage-b
+mkdir -p target/stage-a target/stage-b target/stage-c
 "$seed" build compiler --no-verify --release -o target/stage-a/strata
 target/stage-a/strata build compiler --no-verify --release -o target/stage-b/strata
-cmp -s target/stage-a/strata target/stage-b/strata || { echo "not a fixed point: target/stage-a/strata (built by $seed) and target/stage-b/strata (built by it) differ" >&2; exit 1; }
+if ! cmp -s target/stage-a/strata target/stage-b/strata; then
+  # the seed compiles differently from these sources (an older strata, such
+  # as the last release): B is these sources' own build, so B's build of
+  # itself, C, must be B again
+  echo "stage A (built by $seed) differs from stage B: building stage C" >&2
+  target/stage-b/strata build compiler --no-verify --release -o target/stage-c/strata
+  cmp -s target/stage-b/strata target/stage-c/strata || { echo "not a fixed point: target/stage-b/strata and target/stage-c/strata (built by it) differ" >&2; exit 1; }
+fi
 mv target/stage-b/strata target/strata
-rm -rf target/stage-a target/stage-b
+rm -rf target/stage-a target/stage-b target/stage-c
 echo "strata built by itself (target/strata, a fixed point)"
