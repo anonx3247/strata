@@ -1,0 +1,112 @@
+# codegen.rs: jit_keeps_compile_time_values_between_runs: `strata run` keeps a `comptime` value in its
+# cache (by the code it depends on): a program with the same code reads it, a change computes it again
+
+[[step]]
+save = "one.strata"
+text = '''
+fn base() -> Int {
+  40
+}
+
+fn plus(n: Int) -> Int {
+  base() + n
+}
+
+fn main() {
+  print(to_string(comptime plus(1)))
+}
+'''
+
+[[step]]
+save = "two.strata"
+text = '''
+fn base() -> Int {
+  40
+}
+
+fn plus(n: Int) -> Int {
+  base() + n
+}
+
+fn main() {
+  print(to_string(comptime plus(2)))
+}
+'''
+
+[[step]]
+save = "none.strata"
+text = '''
+fn main() {
+  print(to_string(1))
+}
+'''
+
+# (what a program with no compile-time code of its own keeps)
+[[step]]
+strata = ["run", "none.strata"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+stdout = '''
+1
+'''
+
+[[step]]
+run = ["sh", "-c", "find cache -path \"*comptime*\" -type f | sort > a0.txt"]
+
+[[step]]
+strata = ["run", "one.strata"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+stdout = '''
+41
+'''
+
+[[step]]
+run = ["sh", "-c", "find cache -path \"*comptime*\" -type f | sort > a1.txt; comm -13 a0.txt a1.txt > n1.txt; test -s n1.txt"]
+
+[[step]]
+strata = ["run", "two.strata"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+stdout = '''
+42
+'''
+
+# the two kept values swapped: each program reads the other's (they are read, not computed)
+[[step]]
+run = ["sh", "-c", "find cache -path \"*comptime*\" -type f | sort > a2.txt; comm -13 a1.txt a2.txt > n2.txt; n=0; for x in $(cat n1.txt); do for y in $(cat n2.txt); do if [ $(wc -c < \"$x\") = $(wc -c < \"$y\") ] && ! cmp -s \"$x\" \"$y\"; then cp \"$x\" t && cp \"$y\" \"$x\" && cp t \"$y\"; n=$((n+1)); fi; done; done; test $n -ge 1"]
+
+[[step]]
+strata = ["run", "one.strata"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+stdout = '''
+42
+'''
+
+[[step]]
+strata = ["run", "two.strata"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+stdout = '''
+41
+'''
+
+# a change to the code it depends on: computed again
+[[step]]
+save = "one.strata"
+text = '''
+fn base() -> Int {
+  50
+}
+
+fn plus(n: Int) -> Int {
+  base() + n
+}
+
+fn main() {
+  print(to_string(comptime plus(1)))
+}
+'''
+
+[[step]]
+strata = ["run", "one.strata"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+stdout = '''
+51
+'''

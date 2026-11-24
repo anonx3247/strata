@@ -1,0 +1,295 @@
+# eval.rs: programs_run_as_compiled: compiler/eval (`strata eval PRELUDE STD... -- FILE`, what runs
+# compile-time code codegen doesn't cover) runs the build programs as their compiled builds do: the
+# same output and exit code as the recorded goldens (not files_and_environment: compile-time code
+# has no files or arguments, and eval runs no host I/O)
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" pack --prelude prelude.strata > /dev/null"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$ROOT/tests/data/build/numbers.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/numbers.out\""]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$ROOT/tests/data/build/lists.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/lists.out\""]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$ROOT/tests/data/build/data.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/data.out\""]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$ROOT/tests/data/build/sized.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/sized.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p4.strata edit < \"$ROOT/tests/cases/build-faults/assert.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p4.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-assert.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p5.strata edit < \"$ROOT/tests/cases/build-faults/assignment.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p5.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-assignment.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p6.strata edit < \"$ROOT/tests/cases/build-faults/division.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p6.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-division.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p7.strata edit < \"$ROOT/tests/cases/build-faults/early_return.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p7.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-early_return.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p8.strata edit < \"$ROOT/tests/cases/build-faults/ensures.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p8.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-ensures.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p9.strata edit < \"$ROOT/tests/cases/build-faults/exit_code.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p9.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-exit_code.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p10.strata edit < \"$ROOT/tests/cases/build-faults/floats.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p10.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-floats.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p11.strata edit < \"$ROOT/tests/cases/build-faults/invariant.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p11.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-invariant.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p12.strata edit < \"$ROOT/tests/cases/build-faults/loops.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p12.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-loops.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p13.strata edit < \"$ROOT/tests/cases/build-faults/requires.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p13.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/faults-requires.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p14.strata edit < \"$ROOT/tests/cases/build-data/errors.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p14.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/data-errors.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p15.strata edit < \"$ROOT/tests/cases/build-data/field_refinement.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p15.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/data-field_refinement.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p16.strata edit < \"$ROOT/tests/cases/build-data/main_err.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p16.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/data-main_err.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p17.strata edit < \"$ROOT/tests/cases/build-data/own_methods.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p17.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/data-own_methods.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p18.strata edit < \"$ROOT/tests/cases/build-data/refined_argument.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p18.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/data-refined_argument.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p19.strata edit < \"$ROOT/tests/cases/build-data/tree.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p19.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/data-tree.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p20.strata edit < \"$ROOT/tests/cases/build-traits/default_methods.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p20.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/traits-default_methods.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p21.strata edit < \"$ROOT/tests/cases/build-traits/generic_traits.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p21.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/traits-generic_traits.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p22.strata edit < \"$ROOT/tests/cases/build-traits/method_type_params.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p22.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/traits-method_type_params.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p23.strata edit < \"$ROOT/tests/cases/build-traits/trait_ensures.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p23.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/traits-trait_ensures.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p24.strata edit < \"$ROOT/tests/cases/build-traits/traits_example.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p24.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/traits-traits_example.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p25.strata edit < \"$ROOT/tests/cases/build-traits/variant_impls.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p25.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/traits-variant_impls.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p26.strata edit < \"$ROOT/tests/cases/build-dyn/mut_field_breaks_invariant.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p26.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/dyn-mut_field_breaks_invariant.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p27.strata edit < \"$ROOT/tests/cases/build-dyn/mut_proven_fits.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p27.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/dyn-mut_proven_fits.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p28.strata edit < \"$ROOT/tests/cases/build-dyn/trait_values_are_values.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p28.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/dyn-trait_values_are_values.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p29.strata edit < \"$ROOT/tests/cases/build-dyn/trait_values_in_fields.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p29.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/dyn-trait_values_in_fields.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p30.strata edit < \"$ROOT/tests/cases/build-dyn/trait_values_in_lists.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p30.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/dyn-trait_values_in_lists.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p31.strata edit < \"$ROOT/tests/cases/build-collections/builtins_example.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p31.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-builtins_example.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p32.strata edit < \"$ROOT/tests/cases/build-collections/chr.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p32.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-chr.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p33.strata edit < \"$ROOT/tests/cases/build-collections/dict_key.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p33.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-dict_key.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p34.strata edit < \"$ROOT/tests/cases/build-collections/dict_value.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p34.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-dict_value.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p35.strata edit < \"$ROOT/tests/cases/build-collections/dicts_and_sets.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p35.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-dicts_and_sets.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p36.strata edit < \"$ROOT/tests/cases/build-collections/list_index.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p36.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-list_index.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p37.strata edit < \"$ROOT/tests/cases/build-collections/ord.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p37.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-ord.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p38.strata edit < \"$ROOT/tests/cases/build-collections/set_assigned.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p38.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-set_assigned.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p39.strata edit < \"$ROOT/tests/cases/build-collections/set_element.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p39.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-set_element.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p40.strata edit < \"$ROOT/tests/cases/build-collections/string_index.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p40.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-string_index.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p41.strata edit < \"$ROOT/tests/cases/build-collections/strings.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p41.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-strings.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p42.strata edit < \"$ROOT/tests/cases/build-collections/total_strings.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p42.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-total_strings.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p43.strata edit < \"$ROOT/tests/cases/build-collections/wc.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p43.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/collections-wc.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p44.strata edit < \"$ROOT/tests/cases/build-capabilities/args.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p44.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/capabilities-args.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p45.strata edit < \"$ROOT/tests/cases/build-capabilities/console.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p45.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/capabilities-console.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p46.strata edit < \"$ROOT/tests/cases/build-capabilities/mut_params.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p46.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/capabilities-mut_params.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p47.strata edit < \"$ROOT/tests/cases/build-capabilities/one_function_two_consoles.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p47.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/capabilities-one_function_two_consoles.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p48.strata edit < \"$ROOT/tests/cases/build-small-gaps/fields.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p48.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/small-gaps-fields.out\""]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file p49.strata edit < \"$ROOT/tests/cases/build-small-gaps/trait_equality.st\" > /dev/null; true"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" eval \"$TMP/prelude.strata\" \"$ROOT\"/std/*.strata -- \"$TMP/p49.strata\" 2>&1 | sed -e \"s/^--- exit/\\n--- exit/\" -e \"/^===$/d\" | diff - \"$ROOT/tests/data/build/expected/small-gaps-trait_equality.out\""]

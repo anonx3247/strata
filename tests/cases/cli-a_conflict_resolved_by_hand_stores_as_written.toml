@@ -1,0 +1,62 @@
+# a conflict merge-file leaves as text shows each side as written against the
+# package's other modules (`helper()`, imported, not `util.helper()`, which a
+# parameter named `util` would turn into a method call): fixed by hand and
+# stored again with `resolve`, the module checks
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "util"]
+dir = "p"
+text = "pub type Util = { n: Int }\n\npub fn helper() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "from util use Util, helper\n\nfn a(util: Util) -> Int {\n  helper() + util.n\n}\n\nfn b() -> Int {\n  2\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "o.strata"]
+
+# theirs and ours both change a
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn a(util: Util) -> Int {\n  helper() + util.n + 2\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "b.strata"]
+
+[[step]]
+run = ["cp", "o.strata", "p/main.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn a(util: Util) -> Int {\n  helper() + util.n + 1\n}\n"
+
+[[step]]
+strata = ["merge-file", "../o.strata", "main.strata", "../b.strata", "main.strata"]
+dir = "p"
+fails = true
+has = ["conflict in a"]
+
+[[step]]
+run = ["grep", "-c", "util.helper", "p/main.strata"]
+code = 1
+
+# fixed by hand: ours kept, the markers removed, the rest as merge-file wrote it
+[[step]]
+run = ["perl", "-0pi", "-e", 's/<<<<<<< ours\n(.*?)\|\|\|\|\|\|\| base\n.*?=======\n.*?>>>>>>> theirs\n/$1/s', "p/main.strata"]
+
+[[step]]
+strata = ["resolve", "main.strata"]
+dir = "p"
+has = ["3 definitions stored"]
+
+[[step]]
+strata = ["--file", ".", "check"]
+dir = "p"
+has = ["ok: 5 definitions check"]
