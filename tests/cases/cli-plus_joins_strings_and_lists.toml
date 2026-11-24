@@ -1,0 +1,57 @@
+# cli.rs: plus_joins_strings_and_lists
+
+[[step]]
+save = "plus.strata"
+text = '''
+
+fn greet(name: String) -> String { "hello " + name + "!" }
+test "join" {
+  assert greet("ana") == "hello ana!"
+  assert [1, 2] + [3] == [1, 2, 3]
+  assert len("héllo".code_points()) == 5 && len("héllo".bytes()) == 6
+  assert 1 + 2 == 3
+}
+'''
+
+[[step]]
+strata = ["--file", "plus.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "plus.strata", "render"]
+capture = "plus.st"
+
+[[step]]
+save = "plus-r.strata"
+from_tmp = "plus.st"
+
+[[step]]
+strata = ["--file", "plus-r.strata", "render"]
+out_file = "plus.st"
+
+[[step]]
+write = "plusplus.src"
+text = "fn f() -> String { \"a\" ++ \"b\" }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file plusplus.strata edit < plusplus.src && \"$STRATA\" --file plusplus.strata check"]
+fails = true
+has = ["join strings and lists with `+`"]
+
+[[step]]
+write = "plusmix.src"
+text = "fn f() -> String { \"a\" + 1 }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file plusmix.strata edit < plusmix.src && \"$STRATA\" --file plusmix.strata check"]
+fails = true
+has = ["`+` operands"]
+
+[[step]]
+write = "strlen.src"
+text = "fn f() -> Int { str_len(\"a\") }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file strlen.strata edit < strlen.src && \"$STRATA\" --file strlen.strata check"]
+fails = true
+has = ["str_len"]

@@ -1,0 +1,8 @@
+timeout
+["item 0", "item 1", "item 2"]
+sent
+Some("xy")
+("ab", 2)
+closed
+
+--- exit 0

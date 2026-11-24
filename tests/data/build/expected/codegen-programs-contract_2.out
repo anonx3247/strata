@@ -1,0 +1,5 @@
+10
+fault (Ensures): postcondition of `pos` violated: ensures it > 0 (it = -5)
+    stack: main -> pos
+
+--- exit 101

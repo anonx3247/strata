@@ -1,0 +1,4 @@
+fault (Refinement): argument `i` of `show_id`: 30 is not a `Small | String`
+    stack: main -> show_id
+
+--- exit 101

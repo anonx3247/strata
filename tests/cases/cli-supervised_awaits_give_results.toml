@@ -1,0 +1,53 @@
+# cli.rs: supervised_awaits_give_results: `supervised spawn`: awaiting it gives `Result[T, Panic]`, which must be
+# handled; `supervised` is still a name anywhere else
+
+[[step]]
+save = "s.strata"
+text = '''
+fn work(n: Int) -> Int {
+  n * 2
+}
+
+fn unhandled() -> Int {
+  scope {
+    h := supervised spawn work(1)
+    await h + 1
+  }
+}
+
+fn handled() -> Int {
+  scope {
+    h := supervised spawn work(1)
+    g := supervised spawn work(2)
+    a := await h except p { 0 }
+    b := await g except p {
+      print(p.message)
+      len(p.stack.bytes())
+    }
+    a + b
+  }
+}
+
+fn named(supervised: Int) -> Int {
+  scope {
+    h := spawn supervised + 1
+    await h
+  }
+}
+
+fn in_race() -> String {
+  race {
+    supervised work(1) as r => match r {
+      Ok(v) => f"{v}",
+      Err(p) => p.kind,
+    },
+    work(2) as n => f"{n}",
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "check"]
+fails = true
+has = ["error in unhandled:"]
+lacks = ["error in handled", "error in named", "error in in_race"]

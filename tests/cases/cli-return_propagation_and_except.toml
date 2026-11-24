@@ -1,0 +1,161 @@
+# cli.rs: return_propagation_and_except
+
+[[step]]
+save = "errors.strata"
+text = '''
+type ParseError =
+  | Empty
+  | NotANumber(String)
+
+fn parse(s: String) -> Result[Int, ParseError] {
+  if s == "" { return Err(Empty) }
+  match parse_int(s) {
+    Some(n) => Ok(n),
+    None => Err(NotANumber(s)),
+  }
+}
+
+fn sum_two(a: String, b: String) -> Result[Int, ParseError] {
+  x := parse(a)!
+  Ok(x + parse(b)!)
+}
+
+fn first_even(xs: List[Int]) -> Option[Int] {
+  x := xs.find(x -> x % 2 == 0)?
+  Some(x * 10)
+}
+
+fn or_zero(s: String) -> Int { parse(s) except { 0 } }
+
+fn describe(s: String) -> String {
+  n := parse(s) except e {
+    return match e {
+      Empty => "empty",
+      NotANumber(t) => "not a number: " + t,
+    }
+  }
+  "the number " + to_string(n)
+}
+
+fn first_negative(xs: List[Int]) -> Int {
+  for x in xs {
+    if x < 0 { return x }
+  }
+  0
+}
+
+test "errors" {
+  assert sum_two("1", "2") == Ok(3)
+  assert sum_two("1", "x") == Err(NotANumber("x"))
+  assert sum_two("", "x") == Err(Empty)
+  assert first_even([1, 4, 5]) == Some(40)
+  assert first_even([1, 3]) == None
+  assert or_zero("12") == 12
+  assert or_zero("zz") == 0
+  assert first_negative([3, -2, -5]) == -2
+  assert first_negative([3]) == 0
+  f := x -> {
+    if x > 1 { return "big" }
+    "small"
+  }
+  assert describe("7") == "the number 7"
+  assert describe("q") == "not a number: q"
+  assert describe("") == "empty"
+  assert f(5) == "big" && f(0) == "small"
+  assert [1, 2, 3].find(x -> x > 5) or { 9 } == 9
+}
+'''
+
+[[step]]
+strata = ["--file", "errors.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "errors.strata", "render"]
+capture = "errors.st"
+
+[[step]]
+save = "errors-r.strata"
+from_tmp = "errors.st"
+
+[[step]]
+strata = ["--file", "errors-r.strata", "render"]
+out_file = "errors.st"
+
+[[step]]
+write = "bang.src"
+text = '''
+fn p(s: String) -> Result[Int, String] { Err(s) }
+fn f() -> Int { p("a")! }'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file bang.strata edit < bang.src && \"$STRATA\" --file bang.strata check"]
+fails = true
+has = ["`!` returns the error early, so the result type must be `Result["]
+
+[[step]]
+write = "bangerr.src"
+text = '''
+fn p(s: String) -> Result[Int, String] { Err(s) }
+fn f() -> Result[Int, Int] { Ok(p("a")!) }'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file bangerr.strata edit < bangerr.src && \"$STRATA\" --file bangerr.strata check"]
+fails = true
+has = ["`!` returns the error early"]
+
+[[step]]
+write = "qonresult.src"
+text = '''
+fn p(s: String) -> Result[Int, String] { Err(s) }
+fn f() -> Option[Int] { Some(p("a")?) }'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file qonresult.strata edit < qonresult.src && \"$STRATA\" --file qonresult.strata check"]
+fails = true
+has = ["`?` needs an Option"]
+
+[[step]]
+write = "exceptoption.src"
+text = "fn f() -> Int { [1].find(x -> x > 0) except e { 0 } }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file exceptoption.strata edit < exceptoption.src && \"$STRATA\" --file exceptoption.strata check"]
+fails = true
+has = ["an Option is handled with `or"]
+
+[[step]]
+write = "exceptint.src"
+text = "fn f() -> Int { 1 except { 0 } }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file exceptint.strata edit < exceptint.src && \"$STRATA\" --file exceptint.strata check"]
+fails = true
+has = ["`except` / `!!` handle a Result, found `Int`"]
+
+[[step]]
+write = "orint.src"
+text = "fn f() -> Int { 1 ?? 0 }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file orint.strata edit < orint.src && \"$STRATA\" --file orint.strata check"]
+fails = true
+has = ["`or` / `??` handle an Option, found `Int`"]
+
+[[step]]
+write = "returntest.src"
+text = "test \"t\" { return 1 }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file returntest.strata edit < returntest.src && \"$STRATA\" --file returntest.strata check"]
+fails = true
+has = ["`return` outside a function"]
+
+[[step]]
+write = "returntype.src"
+text = "fn f() -> Int { return \"a\" }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file returntype.strata edit < returntype.src && \"$STRATA\" --file returntype.strata check"]
+fails = true
+has = ["`return` value"]

@@ -1,0 +1,8 @@
+Some(3)
+Set { 1, 2 }
+Dict { "a": 1 }
+Ok(4)
+fault (Refinement): let binding: ["b"]: 0 does not satisfy `Positive` (where it > 0)
+    stack: main
+
+--- exit 101

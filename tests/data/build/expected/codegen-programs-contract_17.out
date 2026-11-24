@@ -1,0 +1,5 @@
+Age(4)
+fault (Refinement): constructing `Age`: -4 does not satisfy `Age` (where it >= 0)
+    stack: main
+
+--- exit 101

@@ -1,0 +1,10 @@
+[1, 2, 20]
+Outer { x: 10, inner: Inner { y: 20, tag: "a" }, items: ["first!"] }
+Outer { x: 1, inner: Inner { y: 2, tag: "a" }, items: [] }
+Inner { y: 20, tag: "renamed" }
+7
+Counter { n: 7, log: ["+3", "+4"] }
+right left
+(2, "one")
+
+--- exit 0

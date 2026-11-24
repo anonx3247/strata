@@ -1,0 +1,19 @@
+<3, -4>
+p = <3, -4>, norm 7
+[P { x: 3, y: -4 }, P { x: 1, y: 1 }]
+circle of area 3.0
+a square, side 2.0
+C
+21
+42
+Box { item: "#21" }
+15.0
+a square, side 3.0
+circle
+square
+circle
+[Circle { r: 1.0 }, Square { side: 3.0 }, Circle { r: 0.5 }]
+false
+a square, side 1.0
+
+--- exit 0

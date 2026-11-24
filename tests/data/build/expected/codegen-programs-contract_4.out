@@ -1,0 +1,5 @@
+3
+fault (Refinement): let binding: 0 does not satisfy `Positive` (where it > 0)
+    stack: main
+
+--- exit 101

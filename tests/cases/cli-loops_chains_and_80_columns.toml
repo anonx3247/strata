@@ -1,0 +1,45 @@
+# cli.rs: loops_chains_and_80_columns
+
+[[step]]
+save = "l.strata"
+text = '''
+fn steps(start: Positive) -> Natural {
+  mut n := start
+  mut k := 0
+  loop {
+    if n == 1 { break }
+    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }
+    k = k + 1
+  }
+  k
+}
+fn top(xs: List[Int]) -> Int {
+  xs
+    .filter(x -> x > 0)
+    .sort()
+    .reverse()
+    .take(3)
+    .sum()
+}
+test "t" {
+  assert steps(6) == 8
+  assert top([5, -1, 9, 2, 7]) == 21
+}
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "test"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks/model.strata", "render"]
+capture = "model.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "--split", "r"]
+
+# a couple of deeply nested lines still exceed 80 columns
+[[step]]
+run = ["sh", "-c", "cat r/*.st | LC_ALL=en_US.UTF-8 awk 'length > 82' | wc -l | tr -d ' '"]
+
+[[step]]
+run = ["sh", "-c", "test $(cat r/*.st | LC_ALL=en_US.UTF-8 awk 'length > 82' | wc -l) -le 2"]

@@ -1,0 +1,4 @@
+fault (Refinement): assigning `k`: -2 does not satisfy `Natural` (where it >= 0)
+    stack: main
+
+--- exit 101

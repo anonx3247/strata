@@ -1,0 +1,7 @@
+{"a":[1,2.5,true,null,"s"],"b":{}}
+Err("at 3: expected a value, got the end of the text")
+Ok(true)
+Ok(false)
+Err("unclosed group (at character 1)")
+
+--- exit 0

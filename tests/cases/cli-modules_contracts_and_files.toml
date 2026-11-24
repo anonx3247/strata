@@ -1,0 +1,105 @@
+# cli.rs: modules_contracts_and_files: a folder of files is a set of modules, one per file
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "--split", "split"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "model"]
+out_file = "split/model.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "memory"]
+out_file = "split/memory.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "print"]
+out_file = "split/print.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "sim"]
+out_file = "split/sim.st"
+
+# `render` prints one module; with several it asks which
+[[step]]
+strata = ["render", "--file", "$ROOT/examples/tasks/model.strata"]
+capture = "model-alone.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "model"]
+out_file = "model-alone.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render"]
+fails = true
+has = ["4 modules, one file each"]
+
+# `module` blocks are gone: a file is a module
+[[step]]
+strata = ["--file", "blocks.strata", "edit"]
+text = "module a {\n  fn f() -> Int {\n    1\n  }\n}\n"
+fails = true
+
+# the contract shows public definitions only
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "interface", "model"]
+has = ["pub fn run_worker"]
+lacks = ["same_ids"]
+
+# private definitions are not part of the contract
+[[step]]
+module = "a"
+into = "$TMP/p/"
+text = "pub fn open() -> Int { secret() }\nfn secret() -> Int { 1 }\n"
+
+[[step]]
+module = "b"
+into = "$TMP/p/"
+text = '''
+from a use open
+fn f() -> Int { open() + secret() }
+fn g() -> Int { a.secret() }
+'''
+
+[[step]]
+strata = ["--file", "p", "check"]
+fails = true
+has = ["`secret` is private to module `a`", "`a.secret` is private to module `a`"]
+
+# a package keeps qualified names; a private edit leaves dependents alone
+[[step]]
+run = ["mkdir", "-p", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+strata = ["add", "$ROOT/examples/tasks"]
+dir = "pkg"
+
+[[step]]
+run = ["test", "-f", "pkg/model.strata"]
+
+[[step]]
+run = ["test", "-f", "pkg/memory.strata"]
+
+[[step]]
+run = ["test", "-f", "pkg/print.strata"]
+
+[[step]]
+run = ["test", "-f", "pkg/sim.strata"]
+
+[[step]]
+strata = ["edit", "model"]
+dir = "pkg"
+text = "fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"
+has = ["model.same_ids", "implementation only"]
+
+[[step]]
+strata = ["render", "--file", "pkg/model.strata"]
+has = ["all(reported, r -> contains(claimed, r))"]
+
+[[step]]
+strata = ["test"]
+dir = "pkg"
+has = ["0 failed"]

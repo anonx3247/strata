@@ -1,0 +1,5 @@
+4
+fault (Refinement): result of `f`: 10 does not satisfy `Small` (where it < 10)
+    stack: main -> f
+
+--- exit 101

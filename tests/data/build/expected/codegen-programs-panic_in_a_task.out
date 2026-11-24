@@ -1,0 +1,4 @@
+fault (Runtime): index 5 out of range (length 2)
+    stack: main -> spawn -> work
+
+--- exit 101
