@@ -9,7 +9,8 @@ fn main() {
 '''
 
 [[step]]
-strata = ["build", "hello.strata", "-o", "hello", "--timings", "--profile"]
+# (its own empty cache: objects kept by their IR would leave LLVM nothing to do)
+run = ["sh", "-c", "STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" build hello.strata -o hello --timings --profile 2>&1"]
 has = ["timings (s):", "codegen IR", "LLVM: machine code", "link (lld)", "in all"]
 
 [[step]]
