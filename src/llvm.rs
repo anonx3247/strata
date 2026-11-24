@@ -1164,6 +1164,7 @@ declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
 declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
 declare i32 @memcmp(ptr, ptr, i64)
 declare zeroext i1 @strata_soft_fault(i64, ptr)
+declare i64 @strata_next_random()
 declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
@@ -1448,7 +1449,8 @@ fn static_sym(name: &str) -> String {
 /// named `strata_...` exported under that name, with C's calling convention
 /// (`Ptr` a pointer, `Bool` a `_Bool`, `()` nothing); the rest internal.
 pub fn compile_core_rt() -> Res<String> {
-    let prog = Program { decls: crate::core::module_decls("rt.strata").into_iter().filter(|d| !matches!(d.kind, DeclKind::Test(_))).collect() };
+    // (core.rt and the topic modules it calls, `core::RUNTIME`)
+    let prog = Program { decls: crate::core::runtime_files().iter().flat_map(|f| crate::core::module_decls(f)).filter(|d| !matches!(d.kind, DeclKind::Test(_))).collect() };
     let resolved = crate::resolve::resolve(&prog);
     if let Some(e) = resolved.errors.first() {
         return Err(format!("core.rt: {e:?}"));
@@ -1473,6 +1475,7 @@ pub fn compile_core_rt() -> Res<String> {
             TypeExpr::Unit => "void",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Ptr" => "ptr",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Bool" => "i1",
+            TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Float" => "double",
             TypeExpr::Named(n, a) if a.is_empty() && Width::of(n.as_str()).is_some() => word_ll(Width::of(n.as_str()).unwrap()),
             other => return Err(format!("core.rt: `{}` doesn't cross to C yet", crate::printer::ty(other))),
         })
@@ -2027,7 +2030,7 @@ impl<'a> Module<'a> {
         c.block("entry.body");
         // on the call stack a fault shows (the program's functions, as the interpreter's)
         // (nor core.rt's: the runtime, called from C)
-        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("core.rt.") && !name.starts_with("test \"") && name != COMPTIME;
+        let framed = !name.starts_with(PRELUDE_MODULE) && !crate::core::runtime_fn(name) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
             // a prelude trait's method by its short name (`ListIter.next`)
             let n = c.m.string(&crate::types::shown_name(name));
@@ -6261,6 +6264,42 @@ impl<'m, 'a> Func<'m, 'a> {
                 bool_v(&r)
             }
             ("str_block", [_]) => (Ty::Con("Ptr".into(), vec![]), vs[0].1.clone()),
+            ("f64_bits", [_]) | ("f64_from_bits", [_]) => {
+                let r = self.fresh("bits");
+                let (from, to, ty) = if name == "f64_bits" { ("double", "i64", Ty::Con("I64".into(), vec![])) } else { ("i64", "double", Ty::Float) };
+                self.emit(format!("{r} = bitcast {from} {} to {to}", vs[0].1));
+                (ty, r)
+            }
+            ("f64_of_i64", [_]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = sitofp i64 {} to double", vs[0].1));
+                (Ty::Float, r)
+            }
+            ("f64_to_i64", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = fptosi double {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("f64_sqrt", [_]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = call double @llvm.sqrt.f64(double {})", vs[0].1));
+                (Ty::Float, r)
+            }
+            ("f64_rem", [_, _]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = frem double {}, {}", vs[0].1, vs[1].1));
+                (Ty::Float, r)
+            }
+            ("random_word", []) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = call i64 @strata_next_random()"));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("widen_i32", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = sext i32 {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
             ("widen_u8", [_]) => {
                 let r = self.fresh("w");
                 self.emit(format!("{r} = zext i8 {} to i64", vs[0].1));
