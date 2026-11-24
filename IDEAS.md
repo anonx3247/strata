@@ -434,6 +434,11 @@ Since then: `assumed` is built (capabilities, `extern c`, mocks); loops keep the
 
 `f(mut g, h(mut g))`: the call takes `g` once its other arguments have run, so what `h` did to `g` is what `f` is given, and `f`'s write-back keeps it. Before, the place was taken in argument order and `h`'s change was silently lost when `f` wrote its copy back (llvm.rs did the same; no test relied on it). #393 made that an error; now it is only an error to give the same variable `mut` twice in one call (`swap(mut g, mut g)`), where one write-back would undo the other. A receiver changed by the call (`mut g.add(bump(mut g))`) and an assignment inside a block argument follow the same rule.
 
+### The cache is cleaned by hand, never evicted (decided with the user 2026-11-25; built, branch `cache-clean`)
+
+- No size cap, no LRU, no automatic eviction: the own cache (`$STRATA_CACHE`, else `~/.cache/strata`) only grows, and `strata cache clean` deletes it, saying how much that freed. It never touches a release's shipped cache (`lib/strata/cache`) or std library, nor the verdicts kept in a git repository; it refuses a folder that isn't a cache of its own, and refuses while another running strata has scratch in it (`build/PID`, `run/PID`, `smt/PID` of a running process; `--force` cleans anyway).
+- `strata cache` prints where the cache is and each top-level folder's size with what it holds (compiler/cache's `cache_folders`); a folder no code reads any more is marked as an older compiler's. Found on 2026-11-25: `std/`, `compiler/`, `scripts/`, `termination/` and `runtime/` (4.4 GB of a 20 GB cache), written by compilers before std-library/, objects/ and verify-strata/; `cache clean --obsolete` removes only those, and the scratch folders of runs that ended without removing theirs.
+
 ### Tool fixes: what agents ran into (decided with the user 2026-11-24; built, branch `tool-fixes`)
 
 Bugs and rough edges reported while working through `strata`, each with a case:
