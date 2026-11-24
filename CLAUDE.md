@@ -11,6 +11,7 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
   expression, a new error) goes into the matching `compiler/` module in the same PR, with its test
   (tests/lex.rs, parse.rs, ast.rs, resolve.rs, check.rs, eval.rs compare the two). Edit it with
   `strata --file compiler/ edit MODULE` (start from `strata --file compiler render MODULE`).
+- Testing after Rust (docs/testing.md): the cargo tests are being ported to golden-output cases in `tests/cases`, run by `strata run tools/check -- --strata target/release/strata NAME…` (filters by case name), and to proofs and `test` blocks. A new CLI behaviour gets a case there too.
 - Never run the whole test suite. Run only the tests for what you are
   changing, by name: `cargo test --release --test cli <filter>` (or `--lib <filter>` for unit tests), with
   filters matching the feature (`verify`, `json`, `regex`, …) plus any test you add; they must pass before
