@@ -1474,6 +1474,7 @@ pub fn compile_core_rt() -> Res<String> {
             TypeExpr::Unit => "void",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Ptr" => "ptr",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Bool" => "i1",
+            TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Float" => "double",
             TypeExpr::Named(n, a) if a.is_empty() && Width::of(n.as_str()).is_some() => word_ll(Width::of(n.as_str()).unwrap()),
             other => return Err(format!("core.rt: `{}` doesn't cross to C yet", crate::printer::ty(other))),
         })
@@ -6262,6 +6263,32 @@ impl<'m, 'a> Func<'m, 'a> {
                 bool_v(&r)
             }
             ("str_block", [_]) => (Ty::Con("Ptr".into(), vec![]), vs[0].1.clone()),
+            ("f64_bits", [_]) | ("f64_from_bits", [_]) => {
+                let r = self.fresh("bits");
+                let (from, to, ty) = if name == "f64_bits" { ("double", "i64", Ty::Con("I64".into(), vec![])) } else { ("i64", "double", Ty::Float) };
+                self.emit(format!("{r} = bitcast {from} {} to {to}", vs[0].1));
+                (ty, r)
+            }
+            ("f64_of_i64", [_]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = sitofp i64 {} to double", vs[0].1));
+                (Ty::Float, r)
+            }
+            ("f64_to_i64", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = fptosi double {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("f64_sqrt", [_]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = call double @llvm.sqrt.f64(double {})", vs[0].1));
+                (Ty::Float, r)
+            }
+            ("f64_rem", [_, _]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = frem double {}, {}", vs[0].1, vs[1].1));
+                (Ty::Float, r)
+            }
             ("widen_i32", [_]) => {
                 let r = self.fresh("w");
                 self.emit(format!("{r} = sext i32 {} to i64", vs[0].1));

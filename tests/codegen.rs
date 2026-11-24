@@ -2758,6 +2758,14 @@ fn core_rt_lists_formats_and_floats_as_in_c() {
     assert!(out.contains("\n32 Some(184) 51 true false\n[1, 3, 5, 9] [\"w0\", \"w1\", \"w10\"]\n"), "{out}");
     let out = both("formats", CORE_RT_FORMATS);
     assert!(out.starts_with("[   42] [42   ] [  42  ] [00042] [-0007] [+42] [-7] [+00042]\n[héllo     ] [     héllo] [  héllo  ] [**héllo**] [hélloééé] [héllo] [🙂🙂🙂héllo]\n"), "{out}");
+    let out = both("floats", CORE_RT_FLOATS);
+    assert!(out.starts_with("0.1 0.100 0\n1.0 1.000 1\n1e+21 1000000000000000000000.000 1000000000000000000000\n1.5e-7 0.000 0\n"), "{out}");
+    assert!(out.contains("\n2.67 0 2 2 -0.00 100000000000000000000.00 123.4560000000 0.000 1.00000000000000000000\n1.5 0.5 1.5 0.5 1.4142135623730951 0.0\n"), "{out}");
+    assert!(out.contains("\n2.4703282292062327e-324 -> Some(0.0)\n2.4703282292062328e-324 -> Some(5e-324)\n1.7976931348623158e308 -> Some(1.7976931348623157e+308)\n1.7976931348623159e308 -> None\n"), "{out}");
+    assert!(out.contains(" is too large for a Float\n0.0\n") && out.contains(" is not a finite number\n0.0\nsqrt of negative number -2.5\n"), "{out}");
+    // floats of every exponent: shown, read back, with 4 decimals
+    let out = both("float_bits", CORE_RT_FLOAT_BITS);
+    assert!(out.contains("not read back: 0\n"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2795,6 +2803,90 @@ const CORE_RT_LISTS: &str = r#"fn main() {
   }
   print(f"{len(d)} {get(d, "k36")} {len(s)} {contains(s, 77)} {contains(s, 3)}")
   print(f"{sort([5, 3, 9, 1])} {sort(words)[0..3]}")
+}
+"#;
+
+const CORE_RT_FLOATS: &str = r#"fn big_float(n: Int) -> Float {
+  float(n)
+}
+
+fn times(a: Float, b: Float) -> Float {
+  a * b
+}
+
+fn root(x: Float) -> Float {
+  sqrt(x)
+}
+
+fn pf(s: String) -> Float {
+  parse_float(s) ?? 0.0
+}
+
+fn main() {
+  xs := [0.1, 1.0, 1000000000000000000000.0, 0.00000015, 123456.789, -0.0, 0.0, 0.3, 1.0 / 3.0, 100.0, 10000000000000000.0, 1000000000000000.0, 12345678901234567.0, 0.000001, 0.0001, -2.5, pf("3.0e-310"), pf("1.7976931348623157e308"), pf("5.0e-324"), pf("2.2250738585072014e-308"), 9007199254740993.0, 0.1 + 0.2]
+  for x in xs {
+    print(f"{x} {x:.3} {x:.0}")
+  }
+  print(f"{2.675:.2} {0.5:.0} {1.5:.0} {2.5:.0} {-0.001:.2} {100000000000000000000.0:.2} {123.456:.10} {0.000123:.3} {1.0:.20}")
+  print(f"{7.5 % 2.0} {-7.5 % 2.0} {7.5 % -2.0} {-7.5 % -2.0} {sqrt(2.0)} {sqrt(0.0)}")
+  print(f"{floor(3.7)} {ceil(-3.2)} {round(2.5)} {floor(100000000000000000000.0)} {round(-123456789012345678901234.0)} {floor(-4611686018427387904.0)}")
+  print(f"{float(123456789012345678901234567890)} {float(-98765432109876543210987654321098765)} {float(9007199254740993)} {float(4611686018427387905)}")
+  for s in ["1e400", "1e-400", "  -0.0 ", ".5", "5.", "1e", "abc", "2.2250738585072011e-308", "4.9e-324", "2.4703282292062327e-324", "2.4703282292062328e-324", "1.7976931348623158e308", "1.7976931348623159e308", "123456789012345678901234567890e-10", "-1.5E+3", "0.1", "+7", "1_0", "9007199254740993", "1e00000000000000000000001"] {
+    print(f"{s} -> {parse_float(s)}")
+  }
+  print(f"{debug(0.1)} {[1.5, -2.0]} {true} {false}")
+  mut huge := 1
+  for _ in 0..400 {
+    huge = huge * 10
+  }
+  scope {
+    h := supervised spawn big_float(huge)
+    print(await h except p {
+      print(p.message)
+      0.0
+    })
+    g := supervised spawn times(pf("1.0e300"), pf("1.0e300"))
+    print(await g except p {
+      print(p.message)
+      0.0
+    })
+    k := supervised spawn root(-2.5)
+    print(await k except p {
+      print(p.message)
+      0.0
+    })
+  }
+}
+"#;
+
+const CORE_RT_FLOAT_BITS: &str = r#"fn main() {
+  mut seed := 88172645463325252
+  mut bad := 0
+  for i in 0..3000 {
+    seed = (seed * 6364136223846793005 + 1442695040888963407) % 18446744073709551616
+    // every exponent, and small ones and near-powers-of-two often
+    bits := if i % 3 == 0 {
+      seed % 9007199254740992 + (i % 2047) * 4503599627370496
+    } else {
+      seed
+    }
+    match float_from_bits(bits) {
+      Some(x) => {
+        s := to_string(x)
+        back := parse_float(s) ?? 0.0
+        if back != x {
+          bad = bad + 1
+        }
+        if i % 7 == 0 {
+          print(f"{s} {x:.4} {float_bits(back) == float_bits(x)}")
+        } else {
+          print(s)
+        }
+      },
+      None => print("nan"),
+    }
+  }
+  print(f"not read back: {bad}")
 }
 "#;
 
