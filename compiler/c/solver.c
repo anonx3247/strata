@@ -234,10 +234,10 @@ static void memo_hash(const char *flags, const char *script, size_t n, uint64_t 
   *h2 = b;
 }
 
-// The answer kept for a script, copied into `result`; 0 when there is none.
-static int memo_get(uint64_t h1, uint64_t h2, size_t n, Buf *result) {
+// The answer kept for a script, copied into `result`; 0 when there is none
+// (`memo_lock` held).
+static int memo_find(uint64_t h1, uint64_t h2, size_t n, Buf *result) {
   int found = 0;
-  pthread_mutex_lock(&memo_lock);
   if (memo_cap) {
     size_t i = (size_t)(h1 % memo_cap);
     while (memo[i].answer) {
@@ -249,8 +249,26 @@ static int memo_get(uint64_t h1, uint64_t h2, size_t n, Buf *result) {
       i = (i + 1) % memo_cap;
     }
   }
-  pthread_mutex_unlock(&memo_lock);
   return found;
+}
+
+// The scripts running now (by their hashes and length), at most one per
+// worker: a second job of one waits for the first's answer instead of
+// running it again (a batch queued ahead by `solver_pool_prefetch`, then
+// asked for).
+typedef struct {
+  uint64_t h1, h2;
+  size_t len;
+} Running;
+
+static Running running[POOL_MAX];
+static int running_count;
+static pthread_cond_t running_done = PTHREAD_COND_INITIALIZER;
+
+static int running_has(uint64_t h1, uint64_t h2, size_t n) {
+  for (int i = 0; i < running_count; i++)
+    if (running[i].h1 == h1 && running[i].h2 == h2 && running[i].len == n) return 1;
+  return 0;
 }
 
 static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer) {
@@ -302,13 +320,7 @@ static void solver_log(const char *flags, size_t n, uint64_t h, double secs, con
 // One script's answers from process `p` (started when it isn't running),
 // with its flags (`-t:MS`, `-T:S`, `rlimit=N`): what the solver wrote
 // before the end mark, or, when it died or ran past `-T`, what it wrote.
-static void run_one(Proc *p, const char *solver, const char *flags, const char *script, size_t script_len, Buf *result) {
-  uint64_t h1, h2;
-  memo_hash(flags, script, script_len, &h1, &h2);
-  if (memo_get(h1, h2, script_len, result)) {
-    solver_log(flags, script_len, h1, 0, result->buf, result->len, "\tagain");
-    return;
-  }
+static void run_fresh(Proc *p, const char *solver, const char *flags, const char *script, size_t script_len, uint64_t h1, uint64_t h2, Buf *result) {
   long timeout_ms = 4294967295L, rlimit = 0;
   double hard = 0;
   const char *f = flags;
@@ -388,6 +400,35 @@ static void run_one(Proc *p, const char *solver, const char *flags, const char *
   free(out.buf);
 }
 
+// `run_fresh`, unless the script was answered before (the memo) or is
+// running on another worker now: then its answer, once it has one.
+static void run_one(Proc *p, const char *solver, const char *flags, const char *script, size_t script_len, Buf *result) {
+  uint64_t h1, h2;
+  memo_hash(flags, script, script_len, &h1, &h2);
+  pthread_mutex_lock(&memo_lock);
+  for (;;) {
+    if (memo_find(h1, h2, script_len, result)) {
+      pthread_mutex_unlock(&memo_lock);
+      solver_log(flags, script_len, h1, 0, result->buf, result->len, "\tagain");
+      return;
+    }
+    if (!running_has(h1, h2, script_len)) break;
+    pthread_cond_wait(&running_done, &memo_lock);
+  }
+  running[running_count++] = (Running){h1, h2, script_len};
+  pthread_mutex_unlock(&memo_lock);
+  run_fresh(p, solver, flags, script, script_len, h1, h2, result);
+  pthread_mutex_lock(&memo_lock);
+  for (int i = 0; i < running_count; i++) {
+    if (running[i].h1 == h1 && running[i].h2 == h2 && running[i].len == script_len) {
+      running[i] = running[--running_count];
+      break;
+    }
+  }
+  pthread_cond_broadcast(&running_done);
+  pthread_mutex_unlock(&memo_lock);
+}
+
 // The jobs given to the kept processes, by number, in a queue served by
 // worker threads (one per core, each with its own process, started on the
 // first job): `solver_pool_run` waits for its own jobs; `solver_pool_submit`
@@ -399,7 +440,8 @@ typedef struct {
   size_t len;
   Buf result;
   int state;   // 0 queued, 1 running, 2 answered, 3 taken
-  int async;   // submitted (taken by `solver_pool_take`), not run
+  int async;   // 0: run (waited for); 1: submitted (taken by
+               // `solver_pool_take`); 2: prefetched (only its answer kept)
 } Job;
 
 static Job *jobs;
@@ -410,13 +452,36 @@ static pthread_cond_t queue_more = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t queue_done = PTHREAD_COND_INITIALIZER;
 static char proc_solver[POOL_MAX][4096];
 
+static void job_free(Job *j) {
+  free(j->solver);
+  free(j->flags);
+  free(j->script);
+  free(j->result.buf);
+  j->solver = j->flags = j->script = NULL;
+  j->result = (Buf){0};
+  j->state = 3;
+}
+
+// The next job to run (-1: none), under `queue_lock`: the first queued,
+// a prefetched one only when no other waits.
+static long next_job(void) {
+  while (jobs_next < jobs_count && jobs[jobs_next].state != 0) jobs_next++;
+  long later = -1;
+  for (long k = jobs_next; k < jobs_count; k++) {
+    if (jobs[k].state != 0) continue;
+    if (jobs[k].async != 2) return k;
+    if (later < 0) later = k;
+  }
+  return later;
+}
+
 static void *worker(void *arg) {
   long i = (long)arg;
   Proc *p = &procs[i];
   pthread_mutex_lock(&queue_lock);
   for (;;) {
-    while (jobs_next >= jobs_count) pthread_cond_wait(&queue_more, &queue_lock);
-    long k = jobs_next++;
+    long k;
+    while ((k = next_job()) < 0) pthread_cond_wait(&queue_more, &queue_lock);
     jobs[k].state = 1;
     // (the job's fields stay where they are: `jobs` grows only by
     // `realloc` under the lock, so a copy of them is taken here)
@@ -434,6 +499,7 @@ static void *worker(void *arg) {
     jobs[k].state = 2;
     free(jobs[k].script);
     jobs[k].script = NULL;
+    if (jobs[k].async == 2) job_free(&jobs[k]);
     pthread_cond_broadcast(&queue_done);
   }
   return NULL;
@@ -481,7 +547,7 @@ static long queue_jobs(const char *solver, const char *text, int async) {
     }
     j->len = strlen(j->script);
     j->async = async;
-    if (async) async_open++;
+    if (async == 1) async_open++;
     if (!end) break;
     c = end + 1;
   }
@@ -489,15 +555,6 @@ static long queue_jobs(const char *solver, const char *text, int async) {
   return first;
 }
 
-static void job_free(Job *j) {
-  free(j->solver);
-  free(j->flags);
-  free(j->script);
-  free(j->result.buf);
-  j->solver = j->flags = j->script = NULL;
-  j->result = (Buf){0};
-  j->state = 3;
-}
 
 // The answers to `jobs` (each `FLAGS 0x1f SCRIPT`, separated by 0x1e), in
 // order and separated by 0x1e, from as many of the kept processes at once
@@ -544,7 +601,7 @@ const char *solver_pool_take(void) {
     int any = 0;
     while (take_from < jobs_count && jobs[take_from].state == 3) take_from++;
     for (long k = take_from; k < jobs_count; k++) {
-      if (jobs[k].async && jobs[k].state == 2) {
+      if (jobs[k].async == 1 && jobs[k].state == 2) {
         char num[32];
         snprintf(num, sizeof num, "%s%ld\x1f", any ? "\x1e" : "", k);
         buf_str(&all, num);
@@ -634,4 +691,14 @@ int32_t solver_pool_usable(const char *solver) {
   answer = a;
   pthread_mutex_unlock(&pool_lock);
   return a;
+}
+
+// `jobs` (as `solver_pool_run` takes them) queued to run when nothing else
+// waits, their answers only kept (the memo): a later run of the same job
+// gets the answer, or waits for it if it is running.
+int32_t solver_pool_prefetch(const char *solver, const char *text) {
+  pthread_mutex_lock(&queue_lock);
+  queue_jobs(solver, text, 2);
+  pthread_mutex_unlock(&queue_lock);
+  return 0;
 }
