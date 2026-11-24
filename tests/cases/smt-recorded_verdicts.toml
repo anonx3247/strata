@@ -544,7 +544,7 @@ stdout = '''
     may not terminate: it calls `to_json_at`, which may not terminate
 ✓ Color.to_json_at         proven (nothing to check)
 ✓ Color.from_json_at       proven (nothing to check)
-    may not terminate: it calls `std.json.stringify`, which may not terminate
+    may not terminate: it calls `std.json.tag_of`, which may not terminate
 ✓ Color.from_json          proven (nothing to check)
     may not terminate: it calls `from_json_at`, which may not terminate
 ✓ Color.from_json_with     proven (nothing to check)
