@@ -1,0 +1,425 @@
+============================================================
+Layout: calls, indexes, signs
+============================================================
+
+fn f(xs: List[Int]) {
+  x := g(1)
+  (a, b) := (2, 3)
+  y := xs[0] - 1
+  -y
+  [1, 2]
+  h (x)
+  z := g(x)!
+  !done
+  return -1
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier)))))
+    (block
+      (binding
+        (identifier)
+        (call_expression
+          (identifier)
+          (arguments
+            (integer))))
+      (binding
+        (tuple_pattern
+          (identifier)
+          (identifier))
+        (tuple_expression
+          (integer)
+          (integer)))
+      (binding
+        (identifier)
+        (binary_expression
+          (index_expression
+            (identifier)
+            (integer))
+          (integer)))
+      (unary_expression
+        (identifier))
+      (list_expression
+        (integer)
+        (integer))
+      (identifier)
+      (parenthesized_expression
+        (identifier))
+      (binding
+        (identifier)
+        (try_expression
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)))))
+      (unary_expression
+        (identifier))
+      (return_expression
+        (unary_expression
+          (integer))))))
+
+============================================================
+Precedence
+============================================================
+
+fn f() = a || b && c == d + e * -f ?? g ==> h
+fn r() = 0..n + 1
+fn i() = x is Some && y & 255 == y
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (binary_expression
+          (identifier)
+          (binary_expression
+            (identifier)
+            (binary_expression
+              (binary_expression
+                (identifier)
+                (binary_expression
+                  (identifier)
+                  (unary_expression
+                    (identifier))))
+              (identifier)))))
+      (identifier)))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (range_expression
+      (integer)
+      (binary_expression
+        (identifier)
+        (integer))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (binary_expression
+      (is_expression
+        (identifier)
+        (type_identifier))
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (integer))
+        (identifier)))))
+
+============================================================
+Handlers and tasks
+============================================================
+
+fn f() {
+  a := read(p) except e { 0 }
+  b := get(xs, 0) or { 1 }
+  c := get(xs, 0)? ?? 2
+  t := spawn work(1)
+  u := supervised spawn work(2)
+  v := await t except { 3 }
+  scope { spawn work(3) }
+  race {
+    supervised pick([1], 0) as r => r,
+    c.sleep(1) => 0,
+  }
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (binding
+        (identifier)
+        (except_expression
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)))
+          (identifier)
+          (block
+            (integer))))
+      (binding
+        (identifier)
+        (or_expression
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)
+              (integer)))
+          (block
+            (integer))))
+      (binding
+        (identifier)
+        (binary_expression
+          (try_expression
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier)
+                (integer))))
+          (integer)))
+      (binding
+        (identifier)
+        (spawn_expression
+          (call_expression
+            (identifier)
+            (arguments
+              (integer)))))
+      (binding
+        (identifier)
+        (spawn_expression
+          (supervised_spawn)
+          (call_expression
+            (identifier)
+            (arguments
+              (integer)))))
+      (binding
+        (identifier)
+        (except_expression
+          (await_expression
+            (identifier))
+          (block
+            (integer))))
+      (scope_expression
+        (block
+          (spawn_expression
+            (call_expression
+              (identifier)
+              (arguments
+                (integer))))))
+      (select_expression
+        (select_arm
+          (identifier)
+          (call_expression
+            (identifier)
+            (arguments
+              (list_expression
+                (integer))
+              (integer)))
+          (identifier)
+          (identifier))
+        (select_arm
+          (call_expression
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (arguments
+              (integer)))
+          (integer))))))
+
+============================================================
+Records and collections
+============================================================
+
+fn f() {
+  p := Point { x: 1, y }
+  q := Point { ..p, x: 2 }
+  l := shop.Line { n: 1 }
+  d := Dict[String, Int] { "a": 1, "b": 2 }
+  s := Set { x % 3 for x in xs where x > 0 }
+  ys := [x * 2 for x in xs]
+  pair.0 + o.lines[1..].len() + xs[..=n].first()
+  if c == Red { 1 } else if c is Blue { 2 } else { 3 }
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (binding
+        (identifier)
+        (record_expression
+          (type_identifier)
+          (record_fields
+            (field_initializer
+              (field_identifier)
+              (integer))
+            (field_initializer
+              (identifier)))))
+      (binding
+        (identifier)
+        (record_expression
+          (type_identifier)
+          (record_fields
+            (base_record
+              (identifier))
+            (field_initializer
+              (field_identifier)
+              (integer)))))
+      (binding
+        (identifier)
+        (record_expression
+          (scoped_type_identifier
+            (identifier)
+            (type_identifier))
+          (record_fields
+            (field_initializer
+              (field_identifier)
+              (integer)))))
+      (binding
+        (identifier)
+        (dict_expression
+          (type_identifier)
+          (type_identifier)
+          (pair
+            (string
+              (string_content))
+            (integer))
+          (pair
+            (string
+              (string_content))
+            (integer))))
+      (binding
+        (identifier)
+        (set_expression
+          (binary_expression
+            (identifier)
+            (integer))
+          (for_clause
+            (identifier)
+            (identifier)
+            (binary_expression
+              (identifier)
+              (integer)))))
+      (binding
+        (identifier)
+        (list_comprehension
+          (binary_expression
+            (identifier)
+            (integer))
+          (for_clause
+            (identifier)
+            (identifier))))
+      (binary_expression
+        (binary_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (call_expression
+            (field_expression
+              (index_expression
+                (field_expression
+                  (identifier)
+                  (field_identifier))
+                (slice
+                  (integer)))
+              (field_identifier))
+            (arguments)))
+        (call_expression
+          (field_expression
+            (index_expression
+              (identifier)
+              (slice
+                (identifier)))
+            (field_identifier))
+          (arguments)))
+      (if_expression
+        (binary_expression
+          (identifier)
+          (type_identifier))
+        (block
+          (integer))
+        (if_expression
+          (is_expression
+            (identifier)
+            (type_identifier))
+          (block
+            (integer))
+          (block
+            (integer)))))))
+
+============================================================
+Lambdas and strings
+============================================================
+
+fn f() {
+  xs.map(x -> x + 1).fold(0, (a, b: Int) -> a + b)
+  k := () -> 0
+  s := f"{name} has {len(xs)} items: {price:.2} {{literal}}\n"
+  t := "a \"quoted\" // not a comment"
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (call_expression
+        (field_expression
+          (call_expression
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (arguments
+              (lambda_expression
+                (identifier)
+                (binary_expression
+                  (identifier)
+                  (integer)))))
+          (field_identifier))
+        (arguments
+          (integer)
+          (lambda_expression
+            (lambda_parameters
+              (lambda_parameter
+                (identifier))
+              (lambda_parameter
+                (identifier)
+                (type_identifier)))
+            (binary_expression
+              (identifier)
+              (identifier)))))
+      (binding
+        (identifier)
+        (lambda_expression
+          (lambda_parameters)
+          (integer)))
+      (binding
+        (identifier)
+        (f_string
+          (interpolation
+            (identifier))
+          (string_content)
+          (interpolation
+            (call_expression
+              (identifier)
+              (arguments
+                (identifier))))
+          (string_content)
+          (interpolation
+            (identifier)
+            (format_spec))
+          (string_content)
+          (escape_sequence)
+          (string_content)
+          (escape_sequence)
+          (escape_sequence)))
+      (binding
+        (identifier)
+        (string
+          (string_content)
+          (escape_sequence)
+          (string_content)
+          (escape_sequence)
+          (string_content))))))
