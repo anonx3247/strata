@@ -7,7 +7,7 @@ Strata is written in Strata: the `strata` command is the `compiler/` package, bu
 | File | What it is |
 |---|---|
 | `compiler/` | the `strata` command: the front end, the checker, the verifier, the code generator, the codebase commands and the driver, module by module below |
-| `compiler/c/` | the C the compiler links in: `jit.c` (LLVM's JIT, running compiled code in memory), `toolchain.cpp` (LLVM: IR to objects; lld: linking), `driver.c`, `cache.c`, and `libSystem.tbd` (the stub of macOS's libSystem executables link against) |
+| `compiler/c/` | the C the compiler links in: `jit.c` (LLVM's JIT, running compiled code in memory), `toolchain.cpp` (LLVM: IR to objects; lld: linking), `driver.c`, `cache.c`, `symbols.c` (the table of names, `ast.Sym`), and `libSystem.tbd` (the stub of macOS's libSystem executables link against) |
 | `runtime/runtime.c` | the C runtime compiled code links with: reference counting, big integers, printing, tasks and channels, the host's I/O; `core.rt` replaces its allocator and string, integer and list functions with Strata's (`-DSTRATA_CORE_RT`) |
 | `runtime/prelude.strata` | the built-ins of lists, dictionaries and sets (each kept as a sorted list), `lines`, and the string built-ins written over `byte_len` / `byte_at` / `byte_slice`: compiled with every program |
 | `core/` | `core`: the builtin types and functions (`builtin type`, `builtin fn` with their `requires`), the types and traits every program names, the code modules (`core.iter`, `core.channel`, `core.text`, `core.task`) and raw memory (`core.mem`, only for core's own modules) and compiled values read back (`core.values`' `Raw`, for core and packages with `[values] read = true`) |
