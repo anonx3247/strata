@@ -2,7 +2,7 @@
 [[step]]
 strata = ["--file", "$ROOT/examples/orders.strata", "run", "total", '[Line { sku: "a", qty: 0, unit_price: 5 }]']
 fails = true
-has = ["`Line.qty`: 0 does not satisfy `Quantity`"]
+has = ["Line.qty: 0 does not satisfy `Quantity`"]
 
 [[step]]
 strata = ["--file", "$ROOT/examples/orders.strata", "run", "total", '[Line { sku: "a", qty: 2, unit_price: 5 }]']
