@@ -7,23 +7,30 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
+#include <stdlib.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
 
-static char self_path[4096];
+static char self_path[PATH_MAX];
 
-// This executable's path, "" when it can't be told.
+// This executable's path, its links followed (a `strata` linked from
+// another folder finds the release beside the real one); "" when it can't
+// be told.
 const char *cache_self_path(void) {
   if (self_path[0]) return self_path;
+  char path[PATH_MAX];
 #ifdef __APPLE__
-  uint32_t n = sizeof self_path;
-  if (_NSGetExecutablePath(self_path, &n) != 0) self_path[0] = 0;
+  uint32_t n = sizeof path;
+  if (_NSGetExecutablePath(path, &n) != 0) return "";
 #else
-  ssize_t n = readlink("/proc/self/exe", self_path, sizeof self_path - 1);
-  self_path[n > 0 ? n : 0] = 0;
+  ssize_t n = readlink("/proc/self/exe", path, sizeof path - 1);
+  if (n <= 0) return "";
+  path[n] = 0;
 #endif
+  if (!realpath(path, self_path)) self_path[0] = 0;
   return self_path;
 }
 

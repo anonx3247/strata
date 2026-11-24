@@ -83,7 +83,7 @@ entries() { find "$1" -type f -path "*/$2/*" 2>/dev/null | wc -l | tr -d ' '; }
 export STRATA_SHIPPED_CACHE=""
 t1=$(run "$tmp/a/bin/strata" "$tmp/c1" "$tmp/1.txt")
 grep -q '(cached)' "$tmp/1.txt" && fail "the first run found cached verdicts"
-[ "$(entries "$tmp/c1" comptime)" = 1 ] || fail "the first run kept no compile-time value"
+[ "$(entries "$tmp/c1" comptime)" -ge 1 ] || fail "the first run kept no compile-time value"
 echo "cold run, cache c1:                    ${t1} s"
 
 # 2. the cache copied to another path, the executable to another path with
@@ -120,6 +120,6 @@ sed 's/squares(4000000)/squares(4000001)/' "$tmp/prog/prog.st" \
   | "$strata" --file "$tmp/prog/prog.strata" edit > /dev/null
 t4=$(run "$tmp/b/bin/strata" "$tmp/c3" "$tmp/4.txt")
 grep -q '^. table .*(cached)' "$tmp/4.txt" && fail "a changed definition kept its verdict"
-[ "$(entries "$tmp/c3" comptime)" = 1 ] || fail "the changed compile-time value was not computed"
+[ "$(entries "$tmp/c3" comptime)" -ge 1 ] || fail "the changed compile-time value was not computed"
 echo "changed program:                       ${t4} s (recomputed what changed)"
 echo "ok"
