@@ -54,7 +54,7 @@ fn run(args: &[&str]) -> String {
 fn module_files() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut out = vec![];
-    let mut todo = vec![root.join("std"), root.join("compiler"), root.join("examples"), root.join("tests/data"), root.join("src/llvm")];
+    let mut todo = vec![root.join("core"), root.join("std"), root.join("compiler"), root.join("examples"), root.join("tests/data"), root.join("src/llvm")];
     while let Some(d) = todo.pop() {
         for e in std::fs::read_dir(&d).unwrap() {
             let p = e.unwrap().path();

@@ -185,7 +185,7 @@ pub fn member(p: &Program, q: &str) -> Option<(&'static str, String)> {
                 DeclKind::Fn(_) => Some(("function", d.module.to_string())),
                 DeclKind::Type(_) => Some(("type", d.module.to_string())),
                 DeclKind::Trait(_) => Some(("trait", d.module.to_string())),
-                DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_) | ExternItem::Static(..), .. }) => Some(("function", d.module.to_string())),
+                DeclKind::Extern(ExternDecl { item: ExternItem::Fn(_) | ExternItem::Static(..) | ExternItem::ThreadStatic(..), .. }) => Some(("function", d.module.to_string())),
                 DeclKind::Extern(ExternDecl { item: ExternItem::Type(..), .. }) | DeclKind::Capability(_) => Some(("type", d.module.to_string())),
                 _ => None,
             };
@@ -240,7 +240,7 @@ pub fn set_member_name(p: &mut Program, q: &str, new: &str) {
                 DeclKind::Trait(t) => t.name = Symbol::from(new),
                 DeclKind::Extern(e) => match &mut e.item {
                     ExternItem::Fn(f) => f.name = Symbol::from(new),
-                    ExternItem::Type(t, _) | ExternItem::Static(t, _) => *t = Symbol::from(new),
+                    ExternItem::Type(t, _) | ExternItem::Static(t, _) | ExternItem::ThreadStatic(t, _) => *t = Symbol::from(new),
                 },
                 DeclKind::Capability(c) => c.name = Symbol::from(new),
                 _ => {}
@@ -662,7 +662,7 @@ fn names_mut(d: &mut DeclKind, f: &mut dyn FnMut(&mut Symbol)) {
         DeclKind::Test(_) => {}
         DeclKind::Extern(e) => match &mut e.item {
             ExternItem::Fn(fd) => f(&mut fd.name),
-            ExternItem::Type(t, _) | ExternItem::Static(t, _) => f(t),
+            ExternItem::Type(t, _) | ExternItem::Static(t, _) | ExternItem::ThreadStatic(t, _) => f(t),
         },
     }
 }
@@ -1275,7 +1275,7 @@ fn run_with(p: &Program, rename: Option<(String, String)>, moves: Option<&HashMa
             DeclKind::Fn(f) | DeclKind::Extern(ExternDecl { item: ExternItem::Fn(f), .. }) => {
                 table.insert(root_fn(d.module, f.name, resolving), item);
             }
-            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t, _) | ExternItem::Static(t, _), .. }) => {
+            DeclKind::Extern(ExternDecl { item: ExternItem::Type(t, _) | ExternItem::Static(t, _) | ExternItem::ThreadStatic(t, _), .. }) => {
                 table.insert(qualified(d.module, *t), item);
             }
             // a type's own methods come with the type, like a trait's
@@ -2025,6 +2025,7 @@ impl Rw<'_> {
                     ExternItem::Fn(f) => ExternItem::Fn(self.func(f, self.declared(m, f.name))),
                     ExternItem::Type(t, ps) => ExternItem::Type(self.declared(m, *t), ps.clone()),
                     ExternItem::Static(n, size) => ExternItem::Static(self.declared(m, *n), *size),
+                    ExternItem::ThreadStatic(n, size) => ExternItem::ThreadStatic(self.declared(m, *n), *size),
                 },
             }),
             DeclKind::Test(t) => {
