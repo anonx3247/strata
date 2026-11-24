@@ -332,3 +332,33 @@ int64_t jit_kept(void) {
   int64_t (*kept)(void) = runtime_fn("strata_ct_kept");
   return kept ? kept() : 0;
 }
+
+// ---- this executable, for the keys of what it caches ----
+//
+// Compile-time values are kept between runs (compiler/main's
+// `comptime_value`), keyed by the code they run and by the compiler that
+// ran it: its path, size and modification time, as Rust's keys have its
+// own (src/derive.rs). "" when they can't be read.
+
+#include <sys/stat.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
+static char self_stamp[4300];
+const char *jit_self_stamp(void) {
+  char path[4096];
+#ifdef __APPLE__
+  uint32_t n = sizeof path;
+  if (_NSGetExecutablePath(path, &n) != 0) return "";
+#else
+  ssize_t n = readlink("/proc/self/exe", path, sizeof path - 1);
+  if (n <= 0) return "";
+  path[n] = 0;
+#endif
+  struct stat st;
+  if (stat(path, &st) != 0) return "";
+  snprintf(self_stamp, sizeof self_stamp, "%s:%lld:%lld", path, (long long)st.st_size, (long long)st.st_mtime);
+  return self_stamp;
+}

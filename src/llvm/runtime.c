@@ -427,6 +427,7 @@ void strata_trace_leave(Str *name, Str *value) {
     fprintf(stderr, "\xe2\x86\x90 %.*s\n", (int)name->len, name->bytes);
 }
 
+#ifndef STRATA_CORE_RT
 // The call stack as `strata run` shows it ("" when empty): as the
 // `names::show_stack`, four or more calls in a row of one function
 // are one entry.
@@ -443,6 +444,11 @@ static char *stack_from(Str **frames, int64_t *counts, int64_t runs) {
   if (runs > FRAMES) strcpy(p, " -> ...");
   return t;
 }
+#else
+// (core.fault's, through core.rt)
+char *strata_stack_text(Str **frames, int64_t *counts, int64_t runs);
+static char *stack_from(Str **frames, int64_t *counts, int64_t runs) { return strata_stack_text(frames, counts, runs); }
+#endif
 
 static char *stack_text(void) { return stack_from(calls.frames, calls.counts, calls.runs); }
 
@@ -1730,10 +1736,8 @@ static void finish_open_scopes(void) {
 
 // ---- integers ----
 //
-// Written in Strata in core.rt (core/rt.strata), as the strings are: these
-// are the first stage's. What stays C under `STRATA_CORE_RT` (`digits`,
-// `num_of`, `trim`, `int_of`) is the float conversions' (`float(n)`,
-// `floor` and the like), until floats move too.
+// Written in Strata in core.int (core/int.strata), as the strings are in
+// core.str and the floats in core.float: these are the first stage's.
 //
 // An `Int` never overflows (as the interpreter's): one in [-2^62, 2^62) is
 // itself, and any other is a big integer, a pointer kept in the 64-bit
@@ -1743,6 +1747,7 @@ static void finish_open_scopes(void) {
 // these when an operand or the result isn't small. Big integers are never
 // freed (they are rare: a program that overflows).
 
+#ifndef STRATA_CORE_RT
 #define SMALL_MIN (-(INT64_C(1) << 62))
 #define SMALL_MAX ((INT64_C(1) << 62) - 1)
 
@@ -1776,12 +1781,6 @@ void strata_int_dup(int64_t v) {
 void strata_int_drop(int64_t v) {
   if (is_big(v) && strata_release(big_at(v))) strata_free(big_at(v));
 }
-#else
-// (core.rt's: the integer functions, below too)
-void strata_int_dup(int64_t v);
-void strata_int_drop(int64_t v);
-Str *strata_show_int(int64_t n);
-int64_t strata_int_from_i64(int64_t raw);
 #endif
 
 static uint32_t *digits(int64_t n) {
@@ -2224,6 +2223,13 @@ int64_t strata_int_from_i64(int64_t raw) {
   return int_of(x);
 }
 #endif
+#else
+// (core.int's, through core.rt: the integer functions, below too)
+void strata_int_dup(int64_t v);
+void strata_int_drop(int64_t v);
+Str *strata_show_int(int64_t n);
+int64_t strata_int_from_i64(int64_t raw);
+#endif
 
 // ---- sized integers (`I8` … `U64`) ----
 //
@@ -2350,6 +2356,12 @@ static uint64_t next_random(void) {
   return z ^ (z >> 31);
 }
 
+// The next number (core.mem's `random_word`, for core.gen): the state stays
+// here, per thread, until threads move.
+uint64_t strata_next_random(void) { return next_random(); }
+
+// The generators: core.gen's when core.rt is linked in (`STRATA_CORE_RT`).
+#ifndef STRATA_CORE_RT
 // From `lo` to `hi`, both included (as 64-bit values).
 int64_t strata_random(int64_t lo, int64_t hi) {
   if (hi <= lo) return lo;
@@ -2402,11 +2414,13 @@ Str *strata_gen_string(int64_t n) {
   for (int64_t i = 0; i < n; i++) s->bytes[i] = CH[strata_random(0, (int64_t)sizeof CH - 2)];
   return s;
 }
+#endif
 
 _Noreturn void strata_overflow(void) {
   strata_fault(4, str_c("integer overflow"));
 }
 
+#ifndef STRATA_CORE_RT
 // The shortest decimal digits that read back as x (x is not 0): x is
 // 0.DIGITS * 10^kk. Returns whether x is negative.
 static int shortest(double x, char digits[32], int *kk) {
@@ -2537,8 +2551,13 @@ double strata_sqrt(double x) {
   soft_fault(4, strata_concat_owned(str_c("sqrt of negative number "), show_float_plain(x)));
   return 0.0;
 }
+#endif
 
 // ---- lists ----
+//
+// Written in Strata in core.list (core/list.strata), which replaces these
+// when core.rt is linked in (`STRATA_CORE_RT`); `buf_new` and `append` stay
+// for the host functions' lists.
 //
 // A list is a header (its length, a buffer, and where in the buffer it starts),
 // the buffer the elements as 64-bit slots. Lists never change: `push` writes
@@ -2571,6 +2590,7 @@ static Buf *buf_new(int64_t cap) {
   return b;
 }
 
+#ifndef STRATA_CORE_RT
 List *strata_list_new(int64_t cap) {
   List *l = strata_alloc(sizeof(List));
   l->len = 0;
@@ -2652,6 +2672,11 @@ int64_t strata_list_remove_at(List *xs, int64_t i) {
   xs->len--;
   return old;
 }
+#else
+// (core.rt's: the list functions, below too; `append` is the host
+// functions')
+List *strata_list_new(int64_t cap);
+#endif
 
 // Add `x` to a list nothing else holds yet (one the runtime is making).
 static List *append(List *l, int64_t x) {
@@ -2668,6 +2693,7 @@ static List *append(List *l, int64_t x) {
   return l;
 }
 
+#ifndef STRATA_CORE_RT
 // The elements from `from` to `to` (already within 0..len): shares the buffer.
 List *strata_list_slice(List *xs, int64_t from, int64_t to) {
   List *l = strata_alloc(sizeof(List));
@@ -2697,6 +2723,7 @@ List *strata_range(int64_t lo, int64_t hi) {
   l->len = n;
   return l;
 }
+#endif
 
 // Whether to color what goes to stream `fd`: a terminal, unless `NO_COLOR`
 // is set or `TERM` is `dumb`; `FORCE_COLOR` forces it (as std.term decides).
@@ -3368,8 +3395,9 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
 //
 // Written in Strata in core.rt (core/rt.strata), which replaces these when it
 // is linked in (`STRATA_CORE_RT`); they stay for the first stage of strata's
-// build. `utf8_put` is the f-string format specs' (below).
+// build.
 
+#ifndef STRATA_CORE_RT
 // A character in UTF-8 at `o`: how many bytes it took.
 static int utf8_put(int32_t c, char *o) {
   if (c < 0x80) return o[0] = (char)c, 1;
@@ -3378,6 +3406,7 @@ static int utf8_put(int32_t c, char *o) {
   o[0] = (char)(0xF0 | (c >> 18)), o[1] = (char)(0x80 | ((c >> 12) & 0x3F)), o[2] = (char)(0x80 | ((c >> 6) & 0x3F)), o[3] = (char)(0x80 | (c & 0x3F));
   return 4;
 }
+#endif
 
 #ifndef STRATA_CORE_RT
 // The character at byte `i` (valid UTF-8), and its length in bytes.
@@ -3617,6 +3646,7 @@ _Bool strata_parse_int(Str *s, int64_t *out) {
 }
 #endif
 
+#ifndef STRATA_CORE_RT
 static _Bool parse_float_trimmed(Str *t, double *out);
 
 _Bool strata_parse_float(Str *s, double *out) {
@@ -3679,9 +3709,13 @@ static _Bool parse_float_trimmed(Str *t, double *out) {
   *out = x;
   return 1;
 }
+#endif
 
 // ---- f-string format specs (`interp::format_spec`) ----
+//
+// `strata_format` is core.fmt's when core.rt is linked in (`STRATA_CORE_RT`).
 
+#ifndef STRATA_CORE_RT
 // A float with `p` decimals, as Rust's `{:.p}`.
 Str *strata_show_float_fixed(double x, int64_t p) {
   int n = snprintf(NULL, 0, "%.*f", (int)p, x);
@@ -3692,7 +3726,9 @@ Str *strata_show_float_fixed(double x, int64_t p) {
   free(tmp);
   return s;
 }
+#endif
 
+#ifndef STRATA_CORE_RT
 // `body` padded to `width` characters: `fill` and `align` (`<`, `>`, `^`, or
 // 0 for the default: numbers right, the rest left), `+` for a number's sign,
 // `0` to pad a number with zeros after its sign.
@@ -3723,3 +3759,4 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
   str_drop(body);
   return o;
 }
+#endif
