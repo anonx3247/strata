@@ -1,0 +1,132 @@
+# resolve.rs: dependency_rules: what a package doesn't reach isn't read; --with-deps checks the
+# dependencies' tests too; `exports` limit what is part of the contract; a module named like a
+# dependency is refused (`strata check --std DIR [--with-deps] PACKAGE`)
+
+[[step]]
+write = "json/strata.toml"
+text = '''
+name = "json"
+[deps]
+'''
+
+[[step]]
+strata = ["--file", "json/", "edit", "main"]
+text = '''
+pub type Kind = | Num | Word(String)
+pub fn parse(s: String) -> Kind { Num }
+'''
+
+[[step]]
+write = "json/strata.toml"
+text = '''
+name = "json"
+[deps]
+'''
+
+[[step]]
+strata = ["--file", "json/", "edit", "text"]
+text = '''
+pub fn k() -> Kind { match parse("x") { Num => Word("n"), w => w } }
+test "k" { assert k() == Word("n") }
+'''
+
+[[step]]
+write = "json/strata.toml"
+text = '''
+name = "json"
+[deps]
+'''
+
+[[step]]
+strata = ["--file", "json/", "edit", "spare"]
+text = '''
+pub fn unused() -> Int { 1 }
+test "broken"(n: Int) { assert unused() == n }
+'''
+
+[[step]]
+write = "app/strata.toml"
+text = '''
+name = "app"
+[deps]
+json = { path = "../json" }
+'''
+
+[[step]]
+strata = ["--file", "app/", "edit", "main"]
+text = '''
+from json use Word
+use json.text
+fn main() { print(text.k() == Word("n")) }
+'''
+
+# spare's failing test is left out, and with it everything else of spare
+[[step]]
+strata = ["check", "--std", "$ROOT/std", "app"]
+out = ""
+
+[[step]]
+strata = ["check", "--std", "$ROOT/std", "--with-deps", "app"]
+any_code = true
+out = '''
+error in test "json.spare: broken": test parameter `n: Int`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`
+'''
+
+# a module the package doesn't reach isn't read: not even when it isn't a module file
+[[step]]
+write = "json/spare.strata"
+text = "not a module file"
+
+[[step]]
+strata = ["check", "--std", "$ROOT/std", "app"]
+out = ""
+
+# exports: modules or definitions; the rest of what is `pub` can't be used from outside
+[[step]]
+write = "json/strata.toml"
+text = '''
+name = "json"
+exports = ["text", "Kind"]
+'''
+
+[[step]]
+write = "hidden/strata.toml"
+text = '''
+name = "hidden"
+[deps]
+json = { path = "../json" }
+'''
+
+[[step]]
+strata = ["--file", "hidden/", "edit", "main"]
+text = '''
+from json use parse, Kind
+use json.text
+fn main() { print(text.k() == Num) }
+'''
+
+[[step]]
+strata = ["check", "--std", "$ROOT/std", "hidden"]
+any_code = true
+out = '''
+error in use json: `parse` isn't exported by package `json` (only what its strata.toml's `exports` lists is part of its contract)
+'''
+
+[[step]]
+write = "clash/strata.toml"
+text = '''
+name = "clash"
+[deps]
+json = { path = "../json" }
+'''
+
+[[step]]
+strata = ["--file", "clash/", "edit", "json"]
+text = '''
+pub fn f() -> Int { 1 }
+'''
+
+[[step]]
+strata = ["check", "--std", "$ROOT/std", "clash"]
+any_code = true
+has = ["error: module `json` is named like the dependency `json`"]
