@@ -41,7 +41,15 @@ $ strata --file examples/math.strata verify
 
 ## Try it
 
-Strata links LLVM 23's libraries in (it compiles and runs code in memory), so building it needs them:
+On macOS (Apple silicon), install the latest release in `~/.strata` (nothing else is needed: LLVM, the runtime, std and Z3 come with it):
+
+```sh
+curl -fsSL https://strata-lang.dev/install.sh | sh
+```
+
+`STRATA_VERSION=v0.1` pins a release, `STRATA_INSTALL=DIR` installs elsewhere, and `STRATA_MODIFY_PATH=1` adds its `bin` to your shell's PATH. Running it again upgrades.
+
+To build it from source instead (LLVM 23 and clang are needed only for this), and try it on the examples:
 
 ```sh
 brew install llvm                      # or apt.llvm.org's llvm-23-dev
