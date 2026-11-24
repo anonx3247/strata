@@ -179,7 +179,7 @@ a much larger proof and isn't needed for this one.
 
 The standard library gets a reference page per module on the docs site (`docs-site/`, Starlight), generated from its `///` doc comments instead of written by hand: the language guide only names the modules, and the hand-written table of what each has (docs/language-reference.md, "The standard library") goes once the pages exist. A `strata doc` command (or a step of `docs-site/sync.mjs`) would write Markdown per module: each public definition's interface (`render --level 1`) with its doc comment, grouped by kind, linked to the types it names. To settle: whether it is a `strata` command (usable on any package, as `cargo doc` is) or the site's script only, and how examples in doc comments are checked.
 
-### Finding code without grep: `find`, `refs`, `search`, locations (designed with the user 2026-11-24; not built)
+### Finding code without grep: `find`, `refs`, `search`, locations (designed with the user 2026-11-24; steps 1-2 built on branch `find-refs`, but for the runtime's side)
 
 Agents grep for: where a name is defined, every use of it before a change, where an error message comes from, half-remembered names, code shapes (every `match` on a type, every construction of a record, writes to a field, `.unwrap()` calls), functions by type, who implements a trait, comments and TODOs. Grep is blind to shapes and types and noisy on names (comments, other modules' namesakes). Today `view 'core.*' --level 0` lists definitions, `view slice:core.f` mixes uses and used-by in one list, `interface` gives a module's API; short names (`slice:run_worker`) match nothing, and nothing says where in a body a use is. Three commands and a location form fix that; they are written in Strata (`compiler/`), on `compiler/binary`, `resolve`, `check`.
 
@@ -211,6 +211,14 @@ Agents grep for: where a name is defined, every use of it before a change, where
 Later: saved rules in strata.toml (`[search.rules]`, in Strata) run by `check`, lint-style; search and refs panels in the viewer.
 
 Order: (1) `find`, `refs`; (2) locations in errors, `view LOCATION`; (3) `search` with `--text` and plain patterns; (4) typed holes and `--where`; (5) `--rewrite`.
+
+**Built (branch `find-refs`).** `compiler/locate` (locations: printed, read back, paths through a definition's tree with the names in scope at each node; code shown with `⋮`, enclosing blocks and `^^^`, through stand-in names the printer lays out like the nodes) and `compiler/finding` (`find`, `refs`, `view LOCATION`, check errors' places). Choices made while building:
+- A path's steps: a block's statements and its result by position (an expression statement is its expression), field names elsewhere (`callee`, `args/N`, `arms/N/pat`, `params/N/ty`, `methods/N/body`, a record argument by its field: `args/attempts`), a one-value wrapper's value as `value` (`return x`, `assert x`). The hash shown is the first 4 bytes of the definition's identity hash (comments included, since paths count comment statements).
+- `find` decodes the interfaces only (`binary.decode_interface`), every definition's, for members; signatures in stored form with the definition's own module's names short.
+- `refs`: a field's reads are told apart by the checker's `mark_field_reads`, a type's own method's calls by `own_methods_resolved` (both only on the definitions that name the field or method); a trait's or capability's method by name (calls not of a type's own method). Uses in a root-module definition skip locals of the same name (paths carry the names in scope). The candidates are the definitions whose header lists the target's definition (or owner) as a dependency. A name defined outside the package (`std.list.map`) is found by name in every definition.
+- Checker errors: the place is the first node written as code the message quotes (`` `y` ``, `` `+` ``, a field name), expressions before types; the checker doesn't track places itself. Printed as `--> LOCATION` and the code after `| ` (lines that start with two spaces are the checker's notes, which cases grep).
+
+Left of steps 1-2: runtime faults with each frame a location (the side table from compiled checks and calls to locations: codegen works on desugared, instantiated trees whose paths differ from the stored ones, so the table needs paths carried through desugaring and instantiation), `view --last-fault` (the runtime, core.fault, would keep the last fault), `--trace`'s `from` locations, verifier refutations with their location (the place of the failing call inside `verify_file`'s report).
 
 ### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below)
 
