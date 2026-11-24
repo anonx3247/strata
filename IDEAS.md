@@ -124,6 +124,44 @@ Open questions:
 - **Later: hot swapping.** As proofs arrive, the JIT replaces a function's checked version with its faster one while the program runs.
 - **Later: live edits of a running program** (user): the same swapping applied to edits. An edit whose definitions check and verify (its contracts, refinements, the callers' obligations) is a safe change to a running program, so it can replace the running code; an edit that breaks other definitions or leaves holes isn't applied until they're fixed and the edit is done (`strata done`), and then the change happens at run time. Strata's guarantees are what make this safe, unlike hot reloading elsewhere. Open: what happens to state whose type changed (a record gaining a field), to running loops and tasks inside replaced code, and how an edit reaches a running process (the viewer, a socket, the JIT's own session).
 
+### `std.regex.samples` matches its pattern, as a proof (asked by the coordinator 2026-11-24; started, not built)
+
+The law: `samples(pattern, n, seed)` gives only texts its pattern matches whole, written as
+`ensures match it { Ok(xs) => all(xs, t -> run_matcher(matcher(pattern), t)), Err(_) => true }`
+with the loop invariant `all(out, t -> run_matcher(m, t))`. It holds by construction (a text is
+kept only if `run_matcher(m, text)`), but the Strata verifier can't prove it yet. Proving it takes
+four things in `compiler/smt` and std. The first two are written on branch `regex-samples-law`
+(commit 714f5aa, WIP, not merged):
+
+1. **Calls as uninterpreted functions.** Today each call's result is a fresh unknown ("the result
+   of `f` (only its contract is known)"), so `if ok(x) { xs = push(xs, x) }` doesn't give
+   `all(xs, ok)`: the two calls of `ok` aren't known to be equal. In the WIP, `call_term` makes a
+   call an application `(|call:f| args)` when the function has no type parameters, no `mut` or raw
+   memory parameters, and every argument and the result is one term (a scalar, or a datatype term:
+   a structured result stays `VData`, so it can be passed on as it is). A call seen through in a
+   contract is linked to the same application, and `why` reports the call's reason when its symbol
+   is in the cone. Rust's verifier had part of this (the same call with the same arguments gave
+   the same result, through a memo). With it, `kept(m, xs, text)` (one conditional push) is proven.
+2. **Loop variables of a declared list type keep their element type.** `havoc_loop` refreshed a
+   list to an untracked one, so an `all(out, ...)` invariant said nothing after a pass. In the WIP,
+   a variable declared `List[T]` becomes a fresh `List[T]`, so the invariant carries. With 1 and 2,
+   a `while` that pushes what `ok` accepts proves `all(out, ok)` when `ok`'s receiver is a scalar.
+3. **Not done: the invariant when the predicate's receiver is a sum-typed value** (`run(m, t)`,
+   with `m: Matcher`). The pass still fails with "an element of an empty list; the elements of a
+   list are not tracked". In contracts the call is seen through (its body expanded per element),
+   and the element machinery (`quantified facts`, regions) drops the fact. Next step: find where
+   the element formula gives up for a datatype-receiver call, with `verify --smt` on a small copy
+   (a two-variant `M`, `mk(p) -> M`, `run(m, t) -> Bool`, the same loop).
+4. **Not done: termination.** `--require proven` also asks that `samples` ends, and it calls
+   `matcher` (the DFA construction), which "may not terminate". The law can be proven while
+   `samples` stays "not proven" until `matcher`'s and `run_matcher`'s loops get measures.
+
+Before 1 is merged, run the std modules it can change (`verify 'std.MODULE.*' --require proven`)
+and the `smt-*`, `cli-*verify*` and `cli-smt_*` cases: an application in place of a fresh unknown
+can change which quantified facts are kept, and so the time of some proofs. A different law,
+`run_matcher(matcher(p), t) == full_match(t, p)` (the DFA agrees with the backtracking matcher), is
+a much larger proof and isn't needed for this one.
+
 ### Generated docs for std (user, 2026-11-23; not built)
 
 The standard library gets a reference page per module on the docs site (`docs-site/`, Starlight), generated from its `///` doc comments instead of written by hand: the language guide only names the modules, and the hand-written table of what each has (docs/language-reference.md, "The standard library") goes once the pages exist. A `strata doc` command (or a step of `docs-site/sync.mjs`) would write Markdown per module: each public definition's interface (`render --level 1`) with its doc comment, grouped by kind, linked to the types it names. To settle: whether it is a `strata` command (usable on any package, as `cargo doc` is) or the site's script only, and how examples in doc comments are checked.
