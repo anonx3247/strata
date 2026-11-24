@@ -16,5 +16,5 @@ strata = ["--file", "learn.strata", "test"]
 has = ["0 failed"]
 
 [[step]]
-strata = ["--file", "learn.strata", "render"]
+strata = ["--file", "learn.strata", "view", "main"]
 out_file = "learn.st"

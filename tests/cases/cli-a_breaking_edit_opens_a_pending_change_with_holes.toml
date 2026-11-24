@@ -33,7 +33,7 @@ has = ["the edit breaks 2 uses elsewhere", '''
       why: call to `tax`: expects 2 arguments, got 1''']
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["amount + ?pending_1", "?pending_2 * 2"]
 
 # nothing logged yet

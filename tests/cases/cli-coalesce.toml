@@ -5,7 +5,7 @@ strata = ["--file", "$ROOT/tests/data/coalesce.strata", "test"]
 has = ["2 passed"]
 
 [[step]]
-strata = ["--file", "$ROOT/tests/data/coalesce.strata", "render"]
+strata = ["--file", "$ROOT/tests/data/coalesce.strata", "view", "main"]
 capture = "coalesce.st"
 
 [[step]]
@@ -13,7 +13,7 @@ save = "again.strata"
 from_tmp = "coalesce.st"
 
 [[step]]
-strata = ["render", "--file", "again.strata"]
+strata = ["view", "main", "--file", "again.strata"]
 out_file = "coalesce.st"
 
 # a short `or { value }` is written `??`, a short `except { value }` `!!`
@@ -25,7 +25,7 @@ fn g(r: Result[Int, String]) -> Int { r except { 0 } }
 '''
 
 [[step]]
-strata = ["--file", "e.strata", "render"]
+strata = ["--file", "e.strata", "view", "main"]
 has = ["parse_int(s) ?? 0", "r !! 0"]
 
 # each on its own type only

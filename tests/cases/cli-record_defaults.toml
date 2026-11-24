@@ -5,7 +5,7 @@ strata = ["--file", "$ROOT/tests/data/defaults.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "$ROOT/tests/data/defaults.strata", "render"]
+strata = ["--file", "$ROOT/tests/data/defaults.strata", "view", "main"]
 capture = "defaults.st"
 
 [[step]]
@@ -13,7 +13,7 @@ save = "again.strata"
 from_tmp = "defaults.st"
 
 [[step]]
-strata = ["render", "--file", "again.strata"]
+strata = ["view", "main", "--file", "again.strata"]
 out_file = "defaults.st"
 
 # an argument: a field left out takes its default

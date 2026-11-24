@@ -1,4 +1,4 @@
-fault (Assert): assertion failed: "x" + "y" == "xz" (left of == = "xy", right = "xz")
+fault (Assert): assertion failed: "x" + "y" == "xz" (left: "xy", right: "xz")
     stack: main
 
 --- exit 101

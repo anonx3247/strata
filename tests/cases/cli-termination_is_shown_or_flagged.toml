@@ -84,7 +84,7 @@ strata = ["--file", "t.strata", "verify", "count_up", "--require", "terminates,p
 
 # `terminates` round-trips
 [[step]]
-strata = ["--file", "t.strata", "render"]
+strata = ["--file", "t.strata", "view", "main"]
 capture = "r.st"
 has = ["fn trusted(n: Int) -> Int\n  terminates {"]
 
@@ -93,5 +93,5 @@ save = "r.strata"
 from_tmp = "r.st"
 
 [[step]]
-strata = ["--file", "r.strata", "render"]
+strata = ["--file", "r.strata", "view", "main"]
 out_file = "r.st"

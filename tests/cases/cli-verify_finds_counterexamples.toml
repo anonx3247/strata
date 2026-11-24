@@ -1,6 +1,6 @@
 # cli.rs: verify_finds_counterexamples
 [[step]]
-strata = ["render", "--file", "$ROOT/examples/orders.strata"]
+strata = ["view", "main", "--file", "$ROOT/examples/orders.strata"]
 capture = "bug.st"
 
 [[step]]

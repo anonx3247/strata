@@ -58,7 +58,7 @@ tools/bootstrap.sh                     # target/strata, built by itself (a fixed
 alias strata=$PWD/target/strata
 
 # Code is stored as its syntax tree (binary .strata files): read it as text…
-strata --file examples/orders.strata render
+strata --file examples/orders.strata view main
 
 # …work directly on a file…
 strata --file examples/orders.strata check

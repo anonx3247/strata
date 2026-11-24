@@ -84,5 +84,5 @@ has = ["✗ shifted", "by a negative number of bits", "✓ low", "✓ kind", "�
 
 # a bit operation compared keeps its parentheses
 [[step]]
-strata = ["--file", "neg.strata", "render"]
+strata = ["--file", "neg.strata", "view", "main"]
 has = ["where (it | 1) == 3 | 0 => 1,", "where (it | 15) == 15", "x & 255"]
