@@ -54,6 +54,9 @@ test "letter counts" {
 EOF
 fail() { echo "release-check: $*" >&2; exit 1; }
 clean "$R/bin/strata" --version | grep -q '^strata ' || fail "--version"
+# (its identity, read from lib/strata/IDENTITY instead of hashing it: still
+# bin/strata's after unpacking)
+[ "$(cat "$L/IDENTITY")" = "$(shasum -a 256 "$R/bin/strata" | cut -d' ' -f1) $(stat -f '%z %m' "$R/bin/strata")" ] || fail "lib/strata/IDENTITY isn't bin/strata's"
 # (the compiler reads core/ and the prelude from the current folder: its home)
 cd "$L"
 [ "$(clean "$R/bin/strata" jit --load "$L/std/libstd.dylib" "$H/hello/main.strata")" = "hello, world!" ] || fail "hello on the JIT"
@@ -95,6 +98,8 @@ own=$H/.cache/strata
 [ -d "$own" ] || fail "no own cache at $own"
 again=$(cd "$L/cache" && find . -type f | sed 's|^\./||' | while read -r rel; do if [ -e "$own/$rel" ]; then echo "$rel"; fi; done)
 [ -z "$again" ] || fail "computed again despite the shipped cache: $again"
+# (nor was bin/strata hashed: its identity came from lib/strata/IDENTITY)
+[ ! -d "$own/identity" ] || fail "bin/strata was hashed (own cache's identity/): lib/strata/IDENTITY not read"
 # first-run timings, a fresh own cache each (the best of two): with the
 # shipped cache, and without it (STRATA_SHIPPED_CACHE naming no folder)
 ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
