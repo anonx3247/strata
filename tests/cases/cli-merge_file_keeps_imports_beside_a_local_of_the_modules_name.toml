@@ -1,0 +1,55 @@
+# merge-file shows each side's code as written against the package's other
+# modules: an imported name stays imported (`helper()`), not `util.helper()`,
+# which a parameter named `util` would turn into a method call
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "util"]
+dir = "p"
+text = "pub type Util = { n: Int }\n\npub fn helper() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "from util use Util, helper\n\nfn a(util: Util) -> Int {\n  helper() + util.n\n}\n\nfn b() -> Int {\n  2\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "o.strata"]
+
+# theirs changes b
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn b() -> Int {\n  3\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "b.strata"]
+
+# ours changes a
+[[step]]
+run = ["cp", "o.strata", "p/main.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn a(util: Util) -> Int {\n  helper() + util.n + 1\n}\n"
+
+[[step]]
+strata = ["merge-file", "../o.strata", "main.strata", "../b.strata", "main.strata"]
+dir = "p"
+has = ["1 definition from theirs"]
+lacks = ["doesn't check"]
+
+[[step]]
+strata = ["--file", ".", "render", "main"]
+dir = "p"
+has = ["  helper() + util.n + 1\n", "  3\n"]
+lacks = ["util.helper"]
+
+[[step]]
+strata = ["--file", ".", "check"]
+dir = "p"
+has = ["ok: 4 definitions check"]
