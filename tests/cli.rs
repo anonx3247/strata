@@ -31,6 +31,15 @@ fn save_module(dir: &std::path::Path, module: &str, src: impl AsRef<str>) {
     assert!(ok || out.contains("doesn't check"), "{module}: {out}");
 }
 
+/// A package's module as text, rendered with its package (imported names
+/// written short, as its `use`s allow); a module file rendered alone names
+/// another module's definitions in full.
+fn module_text(pkg: &str, module: &str) -> String {
+    let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["--file", pkg, "render", module]).output().unwrap();
+    assert!(o.status.success(), "{pkg} {module}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8(o.stdout).unwrap()
+}
+
 /// A module file, as text.
 fn text(path: &std::path::Path) -> String {
     let o = Command::new(env!("CARGO_BIN_EXE_strata")).args(["render", "--file"]).arg(path).output().unwrap();
@@ -146,13 +155,13 @@ fn pack_a_package_into_one_file() {
     let (ok, out) = strata(&["--file", "tasks.strata", "test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
     // the header, read without decoding the definitions
-    let (ok, out) = strata(&["header", &format!("{pkg}/core.strata")], &d, None);
-    assert!(ok && out.starts_with("module core:") && out.contains("uses "), "{out}");
+    let (ok, out) = strata(&["header", &format!("{pkg}/model.strata")], &d, None);
+    assert!(ok && out.starts_with("module model:") && out.contains("uses "), "{out}");
     // rendered back as text, module by module, it is the package's text
     let (ok, out) = strata(&["--file", "tasks.strata", "render", "--split", "out"], &d, None);
     assert!(ok, "{out}");
-    for m in ["core", "memory", "print", "sim"] {
-        assert_eq!(text(std::path::Path::new(&format!("{pkg}/{m}.strata"))), std::fs::read_to_string(d.join(format!("out/{m}.st"))).unwrap(), "{m}");
+    for m in ["model", "memory", "print", "sim"] {
+        assert_eq!(module_text(&pkg, m), std::fs::read_to_string(d.join(format!("out/{m}.st"))).unwrap(), "{m}");
     }
 }
 
@@ -457,13 +466,13 @@ fn package_verify_policies() {
         return;
     }
     let d = tmp("policy");
-    std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
-    save_module(&d, "core",
+    std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"lib\"]\nproven = [\"lib\"]\n").unwrap();
+    save_module(&d, "lib",
         "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
-    save_module(&d, "main", "from core use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
+    save_module(&d, "main", "from lib use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
     let (ok, out) = strata(&["--file", ".", "verify", "--cases", "20"], &d, None);
-    assert!(!ok && out.contains("policy: `core.fact` is recursive (strata.toml [verify])") && out.contains("policy: `core.spin` may not terminate"), "{out}");
-    assert!(!out.contains("`fib` is recursive"), "no_recursion covers only `core`: {out}");
+    assert!(!ok && out.contains("policy: `lib.fact` is recursive (strata.toml [verify])") && out.contains("policy: `lib.spin` may not terminate"), "{out}");
+    assert!(!out.contains("`fib` is recursive"), "no_recursion covers only `lib`: {out}");
     // --smt shows the termination queries too
     let (_, out) = strata(&["--file", ".", "verify", "fib", "--smt"], &d, None);
     assert!(out.contains("termination: measure (n) goes down at recursive call 1") && out.contains("termination: measure (n) goes down at recursive call 2"), "{out}");
@@ -471,6 +480,25 @@ fn package_verify_policies() {
     std::fs::write(d.join("strata.toml"), "name = \"pol\"\n\n[verify]\nproven = [\"nope\"]\n").unwrap();
     let (ok, out) = strata(&["check"], &d, None);
     assert!(!ok && out.contains("[verify] proven names `nope`, which is not a module of this package"), "{out}");
+}
+
+/// `core` and `std` are the language's own packages: a package's module
+/// named like them (or below them) is an error of the Strata checker, as is
+/// a dependency of that name.
+#[test]
+fn modules_named_core_or_std_are_refused() {
+    for (name, file) in [("core", "core.strata"), ("std", "std.strata"), ("core.text", "core/text.strata")] {
+        let d = tmp(&format!("reserved-{}", name.replace('.', "-")));
+        std::fs::write(d.join("strata.toml"), "name = \"pk\"\n").unwrap();
+        save_module(&d, "util", "pub fn one() -> Int {\n  1\n}\n");
+        if let Some(dir) = std::path::Path::new(file).parent() {
+            std::fs::create_dir_all(d.join(dir)).unwrap();
+        }
+        std::fs::rename(d.join("util.strata"), d.join(file)).unwrap();
+        let (ok, out) = strata(&["--file", ".", "check", "--strata"], &d, None);
+        let top = name.split('.').next().unwrap();
+        assert!(!ok && out.contains(&format!("module `{name}` is named like the built-in package `{top}`")), "{name}: {out}");
+    }
 }
 
 /// What termination's solver finds about std's own functions is kept
@@ -1580,7 +1608,7 @@ fn tasks_port_checks_tests_and_verifies() {
     let ex = format!("{}/examples/tasks", env!("CARGO_MANIFEST_DIR"));
     let (ok, out) = strata(&["--file", &ex, "test"], &d, None);
     assert!(ok && out.contains("0 failed"), "{out}");
-    let (ok, out) = strata(&["--file", &ex, "verify", "sim.simulate,core.run_worker,memory.mem_claim", "--cases", "300"], &d, None);
+    let (ok, out) = strata(&["--file", &ex, "verify", "sim.simulate,model.run_worker,memory.mem_claim", "--cases", "300"], &d, None);
     assert!(ok, "{out}");
     let (ok, out) = strata(&["--file", &ex, "run", "print.demo"], &d, None);
     assert!(ok && out.contains("task-3: Done after 2"), "{out}");
@@ -1618,12 +1646,12 @@ fn every_example_round_trips_through_render() {
     // the text read back in, module by module, prints the same
     std::fs::create_dir_all(d.join("t2")).unwrap();
     std::fs::copy(format!("{path}/strata.toml"), d.join("t2/strata.toml")).unwrap();
-    for m in ["core", "memory", "print", "sim"] {
+    for m in ["model", "memory", "print", "sim"] {
         save(&d.join(format!("t2/{m}.strata")), std::fs::read_to_string(d.join(format!("t1/{m}.st"))).unwrap());
     }
     let (ok, out) = strata(&["--file", "t2", "render", "--split", "t3"], &d, None);
     assert!(ok, "{out}");
-    for m in ["core", "memory", "print", "sim"] {
+    for m in ["model", "memory", "print", "sim"] {
         let f = format!("{m}.st");
         assert_eq!(std::fs::read_to_string(d.join("t1").join(&f)).unwrap(), std::fs::read_to_string(d.join("t3").join(&f)).unwrap(), "tasks/{f} does not round-trip");
     }
@@ -1682,19 +1710,19 @@ fn modules_contracts_and_files() {
     // a folder of files is a set of modules, one per file; render --split writes it back identically
     let (ok, out) = strata(&["--file", &ex, "render", "--split", "split"], &d, None);
     assert!(ok, "{out}");
-    for m in ["core", "memory", "print", "sim"] {
-        assert_eq!(text(std::path::Path::new(&format!("{ex}/{m}.strata"))), std::fs::read_to_string(d.join(format!("split/{m}.st"))).unwrap(), "{m}");
+    for m in ["model", "memory", "print", "sim"] {
+        assert_eq!(module_text(&ex, m), std::fs::read_to_string(d.join(format!("split/{m}.st"))).unwrap(), "{m}");
     }
     // `render` prints one module; with several it asks which
-    let (ok, out) = strata(&["--file", &ex, "render", "core"], &d, None);
-    assert!(ok && out == text(std::path::Path::new(&format!("{ex}/core.strata"))), "{out}");
+    let (ok, out) = strata(&["--file", &ex, "render", "model"], &d, None);
+    assert!(ok && out == text(std::path::Path::new(&format!("{ex}/model.strata"))), "{out}");
     let (ok, out) = strata(&["--file", &ex, "render"], &d, None);
     assert!(!ok && out.contains("4 modules, one file each"), "{out}");
     // `module` blocks are gone: a file is a module
     let (ok, _) = strata(&["--file", "blocks.strata", "edit"], &d, Some("module a {\n  fn f() -> Int {\n    1\n  }\n}\n"));
     assert!(!ok, "`module a {{ }}` must not parse");
     // the contract shows public definitions only
-    let (ok, out) = strata(&["--file", &ex, "interface", "core"], &d, None);
+    let (ok, out) = strata(&["--file", &ex, "interface", "model"], &d, None);
     assert!(ok && out.contains("pub fn run_worker") && !out.contains("same_ids"), "{out}");
     // private definitions are not part of the contract
     std::fs::create_dir_all(d.join("p")).unwrap();
@@ -1707,12 +1735,12 @@ fn modules_contracts_and_files() {
     std::fs::create_dir_all(&pkg).unwrap();
     assert!(strata(&["init"], &pkg, None).0);
     assert!(strata(&["add", &ex], &pkg, None).0);
-    for m in ["core", "memory", "print", "sim"] {
+    for m in ["model", "memory", "print", "sim"] {
         assert!(pkg.join(format!("{m}.strata")).is_file(), "add writes one file per module: {m}");
     }
-    let (ok, out) = strata(&["edit", "core"], &pkg, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
-    assert!(ok && out.contains("core.same_ids") && out.contains("implementation only"), "{out}");
-    assert!(text(&pkg.join("core.strata")).contains("all(reported, r -> contains(claimed, r))"), "the edit is in the file");
+    let (ok, out) = strata(&["edit", "model"], &pkg, Some("fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len(claimed) == len(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"));
+    assert!(ok && out.contains("model.same_ids") && out.contains("implementation only"), "{out}");
+    assert!(text(&pkg.join("model.strata")).contains("all(reported, r -> contains(claimed, r))"), "the edit is in the file");
     let (ok, out) = strata(&["test"], &pkg, None);
     assert!(ok && out.contains("0 failed"), "{out}");
 }

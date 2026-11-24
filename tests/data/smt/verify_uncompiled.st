@@ -3,12 +3,15 @@ fn a(x: Int) -> Int
   x + 1
 }
 
+type Holder = { it: Iterator[Int] }
+
 fn units(s: String) -> Natural {
-  mut n := 0
-  comptime for k in [1, 2] {
-    n += k
+  h := Holder { it: [byte_len(s)].iter() }
+  mut n: Natural = 0
+  for _ in h.it {
+    n += 1
   }
-  n + byte_len(s)
+  n
 }
 
 fn longer(s: String) -> Natural
