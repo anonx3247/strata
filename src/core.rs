@@ -31,6 +31,11 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("text.strata", include_bytes!("../core/text.strata")),
     ("task.strata", include_bytes!("../core/task.strata")),
     ("rt.strata", include_bytes!("../core/rt.strata")),
+    ("str.strata", include_bytes!("../core/str.strata")),
+    ("int.strata", include_bytes!("../core/int.strata")),
+    ("list.strata", include_bytes!("../core/list.strata")),
+    ("fmt.strata", include_bytes!("../core/fmt.strata")),
+    ("float.strata", include_bytes!("../core/float.strata")),
     ("values.strata", include_bytes!("../core/values.strata")),
 ];
 
@@ -43,6 +48,25 @@ pub const CODE: &[&str] = &["core.iter", "core.channel", "core.text", "core.task
 /// The module of compiled values read back (`Raw`): core's modules, and a
 /// package whose strata.toml says `read = true` under `[values]`, can use it.
 pub const VALUES: &str = "core.values";
+
+/// The runtime written in Strata: core.rt (the allocator, the runtime's
+/// state, and each `strata_...` function compiled code and the C runtime
+/// call) and the topic modules it is built from (strings, integers, lists,
+/// format specs, floats), which
+/// only it calls. Compiled together (`llvm::compile_core_rt`), never part of
+/// a program; nothing in them allocates through the language.
+pub const RUNTIME: &[&str] = &["core.rt", "core.str", "core.int", "core.list", "core.fmt", "core.float"];
+
+/// Whether `name` (resolved: `core.str.str_size`) is a function of the
+/// runtime's modules (`RUNTIME`), as core's files have it.
+pub fn runtime_fn(name: &str) -> bool {
+    RUNTIME.iter().any(|m| name.strip_prefix(m).and_then(|r| r.strip_prefix('.')).is_some_and(|n| !n.contains('.')) && owns(m, name))
+}
+
+/// The runtime's module files (`rt.strata`, `str.strata`, ...).
+pub fn runtime_files() -> Vec<String> {
+    RUNTIME.iter().map(|m| file_of(m)).collect()
+}
 
 /// The module of raw memory (`Ptr`, `raw_alloc`, `load_i64`, ...): only
 /// core's own modules can use it.
@@ -290,11 +314,12 @@ pub fn check(dir: &std::path::Path) -> crate::types::CheckReport {
 }
 
 /// core's own tests (`test` blocks in its modules), as a program, with
-/// the functions of the modules programs don't get by themselves (core.rt's).
+/// the functions of the modules programs don't get by themselves (the
+/// runtime's, `RUNTIME`).
 pub fn tests() -> Program {
     let decls = FILES
         .iter()
-        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (*f == "rt.strata" && (!is_builtin(d) || matches!(&d.kind, DeclKind::Extern(e) if matches!(e.item, ExternItem::Static(..)))))).cloned())
+        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (runtime_files().iter().any(|r| r == f) && (!is_builtin(d) || matches!(&d.kind, DeclKind::Extern(e) if matches!(e.item, ExternItem::Static(..)))))).cloned())
         .collect();
     Program { decls }
 }
