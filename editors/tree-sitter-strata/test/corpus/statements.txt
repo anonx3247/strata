@@ -1,0 +1,125 @@
+============================================================
+Statements
+============================================================
+
+fn f() {
+  let p: Point = q
+  mut n := 0
+  mut m: Int = 1
+  n += 1
+  o.total = n
+  while n < 10 invariant n >= 0 { n += 1; continue }
+  for (i, x) in enumerate(xs) { print(x) }
+  loop { break }
+  comptime for v in Self.variants { show(v) }
+  match comptime t {
+    Option[x] => x,
+    [first, ..rest] => first,
+    where it > 0 => 1,
+    -1 | 0 => 2,
+    _ => 3,
+  }
+  // a comment
+  f(mut n)
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (let_declaration
+        (identifier)
+        (type_identifier)
+        (identifier))
+      (variable_declaration
+        (identifier)
+        (integer))
+      (variable_declaration
+        (identifier)
+        (type_identifier)
+        (integer))
+      (assignment
+        (identifier)
+        (integer))
+      (assignment
+        (field_expression
+          (identifier)
+          (field_identifier))
+        (identifier))
+      (while_statement
+        (binary_expression
+          (identifier)
+          (integer))
+        (invariant
+          (binary_expression
+            (identifier)
+            (integer)))
+        (block
+          (assignment
+            (identifier)
+            (integer))
+          (continue_statement)))
+      (for_statement
+        (tuple_pattern
+          (identifier)
+          (identifier))
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier)))
+        (block
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)))))
+      (loop_statement
+        (block
+          (break_statement)))
+      (comptime_for_statement
+        (identifier)
+        (field_expression
+          (type_identifier)
+          (field_identifier))
+        (block
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)))))
+      (match_expression
+        (comptime_expression
+          (identifier))
+        (match_arm
+          (constructor_pattern
+            (type_identifier)
+            (identifier))
+          (identifier))
+        (match_arm
+          (list_pattern
+            (identifier)
+            (rest_pattern
+              (identifier)))
+          (identifier))
+        (match_arm
+          (where_pattern
+            (binary_expression
+              (identifier)
+              (integer)))
+          (integer))
+        (match_arm
+          (or_pattern
+            (negative_integer
+              (integer))
+            (integer))
+          (integer))
+        (match_arm
+          (wildcard_pattern)
+          (integer)))
+      (comment)
+      (call_expression
+        (identifier)
+        (arguments
+          (mut_expression
+            (identifier)))))))

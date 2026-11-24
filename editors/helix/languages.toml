@@ -1,0 +1,16 @@
+# Strata in Helix: add this to ~/.config/helix/languages.toml, then
+#   hx --grammar fetch && hx --grammar build
+# and link the queries:
+#   ln -s "$PWD/editors/tree-sitter-strata/queries" ~/.config/helix/runtime/queries/strata
+
+[[language]]
+name = "strata"
+scope = "source.strata"
+file-types = ["st"]
+comment-token = "//"
+indent = { tab-width = 2, unit = "  " }
+roots = ["strata.toml"]
+
+[[grammar]]
+name = "strata"
+source = { git = "https://github.com/anonx3247/strata", rev = "main", subpath = "editors/tree-sitter-strata" }
