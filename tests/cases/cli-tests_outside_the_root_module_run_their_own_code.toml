@@ -1,0 +1,53 @@
+# A package's tests in a module other than the root one run their own code:
+# they were compiled under a key that named no function, so each ran `main`
+# instead (called with no arguments: `strata --file compiler test` crashed,
+# signal 11, and a package without `main` passed them all, run or not)
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit"]
+text = '''
+from std.io use Console
+
+fn main(mut console: Console) {
+  mut console.print("main ran")
+}
+'''
+
+[[step]]
+strata = ["edit", "ops"]
+text = '''
+pub fn double(x: Int) -> Int {
+  x * 2
+}
+
+pub fn evens(n: Int) -> List[Int] {
+  [2 * i for i in 0..n]
+}
+
+test "doubles" {
+  assert double(2) == 4
+}
+
+test "doubles wrongly" {
+  assert double(2) == 5
+}
+
+test "no evens below zero" {
+  assert evens(0) == []
+}
+'''
+
+[[step]]
+strata = ["test"]
+fails = true
+has = [
+  "✓ ops: doubles",
+  "✗ ops: doubles wrongly",
+  "assertion failed: double(2) == 5 (left: 4, right: 5)",
+  "✓ ops: no evens below zero",
+  "2 passed, 1 failed",
+]
+lacks = ["main ran", "crash"]
