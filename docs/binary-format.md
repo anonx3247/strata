@@ -17,7 +17,7 @@ Design:
 - **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file. Its hash is the hash of those bytes. The same bytes could also be stored as one object under that hash (the hash-store idea in IDEAS.md).
 - **References by what they name.** Every reference to a definition is stored by its qualified name (`orders.Line`), however it was written (`Line` under `from orders use Line`, or `orders.Line` under `use orders`); a call to another module's function is stored as a call of that name (`orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`). A definition's own name, its variants and methods, locals, fields and method calls (found from their receiver) are stored as written, and so is a name that resolves to nothing. When code is shown, each reference is written as short as its module's `use`s allow, so text is normalised: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) decides from its own `use` lines. In `compiler/resolve`: `stored` and `written`.
 - **Exact.** Decoding gives back the very tree that was encoded: comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
-- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A module file's bytes are what strata writes for it (a header's dependency lists can go stale when another module changes outside strata; `strata upgrade` rewrites them).
+- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A module file's bytes are what strata writes for it (a header's dependency lists can go stale when another module changes outside strata, or when an edit changes what a definition it leaves alone would now depend on: an edit writes only the files it changes, and in them keeps each untouched definition's bytes and entry as stored; `strata upgrade` rewrites them all).
 - **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed what is left of the file, nesting deeper than 10,000 levels is refused, and a definition that isn't in the file's module, or isn't of the kind and visibility its header entry says, is rejected. A definition's hashes are computed when it is stored and trusted when it is read (reading doesn't hash every definition again); `binary.read_checked` also checks each definition's bytes against its hash, which catches any change inside a definition (`compiler-bad_input`).
 
 A file of another format version is rejected. See [Changing the format](#changing-the-format).
@@ -44,7 +44,7 @@ Entry  = name:str  kind:byte  public:bool  hash:32 bytes  interface_hash:32 byte
 - `module` is the dotted module path (`""` for the root module).
 - `name` is what `strata` calls the definition: `total`, `Order`, `test "totals"`, `impl Show for Order`, `use orders`.
 - `kind` is the `DeclKind` tag below.
-- `deps` are the qualified names of the definitions it refers to.
+- `deps` are the qualified names of the definitions it refers to, sorted.
 - The definitions follow the header back to back, in the order of the entries. A definition's offset is the end of the header plus the sizes of those before it, and the file ends exactly after the last one.
 
 The three hashes are SHA-256:

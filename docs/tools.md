@@ -48,6 +48,10 @@ $ strata verify bump                         # fn bump(q: Quantity) -> Quantity 
 
 $ strata edit -m "steeper discount" < discount.strata
 fn     discount                 changed  #fc40aad7… → #2e54e58d…  (implementation only — dependents unaffected)
+checked 1 definition of 14: what the edit can affect
+
+$ strata edit -m "steeper discount" < discount.strata    # the same again
+no changes: every definition given is as stored (nothing written, checked or logged)
 
 $ strata edit < breaking_change.strata
 error in test "totals": call to `total`, argument 1: expected `Int`, found `Line`
@@ -253,7 +257,8 @@ $ strata view 'jobs.retried@5ce7a5fb/body/1/place'
 strata.toml           the package: name, exports, dependencies, verifier policy, C to link ([native]),
                       whether `main` may ask how it is run ([run] mode)
 main.strata, a/b.strata, …
-                      one file per module, in canonical form (rewritten by `edit`, `add`, `rename`)
+                      one file per module, in canonical form (written by `edit`, `add`, `rename`:
+                      only the files that change; `strata upgrade` rewrites them all)
 strata.log            one JSON entry per change made through strata: its id, message, which
                       definitions changed (with their text before and after), interface vs.
                       implementation, which dependents are affected, and renames
