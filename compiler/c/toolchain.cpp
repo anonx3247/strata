@@ -13,6 +13,8 @@
 #include <llvm-c/Transforms/PassBuilder.h>
 
 #include <CommonCrypto/CommonDigest.h>
+#include <copyfile.h>
+#include <sys/clonefile.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -562,6 +564,42 @@ const char *toolchain_files_key(const char *what, const char *paths) {
   return key.c_str();
 }
 
+// The SHA-256 (64 hex digits) of a link's arguments `args` (each after a
+// newline), with each one's size and time of change that names a file or a
+// folder (`-LDIR` too, for the libraries `-lNAME` finds there): what a
+// linked executable is kept in the cache under. An object of the cache is
+// named by its contents already; a library outside it (LLVM's) is told by
+// its size and time.
+const char *toolchain_link_key(const char *args) {
+  static std::string key;
+  std::string all;
+  std::string_view as(args);
+  size_t i = 0;
+  while (i < as.size()) {
+    size_t e = as.find('\n', i);
+    if (e == std::string_view::npos) e = as.size();
+    std::string a(as.substr(i, e - i));
+    i = e + 1;
+    all += std::to_string(a.size()) + ":" + a;
+    std::string p = a.rfind("-L", 0) == 0 ? a.substr(2) : a;
+    struct stat st;
+    if (!p.empty() && p[0] == '/' && stat(p.c_str(), &st) == 0)
+      all += " " + std::to_string((long long)st.st_size) + " " + std::to_string((long long)st.st_mtimespec.tv_sec) +
+             "." + std::to_string((long long)st.st_mtimespec.tv_nsec);
+    all += "\n";
+  }
+  key = hex_sha256("strata link 1\n", all);
+  return key.c_str();
+}
+
+// The file `from` copied to `to` (replaced): a clone where the file system
+// makes them (APFS: no bytes copied), else copied. 0 when done.
+int32_t toolchain_clone(const char *from, const char *to) {
+  unlink(to);
+  if (clonefile(from, to, 0) == 0) return 0;
+  return copyfile(from, to, nullptr, COPYFILE_ALL) == 0 ? 0 : 1;
+}
+
 // How many parts the last `toolchain_objects` compiled (the others' objects
 // were in the cache).
 int64_t toolchain_objects_compiled(void) { return objects_compiled; }
@@ -583,18 +621,8 @@ int32_t toolchain_objects(const char *ir, const char *scratch, const char *cache
   LLVMInitializeAArch64AsmParser();
   std::string_view text(ir);
   std::vector<std::string> parts;
-  // (optimized, larger parts: more of what a function calls is beside it,
-  // to inline; `STRATA_LLVM_PARTS=0`: the whole module as one part, to
-  // compare)
   const char *whole = getenv("STRATA_LLVM_PARTS");
-  timings_begin("LLVM: split IR");
-  if ((whole && strcmp(whole, "0") == 0) ||
-      !split_ir(text, opt > 0 ? 512 * 1024 : 128 * 1024, 4 * 1024 * 1024, opt > 0 ? IMPORT_BYTES : 0,
-                parts)) {
-    parts.clear();
-    parts.push_back(std::string(text));
-  }
-  timings_end("LLVM: split IR");
+  bool one = whole && strcmp(whole, "0") == 0;
   unsigned major = 0, minor = 0, patch = 0;
   LLVMGetVersion(&major, &minor, &patch);
   char what[160];
@@ -602,6 +630,47 @@ int32_t toolchain_objects(const char *ir, const char *scratch, const char *cache
   snprintf(what, sizeof what, "strata object 1\n%s %s O%d LLVM %u.%u.%u%s\n", TRIPLE, CPU, (int)opt,
            major, minor, patch, toolchain_profiling() ? " profiling" : "");
   std::string dir = cache;
+  // the objects of an IR made before, listed under the key of the whole
+  // text (`lists/KEY`): neither cut into parts nor each part's key worked
+  // out again, when every one is still there
+  std::string list;
+  if (!dir.empty()) {
+    std::string key = hex_sha256(std::string(what) + (one ? "list whole\n" : "list\n"), std::string(text));
+    list = dir + "/lists/" + key;
+    if (FILE *f = fopen(list.c_str(), "r")) {
+      std::string got;
+      char b[4096];
+      size_t n;
+      while ((n = fread(b, 1, sizeof b, f)) > 0) got.append(b, n);
+      fclose(f);
+      int32_t count = 0;
+      bool all = !got.empty();
+      size_t at = 0;
+      while (all && at < got.size()) {
+        size_t e = got.find('\n', at);
+        if (e == std::string::npos) e = got.size();
+        struct stat st;
+        if (stat(got.substr(at, e - at).c_str(), &st) != 0) all = false;
+        count++;
+        at = e + 1;
+      }
+      if (all) {
+        objects_list = got;
+        return count;
+      }
+    }
+  }
+  // (optimized, larger parts: more of what a function calls is beside it,
+  // to inline; `STRATA_LLVM_PARTS=0`: the whole module as one part, to
+  // compare)
+  timings_begin("LLVM: split IR");
+  if (one ||
+      !split_ir(text, opt > 0 ? 512 * 1024 : 128 * 1024, 4 * 1024 * 1024, opt > 0 ? IMPORT_BYTES : 0,
+                parts)) {
+    parts.clear();
+    parts.push_back(std::string(text));
+  }
+  timings_end("LLVM: split IR");
   if (!dir.empty()) make_dirs(dir);
   std::vector<std::string> outs(parts.size()), errs(parts.size());
   std::vector<int> work;
@@ -650,6 +719,16 @@ int32_t toolchain_objects(const char *ir, const char *scratch, const char *cache
   for (size_t k = 0; k < parts.size(); k++)
     if (!errs[k].empty()) return fail(errs[k]) * -1;
   for (size_t k = 0; k < parts.size(); k++) objects_list += outs[k] + "\n";
+  if (!list.empty()) {
+    // (written beside it, then renamed: whole or not at all)
+    make_dirs(dir + "/lists");
+    std::string tmp = list + ".tmp-" + std::to_string(getpid());
+    if (FILE *f = fopen(tmp.c_str(), "w")) {
+      bool ok = fwrite(objects_list.data(), 1, objects_list.size(), f) == objects_list.size();
+      if (fclose(f) == 0 && ok) rename(tmp.c_str(), list.c_str());
+      else unlink(tmp.c_str());
+    }
+  }
   return (int32_t)parts.size();
 }
 
