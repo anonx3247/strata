@@ -427,6 +427,7 @@ void strata_trace_leave(Str *name, Str *value) {
     fprintf(stderr, "\xe2\x86\x90 %.*s\n", (int)name->len, name->bytes);
 }
 
+#ifndef STRATA_CORE_RT
 // The call stack as `strata run` shows it ("" when empty): as the
 // `names::show_stack`, four or more calls in a row of one function
 // are one entry.
@@ -443,6 +444,11 @@ static char *stack_from(Str **frames, int64_t *counts, int64_t runs) {
   if (runs > FRAMES) strcpy(p, " -> ...");
   return t;
 }
+#else
+// (core.fault's, through core.rt)
+char *strata_stack_text(Str **frames, int64_t *counts, int64_t runs);
+static char *stack_from(Str **frames, int64_t *counts, int64_t runs) { return strata_stack_text(frames, counts, runs); }
+#endif
 
 static char *stack_text(void) { return stack_from(calls.frames, calls.counts, calls.runs); }
 
@@ -2350,6 +2356,12 @@ static uint64_t next_random(void) {
   return z ^ (z >> 31);
 }
 
+// The next number (core.mem's `random_word`, for core.gen): the state stays
+// here, per thread, until threads move.
+uint64_t strata_next_random(void) { return next_random(); }
+
+// The generators: core.gen's when core.rt is linked in (`STRATA_CORE_RT`).
+#ifndef STRATA_CORE_RT
 // From `lo` to `hi`, both included (as 64-bit values).
 int64_t strata_random(int64_t lo, int64_t hi) {
   if (hi <= lo) return lo;
@@ -2402,6 +2414,7 @@ Str *strata_gen_string(int64_t n) {
   for (int64_t i = 0; i < n; i++) s->bytes[i] = CH[strata_random(0, (int64_t)sizeof CH - 2)];
   return s;
 }
+#endif
 
 _Noreturn void strata_overflow(void) {
   strata_fault(4, str_c("integer overflow"));

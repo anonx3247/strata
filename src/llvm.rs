@@ -1164,6 +1164,7 @@ declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
 declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
 declare i32 @memcmp(ptr, ptr, i64)
 declare zeroext i1 @strata_soft_fault(i64, ptr)
+declare i64 @strata_next_random()
 declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
@@ -6288,6 +6289,11 @@ impl<'m, 'a> Func<'m, 'a> {
                 let r = self.fresh("f");
                 self.emit(format!("{r} = frem double {}, {}", vs[0].1, vs[1].1));
                 (Ty::Float, r)
+            }
+            ("random_word", []) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = call i64 @strata_next_random()"));
+                (Ty::Con("I64".into(), vec![]), r)
             }
             ("widen_i32", [_]) => {
                 let r = self.fresh("w");
