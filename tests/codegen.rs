@@ -3333,3 +3333,270 @@ fn compiler_fuzzes_as_verify_fuzzes() {
     assert!(compared > 50, "only {compared} functions compared");
 }
 
+
+/// What the compiler package needed of compiler/codegen, so that it
+/// compiles itself: a trait's default method calling `Self.f(x)`; the
+/// checker's types for `mut xs := []` filled by a `mut` argument, for a
+/// tuple pattern met before the type is known, and for `f(a) + f(b)` of a
+/// closure; a `match` used as a statement whose arms give `()` and a
+/// value; a capability trait's value (`Files`) held in an `Option` field;
+/// a dictionary's `remove` in a module importing `Files` (stored as
+/// `std.fs.remove`); `s.graphemes()` (std.unicode's); a concrete value
+/// made a trait's value where a trait type is wanted (a record's field, an
+/// annotated variable, a list's elements and `push`, the branches of an
+/// `if` or `match` a function returns), a `mut self` method through a
+/// trait value (examples/tasks' `print.demo`), and a trait value matched
+/// against a constructor's pattern.
+const COMPILER_CONSTRUCTS: &[(&str, &str)] = &[
+    ("self_calls", "trait Named {
+  fn name(self) -> String
+  fn make(n: Int) -> Self
+  fn twice(n: Int) -> List[Self] {
+    [Self.make(n), Self.make(n + 1)]
+  }
+}
+
+type Box = { n: Int }
+
+impl Named for Box {
+  fn name(self) -> String {
+    f\"box {self.n}\"
+  }
+  fn make(n: Int) -> Self {
+    Box { n }
+  }
+}
+
+impl Named for Int {
+  fn name(self) -> String {
+    f\"int {self}\"
+  }
+  fn make(n: Int) -> Self {
+    n * 10
+  }
+}
+
+fn main() {
+  print(Box.twice(1).map(b -> b.name()))
+  print(Int.twice(2).map(i -> i.name()))
+  print(3.name())
+}
+"),
+    ("inferred", "fn fill(mut out: List[(String, Int)], n: Int) {
+  out = push(out, (f\"k{n}\", n))
+}
+
+fn merged(v: List[(Int, Int)]) -> List[(Int, Int)] {
+  mut out := []
+  for (a, b) in v {
+    match get(out, len(out) - 1) {
+      Some((lo, hi)) => if a <= hi + 1 {
+        out = take(out, len(out) - 1) + [(lo, if b > hi {
+          b
+        } else {
+          hi
+        })]
+      } else {
+        out = push(out, (a, b))
+      },
+      None => {
+        out = push(out, (a, b))
+      },
+    }
+  }
+  out
+}
+
+fn main() {
+  mut binds := []
+  fill(mut binds, 1)
+  fill(mut binds, 2)
+  for (name, n) in binds {
+    print(f\"{name}={n}\")
+  }
+  print(merged([(1, 2), (3, 5), (9, 9), (10, 12)]))
+  twice := (xs: List[String]) -> xs.map(x -> x + x)
+  both := twice([\"a\"]) + twice([\"b\"])
+  print(twice([\"a\", \"c\"]).filter(x -> !contains(both, x)))
+  mut seen := 0
+  for x in [1, 2, 3] {
+    match x {
+      2 => {
+        seen += 10
+      },
+      _ => (),
+    }
+  }
+  print(seen)
+}
+"),
+    ("std_traits", "from std.fs use Files, FsError, mem_files
+
+type Ctx = { files: Option[Files], n: Int }
+
+fn has(c: Ctx, path: String) -> Bool {
+  match c.files {
+    Some(fs) => fs.exists(path),
+    None => false,
+  }
+}
+
+fn without(d: Dict[String, Int], k: String) -> Dict[String, Int] {
+  remove(d, k)
+}
+
+fn main() {
+  c := Ctx { files: Some(mem_files([(\"a.txt\", \"x\")])), n: 1 }
+  print(has(c, \"a.txt\"))
+  print(has(c, \"b.txt\"))
+  print(without(Dict { \"a\": 1, \"b\": 2 }, \"a\"))
+  print(len(\"e\\u{301}x\".graphemes()))
+}
+"),
+    ("trait_places", "trait Out {
+  fn put(mut self, line: String)
+  fn count(self) -> Int
+}
+
+type Log = { lines: List[String] }
+
+impl Out for Log {
+  fn put(mut self, line: String) {
+    self.lines = push(self.lines, line)
+  }
+  fn count(self) -> Int {
+    len(self.lines)
+  }
+}
+
+type Tally = { n: Int }
+
+impl Out for Tally {
+  fn put(mut self, line: String) {
+    self.n = self.n + byte_len(line)
+  }
+  fn count(self) -> Int {
+    self.n
+  }
+}
+
+type Holder = { out: Out }
+
+fn make(big: Bool) -> Out {
+  if big {
+    Log { lines: [\"x\"] }
+  } else {
+    Tally { n: 0 }
+  }
+}
+
+fn pick(k: Int) -> Out {
+  match k {
+    0 => Log { lines: [] },
+    _ => Tally { n: k },
+  }
+}
+
+fn main() {
+  h := Holder { out: Log { lines: [\"x\"] } }
+  print(h.out.count())
+  mut o: Out = Log { lines: [] }
+  mut o.put(\"a\")
+  mut o.put(\"b\")
+  print(o.count())
+  o = Tally { n: 5 }
+  mut o.put(\"abc\")
+  print(o.count())
+  let xs: List[Out] = [Log { lines: [\"p\"] }, Tally { n: 2 }]
+  ys := push(xs, Tally { n: 7 })
+  print(ys.map(x -> x.count()))
+  print(make(true).count() + make(false).count())
+  print(pick(0).count() + pick(3).count())
+  let opt: Option[Out] = Some(Tally { n: 9 })
+  match opt {
+    Some(x) => print(x.count()),
+    None => (),
+  }
+  mut h2 := Holder { out: Log { lines: [\"x\"] } }
+  mut h2.out.put(\"a\")
+  match h2.out {
+    Log { lines } => print(lines),
+    _ => print(\"other\"),
+  }
+  print(\"ok\")
+}
+"),
+];
+
+#[test]
+fn compiler_constructs_do_what_rust_compiled_ones_do() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let dir = scratch("compiler-constructs");
+    for (name, text) in COMPILER_CONSTRUCTS {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let (rust, ours) = both(&dir, name, &file);
+        assert_eq!(ours, rust, "{name}: (stdout, stderr, exit code) of compiler/codegen's build vs strata build's");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A union with a `distinct` member whose refinement is a regex: the
+/// member's check is on the block's field (not the block taken as a
+/// string), and a value of the union is made in each member. (`llvm.rs`
+/// crashes on `name_of`: compared with what the program must print.)
+#[test]
+fn distinct_members_of_unions_are_checked_on_their_field() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let dir = scratch("distinct-union");
+    let file = dir.join("u.strata");
+    save(&file, "distinct type Code = String where matches(it, \"[a-z]+\")
+
+type Thing = Code | Int
+
+fn as_thing(t: Thing) -> Thing {
+  t
+}
+
+fn name_of(t: Thing) -> String {
+  match t {
+    Code(c) => \"code \" + c,
+    _ => \"int\",
+  }
+}
+
+fn main() {
+  t := as_thing(Code(\"xyz\"))
+  print(name_of(t))
+  print(name_of(as_thing(4)))
+  print(t == Code(\"xyz\"))
+}
+");
+    let exe = ours(&dir, "u", &file);
+    let (out, err, code) = outcome(&exe);
+    assert_eq!((out.as_str(), code), ("code xyz
+int
+true
+", Some(0)), "{err}");
+    assert!(memory(&exe).ends_with(" 0 live"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The compiler package itself compiled by compiler/codegen: nothing it
+/// can't compile yet (`strata build` builds the package with `llvm.rs`, so
+/// this is what says codegen covers it).
+#[test]
+fn compiler_package_compiles_with_codegen() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ir = compiler::run(&["codegen".to_string(), root.join("compiler").to_string_lossy().into_owned()]);
+    let errors: Vec<&str> = ir.lines().filter(|l| l.starts_with("error")).collect();
+    assert!(errors.is_empty(), "{}", errors.join("
+"));
+    assert!(ir.contains("define i32 @main("), "no main in the IR");
+}
