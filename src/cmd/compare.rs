@@ -380,10 +380,9 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 // the checks `verify` proved, left out as `strata build` leaves
                 // them out (what changed since verified first; `--all-checks`
                 // keeps them all, `--no-verify` uses what was proven before)
-                // (a package's: not yet, its checks all kept)
                 let proven = scratch.join("proofs.txt");
                 // (verified by `compiler verify`, its record read by `compiler proofs`)
-                let facts = if package || args.flag("--all-checks") {
+                let facts = if args.flag("--all-checks") {
                     String::new()
                 } else {
                     strata_proofs(Path::new(&file), !args.flag("--no-verify"))?.unwrap_or_default()
