@@ -1,0 +1,17 @@
+integers = [ 1, 2, 3 ]
+colors = [ "red", "yellow", "green" ]
+nested = [ [ 1, 2 ], [3, 4, 5] ]
+mixed = [ [ 1, 2 ], ["a", "b", "c"] ]
+strings = [ "all", 'strings', """are the same""", '''type''' ]
+numbers = [ 0.1, 0.2, 0.5, 1, 2, 5 ]
+contributors = [
+  "Foo Bar <foo@example.com>",
+  { name = "Baz Qux", email = "bazqux@example.com" }
+]
+trailing = [
+  1,
+  2, # two
+]
+empty = []
+empty2 = [ # c
+]

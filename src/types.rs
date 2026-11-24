@@ -4598,7 +4598,7 @@ fn core_rt_allocations(f: &FnDecl) -> Vec<String> {
     }
     let callable = |n: &str| {
         let short = crate::names::short(n);
-        builtins().iter().any(|b| b.core_only && b.name == short) || crate::types::sized::conversion(short).is_some() || crate::core::owns("core.rt", n)
+        builtins().iter().any(|b| b.core_only && b.name == short) || crate::types::sized::conversion(short).is_some() || crate::core::runtime_fn(n)
     };
     let mut out = vec![];
     let mut kind = DeclKind::Fn(f.clone());
@@ -4622,11 +4622,11 @@ fn core_rt_allocations(f: &FnDecl) -> Vec<String> {
             Expr::BigInt(_) => "a big integer".into(),
             Expr::Call(callee, _) => match &**callee {
                 Expr::Var(n) if callable(n) => return,
-                Expr::Var(n) => format!("a call to `{}` (core.rt calls only its own functions, core.mem's and the conversions between integers)", crate::names::short(n)),
+                Expr::Var(n) => format!("a call to `{}` (core.rt calls only the runtime's functions, core.mem's and the conversions between integers)", crate::names::short(n)),
                 _ => "a call to a function value".into(),
             },
             Expr::Method(_, m, _) if crate::types::sized::conversion(m.as_str()).is_some() => return,
-            Expr::Method(_, m, _) => format!("a call to `{m}` (core.rt calls only its own functions, core.mem's and the conversions between integers)"),
+            Expr::Method(_, m, _) => format!("a call to `{m}` (core.rt calls only the runtime's functions, core.mem's and the conversions between integers)"),
             _ => return,
         };
         out.push(format!("{CORE_RT_ALLOCATES}{what}"));
@@ -4648,7 +4648,7 @@ fn check_decls(prog: &Program, env: &Env, record_types: bool) -> Decided {
             env: &env,
             in_core: crate::core::owns(&d.module, &d.name()),
             values_said: false,
-            core_rt: { (d.name().strip_prefix("core.rt.").is_some_and(|n| !n.contains('.')) && matches!(d.kind, DeclKind::Fn(_)) && crate::core::owns(&d.module, &d.name())).then(Vec::new) },
+            core_rt: { (crate::core::runtime_fn(&d.name()) && matches!(d.kind, DeclKind::Fn(_)) && crate::core::owns(&d.module, &d.name())).then(Vec::new) },
             subst: Vec::new(),
             scopes: vec![HashMap::default()],
                 rigid: BTreeSet::new(),

@@ -1,0 +1,13 @@
+# build.rs: numbers_compile_and_run_as_interpreted, the_jit_runs_as_the_interpreter
+
+[[step]]
+strata = ["build", "$ROOT/tests/data/build/numbers.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/numbers.out"
+
+[[step]]
+strata = ["run", "$ROOT/tests/data/build/numbers.strata"]
+golden = "tests/data/build/expected/jit-numbers.out"

@@ -1,0 +1,74 @@
+# cli.rs: f_string_interpolation
+
+[[step]]
+save = "fstrings.strata"
+text = '''
+type Color =
+  | Red
+  | Rgb(Int, Int, Int)
+
+fn report(name: String, xs: List[Int]) -> String { f"{name} has {len(xs)} items" }
+
+test "fstrings" {
+  assert report("ana", [1, 2]) == "ana has 2 items"
+  n := 3
+  assert f"{n} + 1 = {n + 1}" == "3 + 1 = 4"
+  assert f"{{literal}} {n}" == "{literal} 3"
+  assert f"quote \" and {join(["a", "b"], "-")}" == "quote \" and a-b"
+  assert f"{Red} {[1, 2]} {Some(1)}" == "Red [1, 2] Some(1)"
+  assert f"no parts" == "no parts"
+  assert f"{if n > 2 { "big" } else { "small" }}" == "big"
+}
+'''
+
+[[step]]
+strata = ["--file", "fstrings.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "fstrings.strata", "render"]
+capture = "fstrings.st"
+
+[[step]]
+save = "fstrings-r.strata"
+from_tmp = "fstrings.st"
+
+[[step]]
+strata = ["--file", "fstrings-r.strata", "render"]
+out_file = "fstrings.st"
+
+[[step]]
+write = "fempty.src"
+text = "fn f() -> String { f\"a {} b\" }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file fempty.strata edit < fempty.src && \"$STRATA\" --file fempty.strata check"]
+fails = true
+has = ["empty `{}` in an f-string"]
+
+[[step]]
+write = "fbrace.src"
+text = "fn f() -> String { f\"a } b\" }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file fbrace.strata edit < fbrace.src && \"$STRATA\" --file fbrace.strata check"]
+fails = true
+has = ["a lone `}` in an f-string"]
+
+[[step]]
+write = "fbad.src"
+text = "fn f() -> String { f\"{1 +}\" }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file fbad.strata edit < fbad.src && \"$STRATA\" --file fbad.strata check"]
+fails = true
+has = ["in f-string"]
+
+[[step]]
+write = "fvar.src"
+text = "fn f() -> String { f\"{nope}\" }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file fvar.strata edit < fvar.src && \"$STRATA\" --file fvar.strata check"]
+fails = true
+has = ["unknown variable `nope`"]

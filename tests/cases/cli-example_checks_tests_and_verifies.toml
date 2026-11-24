@@ -1,0 +1,11 @@
+# cli.rs: example_checks_tests_and_verifies
+[[step]]
+strata = ["--file", "$ROOT/examples/orders.strata", "check"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/orders.strata", "test"]
+has = ["4 passed"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/orders.strata", "verify", "--cases", "50"]
+has = ["incomplete"]

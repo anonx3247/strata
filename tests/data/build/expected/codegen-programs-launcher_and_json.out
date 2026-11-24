@@ -1,0 +1,5 @@
+Ok(Finished { code: 0, out: "hi there\n", err: "" })
+Err("can't run `no-such-program-x`: No such file or directory (os error 2)")
+Ok(Object([("type", Text("Point")), ("x", Integer(1)), ("y", Integer(2))]))
+
+--- exit 0

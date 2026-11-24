@@ -1,0 +1,159 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "builtins_example.strata"
+from = "builtins_example.st"
+
+[[step]]
+strata = ["build", "builtins_example.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-builtins_example.out"
+
+[[step]]
+save = "chr.strata"
+from = "chr.st"
+
+[[step]]
+strata = ["build", "chr.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-chr.out"
+
+[[step]]
+save = "dict_key.strata"
+from = "dict_key.st"
+
+[[step]]
+strata = ["build", "dict_key.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-dict_key.out"
+
+[[step]]
+save = "dict_value.strata"
+from = "dict_value.st"
+
+[[step]]
+strata = ["build", "dict_value.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-dict_value.out"
+
+[[step]]
+save = "dicts_and_sets.strata"
+from = "dicts_and_sets.st"
+
+[[step]]
+strata = ["build", "dicts_and_sets.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-dicts_and_sets.out"
+
+[[step]]
+save = "list_index.strata"
+from = "list_index.st"
+
+[[step]]
+strata = ["build", "list_index.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-list_index.out"
+
+[[step]]
+save = "ord.strata"
+from = "ord.st"
+
+[[step]]
+strata = ["build", "ord.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-ord.out"
+
+[[step]]
+save = "set_assigned.strata"
+from = "set_assigned.st"
+
+[[step]]
+strata = ["build", "set_assigned.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-set_assigned.out"
+
+[[step]]
+save = "set_element.strata"
+from = "set_element.st"
+
+[[step]]
+strata = ["build", "set_element.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-set_element.out"
+
+[[step]]
+save = "string_index.strata"
+from = "string_index.st"
+
+[[step]]
+strata = ["build", "string_index.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-string_index.out"
+
+[[step]]
+save = "strings.strata"
+from = "strings.st"
+
+[[step]]
+strata = ["build", "strings.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-strings.out"
+
+[[step]]
+save = "total_strings.strata"
+from = "total_strings.st"
+
+[[step]]
+strata = ["build", "total_strings.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-total_strings.out"
+
+[[step]]
+save = "wc.strata"
+from = "wc.st"
+
+[[step]]
+strata = ["build", "wc.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/collections-wc.out"

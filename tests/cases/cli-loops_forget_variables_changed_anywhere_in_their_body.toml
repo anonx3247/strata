@@ -1,0 +1,28 @@
+# cli.rs: loops_forget_variables_changed_anywhere_in_their_body: `bump(mut n)`
+# inside a list literal changes `n`: the loop must not keep `n == 0`
+[[step]]
+save = "l.strata"
+text = '''
+fn bump(mut x: Int) -> Int {
+  x = x + 1
+  x
+}
+
+fn count() -> Int
+  ensures it == 0
+{
+  mut n := 0
+  mut i := 0
+  while i < 3 {
+    ys := [bump(mut n)]
+    i = i + 1
+  }
+  n
+}
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "verify"]
+fails = true
+has = ["✗ count"]
+lacks = ["bug in the prover"]

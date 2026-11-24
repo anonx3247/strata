@@ -173,7 +173,8 @@ fn smt_outcomes_on_std_as_in_rust() {
 /// `compiler termination` (the termination analysis written in Strata,
 /// `compiler/termination`): each function's and implementation method's
 /// verdict, and whether a contract may see through it, as `strata verify
-/// --termination` gives them, on the step programs, the repository's
+/// --termination` gives them, on the step programs (and verify.st:
+/// `to_string(x)` is `Display`'s method, not a builtin), the repository's
 /// scripts and a few std modules.
 #[test]
 fn termination_as_in_rust() {
@@ -184,7 +185,7 @@ fn termination_as_in_rust() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = scratch("termination");
     let mut files: Vec<(PathBuf, Option<String>)> = vec![];
-    for (name, text) in [("step4", include_str!("data/smt/step4.st")), ("step5", include_str!("data/smt/step5.st")), ("termination", include_str!("data/smt/termination.st"))] {
+    for (name, text) in [("step4", include_str!("data/smt/step4.st")), ("step5", include_str!("data/smt/step5.st")), ("termination", include_str!("data/smt/termination.st")), ("verify", include_str!("data/smt/verify.st"))] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
         files.push((file, None));
@@ -257,13 +258,13 @@ fn verify_chooses_checks_and_rules_as_in_rust() {
     let dir = scratch("choose");
     let pkg = dir.join("pol");
     std::fs::create_dir_all(&pkg).unwrap();
-    std::fs::write(pkg.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"core\"]\nproven = [\"core\"]\n").unwrap();
-    save(&pkg.join("core.strata"), "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
-    save(&pkg.join("main.strata"), "from core use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
+    std::fs::write(pkg.join("strata.toml"), "name = \"pol\"\n\n[verify]\nterminates = [\"*\"]\nno_recursion = [\"lib\"]\nproven = [\"lib\"]\n").unwrap();
+    save(&pkg.join("lib.strata"), "pub fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }\npub fn spin(n: Int) -> Int {\n  mut k := n\n  loop {\n    if k == 1 { break }\n    k = k - 1\n  }\n  k\n}\n");
+    save(&pkg.join("main.strata"), "from lib use fact, spin\nfn fib(n: Natural) -> Natural { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\n");
     let bad = dir.join("bad.strata");
     std::fs::write(dir.join("bad.st"), "fn f(x: Int) -> Int {\n  x + \"a\"\n}\n").unwrap();
     let _ = Command::new(STRATA).args(["--file", &bad.to_string_lossy(), "edit"]).stdin(std::fs::File::open(dir.join("bad.st")).unwrap()).output().unwrap();
-    for (file, chosen) in [(&pkg, None), (&pkg, Some("core.fact")), (&pkg, Some("core")), (&pkg, Some("fi*")), (&pkg, Some("nope")), (&bad, None)] {
+    for (file, chosen) in [(&pkg, None), (&pkg, Some("lib.fact")), (&pkg, Some("lib")), (&pkg, Some("fi*")), (&pkg, Some("nope")), (&bad, None)] {
         let mut rust_args = vec!["--file".to_string(), file.to_string_lossy().into_owned(), "verify".into(), "--no-race".into(), "--no-cache".into(), "--cases".into(), "20".into()];
         let mut ours_args = vec!["verify".to_string(), "--no-cache".into(), "--cases".into(), "20".into()];
         if let Some(c) = chosen {
@@ -316,7 +317,7 @@ fn proofs_and_statuses_follow_the_code() {
 }
 
 /// `compiler verify` when codegen can't compile one function yet (`units`:
-/// `graphemes`): the drivers are compiled together, and on an error the set
+/// an iterator held in a record's field): the drivers are compiled together, and on an error the set
 /// is split in halves until that one is alone (`compiled_drivers`, as Rust's
 /// `jit_fuzzers` since #357), so the others are still fuzzed (`sq`: floats
 /// aren't modelled, so it is fuzzed, not proven).
@@ -334,4 +335,352 @@ fn verify_fuzzes_around_what_cant_be_compiled() {
     let out = String::from_utf8_lossy(&ours.stdout);
     assert!(out.contains("~ sq                       fuzzed: 200 cases"), "{out}");
     assert!(out.contains("✓ a ") && out.contains("✓ b ") && out.contains("✓ c "), "{out}");
+}
+
+/// `byte_at(s, i)` is checked for `0 <= i < byte_len(s)`: a call that may
+/// be out of range is refuted by the solver (not proven, then caught by the
+/// cross-check, as Rust's verify still does), one inside the string is
+/// proven, and its byte is 0 to 255.
+#[test]
+fn verify_checks_byte_at_offsets() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-byte-at");
+    let file = dir.join("b.strata");
+    save(&file, include_str!("data/smt/verify_byte_at.st"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
+    let out = String::from_utf8_lossy(&ours.stdout);
+    for f in ["any_offset", "before_start", "padded_wrong"] {
+        assert!(out.contains(&format!("✗ {f:<24} Runtime violation (found by the solver)")), "{f}: {out}");
+    }
+    for f in ["inside", "slashes", "ascii_code"] {
+        assert!(out.contains(&format!("✓ {f:<24} proven")), "{f}: {out}");
+    }
+}
+
+/// One compile names every fuzz driver that can't be compiled, those whose
+/// function only calls what can't (`longer` and `longest` through `units`),
+/// each with why: `verify` leaves them all out at once, not by halving the
+/// drivers again and again.
+#[test]
+fn codegen_names_every_driver_that_cant_be_compiled() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("fuzz-uncompiled");
+    let file = dir.join("u.strata");
+    save(&file, include_str!("data/smt/verify_uncompiled.st"));
+    let o = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--fuzz-text", "a,units,longer,b,longest,sq"]).arg(&file).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let cant: Vec<&str> = out.lines().filter(|l| l.starts_with("error: can't fuzz `")).collect();
+    let why = "`: in `units`: not compiled yet: `for` over a `()`";
+    assert_eq!(cant, ["units", "longer", "longest"].map(|k| format!("error: can't fuzz `{k}{why}")), "{out}");
+}
+
+/// A function taking a capability, top-level or inside another type
+/// (`Option[Disk]`, a record or a sum holding one, a capability trait), is
+/// not fuzzed: nothing but `strata run` makes a capability.
+#[test]
+fn verify_doesnt_fuzz_what_holds_a_capability() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-capability");
+    let file = dir.join("c.strata");
+    save(&file, include_str!("data/smt/verify_capability.st"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
+    let out = String::from_utf8_lossy(&ours.stdout);
+    for (f, c) in [("top", "Disk"), ("opt", "Disk"), ("held", "Disk"), ("nested", "Disk"), ("files", "Files")] {
+        let line = format!("- {f:<24} skipped: it takes the capability `{c}`, which only `strata run` gives, so it isn't fuzzed");
+        assert!(out.lines().any(|l| l.starts_with(&line)), "{f}: {out}");
+    }
+    assert!(out.contains("~ plain                    fuzzed: 200 cases"), "{out}");
+}
+
+/// `compiler verify` on examples/traits.strata reports what Rust's verify
+/// does: its laws proven or refuted, and `Sku`'s values (a `distinct`
+/// string matching a regex) generated from its regex's samples, not as
+/// strings checked as if they were `Sku` blocks (which took gigabytes).
+#[test]
+fn verify_traits_example_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // (through `strata verify --compare`, which loads std's precompiled
+    // library into the drivers: compiling std into them takes minutes)
+    let file = root.join("examples/traits.strata");
+    let o = Command::new(STRATA).current_dir(root).arg("--file").arg(&file).args(["verify", "--compare", "--no-cache"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("compare: they agree"), "{out}{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// `xs = drop(xs, 2)` under 100 `if`s: each `if` makes the list "the one
+/// before, or the one before less two", and the encoder shares the one
+/// before (its length, its elements, whether it is positional) instead of
+/// following both branches, which doubled the work at each `if` (7 `if`s
+/// went past 5 GB). It must finish in seconds.
+#[test]
+fn smt_shares_lists_both_branches_drop_from() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("smt-ifs");
+    let mut text = String::from("fn f(args: List[String]) -> String {\n  mut files := args\n");
+    for k in 1..=100 {
+        text += &format!("  if get(files, 0) ?? \"\" == \"--o{k}\" {{\n    files = drop(files, 2)\n  }}\n");
+    }
+    text += "  get(files, 0) ?? \"\"\n}\n";
+    let file = dir.join("ifs.strata");
+    save(&file, &text);
+    let mut child = Command::new(compiler::exe()).current_dir(root).arg("smt").arg(&file).env("STRATA_CACHE", &dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("compiler smt on 100 ifs ran past 10 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("fn f"), "{}", String::from_utf8_lossy(&o.stdout));
+}
+
+/// `strata verify --compare` (and its other arguments) on `file`: Rust's
+/// verify and `compiler verify` must agree, line for line.
+fn compare(file: &Path, args: &[&str]) {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let o = Command::new(STRATA).current_dir(root).arg("--file").arg(file).arg("verify").args(args).args(["--compare", "--no-cache"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("compare: they agree"), "{}: {out}{}", file.display(), String::from_utf8_lossy(&o.stderr));
+}
+
+/// Inputs the fuzzer can't make (a sorted list as a refinement, a
+/// `requires` few values meet) are made by the solver, and the function is
+/// run on them, as Rust's verify does; `s.graphemes()` is std.unicode's
+/// (its `len` is `FiniteIterator`'s method); `--smt` shows termination's
+/// queries too.
+#[test]
+fn verify_solver_inputs_graphemes_and_queries_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let dir = scratch("verify-parity");
+    let inputs = dir.join("inputs.strata");
+    save(
+        &inputs,
+        "type Sorted = List[Int] where len(it) >= 5 && all(1..len(it), i -> it[i - 1] < it[i])
+
+fn zero(xs: Sorted) -> Int
+  ensures it >= 0 {
+  fold(xs, 0, (a, b) -> a * 1)
+}
+
+fn tight(x: Int, y: Int) -> Int
+  requires x * 3 == y && 1000 < y && y < 1010
+  ensures it >= 0 {
+  fold([x], 0, (a, b) -> a * 1)
+}
+",
+    );
+    compare(&inputs, &[]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&inputs).env("STRATA_CACHE", &dir).output().unwrap();
+    let out = String::from_utf8_lossy(&ours.stdout);
+    assert!(out.contains("~ zero                     fuzzed: 20 cases") && out.contains("~ tight                    fuzzed: 3 cases"), "{out}");
+    let units = dir.join("units.strata");
+    save(&units, "fn units(s: String) -> Natural { len(s.graphemes()) }\n");
+    compare(&units, &[]);
+    let terms = dir.join("terms.strata");
+    save(
+        &terms,
+        "fn count(n: Natural) -> Natural {
+  if n == 0 {
+    0
+  } else {
+    1 + count(n - 1)
+  }
+}
+
+fn up_to(n: Int) -> Int {
+  mut i := 0
+  while i < n {
+    i += 1
+  }
+  i
+}
+
+fn spin(n: Int) -> Int {
+  if n == 0 {
+    0
+  } else {
+    spin(n + 1)
+  }
+}
+",
+    );
+    compare(&terms, &["--smt"]);
+}
+
+/// `xs = drop(xs, 1)` under 100 `if`s, returned as a `List[Natural]`:
+/// whether every element is known valid looks at each list once, not once
+/// per path (both branches of each `if` reach the list before). It agrees
+/// with Rust on 8 `if`s (Rust's own encoder goes past gigabytes from 20)
+/// and finishes in seconds on 100.
+#[test]
+fn smt_valid_lists_shared_by_both_branches() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("smt-valid-ifs");
+    let program = |n: usize| {
+        let mut text = String::from("fn f(args: List[Natural], k: Int) -> List[Natural] {\n  mut xs := args\n");
+        for i in 1..=n {
+            text += &format!("  if k == {i} {{\n    xs = drop(xs, 1)\n  }}\n");
+        }
+        text + "  xs\n}\n"
+    };
+    let small = dir.join("small.strata");
+    save(&small, &program(8));
+    compare(&small, &["--obligations"]);
+    let file = dir.join("ifs.strata");
+    save(&file, &program(100));
+    let mut child = Command::new(compiler::exe()).current_dir(root).arg("smt").arg(&file).env("STRATA_CACHE", &dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("compiler smt on 100 ifs ran past 10 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    assert!(String::from_utf8_lossy(&o.stdout).contains("proven result of `f`: List[Natural]"), "{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+}
+
+/// A function taking core.values' `Raw` (a compiled value's address) is
+/// assumed, never run on made-up values nor on a solver's counterexample
+/// (replaying one crashed on compiler/codegen's `text_at`), as Rust's
+/// verify has it; a package's `[native]` paths that are absolute are kept
+/// as they are (the compiler package's LLVM headers).
+#[test]
+fn verify_doesnt_run_raw_and_finds_absolute_native_paths() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-raw");
+    let pkg = dir.join("rw");
+    std::fs::create_dir_all(pkg.join("c")).unwrap();
+    let include = dir.join("include");
+    std::fs::create_dir_all(&include).unwrap();
+    std::fs::write(include.join("seven.h"), "#define SEVEN 7\n").unwrap();
+    std::fs::write(pkg.join("c/lib.c"), "#include <seven.h>\n#include <stdint.h>\nint64_t seven(void) { return SEVEN; }\n").unwrap();
+    std::fs::write(pkg.join("strata.toml"), format!("name = \"rw\"\n\n[native]\nsources = [\"c/lib.c\"]\ninclude_dirs = [\"{}\"]\n\n[values]\nread = true\n", include.display())).unwrap();
+    save(
+        &pkg.join("main.strata"),
+        "fn first_word(r: Raw) -> Int
+  ensures it >= 0 {
+  r.word(0).to_int()
+}
+
+extern c fn seven() -> I64
+
+fn plus(n: Int) -> Int
+  ensures it != n {
+  n + seven().to_int()
+}
+",
+    );
+    compare(&pkg, &[]);
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&pkg).env("STRATA_CACHE", &dir).output().unwrap();
+    let (out, err) = (String::from_utf8_lossy(&ours.stdout), String::from_utf8_lossy(&ours.stderr));
+    assert!(out.contains("first_word               assumed: it reads compiled values (`Raw`)"), "{out}{err}");
+    assert!(!err.contains("failed on the package's C"), "{err}");
+}
+
+/// A generic function is fuzzed at the types Rust's verify picks
+/// (`test_instance`: an unbounded type parameter is `Int`, a bounded one an
+/// implementation of its bounds), with the same cases, so the same
+/// counterexample; a function taking a function is given ones returning a
+/// value generated once, whatever they are given (Rust's verify doesn't
+/// fuzz it: the one difference).
+#[test]
+fn verify_fuzzes_generic_functions_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-generic");
+    let file = dir.join("g.strata");
+    save(&file, "trait Sized2 {
+  fn size(self) -> Int
+}
+
+impl Sized2 for String {
+  fn size(self) -> Int {
+    byte_len(self)
+  }
+}
+
+fn gen_sq[T](xs: List[T], x: Float) -> Float
+  ensures it >= 0.0
+{
+  x * x
+}
+
+fn biggest[T: Sized2](xs: List[T], f: Float) -> Float
+  ensures it >= 0.0
+{
+  mut m := 0
+  for x in xs {
+    if x.size() > m {
+      m = x.size()
+    }
+  }
+  f * f + float(m)
+}
+
+fn wrong[T](xs: List[T], x: Float) -> Float
+  ensures it > x
+{
+  x * 2.0 + float(len(xs))
+}
+
+fn apply(f: (Int) -> Int, x: Int) -> Int
+  ensures it == f(x)
+{
+  f(x)
+}
+");
+    let o = Command::new(STRATA).current_dir(root).arg("--file").arg(&file).args(["verify", "--compare", "--no-cache"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("only in strata: ~ apply                    fuzzed: 200 cases"), "{out}");
+    // (the rest of `apply`'s verdict, its solver's line, under it)
+    assert!(out.contains("only in rust: - apply                    skipped: not compiled"), "{out}");
+    assert!(out.contains("compare: 1 only in rust, 2 only in strata"), "{out}");
+    let ours = Command::new(STRATA).current_dir(root).arg("--file").arg(&file).args(["verify", "--strata", "--no-cache"]).output().unwrap();
+    let ours = String::from_utf8_lossy(&ours.stdout);
+    for f in ["gen_sq", "biggest"] {
+        assert!(ours.contains(&format!("~ {f:<24} fuzzed: 200 cases")), "{ours}");
+    }
+    assert!(ours.contains("✗ wrong                    Ensures violation (found by the fuzzer)"), "{ours}");
 }

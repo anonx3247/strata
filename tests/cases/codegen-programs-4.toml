@@ -1,0 +1,160 @@
+# codegen.rs: compiled_programs_do_what_rust_compiled_ones_do (part 4):
+# built, run, and compared with what the build of llvm.rs printed
+# (recorded in tests/data/build/expected/codegen-programs-NAME.out)
+
+[[step]]
+save = "assert_records.strata"
+from = "assert_records.st"
+
+[[step]]
+strata = ["build", "assert_records.strata", "-o", "assert_records"]
+
+[[step]]
+run = ["./assert_records"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-assert_records.out"
+
+[[step]]
+save = "counting.strata"
+from = "counting.st"
+
+[[step]]
+strata = ["build", "counting.strata", "-o", "counting"]
+
+[[step]]
+run = ["./counting"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-counting.out"
+
+[[step]]
+save = "held_operand.strata"
+from = "held_operand.st"
+
+[[step]]
+strata = ["build", "held_operand.strata", "-o", "held_operand"]
+
+[[step]]
+run = ["./held_operand"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-held_operand.out"
+
+[[step]]
+save = "lists.strata"
+from = "lists.st"
+
+[[step]]
+strata = ["build", "lists.strata", "-o", "lists"]
+
+[[step]]
+run = ["./lists"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-lists.out"
+
+[[step]]
+save = "list_index_out_of_range.strata"
+from = "list_index_out_of_range.st"
+
+[[step]]
+strata = ["build", "list_index_out_of_range.strata", "-o", "list_index_out_of_range"]
+
+[[step]]
+run = ["./list_index_out_of_range"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-list_index_out_of_range.out"
+
+[[step]]
+save = "closures_and_generics.strata"
+from = "closures_and_generics.st"
+
+[[step]]
+strata = ["build", "closures_and_generics.strata", "-o", "closures_and_generics"]
+
+[[step]]
+run = ["./closures_and_generics"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-closures_and_generics.out"
+
+[[step]]
+save = "generic_result_wanted.strata"
+from = "generic_result_wanted.st"
+
+[[step]]
+strata = ["build", "generic_result_wanted.strata", "-o", "generic_result_wanted"]
+
+[[step]]
+run = ["./generic_result_wanted"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-generic_result_wanted.out"
+
+[[step]]
+save = "builtins_sets_dicts_formats.strata"
+from = "builtins_sets_dicts_formats.st"
+
+[[step]]
+strata = ["build", "builtins_sets_dicts_formats.strata", "-o", "builtins_sets_dicts_formats"]
+
+[[step]]
+run = ["./builtins_sets_dicts_formats"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-builtins_sets_dicts_formats.out"
+
+[[step]]
+save = "unicode.strata"
+from = "unicode.st"
+
+[[step]]
+strata = ["build", "unicode.strata", "-o", "unicode"]
+
+[[step]]
+run = ["./unicode"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-unicode.out"
+
+[[step]]
+save = "methods_and_traits.strata"
+from = "methods_and_traits.st"
+
+[[step]]
+strata = ["build", "methods_and_traits.strata", "-o", "methods_and_traits"]
+
+[[step]]
+run = ["./methods_and_traits"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-methods_and_traits.out"
+
+[[step]]
+save = "failures_as_values.strata"
+from = "failures_as_values.st"
+
+[[step]]
+strata = ["build", "failures_as_values.strata", "-o", "failures_as_values"]
+
+[[step]]
+run = ["./failures_as_values"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-failures_as_values.out"
+
+[[step]]
+save = "main_result_code.strata"
+from = "main_result_code.st"
+
+[[step]]
+strata = ["build", "main_result_code.strata", "-o", "main_result_code"]
+
+[[step]]
+run = ["./main_result_code"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-main_result_code.out"
+
+[[step]]
+save = "mutation.strata"
+from = "mutation.st"
+
+[[step]]
+strata = ["build", "mutation.strata", "-o", "mutation"]
+
+[[step]]
+run = ["./mutation"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-mutation.out"
+

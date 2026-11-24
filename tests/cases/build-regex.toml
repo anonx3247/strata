@@ -1,0 +1,39 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "bad_regex.strata"
+from = "bad_regex.st"
+
+[[step]]
+strata = ["build", "bad_regex.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/regex-bad_regex.out"
+
+[[step]]
+save = "regex.strata"
+from = "regex.st"
+
+[[step]]
+strata = ["build", "regex.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/regex-regex.out"
+
+[[step]]
+save = "shown_functions.strata"
+from = "shown_functions.st"
+
+[[step]]
+strata = ["build", "shown_functions.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/regex-shown_functions.out"

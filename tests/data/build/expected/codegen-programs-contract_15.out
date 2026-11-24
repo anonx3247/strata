@@ -1,0 +1,4 @@
+fault (Refinement): argument `xs` of `total`: [1]: -2 does not satisfy `Natural` (where it >= 0)
+    stack: main -> total
+
+--- exit 101

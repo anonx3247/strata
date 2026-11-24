@@ -2132,6 +2132,37 @@ fn leaves_out_what_verify_proved() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A package's default build (compiler/codegen) leaves out what `compiler
+/// verify` proved of it, as a script's does (`compiler proofs DIR`); with
+/// `--all-checks` they all stay.
+#[test]
+fn package_build_leaves_out_what_verify_proved() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("package-proofs");
+    let pkg = dir.join("pk");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("strata.toml"), "name = \"pk\"\n").unwrap();
+    save(&pkg.join("util.strata"), "pub fn second(xs: List[Int]) -> Int\n    requires len(xs) >= 2\n{\n    xs[1]\n}\n");
+    save(&pkg.join("main.strata"), "use util\n\nfn pick(xs: List[Int], i: Int) -> Int\n    requires 0 <= i && i < len(xs)\n{\n    xs[i]\n}\n\nfn main() {\n    print(pick([1, 2, 3], 1) + util.second([4, 5]))\n}\n");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let build = |args: &[&str]| {
+        let o = Command::new(STRATA).current_dir(&pkg).args(args).env_remove("STRATA_BACKEND").env("STRATA_COMPILER", root.join("compiler")).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr), o.status.success())
+    };
+    let has = |exe: &str, text: &str| std::fs::read(pkg.join(exe)).unwrap().windows(text.len()).any(|w| w == text.as_bytes());
+    let (out, ok) = build(&["build", ".", "-o", "fast"]);
+    assert!(ok && out.contains("(compiler/codegen)"), "{out}");
+    let (out, ok) = build(&["build", ".", "-o", "slow", "--all-checks"]);
+    assert!(ok && out.contains("(compiler/codegen)"), "{out}");
+    assert_eq!(outcome(&pkg.join("fast")).0, "7\n");
+    for msg in ["precondition of `pick`", "precondition of `util.second`"] {
+        assert!(!has("fast", msg) && has("slow", msg), "{msg}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A package calling C through `extern c` (its `[native]` C file and libm):
 /// sized integers, floats, booleans and strings across, handles (an
 /// `Option` of one for NULL), `mut` out-pointers, contracts.
@@ -2520,6 +2551,731 @@ fn core_rt_compiled_by_codegen() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// core.rt's strings and integers (runtime.c's, moved to Strata): programs
+/// built with core.rt (compiled by compiler/codegen) and with the C
+/// runtime's versions give the same output, faults (their messages, exit
+/// codes, inside a supervised task too) and check mode's report (the same
+/// objects made, freed and left alive).
+#[test]
+fn core_rt_strings_and_integers_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    let dir = scratch("core-rt-strings");
+    let rt = dir.join("core_rt.ll");
+    std::fs::write(&rt, &ir).unwrap();
+    // each program's output, error output and exit code, with core.rt and with C
+    let run = |name: &str, text: &str, sides: &[bool]| -> Vec<String> {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
+        let ll = dir.join(format!("{name}.ll"));
+        std::fs::write(&ll, &prog.stdout).unwrap();
+        let mut outs = vec![];
+        for &with_rt in sides {
+            let exe = dir.join(format!("{name}-{}", if with_rt { "rt" } else { "c" }));
+            let mut c = Command::new("clang");
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(root.join("src/llvm/runtime.c"));
+            if with_rt {
+                c.arg("-DSTRATA_CORE_RT").arg(&rt);
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+            outs.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+        }
+        outs
+    };
+    let both = |name: &str, text: &str| -> String {
+        let mut outs = run(name, text, &[true, false]);
+        assert_eq!(outs[0], outs[1], "{name}: core.rt (left) and C (right) differ");
+        outs.remove(0)
+    };
+    let out = both("strings", CORE_RT_STRINGS);
+    assert!(out.starts_with("héllo, wörld ∑ 😀\n23 true false [\"\", \"ab\", \"abc\", \"b\", \"é\"]\n"), "{out}");
+    assert!(out.contains("HÉLLO, WÖRLD ∑ 😀 σας οδος STRASSE\n"), "{out}");
+    assert!(out.contains("byte 10 out of range (3 bytes)\n0\nchr: -1 is not a character\nord needs a single character, got \"ab\\n\"\n-1\n"), "{out}");
+    assert!(out.contains("memory: ") && out.contains(" 0 live"), "{out}");
+    // a fault ending the program: its message, and what was left alive
+    for (i, e) in ["byte_at(\"abc\", 3)", "chr(55296)", "ord(\"\\n\\u{1}x\")"].iter().enumerate() {
+        let out = both(&format!("fault{i}"), &format!("fn main() {{\n  print(\"start\")\n  x := {e}\n  print(x)\n}}\n"));
+        assert!(out.contains("fault (Runtime): ") && out.ends_with("Some(101)"), "{out}");
+    }
+    let out = both("integers", CORE_RT_INTEGERS);
+    assert!(out.starts_with("123456789012345678901234567890 -123456789012345678901234567890 4611686018427387904 -4611686018427387905 15241578753238836750495351562536198787501905199875019052100 0\n"), "{out}");
+    // Euclidean: the remainder is never negative
+    assert!(out.contains("\n1 4611686018427387904 17636684144620811271604938270 3 -17636684144620811271604938270 4\n-17636684144620811271604938270 3 17636684144620811271604938271 4 1 123456789012345678901234567890\n-4 1 -3 1 0\n"), "{out}");
+    assert!(out.contains("\n1180591620717411303424 -36893488147419103232 15432098626543209862654320986 -15432098626543209862654320987 0 -1 11529215046068469760 -13835058055282163712\n"), "{out}");
+    assert!(out.contains("\n6148914691236517205 5 4611686018427387904 3 9223372036854775807 18446744073709551616 -9223372036854775808\n"), "{out}");
+    assert!(out.contains("division by zero\n0\ndivision by zero\n0\n`<<` by a negative number of bits\n0\n`300` doesn't fit in `U8`\n0\n`-123456789012345678901234567890` doesn't fit in `U8`\n0\n`<<` by a negative number of bits\n0\n"), "{out}");
+    // -2^62 / -1 is 2^62, a big integer (C read it as one's address and
+    // crashed, until this test)
+    let out = both("past_small", "fn main() {\n  x := byte_len(\"\") - 4611686018427387904\n  print(x / -1)\n}\n");
+    assert!(out.starts_with("4611686018427387904\n") && out.ends_with("Some(0)"), "{out}");
+    for (i, e) in ["1 << -1", "5 / (byte_len(\"\") * 1)", "7 % (byte_len(\"\") * 1)", "1 << 5000000000", "to_u8(-1)", "to_i8(128)"].iter().enumerate() {
+        let out = both(&format!("int_fault{i}"), &format!("fn main() {{\n  print(\"start\")\n  x := {e}\n  print(x)\n}}\n"));
+        assert!(out.contains("fault (") && out.ends_with("Some(101)"), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const CORE_RT_INTEGERS: &str = r#"fn div0(a: Int, b: Int) -> Int {
+  a / b
+}
+
+fn mod0(a: Int, b: Int) -> Int {
+  a % b
+}
+
+fn shift(a: Int, n: Int) -> Int {
+  a << n
+}
+
+fn fit(n: Int) -> U8 {
+  to_u8(n)
+}
+
+fn word_shift(a: I64, n: I64) -> I64 {
+  a << n
+}
+
+fn main() {
+  big := 123456789012345678901234567890
+  small := 4611686018427387903
+  print(f"{big} {-big} {small + 1} {-small - 2} {big * big} {big - big}")
+  print(f"{big + 1 - big} {(small + 1) * 2 / 2} {(big + 3) / 7} {(big + 3) % 7} {-big / 7} {(-big - 3) % 7}")
+  print(f"{(big + 3) / -7} {(big + 3) % -7} {(-big - 3) / -7} {(-big - 3) % -7} {big / big} {big % (big + 1)}")
+  print(f"{-7 / 2} {-7 % 2} {7 / -2} {7 % -2} {-4611686018427387904 % -1}")
+  print(f"{abs(-big)} {abs(-4611686018427387904)} {big == big + 0} {big < big + 1} {-big < big} {big > small}")
+  print(f"{big & 255} {big | 1} {big ^ big} {-big & 65535} {-big | 3} {-big ^ 12345678901234567890123}")
+  print(f"{1 << 70} {-1 << 65} {big >> 3} {-big >> 3} {big >> 200} {-big >> 200} {5 << 61} {-3 << 62}")
+  print(f"{parse_int("123456789012345678901234567890123")} {parse_int("-1_000")} {parse_int("+0")} {parse_int("1x")}")
+  print(f"{to_i64(-9223372036854775808)} {to_u64(18446744073709551615)} {wrap_u64(-1)} {wrap_i64(big)}")
+  let x: U64 = to_u64(18446744073709551615)
+  let y: I64 = to_i64(-9223372036854775807)
+  print(f"{x / to_u64(3)} {x % to_u64(10)} {y / to_i64(-2)} {y % to_i64(10)} {y / to_i64(-1)} {to_int(x) + 1} {to_int(y) - 1}")
+  print(f"{float(big)} {float(-small - 2)}")
+  scope {
+    h := supervised spawn div0(5, 0)
+    print(await h except p {
+      print(p.message)
+      0
+    })
+    g := supervised spawn mod0(big, 0)
+    print(await g except p {
+      print(p.message)
+      0
+    })
+    k := supervised spawn shift(3, -1)
+    print(await k except p {
+      print(p.message)
+      0
+    })
+    m := supervised spawn fit(300)
+    print(await m except p {
+      print(p.message)
+      to_u8(0)
+    })
+    n := supervised spawn fit(-big)
+    print(await n except p {
+      print(p.message)
+      to_u8(0)
+    })
+    w := supervised spawn word_shift(to_i64(1), to_i64(-2))
+    print(await w except p {
+      print(p.message)
+      to_i64(0)
+    })
+  }
+}
+"#;
+
+const CORE_RT_STRINGS: &str = r#"fn bad_byte(s: String) -> Int {
+  byte_at(s, 10)
+}
+
+fn bad_chr(n: Int) -> String {
+  chr(n)
+}
+
+fn bad_ord(s: String) -> Int {
+  ord(s)
+}
+
+fn main() {
+  s := "  héllo, wörld ∑ 😀  "
+  t := trim(s)
+  print(t)
+  print(f"{byte_len(t)} {t == "héllo, wörld ∑ 😀"} {t == "x"} {sort(["b", "abc", "ab", "", "é"])}")
+  print(t + "!" + s)
+  print(f"{byte_slice(t, 2, 9)} {byte_slice(t, -4, 3)} {byte_slice(t, 5, 2)}")
+  print(f"{ord("∑")} {chr(128512)} {chr(233)} {chr(65)} {byte_at(t, 1)}")
+  print(debug("a\"b\\n\tc\\"))
+  print(f"{to_upper(t)} {to_lower("ΣΑΣ ΟΔΟΣ")} {to_upper("straße")}")
+  print(f"{is_digit("123")} {is_alpha("abc1")} {is_alpha("éa")} {is_space(" \t")} {is_digit("")}")
+  print(f"{parse_int(" 12_345 ")} {parse_int("x")} {parse_int("-99999999999999999999999")}")
+  scope {
+    h := supervised spawn bad_byte("abc")
+    print(await h except p {
+      print(p.message)
+      0
+    })
+    g := supervised spawn bad_chr(-1)
+    print(await g except p { p.message })
+    k := supervised spawn bad_ord("ab\n")
+    print(await k except p {
+      print(p.message)
+      -1
+    })
+  }
+  print(f"{bad_ord("é")} {bad_chr(97)}")
+}
+"#;
+
+/// core.list, core.fmt and core.float (runtime.c's lists, format specs
+/// and floats, moved to Strata): programs built by each code generator
+/// (compiler/codegen, and llvm.rs, whose in-place changes of lists use
+/// `strata_list_owned` / `_put` / `_insert` / `_remove_at`), with the
+/// runtime in Strata (its own compile of core.rt) and with the C runtime's
+/// versions, give the same output, faults and check mode's report.
+#[test]
+fn core_rt_lists_formats_and_floats_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-lists");
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    let rt_codegen = dir.join("core_rt_codegen.ll");
+    std::fs::write(&rt_codegen, &ir).unwrap();
+    let rt_rust = dir.join("core_rt_rust.ll");
+    let o = Command::new(STRATA).current_dir(root).arg("build-core").arg("-o").arg(&rt_rust).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // a program's output, error output and exit code, by each code
+    // generator, with core.rt and with C: the same
+    let both = |name: &str, text: &str| -> String {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let mut outs = vec![];
+        for rust in [false, true] {
+            let ll = dir.join(format!("{name}-{}.ll", if rust { "rust" } else { "codegen" }));
+            if rust {
+                let o = Command::new(STRATA).current_dir(root).args(["build", "--rust", "--no-verify", "--emit-llvm"]).arg(&file).arg("-o").arg(&ll).output().unwrap();
+                assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            } else {
+                let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
+                std::fs::write(&ll, &prog.stdout).unwrap();
+            }
+            let mut pair = vec![];
+            for with_rt in [true, false] {
+                let exe = dir.join(format!("{name}-{rust}-{with_rt}"));
+                let mut c = Command::new("clang");
+                c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(root.join("src/llvm/runtime.c"));
+                if with_rt {
+                    c.arg("-DSTRATA_CORE_RT").arg(if rust { &rt_rust } else { &rt_codegen });
+                }
+                let o = c.arg("-lm").output().unwrap();
+                assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+                let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+                pair.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+            }
+            assert_eq!(pair[0], pair[1], "{name} ({}): core.rt (left) and C (right) differ", if rust { "llvm.rs" } else { "compiler/codegen" });
+            outs.push(pair.remove(0));
+        }
+        outs.remove(0)
+    };
+    let out = both("lists", CORE_RT_LISTS);
+    assert!(out.starts_with("100 101 1 2 9801\nx y w49 101 true true\n"), "{out}");
+    assert!(out.contains("\n32 Some(184) 51 true false\n[1, 3, 5, 9] [\"w0\", \"w1\", \"w10\"]\n"), "{out}");
+    let out = both("formats", CORE_RT_FORMATS);
+    assert!(out.starts_with("[   42] [42   ] [  42  ] [00042] [-0007] [+42] [-7] [+00042]\n[héllo     ] [     héllo] [  héllo  ] [**héllo**] [hélloééé] [héllo] [🙂🙂🙂héllo]\n"), "{out}");
+    let out = both("floats", CORE_RT_FLOATS);
+    assert!(out.starts_with("0.1 0.100 0\n1.0 1.000 1\n1e+21 1000000000000000000000.000 1000000000000000000000\n1.5e-7 0.000 0\n"), "{out}");
+    assert!(out.contains("\n2.67 0 2 2 -0.00 100000000000000000000.00 123.4560000000 0.000 1.00000000000000000000\n1.5 0.5 1.5 0.5 1.4142135623730951 0.0\n"), "{out}");
+    assert!(out.contains("\n2.4703282292062327e-324 -> Some(0.0)\n2.4703282292062328e-324 -> Some(5e-324)\n1.7976931348623158e308 -> Some(1.7976931348623157e+308)\n1.7976931348623159e308 -> None\n"), "{out}");
+    assert!(out.contains(" is too large for a Float\n0.0\n") && out.contains(" is not a finite number\n0.0\nsqrt of negative number -2.5\n"), "{out}");
+    // floats of every exponent: shown, read back, with 4 decimals
+    let out = both("float_bits", CORE_RT_FLOAT_BITS);
+    assert!(out.contains("not read back: 0\n"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const CORE_RT_LISTS: &str = r#"fn main() {
+  mut xs := []
+  for i in 0..100 {
+    xs = push(xs, i * i)
+  }
+  a := push(xs, 1)
+  b := push(xs, 2)
+  print(f"{len(xs)} {len(a)} {a[100]} {b[100]} {xs[99]}")
+  mut words := []
+  for i in 0..50 {
+    words = push(words, f"w{i}")
+  }
+  shared := push(words, "x")
+  other := push(words, "y")
+  print(f"{shared[50]} {other[50]} {words[49]} {len(words + shared)} {[] + words == words} {words + [] == words}")
+  big := [123456789012345678901234567890, 2, -98765432109876543210987654321]
+  bigs := big + big
+  print(f"{bigs} {push(big, 7)} {big[1..3]} {bigs[2..5]} {range(3, 8)} {range(5, 2)}")
+  sl := words[10..20]
+  print(f"{sl} {push(sl, "z")} {sl + sl}")
+  mut d := Dict[String, Int] {}
+  for i in 0..200 {
+    d = insert(d, f"k{i % 37}", i)
+  }
+  mut s := Set[Int] {}
+  for i in 0..300 {
+    s = insert(s, (i * 7) % 101)
+  }
+  for i in 0..50 {
+    s = remove(s, i)
+    d = remove(d, f"k{i % 5}")
+  }
+  print(f"{len(d)} {get(d, "k36")} {len(s)} {contains(s, 77)} {contains(s, 3)}")
+  print(f"{sort([5, 3, 9, 1])} {sort(words)[0..3]}")
+}
+"#;
+
+const CORE_RT_FLOATS: &str = r#"fn big_float(n: Int) -> Float {
+  float(n)
+}
+
+fn times(a: Float, b: Float) -> Float {
+  a * b
+}
+
+fn root(x: Float) -> Float {
+  sqrt(x)
+}
+
+fn pf(s: String) -> Float {
+  parse_float(s) ?? 0.0
+}
+
+fn main() {
+  xs := [0.1, 1.0, 1000000000000000000000.0, 0.00000015, 123456.789, -0.0, 0.0, 0.3, 1.0 / 3.0, 100.0, 10000000000000000.0, 1000000000000000.0, 12345678901234567.0, 0.000001, 0.0001, -2.5, pf("3.0e-310"), pf("1.7976931348623157e308"), pf("5.0e-324"), pf("2.2250738585072014e-308"), 9007199254740993.0, 0.1 + 0.2]
+  for x in xs {
+    print(f"{x} {x:.3} {x:.0}")
+  }
+  print(f"{2.675:.2} {0.5:.0} {1.5:.0} {2.5:.0} {-0.001:.2} {100000000000000000000.0:.2} {123.456:.10} {0.000123:.3} {1.0:.20}")
+  print(f"{7.5 % 2.0} {-7.5 % 2.0} {7.5 % -2.0} {-7.5 % -2.0} {sqrt(2.0)} {sqrt(0.0)}")
+  print(f"{floor(3.7)} {ceil(-3.2)} {round(2.5)} {floor(100000000000000000000.0)} {round(-123456789012345678901234.0)} {floor(-4611686018427387904.0)}")
+  print(f"{float(123456789012345678901234567890)} {float(-98765432109876543210987654321098765)} {float(9007199254740993)} {float(4611686018427387905)}")
+  for s in ["1e400", "1e-400", "  -0.0 ", ".5", "5.", "1e", "abc", "2.2250738585072011e-308", "4.9e-324", "2.4703282292062327e-324", "2.4703282292062328e-324", "1.7976931348623158e308", "1.7976931348623159e308", "123456789012345678901234567890e-10", "-1.5E+3", "0.1", "+7", "1_0", "9007199254740993", "1e00000000000000000000001"] {
+    print(f"{s} -> {parse_float(s)}")
+  }
+  print(f"{debug(0.1)} {[1.5, -2.0]} {true} {false}")
+  mut huge := 1
+  for _ in 0..400 {
+    huge = huge * 10
+  }
+  scope {
+    h := supervised spawn big_float(huge)
+    print(await h except p {
+      print(p.message)
+      0.0
+    })
+    g := supervised spawn times(pf("1.0e300"), pf("1.0e300"))
+    print(await g except p {
+      print(p.message)
+      0.0
+    })
+    k := supervised spawn root(-2.5)
+    print(await k except p {
+      print(p.message)
+      0.0
+    })
+  }
+}
+"#;
+
+const CORE_RT_FLOAT_BITS: &str = r#"fn main() {
+  mut seed := 88172645463325252
+  mut bad := 0
+  for i in 0..3000 {
+    seed = (seed * 6364136223846793005 + 1442695040888963407) % 18446744073709551616
+    // every exponent, and small ones and near-powers-of-two often
+    bits := if i % 3 == 0 {
+      seed % 9007199254740992 + (i % 2047) * 4503599627370496
+    } else {
+      seed
+    }
+    match float_from_bits(bits) {
+      Some(x) => {
+        s := to_string(x)
+        back := parse_float(s) ?? 0.0
+        if back != x {
+          bad = bad + 1
+        }
+        if i % 7 == 0 {
+          print(f"{s} {x:.4} {float_bits(back) == float_bits(x)}")
+        } else {
+          print(s)
+        }
+      },
+      None => print("nan"),
+    }
+  }
+  print(f"not read back: {bad}")
+}
+"#;
+
+const CORE_RT_FORMATS: &str = r#"fn main() {
+  n := 42
+  m := -7
+  s := "héllo"
+  print(f"[{n:5}] [{n:<5}] [{n:^6}] [{n:05}] [{m:05}] [{n:+}] [{m:+}] [{n:+06}]")
+  print(f"[{s:10}] [{s:>10}] [{s:^9}] [{s:*^9}] [{s:é<8}] [{s:2}] [{s:🙂>8}]")
+  print(f"[{123456789012345678901234567890:40}] [{true:>7}]")
+}
+"#;
+
+/// `compiler codegen --core-rt` checks the runtime before compiling it: a
+/// function of one of its modules that allocates (`Int` arithmetic: two
+/// literals added, then compared with a word) is an error, not compiled (Rust's `strata
+/// build-core` doesn't check yet).
+#[test]
+fn core_rt_that_doesnt_check_isnt_compiled() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-check");
+    // a copy of core/ (and the prelude codegen reads) with one bad function
+    let core = dir.join("core");
+    std::fs::create_dir_all(&core).unwrap();
+    for e in std::fs::read_dir(root.join("core")).unwrap() {
+        let e = e.unwrap();
+        std::fs::copy(e.path(), core.join(e.file_name())).unwrap();
+    }
+    std::fs::create_dir_all(dir.join("src/llvm")).unwrap();
+    std::fs::copy(root.join("src/llvm/prelude.strata"), dir.join("src/llvm/prelude.strata")).unwrap();
+    let text = Command::new(STRATA).current_dir(root).args(["--file", "core", "render", "--rust", "core.gen"]).output().unwrap();
+    let text = String::from_utf8_lossy(&text.stdout).into_owned() + "\nfn too_big(x: I64) -> Bool {\n  x < 1023 + 62\n}\n";
+    let mut edit = Command::new(STRATA).current_dir(&dir).args(["--file", "core/", "edit", "gen"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    std::io::Write::write_all(edit.stdin.as_mut().unwrap(), text.as_bytes()).unwrap();
+    assert!(edit.wait_with_output().unwrap().status.success());
+    let out = Command::new(compiler::exe()).current_dir(&dir).args(["codegen", "--core-rt"]).output().unwrap();
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.lines().any(|l| l.starts_with("error: in core.gen.too_big: core.rt can't allocate")), "{out}");
+    assert!(!out.contains("define "), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// core.gen and core.fault (runtime.c's generators of values and the text
+/// of a fault's call stack, moved to Strata): a test's mocked values (built
+/// by compiler/codegen, run through `strata_test` as the JIT runs a test)
+/// and programs faulting deep in recursions (built by both code
+/// generators) do the same with the runtime in Strata and with C: the same
+/// values, messages, call stacks (`down (101 times)`, ` -> ...` past the
+/// runs kept) and check mode's report.
+#[test]
+fn core_rt_generators_and_stacks_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-gen");
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    let rt_codegen = dir.join("core_rt_codegen.ll");
+    std::fs::write(&rt_codegen, &ir).unwrap();
+    let rt_rust = dir.join("core_rt_rust.ll");
+    let o = Command::new(STRATA).current_dir(root).arg("build-core").arg("-o").arg(&rt_rust).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // a test run as the JIT runs one (`strata_test`), from a C `main`
+    let harness = dir.join("harness.c");
+    std::fs::write(&harness, HARNESS).unwrap();
+    // IR (`ll`) with C's runtime, plus `extra` files, with core.rt (`rt`) and
+    // without: their output, error output and exit code, the same
+    let run_both = |name: &str, ll: &Path, rt: &Path, extra: &[&Path]| -> String {
+        let mut pair = vec![];
+        for with_rt in [true, false] {
+            let exe = dir.join(format!("{name}-{with_rt}"));
+            let mut c = Command::new("clang");
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(ll).args(extra).arg(root.join("src/llvm/runtime.c"));
+            if with_rt {
+                c.arg("-DSTRATA_CORE_RT").arg(rt);
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+            pair.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+        }
+        assert_eq!(pair[0], pair[1], "{name}: core.rt (left) and C (right) differ");
+        pair.remove(0)
+    };
+    // mocked values, in a test
+    let file = dir.join("mocks.strata");
+    save(&file, CORE_RT_MOCKS);
+    let tests = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg("--tests").arg(&file).output().unwrap();
+    let ll = dir.join("mocks.ll");
+    std::fs::write(&ll, &tests.stdout).unwrap();
+    let out = run_both("mocks", &ll, &rt_codegen, &[&harness]);
+    assert!(out.contains("-- 0\n") && out.lines().filter(|l| l.contains("Item {")).count() >= 30, "{out}");
+    // faults deep in recursions, by both code generators
+    for (name, text, stack) in [("stack", CORE_RT_STACK, "    stack: main -> two -> two -> two -> down (101 times)\n"), ("stack_cut", CORE_RT_STACK_CUT, " -> ping -> pong -> ping -> ...\n")] {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        for rust in [false, true] {
+            let ll = dir.join(format!("{name}-{rust}.ll"));
+            if rust {
+                let o = Command::new(STRATA).current_dir(root).args(["build", "--rust", "--no-verify", "--emit-llvm"]).arg(&file).arg("-o").arg(&ll).output().unwrap();
+                assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            } else {
+                let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
+                std::fs::write(&ll, &prog.stdout).unwrap();
+            }
+            let out = run_both(&format!("{name}-{rust}"), &ll, if rust { &rt_rust } else { &rt_codegen }, &[]);
+            assert!(out.contains("fault (Runtime): byte 5 out of range (2 bytes)\n") && out.contains(stack) && out.ends_with("Some(101)"), "{out}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const HARNESS: &str = r##"#include <stdio.h>
+#include <stdint.h>
+typedef struct { int64_t len; char bytes[]; } Str;
+extern void strata_init(int32_t, char **);
+extern int32_t strata_test(void (*)(void));
+extern const char *strata_test_printed(void), *strata_test_kind(void), *strata_test_stack(void);
+extern Str *strata_test_message(void);
+#ifdef __APPLE__
+extern void test0(void) __asm__("_strata.test.0");
+#else
+extern void test0(void) __asm__("strata.test.0");
+#endif
+int main(int argc, char **argv) {
+  strata_init(argc, argv);
+  int32_t r = strata_test(test0);
+  printf("%s-- %d\n", strata_test_printed(), r);
+  if (r) { Str *m = strata_test_message(); printf("%s: %.*s [%s]\n", strata_test_kind(), (int)m->len, m->bytes, strata_test_stack()); }
+  return 0;
+}
+"##;
+
+const CORE_RT_MOCKS: &str = r#"type Score = Int where 0 <= it && it <= 100
+
+type Item = { name: String, qty: Int where it > 0 }
+
+type Mood = Happy | Sad | Calm
+
+trait Store {
+  fn price(self, sku: String) -> Int
+    ensures it >= 0
+  fn score(self) -> Score
+  fn items(self, n: Int) -> List[Item]
+    requires n >= 0
+  fn pick(self) -> Option[Bool]
+  fn ratio(self) -> Float
+  fn mood(self) -> Mood
+  fn tag(self) -> String
+}
+
+test "mocked values" {
+  s := mock Store
+  for i in 0..40 {
+    print(f"{s.price("a")} {s.score()} {s.items(3)} {s.pick()} {s.ratio()} {s.mood()} {s.tag()}")
+  }
+  assert s.score() <= 100
+}
+"#;
+
+const CORE_RT_STACK: &str = r#"fn down(n: Int) -> Int {
+  if n == 0 {
+    return byte_at("ab", 5)
+  }
+  down(n - 1) + 1
+}
+
+fn two(n: Int) -> Int {
+  if n == 0 {
+    down(100)
+  } else {
+    two(n - 1)
+  }
+}
+
+fn main() {
+  print("start")
+  print(two(2))
+}
+"#;
+
+const CORE_RT_STACK_CUT: &str = r#"fn ping(n: Int) -> Int {
+  if n == 0 {
+    return byte_at("ab", 5)
+  }
+  pong(n - 1) + 1
+}
+
+fn pong(n: Int) -> Int {
+  ping(n) + 1
+}
+
+fn main() {
+  print(ping(2100))
+}
+"#;
+
+/// core.fault and core.run (runtime.c's call stack, faults, tests' and fuzz
+/// cases' runs and `--trace`, moved to Strata over `builtin thread static`
+/// state and core.mem's `trap_run` / `trap_leave`): a test that faults
+/// (what it printed kept, the fault's message and stack) and a fuzz case
+/// (run through `strata_test` / `strata_fuzz` from a C `main`), a traced
+/// program, and tasks that fault (supervised: caught; not: ending the
+/// program), built by compiler/codegen (and llvm.rs for the tasks), do the
+/// same with the runtime in Strata and with C.
+#[test]
+fn core_rt_runs_faults_and_traces_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-runs");
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    assert!(ir.contains("thread_local global"), "the runtime's per-thread state isn't thread-local");
+    let rt_codegen = dir.join("core_rt_codegen.ll");
+    std::fs::write(&rt_codegen, &ir).unwrap();
+    let rt_rust = dir.join("core_rt_rust.ll");
+    let o = Command::new(STRATA).current_dir(root).arg("build-core").arg("-o").arg(&rt_rust).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let harness = dir.join("harness.c");
+    std::fs::write(&harness, RUN_HARNESS).unwrap();
+    let fuzz_harness = dir.join("harness_fuzz.c");
+    std::fs::write(&fuzz_harness, RUN_HARNESS.replace("strata_test(test0)", "strata_fuzz(test0, 5, 1000)")).unwrap();
+    let run_both = |name: &str, ll: &Path, rt: &Path, extra: &[&Path]| -> String {
+        let mut pair = vec![];
+        for with_rt in [true, false] {
+            let exe = dir.join(format!("{name}-{with_rt}"));
+            let mut c = Command::new("clang");
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(ll).args(extra).arg(root.join("src/llvm/runtime.c"));
+            if with_rt {
+                c.arg("-DSTRATA_CORE_RT").arg(rt);
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+            pair.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+        }
+        assert_eq!(pair[0], pair[1], "{name}: core.rt (left) and C (right) differ");
+        pair.remove(0)
+    };
+    let codegen = |name: &str, text: &str, flag: Option<&str>| -> PathBuf {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let mut c = Command::new(compiler::exe());
+        c.current_dir(root).arg("codegen");
+        if let Some(f) = flag {
+            c.arg(f);
+        }
+        let o = c.arg(&file).output().unwrap();
+        let ll = dir.join(format!("{name}.ll"));
+        std::fs::write(&ll, &o.stdout).unwrap();
+        ll
+    };
+    // a test that faults: what it printed before, the fault and its stack
+    let ll = codegen("tfault", RUNS_TEST_FAULT, Some("--tests"));
+    for (name, h) in [("tfault", &harness), ("tfault-fuzz", &fuzz_harness)] {
+        let out = run_both(name, &ll, &rt_codegen, &[h.as_path()]);
+        assert!(out.starts_with("before\n2\n-- 1\nRequires: precondition of `half` violated: requires n % 2 == 0 (with n = 3) [deep (8 times) -> half]\n"), "{out}");
+    }
+    // `--trace`
+    let ll = codegen("trace", RUNS_TRACE, Some("--trace"));
+    let out = run_both("trace", &ll, &rt_codegen, &[]);
+    assert!(out.contains("\u{2192} main()\n  \u{2192} total([1, 2, 3])\n") && out.contains("\u{2190} total: 6\n"), "{out}");
+    // tasks: a supervised one's fault caught, another's ending the program
+    let ll = codegen("tasks", RUNS_TASKS, None);
+    let out = run_both("tasks", &ll, &rt_codegen, &[]);
+    assert!(out.starts_with("Runtime: byte 5 out of range (1 bytes) [main -> spawn -> bad]\n0\n1\n") && out.contains("fault (Runtime): byte 7 out of range (1 bytes)\n    stack: main -> spawn -> bad\n") && out.ends_with("Some(101)"), "{out}");
+    let file = dir.join("tasks.strata");
+    let ll = dir.join("tasks-rust.ll");
+    let o = Command::new(STRATA).current_dir(root).args(["build", "--rust", "--no-verify", "--emit-llvm"]).arg(&file).arg("-o").arg(&ll).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(run_both("tasks-rust", &ll, &rt_rust, &[]), out);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const RUN_HARNESS: &str = r##"#include <stdio.h>
+#include <stdint.h>
+typedef struct { int64_t len; char bytes[]; } Str;
+extern void strata_init(int32_t, char **);
+extern int32_t strata_test(void (*)(void));
+extern int32_t strata_fuzz(void (*)(void), int64_t, int64_t);
+extern const char *strata_test_printed(void), *strata_test_kind(void), *strata_test_stack(void);
+extern Str *strata_test_message(void);
+#ifdef __APPLE__
+extern void test0(void) __asm__("_strata.test.0");
+#else
+extern void test0(void) __asm__("strata.test.0");
+#endif
+int main(int argc, char **argv) {
+  strata_init(argc, argv);
+  int32_t r = strata_test(test0);
+  printf("%s-- %d\n", strata_test_printed(), r);
+  if (r) { Str *m = strata_test_message(); printf("%s: %.*s [%s]\n", strata_test_kind(), (int)m->len, m->bytes, strata_test_stack()); }
+  return 0;
+}
+"##;
+
+const RUNS_TEST_FAULT: &str = r#"fn half(n: Int) -> Int
+  requires n % 2 == 0 {
+  n / 2
+}
+
+fn deep(n: Int) -> Int {
+  if n == 0 {
+    half(3)
+  } else {
+    deep(n - 1) + 1
+  }
+}
+
+test "a fault ends the test, what it printed kept" {
+  print("before")
+  print(f"{half(4)}")
+  x := deep(7)
+  print("never")
+}
+"#;
+
+const RUNS_TRACE: &str = r#"fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+fn total(xs: List[Int]) -> Int {
+  if len(xs) == 0 {
+    0
+  } else {
+    add(xs[0], total(xs[1..len(xs)]))
+  }
+}
+
+fn main() {
+  print(total([1, 2, 3]))
+}
+"#;
+
+const RUNS_TASKS: &str = r#"fn bad(n: Int) -> Int {
+  if n > 2 {
+    byte_at("x", n)
+  } else {
+    n
+  }
+}
+
+fn main() {
+  scope {
+    h := supervised spawn bad(5)
+    print(await h except p {
+      print(f"{p.kind}: {p.message} [{p.stack}]")
+      0
+    })
+    g := spawn bad(1)
+    print(await g)
+  }
+  scope {
+    k := spawn bad(7)
+    print(await k)
+  }
+}
+"#;
+
 /// `strata build --compare`: compiler/codegen's executable does what Rust's
 /// does on the build tests' programs and the example packages with a `main`
 /// (the measure for switching `build` over).
@@ -2556,6 +3312,46 @@ fn jit_runs_programs_as_built_ones_run() {
         assert_eq!(String::from_utf8_lossy(&theirs.stdout), String::from_utf8_lossy(&ours.stdout), "{name}");
         assert_eq!(theirs.status.code(), ours.status.code(), "{name}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Compile-time values are kept between runs (`$STRATA_CACHE/comptime`,
+/// compiler/main's `comptime_value`), keyed by the code they reach: a run
+/// reads a value kept before instead of computing it (the two programs'
+/// values swapped in the cache, each prints the other's), and a change to
+/// what the code reaches computes it again.
+#[test]
+fn jit_keeps_compile_time_values_between_runs() {
+    let dir = scratch("comptime-cache");
+    let cache = dir.join("cache");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let run = |file: &Path| {
+        let o = Command::new(compiler::exe()).current_dir(root).arg("jit").arg(file).env("STRATA_CACHE", &cache).output().unwrap();
+        assert!(o.status.success(), "{}: {}", file.display(), String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let kept = || -> std::collections::BTreeSet<PathBuf> {
+        std::fs::read_dir(cache.join("comptime")).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "strata")).collect()).unwrap_or_default()
+    };
+    let program = |base: i64, n: i64| format!("fn base() -> Int {{\n  {base}\n}}\n\nfn plus(n: Int) -> Int {{\n  base() + n\n}}\n\nfn main() {{\n  print(to_string(comptime plus({n})))\n}}\n");
+    let one = dir.join("one.strata");
+    let two = dir.join("two.strata");
+    save(&one, &program(40, 1));
+    save(&two, &program(40, 2));
+    assert_eq!(run(&one), "41\n");
+    let a = kept();
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!(run(&two), "42\n");
+    let b: Vec<PathBuf> = kept().difference(&a).cloned().collect();
+    assert_eq!(b.len(), 1, "{b:?}");
+    let (fa, fb) = (a.iter().next().unwrap(), &b[0]);
+    let (va, vb) = (std::fs::read(fa).unwrap(), std::fs::read(fb).unwrap());
+    std::fs::write(fa, &vb).unwrap();
+    std::fs::write(fb, &va).unwrap();
+    assert_eq!(run(&one), "42\n");
+    assert_eq!(run(&two), "41\n");
+    save(&one, &program(50, 1));
+    assert_eq!(run(&one), "51\n");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2699,3 +3495,270 @@ fn compiler_fuzzes_as_verify_fuzzes() {
     assert!(compared > 50, "only {compared} functions compared");
 }
 
+
+/// What the compiler package needed of compiler/codegen, so that it
+/// compiles itself: a trait's default method calling `Self.f(x)`; the
+/// checker's types for `mut xs := []` filled by a `mut` argument, for a
+/// tuple pattern met before the type is known, and for `f(a) + f(b)` of a
+/// closure; a `match` used as a statement whose arms give `()` and a
+/// value; a capability trait's value (`Files`) held in an `Option` field;
+/// a dictionary's `remove` in a module importing `Files` (stored as
+/// `std.fs.remove`); `s.graphemes()` (std.unicode's); a concrete value
+/// made a trait's value where a trait type is wanted (a record's field, an
+/// annotated variable, a list's elements and `push`, the branches of an
+/// `if` or `match` a function returns), a `mut self` method through a
+/// trait value (examples/tasks' `print.demo`), and a trait value matched
+/// against a constructor's pattern.
+const COMPILER_CONSTRUCTS: &[(&str, &str)] = &[
+    ("self_calls", "trait Named {
+  fn name(self) -> String
+  fn make(n: Int) -> Self
+  fn twice(n: Int) -> List[Self] {
+    [Self.make(n), Self.make(n + 1)]
+  }
+}
+
+type Box = { n: Int }
+
+impl Named for Box {
+  fn name(self) -> String {
+    f\"box {self.n}\"
+  }
+  fn make(n: Int) -> Self {
+    Box { n }
+  }
+}
+
+impl Named for Int {
+  fn name(self) -> String {
+    f\"int {self}\"
+  }
+  fn make(n: Int) -> Self {
+    n * 10
+  }
+}
+
+fn main() {
+  print(Box.twice(1).map(b -> b.name()))
+  print(Int.twice(2).map(i -> i.name()))
+  print(3.name())
+}
+"),
+    ("inferred", "fn fill(mut out: List[(String, Int)], n: Int) {
+  out = push(out, (f\"k{n}\", n))
+}
+
+fn merged(v: List[(Int, Int)]) -> List[(Int, Int)] {
+  mut out := []
+  for (a, b) in v {
+    match get(out, len(out) - 1) {
+      Some((lo, hi)) => if a <= hi + 1 {
+        out = take(out, len(out) - 1) + [(lo, if b > hi {
+          b
+        } else {
+          hi
+        })]
+      } else {
+        out = push(out, (a, b))
+      },
+      None => {
+        out = push(out, (a, b))
+      },
+    }
+  }
+  out
+}
+
+fn main() {
+  mut binds := []
+  fill(mut binds, 1)
+  fill(mut binds, 2)
+  for (name, n) in binds {
+    print(f\"{name}={n}\")
+  }
+  print(merged([(1, 2), (3, 5), (9, 9), (10, 12)]))
+  twice := (xs: List[String]) -> xs.map(x -> x + x)
+  both := twice([\"a\"]) + twice([\"b\"])
+  print(twice([\"a\", \"c\"]).filter(x -> !contains(both, x)))
+  mut seen := 0
+  for x in [1, 2, 3] {
+    match x {
+      2 => {
+        seen += 10
+      },
+      _ => (),
+    }
+  }
+  print(seen)
+}
+"),
+    ("std_traits", "from std.fs use Files, FsError, mem_files
+
+type Ctx = { files: Option[Files], n: Int }
+
+fn has(c: Ctx, path: String) -> Bool {
+  match c.files {
+    Some(fs) => fs.exists(path),
+    None => false,
+  }
+}
+
+fn without(d: Dict[String, Int], k: String) -> Dict[String, Int] {
+  remove(d, k)
+}
+
+fn main() {
+  c := Ctx { files: Some(mem_files([(\"a.txt\", \"x\")])), n: 1 }
+  print(has(c, \"a.txt\"))
+  print(has(c, \"b.txt\"))
+  print(without(Dict { \"a\": 1, \"b\": 2 }, \"a\"))
+  print(len(\"e\\u{301}x\".graphemes()))
+}
+"),
+    ("trait_places", "trait Out {
+  fn put(mut self, line: String)
+  fn count(self) -> Int
+}
+
+type Log = { lines: List[String] }
+
+impl Out for Log {
+  fn put(mut self, line: String) {
+    self.lines = push(self.lines, line)
+  }
+  fn count(self) -> Int {
+    len(self.lines)
+  }
+}
+
+type Tally = { n: Int }
+
+impl Out for Tally {
+  fn put(mut self, line: String) {
+    self.n = self.n + byte_len(line)
+  }
+  fn count(self) -> Int {
+    self.n
+  }
+}
+
+type Holder = { out: Out }
+
+fn make(big: Bool) -> Out {
+  if big {
+    Log { lines: [\"x\"] }
+  } else {
+    Tally { n: 0 }
+  }
+}
+
+fn pick(k: Int) -> Out {
+  match k {
+    0 => Log { lines: [] },
+    _ => Tally { n: k },
+  }
+}
+
+fn main() {
+  h := Holder { out: Log { lines: [\"x\"] } }
+  print(h.out.count())
+  mut o: Out = Log { lines: [] }
+  mut o.put(\"a\")
+  mut o.put(\"b\")
+  print(o.count())
+  o = Tally { n: 5 }
+  mut o.put(\"abc\")
+  print(o.count())
+  let xs: List[Out] = [Log { lines: [\"p\"] }, Tally { n: 2 }]
+  ys := push(xs, Tally { n: 7 })
+  print(ys.map(x -> x.count()))
+  print(make(true).count() + make(false).count())
+  print(pick(0).count() + pick(3).count())
+  let opt: Option[Out] = Some(Tally { n: 9 })
+  match opt {
+    Some(x) => print(x.count()),
+    None => (),
+  }
+  mut h2 := Holder { out: Log { lines: [\"x\"] } }
+  mut h2.out.put(\"a\")
+  match h2.out {
+    Log { lines } => print(lines),
+    _ => print(\"other\"),
+  }
+  print(\"ok\")
+}
+"),
+];
+
+#[test]
+fn compiler_constructs_do_what_rust_compiled_ones_do() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let dir = scratch("compiler-constructs");
+    for (name, text) in COMPILER_CONSTRUCTS {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let (rust, ours) = both(&dir, name, &file);
+        assert_eq!(ours, rust, "{name}: (stdout, stderr, exit code) of compiler/codegen's build vs strata build's");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A union with a `distinct` member whose refinement is a regex: the
+/// member's check is on the block's field (not the block taken as a
+/// string), and a value of the union is made in each member. (`llvm.rs`
+/// crashes on `name_of`: compared with what the program must print.)
+#[test]
+fn distinct_members_of_unions_are_checked_on_their_field() {
+    if !have_clang() {
+        eprintln!("skipped: no clang");
+        return;
+    }
+    let dir = scratch("distinct-union");
+    let file = dir.join("u.strata");
+    save(&file, "distinct type Code = String where matches(it, \"[a-z]+\")
+
+type Thing = Code | Int
+
+fn as_thing(t: Thing) -> Thing {
+  t
+}
+
+fn name_of(t: Thing) -> String {
+  match t {
+    Code(c) => \"code \" + c,
+    _ => \"int\",
+  }
+}
+
+fn main() {
+  t := as_thing(Code(\"xyz\"))
+  print(name_of(t))
+  print(name_of(as_thing(4)))
+  print(t == Code(\"xyz\"))
+}
+");
+    let exe = ours(&dir, "u", &file);
+    let (out, err, code) = outcome(&exe);
+    assert_eq!((out.as_str(), code), ("code xyz
+int
+true
+", Some(0)), "{err}");
+    assert!(memory(&exe).ends_with(" 0 live"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The compiler package itself compiled by compiler/codegen: nothing it
+/// can't compile yet (`strata build` builds the package with `llvm.rs`, so
+/// this is what says codegen covers it).
+#[test]
+fn compiler_package_compiles_with_codegen() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ir = compiler::run(&["codegen".to_string(), root.join("compiler").to_string_lossy().into_owned()]);
+    let errors: Vec<&str> = ir.lines().filter(|l| l.starts_with("error")).collect();
+    assert!(errors.is_empty(), "{}", errors.join("
+"));
+    assert!(ir.contains("define i32 @main("), "no main in the IR");
+}

@@ -1,0 +1,56 @@
+# cli.rs: a_deadlocked_test_fails: a deadlocked test fails with what each task waits on, instead of
+# hanging; a test asking for a `VirtualClock` has its own time, from 0
+
+[[step]]
+save = "t.strata"
+text = '''
+from std.time use VirtualClock, seconds
+
+test "two tasks wait for each other" {
+  (atx, arx) := channel()
+  (btx, brx) := channel()
+  scope {
+    spawn {
+      x := brx.recv() ?? 0
+      atx.send(x)
+      atx.close()
+    }
+    spawn {
+      y := arx.recv() ?? 0
+      btx.send(y)
+      btx.close()
+    }
+  }
+  atx.close()
+  btx.close()
+}
+
+test "the test itself waits for nothing" {
+  (tx, rx) := channel()
+  x := rx.recv() ?? 0
+  tx.close()
+  assert x == 0
+}
+
+test "a timeout on a virtual clock" (clock: VirtualClock) {
+  (tx, rx) := channel()
+  r := race {
+    rx.recv() as v => v ?? 0,
+    clock.sleep(seconds(5)) => -1,
+  }
+  tx.close()
+  assert r == -1
+  assert clock.now().value == seconds(5).value
+}
+
+test "each test has its own virtual time, from 0" (clock: VirtualClock) {
+  assert clock.now().value == 0
+  clock.sleep(seconds(2))
+  assert clock.now().value == seconds(2).value
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "test"]
+fails = true
+has = ["✗ two tasks wait for each other", "deadlock: every task is waiting, so none can go on: the test waits in the end of a `scope`", "the test waits in `recv`", "✓ a timeout on a virtual clock", "✓ each test has its own virtual time, from 0", "2 passed, 2 failed"]

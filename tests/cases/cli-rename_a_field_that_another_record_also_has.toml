@@ -1,0 +1,91 @@
+# cli.rs: rename_a_field_that_another_record_also_has
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "main.strata"
+text = '''
+type Line = { sku: String, qty: Int }
+
+type Order = { sku: String, lines: List[Line] }
+
+fn label(l: Line, o: Order) -> String {
+  l.sku + "/" + o.sku
+}
+
+fn first_skus(o: Order) -> List[String] {
+  o.lines.map(l -> l.sku)
+}
+
+fn fix(l: Line) -> Line {
+  match l {
+    Line { sku, .. } => Line { ..l, sku: sku + "!" },
+  }
+}
+
+test "skus" {
+  l := Line { sku: "a", qty: 1 }
+  o := Order { sku: "o", lines: [l] }
+  assert label(l, o) == "a/o"
+  assert first_skus(o) == ["a"]
+  assert fix(l).sku == "a!"
+}
+'''
+
+# the checker says which record each `.sku` reads: Line's are renamed, Order's stay
+[[step]]
+strata = ["rename", "Line.sku", "code"]
+
+[[step]]
+strata = ["render", "main"]
+has = ["type Line = { code: String, qty: Int }", "type Order = { sku: String", "l.code + \"/\" + o.sku", "o.lines.map(l -> l.code)", "Line { code: sku, .. } => Line { ..l, code: sku + \"!\" }", "Line { code: \"a\", qty: 1 }", "Order { sku: \"o\"", "fix(l).code == \"a!\""]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
+
+# read from a union of both records: renaming one would break it
+[[step]]
+run = ["mkdir", "e"]
+
+[[step]]
+strata = ["init"]
+dir = "e"
+
+[[step]]
+save = "e/main.strata"
+text = '''
+type A = { tag: String, n: Int }
+
+type B = { tag: String }
+
+fn tag_of(x: A | B) -> String {
+  x.tag
+}
+'''
+
+[[step]]
+strata = ["rename", "A.tag", "label"]
+dir = "e"
+fails = true
+has = ["in `tag_of`, `.tag` is read from a union that also has `B.tag` (rename it too, in the same command)"]
+
+[[step]]
+strata = ["rename", "A.tag", "label", "B.tag", "name"]
+dir = "e"
+fails = true
+has = ["`.tag` is read from a union whose records would get different names"]
+
+[[step]]
+strata = ["rename", "A.tag", "label", "B.tag", "label"]
+dir = "e"
+has = ["renamed A.tag → A.label, B.tag → B.label", "updated 1 definition that refers to them: tag_of"]
+
+[[step]]
+strata = ["render", "main"]
+dir = "e"
+has = ["type A = { label: String, n: Int }", "type B = { label: String }", "x.label"]
+
+[[step]]
+run = ["sh", "-c", "test $(wc -l < e/strata.log) -eq 1"]

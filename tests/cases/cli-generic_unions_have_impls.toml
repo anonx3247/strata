@@ -1,0 +1,43 @@
+# cli.rs: generic_unions_have_impls
+
+[[step]]
+strata = ["--file", "g.strata", "edit"]
+text = '''
+trait Show {
+  fn show(self) -> String
+}
+
+type Problem = { why: String }
+
+type OrError[T] = Value(T) | Problem
+
+impl[T] Show for OrError[T] {
+  fn show(self) -> String {
+    match self {
+      Value(_) => "a value",
+      Problem => f"problem: {self.why}",
+    }
+  }
+}
+
+fn get(n: Int) -> OrError[Int] {
+  if n > 0 {
+    Value(n)
+  } else {
+    Problem { why: "not positive" }
+  }
+}
+
+fn main() {
+  print(get(3).show())
+  print(get(0).show())
+  match get(5) {
+    Value(n) => print(n),
+    Problem => print("no"),
+  }
+}
+'''
+
+[[step]]
+strata = ["run", "g.strata"]
+stdout = "a value\nproblem: not positive\n5\n"

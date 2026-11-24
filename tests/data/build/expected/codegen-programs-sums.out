@@ -1,0 +1,21 @@
+3.0
+6.0
+0.0
+Rect(2.0, 3.0)
+Dot
+Node(Node(Leaf, 2, Leaf), 5, Node(Leaf, 8, Leaf))
+15
+zero
+small
+big
+Some(3)
+None
+5
+true
+true
+true
+false
+error: bad
+Err("bad")
+
+--- exit 0

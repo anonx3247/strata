@@ -1,0 +1,45 @@
+# cli.rs: comptime_in_ordinary_code_runs_while_compiling
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+from std.regex use parse, show
+
+fn shout(s: String) -> String {
+  s + "!"
+}
+
+fn main() {
+  r := comptime parse("(?i)ab|ac")
+  print(match r {
+    Ok(x) => show(x),
+    Err(e) => e,
+  })
+  print(comptime shout("hi"))
+}
+'''
+
+[[step]]
+strata = ["--file", "c.strata", "run"]
+stdout = "cat(cls(41-41 61-61),cls(42-43 62-63))\nhi!\n"
+
+[[step]]
+strata = ["--file", "c.strata", "build", "--emit-llvm", "-o", "c.ll"]
+
+# the values are constants
+[[step]]
+run = ["cat", "c.ll"]
+has = ["define"]
+lacks = ["std.regex.parse", "@\"strata:shout\""]
+
+# the edit says so at once (it is stored, as a script's edit is)
+[[step]]
+strata = ["--file", "v.strata", "edit"]
+text = "fn main() {\n  n := 3\n  print(comptime n + 1)\n}\n"
+fails = true
+has = ["unknown variable `n`", "written, but"]
+
+[[step]]
+strata = ["--file", "v.strata", "check"]
+fails = true
+has = ["unknown variable `n`: compile-time code can use definitions, not the variables around it"]

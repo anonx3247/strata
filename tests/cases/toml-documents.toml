@@ -1,0 +1,429 @@
+# toml.rs: reads_toml_as_the_toml_crate_does: each document's value in
+# canonical form, then the value of the text `stringify` wrote for it, or its
+# error; recorded (tests/data/toml-documents.out) when std.toml agreed with the
+# `toml` crate (the same values, the same documents refused). The documents
+# are toml.rs's cases, case000.toml ... (with STRATA_TOML_CORPUS the Rust test
+# also read toml-test's TOML 1.1 files).
+[[step]]
+save = "check.strata"
+from = "check.st"
+
+[[step]]
+write = "case000.toml"
+from = "case000.toml"
+
+[[step]]
+write = "case001.toml"
+from = "case001.toml"
+
+[[step]]
+write = "case002.toml"
+from = "case002.toml"
+
+[[step]]
+write = "case003.toml"
+from = "case003.toml"
+
+[[step]]
+write = "case004.toml"
+from = "case004.toml"
+
+[[step]]
+write = "case005.toml"
+from = "case005.toml"
+
+[[step]]
+write = "case006.toml"
+from = "case006.toml"
+
+[[step]]
+write = "case007.toml"
+from = "case007.toml"
+
+[[step]]
+write = "case008.toml"
+from = "case008.toml"
+
+[[step]]
+write = "case009.toml"
+from = "case009.toml"
+
+[[step]]
+write = "case010.toml"
+from = "case010.toml"
+
+[[step]]
+write = "case011.toml"
+from = "case011.toml"
+
+[[step]]
+write = "case012.toml"
+from = "case012.toml"
+
+[[step]]
+write = "case013.toml"
+from = "case013.toml"
+
+[[step]]
+write = "case014.toml"
+from = "case014.toml"
+
+[[step]]
+write = "case015.toml"
+from = "case015.toml"
+
+[[step]]
+write = "case016.toml"
+from = "case016.toml"
+
+[[step]]
+write = "case017.toml"
+from = "case017.toml"
+
+[[step]]
+write = "case018.toml"
+from = "case018.toml"
+
+[[step]]
+write = "case019.toml"
+from = "case019.toml"
+
+[[step]]
+write = "case020.toml"
+from = "case020.toml"
+
+[[step]]
+write = "case021.toml"
+from = "case021.toml"
+
+[[step]]
+write = "case022.toml"
+from = "case022.toml"
+
+[[step]]
+write = "case023.toml"
+from = "case023.toml"
+
+[[step]]
+write = "case024.toml"
+from = "case024.toml"
+
+[[step]]
+write = "case025.toml"
+from = "case025.toml"
+
+[[step]]
+write = "case026.toml"
+from = "case026.toml"
+
+[[step]]
+write = "case027.toml"
+from = "case027.toml"
+
+[[step]]
+write = "case028.toml"
+from = "case028.toml"
+
+[[step]]
+write = "case029.toml"
+from = "case029.toml"
+
+[[step]]
+write = "case030.toml"
+from = "case030.toml"
+
+[[step]]
+write = "case031.toml"
+from = "case031.toml"
+
+[[step]]
+write = "case032.toml"
+from = "case032.toml"
+
+[[step]]
+write = "case033.toml"
+from = "case033.toml"
+
+[[step]]
+write = "case034.toml"
+from = "case034.toml"
+
+[[step]]
+write = "case035.toml"
+from = "case035.toml"
+
+[[step]]
+write = "case036.toml"
+from = "case036.toml"
+
+[[step]]
+write = "case037.toml"
+from = "case037.toml"
+
+[[step]]
+write = "case038.toml"
+from = "case038.toml"
+
+[[step]]
+write = "case039.toml"
+from = "case039.toml"
+
+[[step]]
+write = "case040.toml"
+from = "case040.toml"
+
+[[step]]
+write = "case041.toml"
+from = "case041.toml"
+
+[[step]]
+write = "case042.toml"
+from = "case042.toml"
+
+[[step]]
+write = "case043.toml"
+from = "case043.toml"
+
+[[step]]
+write = "case044.toml"
+from = "case044.toml"
+
+[[step]]
+write = "case045.toml"
+from = "case045.toml"
+
+[[step]]
+write = "case046.toml"
+from = "case046.toml"
+
+[[step]]
+write = "case047.toml"
+from = "case047.toml"
+
+[[step]]
+write = "case048.toml"
+from = "case048.toml"
+
+[[step]]
+write = "case049.toml"
+from = "case049.toml"
+
+[[step]]
+write = "case050.toml"
+from = "case050.toml"
+
+[[step]]
+write = "case051.toml"
+from = "case051.toml"
+
+[[step]]
+write = "case052.toml"
+from = "case052.toml"
+
+[[step]]
+write = "case053.toml"
+from = "case053.toml"
+
+[[step]]
+write = "case054.toml"
+from = "case054.toml"
+
+[[step]]
+write = "case055.toml"
+from = "case055.toml"
+
+[[step]]
+write = "case056.toml"
+from = "case056.toml"
+
+[[step]]
+write = "case057.toml"
+from = "case057.toml"
+
+[[step]]
+write = "case058.toml"
+from = "case058.toml"
+
+[[step]]
+write = "case059.toml"
+from = "case059.toml"
+
+[[step]]
+write = "case060.toml"
+from = "case060.toml"
+
+[[step]]
+write = "case061.toml"
+from = "case061.toml"
+
+[[step]]
+write = "case062.toml"
+from = "case062.toml"
+
+[[step]]
+write = "case063.toml"
+from = "case063.toml"
+
+[[step]]
+write = "case064.toml"
+from = "case064.toml"
+
+[[step]]
+write = "case065.toml"
+from = "case065.toml"
+
+[[step]]
+write = "case066.toml"
+from = "case066.toml"
+
+[[step]]
+write = "case067.toml"
+from = "case067.toml"
+
+[[step]]
+write = "case068.toml"
+from = "case068.toml"
+
+[[step]]
+write = "case069.toml"
+from = "case069.toml"
+
+[[step]]
+write = "case070.toml"
+from = "case070.toml"
+
+[[step]]
+write = "case071.toml"
+from = "case071.toml"
+
+[[step]]
+write = "case072.toml"
+from = "case072.toml"
+
+[[step]]
+write = "case073.toml"
+from = "case073.toml"
+
+[[step]]
+write = "case074.toml"
+from = "case074.toml"
+
+[[step]]
+write = "case075.toml"
+from = "case075.toml"
+
+[[step]]
+write = "case076.toml"
+from = "case076.toml"
+
+[[step]]
+write = "case077.toml"
+from = "case077.toml"
+
+[[step]]
+write = "case078.toml"
+from = "case078.toml"
+
+[[step]]
+write = "case079.toml"
+from = "case079.toml"
+
+[[step]]
+write = "case080.toml"
+from = "case080.toml"
+
+[[step]]
+write = "case081.toml"
+from = "case081.toml"
+
+[[step]]
+write = "case082.toml"
+from = "case082.toml"
+
+[[step]]
+write = "case083.toml"
+from = "case083.toml"
+
+[[step]]
+write = "case084.toml"
+from = "case084.toml"
+
+[[step]]
+write = "case085.toml"
+from = "case085.toml"
+
+[[step]]
+write = "case086.toml"
+from = "case086.toml"
+
+[[step]]
+write = "case087.toml"
+from = "case087.toml"
+
+[[step]]
+write = "case088.toml"
+from = "case088.toml"
+
+[[step]]
+write = "case089.toml"
+from = "case089.toml"
+
+[[step]]
+write = "case090.toml"
+from = "case090.toml"
+
+[[step]]
+write = "case091.toml"
+from = "case091.toml"
+
+[[step]]
+write = "case092.toml"
+from = "case092.toml"
+
+[[step]]
+write = "case093.toml"
+from = "case093.toml"
+
+[[step]]
+write = "case094.toml"
+from = "case094.toml"
+
+[[step]]
+write = "case095.toml"
+from = "case095.toml"
+
+[[step]]
+write = "case096.toml"
+from = "case096.toml"
+
+[[step]]
+write = "case097.toml"
+from = "case097.toml"
+
+[[step]]
+write = "case098.toml"
+from = "case098.toml"
+
+[[step]]
+write = "case099.toml"
+from = "case099.toml"
+
+[[step]]
+write = "case100.toml"
+from = "case100.toml"
+
+[[step]]
+write = "case101.toml"
+from = "case101.toml"
+
+[[step]]
+write = "case102.toml"
+from = "case102.toml"
+
+[[step]]
+write = "case103.toml"
+from = "case103.toml"
+
+[[step]]
+strata = ["--file", "check.strata", "run", "--", "case000.toml", "case001.toml", "case002.toml", "case003.toml", "case004.toml", "case005.toml", "case006.toml", "case007.toml", "case008.toml", "case009.toml", "case010.toml", "case011.toml", "case012.toml", "case013.toml", "case014.toml", "case015.toml", "case016.toml", "case017.toml", "case018.toml", "case019.toml", "case020.toml", "case021.toml", "case022.toml", "case023.toml", "case024.toml", "case025.toml", "case026.toml", "case027.toml", "case028.toml", "case029.toml", "case030.toml", "case031.toml", "case032.toml", "case033.toml", "case034.toml", "case035.toml", "case036.toml", "case037.toml", "case038.toml", "case039.toml", "case040.toml", "case041.toml", "case042.toml", "case043.toml", "case044.toml", "case045.toml", "case046.toml", "case047.toml", "case048.toml", "case049.toml", "case050.toml", "case051.toml", "case052.toml", "case053.toml", "case054.toml", "case055.toml", "case056.toml", "case057.toml", "case058.toml", "case059.toml", "case060.toml", "case061.toml", "case062.toml", "case063.toml", "case064.toml", "case065.toml", "case066.toml", "case067.toml", "case068.toml", "case069.toml", "case070.toml", "case071.toml", "case072.toml", "case073.toml", "case074.toml", "case075.toml", "case076.toml", "case077.toml", "case078.toml", "case079.toml", "case080.toml", "case081.toml", "case082.toml", "case083.toml", "case084.toml", "case085.toml", "case086.toml", "case087.toml", "case088.toml", "case089.toml", "case090.toml", "case091.toml", "case092.toml", "case093.toml", "case094.toml", "case095.toml", "case096.toml", "case097.toml", "case098.toml", "case099.toml", "case100.toml", "case101.toml", "case102.toml", "case103.toml"]
+golden = "tests/data/toml-documents.out"

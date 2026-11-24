@@ -1,0 +1,88 @@
+# cli.rs: comments_are_kept_in_the_tree: (the Rust test also checked that editing a comment changes a
+# definition's hash but not its interface hash, from `strata ast`)
+
+[[step]]
+save = "c.strata"
+text = '''
+// file header
+//
+// second paragraph
+
+// section banner
+/// A status.
+pub type Status =
+  // waiting
+  | Pending
+  | Done // finished
+
+pub type Point = { x: Int, y: Int } // the y axis points down
+
+pub trait Shape {
+  // area, never negative
+  /// The area.
+  fn area(self) -> Int
+    ensures it >= 0
+  // checked by verify
+  /// Areas are never negative.
+  law nonneg(s: Self): s.area() >= 0
+}
+
+impl Shape for Point {
+  // a point has no area
+  /// Always zero.
+  fn area(self) -> Int {
+    0
+  }
+}
+
+fn label(s: Status) -> String {
+  // the common case first
+  n := 1 // one
+
+
+  m := n
+  match s {
+    // still going
+    Pending => "pending",
+    Done => "done", // all good
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "c.strata", "render"]
+capture = "r1.st"
+has = ['''
+// file header
+//
+// second paragraph
+
+// section banner
+/// A status.''', "  // waiting\n  | Pending", "  // finished\n  | Done", "// the y axis points down", "  // area, never negative\n  /// The area.", '''
+  // checked by verify
+  /// Areas are never negative.
+  law nonneg''', "  // a point has no area\n  /// Always zero.", '''
+  // the common case first
+  // one
+  n := 1
+
+  m := n
+  match''', "    // still going\n    Pending", "    // all good\n    Done"]
+
+[[step]]
+save = "r1.strata"
+from_tmp = "r1.st"
+
+[[step]]
+strata = ["--file", "r1.strata", "render"]
+out_file = "r1.st"
+
+[[step]]
+strata = ["--file", "c.strata", "check"]
+
+# a comment the tree has no place for is an error, not silently dropped
+[[step]]
+strata = ["--file", "bad.strata", "edit"]
+text = "fn f(a: Int, // why\n  b: Int) -> Int { a }\n"
+fails = true
+has = ["1:14: this comment would be lost"]

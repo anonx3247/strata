@@ -1,0 +1,138 @@
+# cli.rs: rename_variants_methods_and_fields
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "shapes.strata"
+text = '''
+pub type Shape =
+  | Circle { radius: Int }
+  | Square(Int)
+
+pub type Line = { sku: String, qty: Int }
+
+pub trait Sized {
+  fn size(self) -> Int
+}
+
+impl Sized for Line {
+  fn size(self) -> Int {
+    self.qty
+  }
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+from shapes use Shape, Circle, Square, Line, Sized
+
+fn area(s: Shape) -> Int {
+  match s {
+    Circle { radius } => 3 * radius * radius,
+    Square(n) => n * n,
+  }
+}
+
+fn bigger(l: Line) -> Line {
+  Line { ..l, qty: l.qty + 1 }
+}
+
+test "shapes" {
+  assert area(Circle { radius: 1 }) == 3
+  assert Square(2) is Square
+  l := Line { sku: "a", qty: 2 }
+  assert bigger(l).size() == 3
+  assert l.size() == 2
+}
+'''
+
+# a variant: constructors, patterns and `is`
+[[step]]
+strata = ["rename", "Circle", "Round"]
+has = ["renamed shapes.Circle → shapes.Round", "updated 2 definitions that refer to it: area, test \"shapes\""]
+
+# a trait method: the trait, its impls and the calls
+[[step]]
+strata = ["rename", "size", "measure"]
+has = ["shapes.impl Sized for Line"]
+
+# a field: the declaration, accesses, literals, updates
+[[step]]
+strata = ["rename", "Line.qty", "quantity"]
+has = ["renamed shapes.Line.qty → shapes.Line.quantity"]
+
+[[step]]
+strata = ["render", "shapes"]
+has = ["| Round { radius: Int }", "fn measure(self) -> Int {\n    self.quantity", "quantity: Int }"]
+
+[[step]]
+strata = ["render", "main"]
+has = ["Round { radius } =>", "Line { ..l, quantity: l.quantity + 1 }", "area(Round { radius: 1 })", "bigger(l).measure() == 3", "Line { sku: \"a\", quantity: 2 }"]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
+
+# the diff says what was renamed, and folds the code that only follows it
+[[step]]
+strata = ["diff", "--step", "0"]
+has = ["~ shapes.Shape  (variant `Circle` renamed to `Round`)", "only a name changed · 3 references updated"]
+lacks = ["~ area"]
+
+[[step]]
+strata = ["diff", "--step", "1"]
+any_code = true
+has = ["~ shapes.Sized  (method `size` renamed to `measure`)"]
+
+[[step]]
+strata = ["diff", "--step", "2"]
+any_code = true
+has = ["~ shapes.Line  (field `qty` renamed to `quantity`)"]
+
+# refused: a taken name
+[[step]]
+strata = ["rename", "Round", "Square"]
+fails = true
+has = ["`shapes.Square` already exists"]
+
+[[step]]
+save = "more.strata"
+text = '''
+pub type Order = { sku: String, total: Int }
+
+distinct type Id = String
+'''
+
+# a field another record also has: the checker tells their accesses apart
+[[step]]
+strata = ["rename", "Line.sku", "code"]
+
+[[step]]
+strata = ["render", "more"]
+has = ["pub type Order = { sku: String"]
+
+# `value`, which distinct types also have
+[[step]]
+save = "more.strata"
+text = '''
+pub type Order = { value: Int }
+
+distinct type Id = String
+
+fn both(o: Order, i: Id) -> String {
+  f"{o.value} {i.value}"
+}
+'''
+
+[[step]]
+strata = ["rename", "Order.value", "amount"]
+
+[[step]]
+strata = ["render", "more"]
+has = ["f\"{o.amount} {i.value}\""]
+
+[[step]]
+strata = ["log", "--json"]
+has = ["\"kind\":\"variant\"", "\"kind\":\"method\"", "\"kind\":\"field\""]

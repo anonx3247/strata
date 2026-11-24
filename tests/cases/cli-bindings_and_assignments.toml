@@ -1,0 +1,42 @@
+# cli.rs: bindings_and_assignments: written loosely, rendered in the canonical
+# forms. A call's `(` is against the name, so `a (q, r) := …` is `a`, then a
+# binding.
+[[step]]
+save = "b.strata"
+text = '''
+fn log(s: String) -> () { print(s) }
+fn f() -> Int {
+n := 1
+let k: Int = 2
+(a, b) := (3, 4)
+m := a (q, r) := (a, b)
+mut x := 0
+mut y: Int = 10
+x += n + k
+x = x * 2
+y -= a - b
+y %= 7
+x + y
+}
+test "f" { assert f() == 10 }
+'''
+
+[[step]]
+strata = ["render", "--file", "b.strata"]
+has = ["fn log(s: String) {", "n := 1", "let k: Int = 2", "(a, b) := (3, 4)", "m := a\n  (q, r) := (a, b)", "mut x := 0", "mut y: Int = 10", "x += n + k", "x *= 2", "y -= a - b", "y %= 7"]
+
+[[step]]
+strata = ["--file", "b.strata", "test"]
+
+# `let` needs a type; `:=` can't change a field
+[[step]]
+strata = ["--file", "e1.strata", "edit"]
+text = "fn g() -> Int { let n = 1\n n }"
+fails = true
+has = ["`let` needs a type"]
+
+[[step]]
+strata = ["--file", "e2.strata", "edit"]
+text = "type P = { a: Int }\nfn g(p: P) -> Int { p.a := 1\n 0 }"
+fails = true
+has = ["`:=` declares a new name"]

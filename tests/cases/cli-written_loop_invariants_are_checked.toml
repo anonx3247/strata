@@ -1,0 +1,96 @@
+# cli.rs: written_loop_invariants_are_checked: a written `invariant` is
+# checked on entry and where every pass ends (`continue` too), assumed at the
+# head, and checked when the program runs
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+fn triangle(n: Natural) -> Int
+  ensures 2 * it == n * (n + 1)
+{
+  mut total := 0
+  mut i := 0
+  while i < n
+    invariant 2 * total == i * (i + 1)
+  {
+    i += 1
+    total += i
+  }
+  total
+}
+fn evens(n: Natural) -> Natural
+  ensures it <= n
+{
+  mut i := 0
+  mut c := 0
+  while i < n {
+    i += 1
+    if i % 2 == 1 { continue }
+    c += 1
+  }
+  c
+}
+fn sum_pos(xs: List[Int]) -> Int
+  ensures it >= 0
+{
+  mut s := 0
+  for x in xs
+    invariant s >= 0
+  {
+    if x < 0 { continue }
+    s += x
+  }
+  s
+}
+fn wrong(n: Natural) -> Int {
+  mut i := 0
+  while i < n
+    invariant i < n
+  {
+    i += 1
+  }
+  i
+}
+fn main() {
+  print(triangle(4))
+  print(wrong(3))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "render"]
+has = ["  while i < n\n    invariant 2 * total == i * (i + 1) {\n"]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--checks", "--no-race"]
+fails = true
+has = [
+  "✓ triangle ",
+  "proven:  invariant `2 * total == i * (i + 1)` after a pass of `while i < n`",
+  "✓ evens ",
+  "terminates: `while i < n` ends",
+  "✓ sum_pos ",
+  "invariant `s >= 0` at a `continue` in `for x in xs`",
+  "✗ wrong",
+  "invariant failed: i < n",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+fails = true
+has = ["10", "invariant failed: i < n (left of < = 3, right = 3)"]
+
+[[step]]
+strata = ["--file", "bad.strata", "edit"]
+text = '''
+fn f(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs
+    invariant x >= 0
+  {
+    s += x
+  }
+  s
+}
+'''
+fails = true
+has = ["can't name the loop's variable `x`"]

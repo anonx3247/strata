@@ -1,0 +1,111 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "builtins.strata"
+from = "builtins.st"
+
+[[step]]
+strata = ["build", "builtins.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-builtins.out"
+
+[[step]]
+save = "generic_derive.strata"
+from = "generic_derive.st"
+
+[[step]]
+strata = ["build", "generic_derive.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-generic_derive.out"
+
+[[step]]
+save = "option_option.strata"
+from = "option_option.st"
+
+[[step]]
+strata = ["build", "option_option.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-option_option.out"
+
+[[step]]
+save = "refined.strata"
+from = "refined.st"
+
+[[step]]
+strata = ["build", "refined.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-refined.out"
+
+[[step]]
+save = "refined_more.strata"
+from = "refined_more.st"
+
+[[step]]
+strata = ["build", "refined_more.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-refined_more.out"
+
+[[step]]
+save = "root_builtin_name.strata"
+from = "root_builtin_name.st"
+
+[[step]]
+strata = ["build", "root_builtin_name.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-root_builtin_name.out"
+
+[[step]]
+save = "self_methods.strata"
+from = "self_methods.st"
+
+[[step]]
+strata = ["build", "self_methods.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-self_methods.out"
+
+[[step]]
+save = "statics.strata"
+from = "statics.st"
+
+[[step]]
+strata = ["build", "statics.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-statics.out"
+
+[[step]]
+save = "text.strata"
+from = "text.st"
+
+[[step]]
+strata = ["build", "text.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/impl-statics-text.out"

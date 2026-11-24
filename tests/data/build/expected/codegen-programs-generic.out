@@ -1,0 +1,20 @@
+Pair { first: 1, second: "one" }
+Pair { first: "one", second: 1 }
+Some(Some(4))
+4
+Add(Mul { left: Num(1), right: Num(7) }, Neg(Add(Num(0), Num(2))))
+5
+zero
+yes
+n=2
+other
+3 2
+1x2.5
+Empty {}
+true
+Flags { on: true, ratio: 0.5, note: "say \"hi\"\n", nothing: () }
+1208925819614629174706176
+five 5
+3
+
+--- exit 0

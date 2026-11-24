@@ -1,0 +1,44 @@
+# cli.rs: collections_have_iterators
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+fn total[I: FiniteIterator[Int]](it: I) -> Int {
+  it.fold(0, (a, b) -> a + b)
+}
+
+fn main() {
+  xs := [3, 1, 2]
+  it := xs.iter()
+  print(it.len())
+  for x in it {
+    print(x)
+  }
+  print(total(xs.iter()))
+  print(total((0..5).iter()))
+  print([x * 10 for x in xs.iter() where x > 1].to_list())
+  print(Set { 5, 1, 3 }.iter().to_list())
+  d := Dict { "b": 2, "a": 1 }
+  for (k, v) in d.iter() {
+    print(f"{k}={v}")
+  }
+  print(xs.map(x -> x + 1))
+  print(len(xs))
+  print(to_list(Set { 2, 1 }))
+}
+'''
+
+[[step]]
+strata = ["run", "c.strata"]
+stdout = "3\n3\n1\n2\n6\n10\n[30, 20]\n[1, 3, 5]\na=1\nb=2\n[4, 2, 3]\n3\n[1, 2]\n"
+
+[[step]]
+strata = ["--file", "c.strata", "verify"]
+any_code = true
+lacks = ["may not terminate"]
+
+[[step]]
+strata = ["--file", "d.strata", "edit"]
+text = "type ListIter = { n: Int }\n"
+any_code = true
+has = ["`ListIter` is already defined in the prelude"]

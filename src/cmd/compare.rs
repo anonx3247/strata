@@ -138,7 +138,8 @@ fn strata_check(file: &str) -> Result<Vec<String>, String> {
     // an error's message may go on over indented lines (`available:` overloads)
     let mut errs: Vec<String> = vec![];
     for l in run_compiler(&exe, &args)?.lines() {
-        if l.starts_with("error in ") {
+        // (`error: …` without a definition: the package can't be loaded)
+        if l.starts_with("error in ") || l.starts_with("error: ") {
             errs.push(l.to_string());
         } else if let (Some(e), true) = (errs.last_mut(), l.starts_with("  ")) {
             e.push('\n');
@@ -380,10 +381,9 @@ pub fn command(args: &crate::Args, cmd: &str) -> Result<bool, String> {
                 // the checks `verify` proved, left out as `strata build` leaves
                 // them out (what changed since verified first; `--all-checks`
                 // keeps them all, `--no-verify` uses what was proven before)
-                // (a package's: not yet, its checks all kept)
                 let proven = scratch.join("proofs.txt");
                 // (verified by `compiler verify`, its record read by `compiler proofs`)
-                let facts = if package || args.flag("--all-checks") {
+                let facts = if args.flag("--all-checks") {
                     String::new()
                 } else {
                     strata_proofs(Path::new(&file), !args.flag("--no-verify"))?.unwrap_or_default()
@@ -627,7 +627,7 @@ fn built(dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// The `.strata` files, settings and C (`[native]`: the compiler's JIT is
-/// `c/jit.c`) under `dir` (not hidden folders such as the package's
+/// `c/jit.c`, `c/toolchain.cpp`) under `dir` (not hidden folders such as the package's
 /// cache), with their paths relative to `root`.
 fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
@@ -639,7 +639,7 @@ fn sources(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
         }
         if p.is_dir() {
             sources(root, &p, out);
-        } else if name.ends_with(".strata") || name == "strata.toml" || name == "strata.lock" || name.ends_with(".c") || name.ends_with(".h") {
+        } else if name.ends_with(".strata") || name == "strata.toml" || name == "strata.lock" || name.ends_with(".c") || name.ends_with(".cpp") || name.ends_with(".h") {
             out.push((p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned(), p));
         }
     }

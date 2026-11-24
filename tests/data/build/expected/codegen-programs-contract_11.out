@@ -1,0 +1,4 @@
+fault (Refinement): argument `n` of `g`: -1 does not satisfy `Natural` (where it >= 0)
+    stack: main -> g
+
+--- exit 101

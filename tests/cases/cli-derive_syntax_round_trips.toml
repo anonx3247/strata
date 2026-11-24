@@ -1,0 +1,86 @@
+# cli.rs: derive_syntax_round_trips: derived traits and `comptime`: stored and printed exactly
+
+# stored as written; it doesn't check (`Point` and `Pair` aren't records), as the edit says
+[[step]]
+strata = ["--file", "d.strata", "edit"]
+text = '''
+/// Show a record as its field names.
+pub derivable(Record) trait Named
+  requires len(Self.fields) > 0 {
+  /// The names of the fields.
+  derived fn names() -> List[String] {
+    comptime Self.fields.map(f -> f.name)
+  }
+  fn shout(self) -> String
+}
+
+comptime fn kind_of(comptime f: Field) -> String {
+  match comptime f.type {
+    _ => f.name,
+  }
+}
+
+type Point = { x: Int, y: Int }
+
+derive Named for Point {
+  fn shout(self) -> String {
+    "point"
+  }
+}
+
+type Pair = { a: Int, b: Int }
+
+derive Named for Pair
+
+fn derive(derive: Int) -> Int {
+  derive + 1
+}
+'''
+fails = true
+has = ["written, but", "`Point` isn't one"]
+
+[[step]]
+write = "d.st"
+text = '''
+/// Show a record as its field names.
+pub derivable(Record) trait Named
+  requires len(Self.fields) > 0 {
+  /// The names of the fields.
+  derived fn names() -> List[String] {
+    comptime Self.fields.map(f -> f.name)
+  }
+  fn shout(self) -> String
+}
+
+comptime fn kind_of(comptime f: Field) -> String {
+  match comptime f.type {
+    _ => f.name,
+  }
+}
+
+type Point = { x: Int, y: Int }
+
+derive Named for Point {
+  fn shout(self) -> String {
+    "point"
+  }
+}
+
+type Pair = { a: Int, b: Int }
+
+derive Named for Pair
+
+fn derive(derive: Int) -> Int {
+  derive + 1
+}
+'''
+
+[[step]]
+strata = ["--file", "d.strata", "render"]
+out_file = "d.st"
+
+# `derive` stays an ordinary name: the function `derive` checks
+[[step]]
+strata = ["--file", "d.strata", "check"]
+any_code = true
+lacks = ["error in derive:"]

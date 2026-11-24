@@ -1120,5 +1120,41 @@ const CORE_RT: &str = "fn strata_unique(p: Ptr) -> Bool {\n  n := 5\n  m := n + 
 
 #[test]
 fn core_rt_allocates_nothing_as_in_rust() {
-    same_check_in("core_rt", &[("strata.toml", "name = \"p\"\n"), ("main.strata", "fn main() {}\n"), ("core/rt.strata", CORE_RT)], true);
+    // (a module `core.rt` belongs to the core package: the Strata checker
+    // refuses it in any other package, and Rust takes a package named `core`
+    // for the core it was built with, so each side gets its own name)
+    let dir = std::env::temp_dir().join(format!("strata-check-test-core_rt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("core")).unwrap();
+    std::fs::write(dir.join("strata.toml"), "name = \"p\"\n").unwrap();
+    save(&dir.join("main.strata"), "fn main() {}\n");
+    save(&dir.join("core/rt.strata"), CORE_RT);
+    let errors = |out: &str| -> Vec<String> {
+        let mut v: Vec<String> = out.lines().filter(|l| l.starts_with("error in ") || l.starts_with("  ")).map(String::from).collect();
+        v.sort();
+        v
+    };
+    let o = Command::new(STRATA).args(["--file", &dir.to_string_lossy(), "check"]).output().unwrap();
+    let rust = String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr);
+    std::fs::write(dir.join("strata.toml"), "name = \"core\"\n").unwrap();
+    let ours = compiler::run(&[std::ffi::OsStr::new("check"), dir.as_os_str()]);
+    assert!(!errors(&rust).is_empty(), "{rust}");
+    assert_eq!(errors(&ours), errors(&rust));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two modules with a function of the same name (one private): a call is to
+/// its own module's (`report` in main, `util.report` in util), never to the
+/// other module's private one, whatever their number of parameters.
+#[test]
+fn same_name_in_two_modules_as_in_rust() {
+    same_check_in(
+        "same_name",
+        &[
+            ("strata.toml", "name = \"p\"\n"),
+            ("util.strata", "fn report(a: Int) -> Int { a }\npub fn other(x: Int) -> Int { report(x, 2) }\n"),
+            ("main.strata", "use util\nfn report(a: Int, b: Int, c: Int) -> Int { a + b + c }\nfn main() { print(report(1, 2, 3) + util.other(1)) }\n"),
+        ],
+        true,
+    );
 }

@@ -1,0 +1,160 @@
+# codegen.rs: compiled_programs_do_what_rust_compiled_ones_do (part 3):
+# built, run, and compared with what the build of llvm.rs printed
+# (recorded in tests/data/build/expected/codegen-programs-NAME.out)
+
+[[step]]
+save = "sized.strata"
+from = "sized.st"
+
+[[step]]
+strata = ["build", "sized.strata", "-o", "sized"]
+
+[[step]]
+run = ["./sized"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-sized.out"
+
+[[step]]
+save = "arithmetic.strata"
+from = "arithmetic.st"
+
+[[step]]
+strata = ["build", "arithmetic.strata", "-o", "arithmetic"]
+
+[[step]]
+run = ["./arithmetic"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-arithmetic.out"
+
+[[step]]
+save = "big_integers.strata"
+from = "big_integers.st"
+
+[[step]]
+strata = ["build", "big_integers.strata", "-o", "big_integers"]
+
+[[step]]
+run = ["./big_integers"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-big_integers.out"
+
+[[step]]
+save = "strings.strata"
+from = "strings.st"
+
+[[step]]
+strata = ["build", "strings.strata", "-o", "strings"]
+
+[[step]]
+run = ["./strings"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-strings.out"
+
+[[step]]
+save = "loops.strata"
+from = "loops.st"
+
+[[step]]
+strata = ["build", "loops.strata", "-o", "loops"]
+
+[[step]]
+run = ["./loops"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-loops.out"
+
+[[step]]
+save = "exit_code.strata"
+from = "exit_code.st"
+
+[[step]]
+strata = ["build", "exit_code.strata", "-o", "exit_code"]
+
+[[step]]
+run = ["./exit_code"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-exit_code.out"
+
+[[step]]
+save = "assert_fails.strata"
+from = "assert_fails.st"
+
+[[step]]
+strata = ["build", "assert_fails.strata", "-o", "assert_fails"]
+
+[[step]]
+run = ["./assert_fails"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-assert_fails.out"
+
+[[step]]
+save = "assert_strings.strata"
+from = "assert_strings.st"
+
+[[step]]
+strata = ["build", "assert_strings.strata", "-o", "assert_strings"]
+
+[[step]]
+run = ["./assert_strings"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-assert_strings.out"
+
+[[step]]
+save = "division_by_zero.strata"
+from = "division_by_zero.st"
+
+[[step]]
+strata = ["build", "division_by_zero.strata", "-o", "division_by_zero"]
+
+[[step]]
+run = ["./division_by_zero"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-division_by_zero.out"
+
+[[step]]
+save = "float_overflow.strata"
+from = "float_overflow.st"
+
+[[step]]
+strata = ["build", "float_overflow.strata", "-o", "float_overflow"]
+
+[[step]]
+run = ["./float_overflow"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-float_overflow.out"
+
+[[step]]
+save = "records.strata"
+from = "records.st"
+
+[[step]]
+strata = ["build", "records.strata", "-o", "records"]
+
+[[step]]
+run = ["./records"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-records.out"
+
+[[step]]
+save = "sums.strata"
+from = "sums.st"
+
+[[step]]
+strata = ["build", "sums.strata", "-o", "sums"]
+
+[[step]]
+run = ["./sums"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-sums.out"
+
+[[step]]
+save = "generic.strata"
+from = "generic.st"
+
+[[step]]
+strata = ["build", "generic.strata", "-o", "generic"]
+
+[[step]]
+run = ["./generic"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-generic.out"
+

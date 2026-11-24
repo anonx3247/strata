@@ -1,0 +1,13 @@
+# cli.rs: string_escapes_round_trip
+
+[[step]]
+save = "e.strata"
+text = "fn s() -> String {\n  \"a\tb\\\\n\"\n}\n"
+
+[[step]]
+strata = ["--file", "e.strata", "render"]
+has = ["\"a\\tb\\\\n\""]
+
+[[step]]
+strata = ["--file", "e.strata", "run", "s"]
+has = ["\"a\\tb\\\\n\""]

@@ -1,0 +1,20 @@
+# cli.rs: learn_strata_code_is_valid_and_canonical: docs/learn-strata.md: the first ```rust block checks, its tests pass, and it
+# is as `render` prints it
+
+[[step]]
+run = ["sh", "-c", "awk '/^```rust$/{f=1;next} f&&/^```$/{exit} f' $ROOT/docs/learn-strata.md > learn.st"]
+
+[[step]]
+save = "learn.strata"
+from_tmp = "learn.st"
+
+[[step]]
+strata = ["--file", "learn.strata", "check"]
+
+[[step]]
+strata = ["--file", "learn.strata", "test"]
+has = ["0 failed"]
+
+[[step]]
+strata = ["--file", "learn.strata", "render"]
+out_file = "learn.st"

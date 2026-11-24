@@ -1,0 +1,38 @@
+# cli.rs: core_mem_is_core_only: `core.mem`: raw memory, usable only by core's own modules
+
+# core's own tests use it
+[[step]]
+strata = ["--file", "$ROOT/core", "test"]
+has = ["✓ core.mem: a block holds the words and bytes stored in it", " 0 failed"]
+
+# anywhere else it is refused, its type included
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = '''
+fn main() {
+  p := raw_alloc(8)
+  store_i64(p, 0, 1)
+}
+
+fn keep(p: Ptr) -> Ptr {
+  p
+}
+'''
+any_code = true
+has = ["error in main: `raw_alloc` is core's: only core's modules can use raw memory (`core.mem`)", "error in main: `store_i64` is core's", "error in keep: `Ptr` is core's"]
+
+# a package's module named like core's is not core
+[[step]]
+module = "main"
+into = "$TMP/p/"
+text = "fn main() {}\n"
+
+[[step]]
+module = "core.mem"
+into = "$TMP/p/"
+text = "pub fn grab() -> Int {\n  load_i64(raw_alloc(8), 0)\n}\n"
+
+[[step]]
+strata = ["--file", "p", "check"]
+fails = true
+has = ["`raw_alloc` is core's"]

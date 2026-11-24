@@ -1,6 +1,6 @@
 //! Both compilers read the builtins' signatures from `core/builtins.strata`:
-//! the compiler package's (`compiler/builtins`' `core_of`, its `builtins`
-//! command) are `strata builtins`' lines, in the same order.
+//! the compiler package's `builtins` command (the prelude's types, then
+//! `compiler/builtins`' `core_of`) prints what `strata builtins` prints.
 
 use std::process::Command;
 
@@ -16,5 +16,5 @@ fn builtins_as_in_rust() {
     let all = String::from_utf8_lossy(&o.stdout).to_string();
     let (_, listed) = all.split_once("// builtin functions\n\n").expect("strata builtins lists the builtin functions");
     assert!(listed.lines().count() > 50, "{all}");
-    assert_eq!(got, listed);
+    assert_eq!(got, all);
 }

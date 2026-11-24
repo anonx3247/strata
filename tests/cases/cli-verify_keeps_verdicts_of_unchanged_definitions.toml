@@ -1,0 +1,52 @@
+# cli.rs: verify_keeps_verdicts_of_unchanged_definitions: a check's verdict is
+# kept under its definition's hash with all it depends on; a changed
+# definition is checked again, with what calls it, and nothing else
+
+[[step]]
+save = "k.strata"
+text = "type Small = Int where 0 <= it && it <= 10\nfn f(x: Small) -> Int\n  ensures it >= 0\n{\n  x * 2\n}\nfn g(x: Small) -> Int\n  ensures it >= 0\n{\n  f(x) + 1\n}\nfn h(x: Small) -> Int\n  ensures it <= 10\n{\n  x\n}\n"
+
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "20"]
+has = ["✓ f ", "✓ g ", "✓ h "]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "20"]
+counts = { "(cached)" = 3 }
+
+# other settings are other checks
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "21"]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "20", "--no-cache"]
+lacks = ["(cached)"]
+
+# `f` changes: it and `g`, which calls it, are checked again (`h` is kept)
+[[step]]
+save = "k.strata"
+text = "type Small = Int where 0 <= it && it <= 10\nfn f(x: Small) -> Int\n  ensures it >= 0\n{\n  x * 3\n}\nfn g(x: Small) -> Int\n  ensures it >= 0\n{\n  f(x) + 1\n}\nfn h(x: Small) -> Int\n  ensures it <= 10\n{\n  x\n}\n"
+
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "20"]
+counts = { "(cached)" = 1 }
+
+# a change that breaks `h`: the policy sees the new verdict
+[[step]]
+save = "k.strata"
+text = "type Small = Int where 0 <= it && it <= 10\nfn f(x: Small) -> Int\n  ensures it >= 0\n{\n  x * 3\n}\nfn g(x: Small) -> Int\n  ensures it >= 0\n{\n  f(x) + 1\n}\nfn h(x: Small) -> Int\n  ensures it <= 10\n{\n  x + 1\n}\n"
+
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "20", "--require", "proven"]
+fails = true
+has = ["✗ h"]
+counts = { "(cached)" = 2 }
+
+# and a kept failure still fails the run
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "20", "--require", "proven"]
+fails = true
+has = ["✗ h"]
+counts = { "(cached)" = 3 }

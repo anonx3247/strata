@@ -1,0 +1,190 @@
+# cli.rs: sync_carries_logged_renames_into_the_other_sides_files
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "a.strata"
+text = "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n"
+
+[[step]]
+save = "b.strata"
+text = "from a use area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n"
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "base"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+# feature renames `area`; main adds a new file that calls it by its old name
+[[step]]
+run = ["git", "checkout", "-q", "-b", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["rename", "area", "rect_area"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+save = "c.strata"
+text = '''
+from a use area
+
+fn cube(s: Int) -> Int {
+  area(s, s) * s
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "cubes"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["merged main", "merge: theirs code follows the rename a.area → a.rect_area (c.use a, c.cube)"]
+
+[[step]]
+strata = ["render", "c"]
+stdout = '''
+from a use rect_area
+
+fn cube(s: Int) -> Int {
+  rect_area(s, s) * s
+}
+'''
+
+# the fix is logged, and part of the merge commit
+[[step]]
+run = ["grep", "-q", "\"follows\"", "strata.log"]
+
+[[step]]
+run = ["git", "status", "--porcelain"]
+stdout = ""
+
+[[step]]
+run = ["sh", "-c", "test $(git log -1 --format=%p | wc -w) -eq 2"]
+
+# the other way round: main renames, feature's new call follows
+[[step]]
+run = ["git", "checkout", "-q", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "merge", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["rename", "rect_area", "surface"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["render", "b"]
+capture = "b.st"
+
+[[step]]
+write = "b.st"
+append = true
+text = "\nfn twice(s: Int) -> Int {\n  rect_area(s, s) * 2\n}\n"
+
+[[step]]
+save = "b.strata"
+from_tmp = "b.st"
+
+[[step]]
+run = ["git", "commit", "-q", "-am", "twice"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["merged main"]
+
+[[step]]
+strata = ["render", "b"]
+capture = "b2.st"
+has = ["surface(s, s) * 2"]
+lacks = ["rect_area"]
+
+# a rename the other side's code can't follow (a local would capture the new name) is left alone
+[[step]]
+run = ["git", "checkout", "-q", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "merge", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["rename", "surface", "extent"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+write = "b2.st"
+append = true
+text = '''
+
+fn padded(s: Int) -> Int {
+  extent := 2
+  surface(s, s) + extent
+}
+'''
+
+[[step]]
+save = "b.strata"
+from_tmp = "b2.st"
+
+[[step]]
+run = ["git", "commit", "-q", "-am", "padded"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "rev-parse", "HEAD"]
+capture = "head"
+
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+fails = true
+has = ["doesn't check", "b.padded"]
+
+[[step]]
+strata = ["render", "b"]
+has = ["surface(s, s) + extent"]
+
+[[step]]
+run = ["git", "rev-parse", "HEAD"]
+out_file = "head"

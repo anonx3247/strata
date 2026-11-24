@@ -1,0 +1,212 @@
+# cli.rs: capabilities_given_by_the_runtime: made only by the runtime, for `main` and tests that ask; capability
+# traits for everything else
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+module = "clock"
+into = "$TMP/p/"
+text = '''
+/// Reading the time.
+pub capability trait Clock {
+  fn now(self) -> Int
+}
+
+/// The machine's clock.
+pub capability SystemClock {
+  /// Seconds, as the system tells.
+  fn seconds() -> Int {
+    42
+  }
+}
+
+impl Clock for SystemClock {
+  fn now(self) -> Int {
+    self.seconds()
+  }
+}
+
+pub type Fixed = { at: Int }
+
+impl Clock for Fixed {
+  fn now(self) -> Int {
+    self.at
+  }
+}
+
+pub fn late(c: Clock) -> Bool {
+  c.now() > 40
+}
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+text = '''
+from clock use SystemClock, Fixed, late
+
+fn main(sys: SystemClock) {
+  print(f"{sys.seconds()} {late(sys)} {late(Fixed { at: 1 })}")
+}
+
+test "the real clock" (sys: SystemClock) {
+  assert late(sys)
+}
+
+test "a fixed clock" {
+  assert !late(Fixed { at: 1 })
+}
+'''
+
+# the text round-trips
+[[step]]
+strata = ["--file", "p", "render", "clock"]
+stdout = '''
+/// Reading the time.
+pub capability trait Clock {
+  fn now(self) -> Int
+}
+
+/// The machine's clock.
+pub capability SystemClock {
+  /// Seconds, as the system tells.
+  fn seconds() -> Int {
+    42
+  }
+}
+
+impl Clock for SystemClock {
+  fn now(self) -> Int {
+    self.seconds()
+  }
+}
+
+pub type Fixed = { at: Int }
+
+impl Clock for Fixed {
+  fn now(self) -> Int {
+    self.at
+  }
+}
+
+pub fn late(c: Clock) -> Bool {
+  c.now() > 40
+}
+'''
+
+[[step]]
+strata = ["--file", "p", "render", "main"]
+stdout = '''
+from clock use SystemClock, Fixed, late
+
+fn main(sys: SystemClock) {
+  print(f"{sys.seconds()} {late(sys)} {late(Fixed { at: 1 })}")
+}
+
+test "the real clock" (sys: SystemClock) {
+  assert late(sys)
+}
+
+test "a fixed clock" {
+  assert !late(Fixed { at: 1 })
+}
+'''
+
+[[step]]
+strata = ["--file", "p", "check"]
+
+# the runtime makes it: compiled, built
+[[step]]
+strata = ["run", "p"]
+stdout = "42 true false\n"
+
+[[step]]
+strata = ["--file", "p", "test"]
+has = ["✓ the real clock", "2 passed"]
+
+[[step]]
+strata = ["build", "p", "-o", "clockprog"]
+
+[[step]]
+run = ["./clockprog"]
+stdout = "42 true false\n"
+
+# the capability's own code is trusted; code taking one is proven from its contracts
+[[step]]
+strata = ["--file", "p", "verify"]
+any_code = true
+has = ["assumed: `SystemClock` is a capability", "✓ main ", "clock.late"]
+lacks = ["panicked"]
+
+# nothing else makes one
+[[step]]
+module = "bad"
+into = "$TMP/p/"
+text = '''
+from clock use SystemClock
+
+fn forge() -> SystemClock {
+  SystemClock {}
+}
+
+fn mocked() -> SystemClock {
+  mock SystemClock
+}
+
+test "asks for an int" (n: Int) {
+  assert n == 1
+}
+'''
+
+[[step]]
+strata = ["--file", "p", "check"]
+fails = true
+has = ["`SystemClock` is a capability: only the runtime makes one, for `main` or a test that asks for it (`system_clock: SystemClock`)", "`mock` needs a trait, found `clock.SystemClock`", "test parameter `n: Int`: a test asks only for capabilities"]
+
+[[step]]
+run = ["rm", "p/bad.strata"]
+
+# its functions don't take `self`
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = "capability C {\n  fn f(self) -> Int {\n    1\n  }\n}\n"
+fails = true
+has = ["a capability's functions don't take `self`"]
+
+# std's: `main` names `Disk` and `Process`, and calls their traits' methods
+# without the traits imported; `Files` itself is for code below `main`
+[[step]]
+save = "std_caps.strata"
+text = '''
+from std.fs use Disk
+from std.process use Process
+
+fn main(mut disk: Disk, process: Process) {
+  mut disk.write("cap.txt", "hi") except { () }
+  print(disk.read("cap.txt") except { "?" })
+  mut disk.remove("cap.txt") except { () }
+  print(disk.exists("cap.txt"))
+  print(len(process.args()))
+}
+'''
+
+[[step]]
+strata = ["run", "std_caps.strata", "--", "a", "b"]
+stdout = "hi\nfalse\n2\n"
+
+[[step]]
+save = "asks_files.strata"
+text = '''
+from std.fs use Files
+
+fn main(files: Files) {
+  print(files.exists("x"))
+}
+'''
+
+[[step]]
+strata = ["run", "asks_files.strata"]
+fails = true
+has = ["Name the capability instead, `disk: Disk` (std.fs), and pass it where `Files` is wanted"]

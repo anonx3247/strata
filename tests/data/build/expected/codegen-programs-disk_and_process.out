@@ -1,0 +1,12 @@
+Ok(5)
+Ok("hello!")
+Err(NotFound { path: "/tmp/strata-codegen-c4/missing.txt" })
+true
+Ok(["a.txt", "b.txt"])
+Ok([104, 101, 108, 108, 111])
+Ok([])
+[]
+None
+true
+
+--- exit 3

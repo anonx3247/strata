@@ -1,0 +1,65 @@
+# cli.rs: tasks_stay_in_their_scope: `spawn` only in a `scope`, and a handle never leaves it
+
+[[step]]
+save = "t.strata"
+text = '''
+fn outside() -> Int {
+  h := spawn 1
+  0
+}
+fn leaks() -> Int {
+  h := scope {
+    a := spawn 1
+    a
+  }
+  0
+}
+fn ret() -> Int {
+  scope {
+    h := spawn { return 1 }
+    0
+  }
+}
+fn tries(r: Result[Int, String]) -> Result[Int, String] {
+  scope {
+    h := spawn r! + 1
+    Ok(await h)
+  }
+}
+fn captured() -> Int {
+  scope {
+    a := spawn 1
+    b := spawn await a + 1
+    await b
+  }
+}
+fn stored() -> Int {
+  mut hs := []
+  scope {
+    hs = [spawn 1]
+    0
+  }
+}
+fn changes() -> Int {
+  mut n := 0
+  scope {
+    h := spawn { n += 1; n }
+    await h
+  }
+}
+fn not_task() -> Int {
+  await 3
+}
+fn fine(xs: List[Int]) -> (Int, List[Int]) {
+  scope {
+    a := spawn len(xs)
+    (await a, await [spawn x * 2 for x in xs])
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "check"]
+fails = true
+has = ["error in outside: `spawn` outside a `scope`", "error in leaks: a task's handle can't leave its `scope`", "error in ret: `return` can't leave a task (a `spawn`, a `race` arm)", "error in tries: `!` can't return from a task (a `spawn`, a `race` arm)", "error in captured: a closure or `spawn` can't hold `a`, a task's handle", "error in stored: `hs` is declared outside the `scope`", "error in changes: a closure cannot change `n`", "error in not_task: `await` takes a task's handle"]
+lacks = ["error in fine"]

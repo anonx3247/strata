@@ -1,0 +1,83 @@
+# cli.rs: channels_are_closed_and_selected: every sender made is closed where it is made, each task closes
+# its copy, a `spawn` captures a sender only on its own, and `select`'s arms
+# wait on `recv`, `send` or `await`
+
+[[step]]
+save = "c.strata"
+text = '''
+fn never_closed() {
+  (tx, rx) := channel(1)
+  tx.send(1)
+}
+
+fn task_never_closes() {
+  (tx, rx) := channel(1)
+  scope {
+    spawn tx.send(1)
+  }
+  tx.close()
+}
+
+fn nested_sender() {
+  (tx, rx) := channel(1)
+  pair := (tx, 1)
+  scope {
+    spawn {
+      pair.0.send(1)
+      pair.0.close()
+    }
+  }
+  tx.close()
+}
+
+fn arms(rx: Receiver[Int]) -> Int {
+  select {
+    rx.recv() as x => 1,
+    len([1]) as y => 2,
+  }
+}
+
+fn named_send(tx: Sender[Int]) {
+  select {
+    tx.send(1) as x => (),
+  }
+}
+
+fn race_return(x: Int) -> Int {
+  race {
+    { return 1 } as a => a,
+    x as b => b,
+  }
+}
+
+fn race_sender() -> Int {
+  (tx, out) := channel()
+  r := race {
+    tx.send(1) as a => 1,
+    2 as b => b,
+  }
+  tx.close()
+  r
+}
+
+fn fine(rx: Receiver[Int]) -> Int {
+  (tx, out) := channel()
+  scope {
+    spawn {
+      tx.send(1)
+      tx.close()
+    }
+  }
+  tx.close()
+  select {
+    rx.recv() as x => x ?? 0,
+    out.recv() as y => y ?? 1,
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "c.strata", "check"]
+fails = true
+has = ["error in never_closed: `tx` is never closed here", "error in task_never_closes: the task holds a copy of `tx` and never closes it", "error in nested_sender: a task (a `spawn`, a `race` arm) can capture a sender only on its own", "error in arms: a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`", "error in named_send: a `send` arm gives nothing to name", "error in race_return: `return` can't leave a task (a `spawn`, a `race` arm)", "error in race_sender: the task holds a copy of `tx` and never closes it"]
+lacks = ["error in fine"]

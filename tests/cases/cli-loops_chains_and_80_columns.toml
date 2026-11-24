@@ -1,0 +1,35 @@
+# cli.rs: loops_chains_and_80_columns
+
+[[step]]
+save = "l.strata"
+text = '''
+fn steps(start: Positive) -> Natural {
+  mut n := start
+  mut k := 0
+  loop {
+    if n == 1 { break }
+    n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }
+    k = k + 1
+  }
+  k
+}
+fn top(xs: List[Int]) -> Int {
+  xs
+    .filter(x -> x > 0)
+    .sort()
+    .reverse()
+    .take(3)
+    .sum()
+}
+test "t" {
+  assert steps(6) == 8
+  assert top([5, -1, 9, 2, 7]) == 21
+}
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "test"]
+
+# (the Rust test also counted rendered lines over 80 columns, on the output
+# of `render` of the whole package, which is an error message: it checked
+# nothing)

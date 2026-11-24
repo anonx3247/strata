@@ -1,0 +1,5 @@
+2
+fault (Requires): precondition of `half` violated: requires n % 2 == 0 (with n = 3)
+    stack: main -> half
+
+--- exit 101

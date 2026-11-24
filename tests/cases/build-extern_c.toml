@@ -1,0 +1,35 @@
+# build.rs: extern_c_calls: the package's C (`[native]`), called from compiled
+# code, built and on the JIT
+[[step]]
+write = "strata.toml"
+text = "name = \"ffi\"\n\n[native]\nsources = [\"ffi.c\"]\n"
+
+[[step]]
+write = "ffi.c"
+from = "ffi.c"
+
+[[step]]
+module = "c"
+into = "."
+from = "c.st"
+
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+strata = ["build", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "[-5, -128, 255, 18446744073709551615, -9223372036854775808, 9223372036854775807, 1]\nHELLO, C 3.0 1.5\n[0, 42, 43, 42]\n[1, 1]\n"
+
+[[step]]
+strata = ["run", "."]
+stdout = "[-5, -128, 255, 18446744073709551615, -9223372036854775808, 9223372036854775807, 1]\nHELLO, C 3.0 1.5\n[0, 42, 43, 42]\n[1, 1]\n"
+
+[[step]]
+strata = ["test"]
+any_code = true
+has = ["`nothing` gave NULL for a `Counter` (declare it `Option[Counter]` if it can be NULL)", "a string passed to `shout` holds a NUL character"]

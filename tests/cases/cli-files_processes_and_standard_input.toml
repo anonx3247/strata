@@ -1,0 +1,58 @@
+# cli.rs: files_processes_and_standard_input: (the Rust test ran it with `--rust` too)
+
+[[step]]
+save = "a.strata"
+text = '''
+from std.io use Console
+from std.fs use Files, Disk, FsError
+from std.process use Environment, Process, Launcher, Commands, RunOptions
+from std.cli use read_input
+
+fn main(mut console: Console, mut disk: Disk, process: Process, mut launcher: Launcher) -> Result[(), String] {
+  dir := "fsplay"
+  mut disk.remove_all(dir) except { () }
+  mut disk.make_dir(dir + "/sub").or_text()!
+  mut disk.write_bytes(dir + "/sub/b.bin", [0, 255, 10]).or_text()!
+  print(disk.read_bytes(dir + "/sub/b.bin").or_text()!)
+  mut disk.rename(dir + "/sub/b.bin", dir + "/c.bin").or_text()!
+  print(f"{disk.is_dir(dir + "/sub")} {disk.is_dir(dir + "/c.bin")} {disk.exists(dir + "/sub/b.bin")}")
+  print(ends_with(disk.absolute(dir).or_text()!, "/fsplay"))
+  print(starts_with(process.current_dir(), "/"))
+  mut disk.remove_all(dir).or_text()!
+  print(disk.exists(dir))
+  r := mut launcher.run_with("sh", ["-c", "cat; echo $GREET"], "", RunOptions { input: "piped in\n", env: [("GREET", "hello")] })!
+  print(r.out)
+  t := mut launcher.run_with("sh", ["-c", "echo on the terminal"], "", RunOptions { terminal: true })!
+  print(f"code {t.code} out {len(t.out.bytes())}")
+  text := read_input(mut console, disk, "-").or_text()!
+  print(f"stdin: {text}")
+  Ok(())
+}
+
+impl[T] Result[T, FsError] {
+  fn or_text(self) -> Result[T, String] {
+    match self {
+      Ok(x) => Ok(x),
+      Err(e) => Err(f"{e}"),
+    }
+  }
+}
+'''
+
+[[step]]
+strata = ["run", "a.strata"]
+text = "abc\ndef"
+stdout = '''
+[0, 255, 10]
+true false false
+true
+true
+false
+piped in
+hello
+
+on the terminal
+code 0 out 0
+stdin: abc
+def
+'''

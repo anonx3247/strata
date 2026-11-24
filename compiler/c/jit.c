@@ -10,6 +10,8 @@
 #include <llvm-c/LLJIT.h>
 #include <llvm-c/Orc.h>
 #include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +43,66 @@ static LLVMErrorRef add_generators(LLVMOrcLLJITRef jit) {
   return NULL;
 }
 
+// How programs and tests are compiled (`jit_set_opt`): -1 as LLVM's JIT
+// does by default (its code generator at -O2, no IR passes: what `verify`'s
+// fuzzing and compile-time code get), 0 unoptimized (`strata run` and
+// `strata test`, as Rust's driver: several times faster to compile), 2 as
+// clang -O2 would (`--release`: the IR passes too).
+static int jit_opt = -1;
+
+int32_t jit_set_opt(int32_t level) {
+  jit_opt = level;
+  return 0;
+}
+
+// A JIT's builder for `jit_opt`: the host's CPU and features, at its level.
+static LLVMOrcLLJITBuilderRef jit_builder(void) {
+  LLVMOrcLLJITBuilderRef b = LLVMOrcCreateLLJITBuilder();
+  if (jit_opt < 0) return b;
+  char *triple = LLVMGetDefaultTargetTriple();
+  LLVMTargetRef target;
+  char *msg = NULL;
+  if (LLVMGetTargetFromTriple(triple, &target, &msg)) {
+    LLVMDisposeMessage(msg);
+    LLVMDisposeMessage(triple);
+    return b;
+  }
+  char *cpu = LLVMGetHostCPUName();
+  char *features = LLVMGetHostCPUFeatures();
+  LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, cpu, features,
+      jit_opt == 0 ? LLVMCodeGenLevelNone : LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelJITDefault);
+  LLVMDisposeMessage(cpu);
+  LLVMDisposeMessage(features);
+  LLVMDisposeMessage(triple);
+  // (the builder owns the target machine from here)
+  LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(b, LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine(tm));
+  return b;
+}
+
+// The module optimized as clang -O2 would, with `--release` (jit_opt 2).
+static void optimized(LLVMModuleRef mod) {
+  if (jit_opt < 2) return;
+  char *triple = LLVMGetDefaultTargetTriple();
+  LLVMTargetRef target;
+  char *msg = NULL;
+  if (!LLVMGetTargetFromTriple(triple, &target, &msg)) {
+    char *cpu = LLVMGetHostCPUName();
+    char *features = LLVMGetHostCPUFeatures();
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, cpu, features,
+        LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelJITDefault);
+    LLVMPassBuilderOptionsRef o = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef e = LLVMRunPasses(mod, "default<O2>", tm, o);
+    if (e) LLVMConsumeError(e);
+    LLVMDisposePassBuilderOptions(o);
+    LLVMDisposeTargetMachine(tm);
+    LLVMDisposeMessage(cpu);
+    LLVMDisposeMessage(features);
+  } else {
+    LLVMDisposeMessage(msg);
+  }
+  LLVMDisposeMessage(triple);
+}
+
 static int failed(LLVMErrorRef e, const char *what) {
   char *m = LLVMGetErrorMessage(e);
   fprintf(stderr, "error: the JIT %s: %s\n", what, m);
@@ -66,7 +128,8 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
     return NULL;
   }
   LLVMOrcLLJITRef jit;
-  LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, LLVMOrcCreateLLJITBuilder());
+  optimized(mod);
+  LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, jit_builder());
   if (e) return failed(e, "can't start"), NULL;
   // the loaded libraries, then the runtime: this process's own symbols
   e = add_generators(jit);
@@ -243,7 +306,8 @@ int32_t jit_fuzz_load(const char *ir) {
     return -1;
   }
   LLVMOrcLLJITRef fuzz_jit;
-  LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, LLVMOrcCreateLLJITBuilder());
+  optimized(mod);
+  LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, jit_builder());
   if (!e) {
     e = add_generators(fuzz_jit);
     if (!e) {
@@ -301,6 +365,36 @@ const char *jit_fault_message(void) {
 const char *jit_fault_stack(void) { return runtime_text("strata_test_stack"); }
 
 const char *jit_fuzz_args(void) { return runtime_text("strata_fuzz_args"); }
+
+// ---- tests (`strata test`) ----
+//
+// The tests compiler/codegen makes (`codegen --tests`, one `strata.test.N`
+// per test block), loaded by `jit_fuzz_load`, each run as `strata test`
+// runs it (`strata_test`): a fault ends the test, not the process; what it
+// printed is kept (`jit_test_printed`), and the fault read with
+// `jit_fault_kind`, `jit_fault_message` and `jit_fault_stack`.
+
+// Run test `i` of module `m`: 0 when it passed, 1 when a fault ended it,
+// -1 when there is no such test.
+int32_t jit_test_case(int32_t m, int64_t i) {
+  if (m < 0 || m >= fuzz_count) return -1;
+  char name[64];
+  snprintf(name, sizeof name, "strata.test.%lld", (long long)i);
+  LLVMOrcExecutorAddress addr;
+  LLVMErrorRef e = LLVMOrcLLJITLookup(fuzz_jits[m], &addr, name);
+  if (e) {
+    LLVMConsumeError(e);
+    return -1;
+  }
+  int32_t (*test)(void (*)(void)) = runtime_fn("strata_test");
+  if (!test) return -1;
+  int32_t r = test((void (*)(void))(uintptr_t)addr) != 0;
+  fflush(stdout);
+  return r;
+}
+
+// What the last test printed.
+const char *jit_test_printed(void) { return runtime_text("strata_test_printed"); }
 
 // ---- compile-time values (`comptime e`, compiler/derive) ----
 //

@@ -1,0 +1,159 @@
+# codegen.rs: compiled_programs_do_what_rust_compiled_ones_do (part 5):
+# built, run, and compared with what the build of llvm.rs printed
+# (recorded in tests/data/build/expected/codegen-programs-NAME.out)
+
+[[step]]
+save = "unions_and_distinct.strata"
+from = "unions_and_distinct.st"
+
+[[step]]
+strata = ["build", "unions_and_distinct.strata", "-o", "unions_and_distinct"]
+
+[[step]]
+run = ["./unions_and_distinct"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-unions_and_distinct.out"
+
+[[step]]
+save = "contract_1.strata"
+from = "contract_1.st"
+
+[[step]]
+strata = ["build", "contract_1.strata", "-o", "contract_1"]
+
+[[step]]
+run = ["./contract_1"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_1.out"
+
+[[step]]
+save = "contract_2.strata"
+from = "contract_2.st"
+
+[[step]]
+strata = ["build", "contract_2.strata", "-o", "contract_2"]
+
+[[step]]
+run = ["./contract_2"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_2.out"
+
+[[step]]
+save = "contract_3.strata"
+from = "contract_3.st"
+
+[[step]]
+strata = ["build", "contract_3.strata", "-o", "contract_3"]
+
+[[step]]
+run = ["./contract_3"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_3.out"
+
+[[step]]
+save = "contract_4.strata"
+from = "contract_4.st"
+
+[[step]]
+strata = ["build", "contract_4.strata", "-o", "contract_4"]
+
+[[step]]
+run = ["./contract_4"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_4.out"
+
+[[step]]
+save = "contract_5.strata"
+from = "contract_5.st"
+
+[[step]]
+strata = ["build", "contract_5.strata", "-o", "contract_5"]
+
+[[step]]
+run = ["./contract_5"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_5.out"
+
+[[step]]
+save = "contract_11.strata"
+from = "contract_11.st"
+
+[[step]]
+strata = ["build", "contract_11.strata", "-o", "contract_11"]
+
+[[step]]
+run = ["./contract_11"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_11.out"
+
+[[step]]
+save = "contract_12.strata"
+from = "contract_12.st"
+
+[[step]]
+strata = ["build", "contract_12.strata", "-o", "contract_12"]
+
+[[step]]
+run = ["./contract_12"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_12.out"
+
+[[step]]
+save = "contract_13.strata"
+from = "contract_13.st"
+
+[[step]]
+strata = ["build", "contract_13.strata", "-o", "contract_13"]
+
+[[step]]
+run = ["./contract_13"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_13.out"
+
+[[step]]
+save = "contract_14.strata"
+from = "contract_14.st"
+
+[[step]]
+strata = ["build", "contract_14.strata", "-o", "contract_14"]
+
+[[step]]
+run = ["./contract_14"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_14.out"
+
+[[step]]
+save = "contract_15.strata"
+from = "contract_15.st"
+
+[[step]]
+strata = ["build", "contract_15.strata", "-o", "contract_15"]
+
+[[step]]
+run = ["./contract_15"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_15.out"
+
+[[step]]
+save = "contract_16.strata"
+from = "contract_16.st"
+
+[[step]]
+strata = ["build", "contract_16.strata", "-o", "contract_16"]
+
+[[step]]
+run = ["./contract_16"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_16.out"
+
+[[step]]
+save = "contract_17.strata"
+from = "contract_17.st"
+
+[[step]]
+strata = ["build", "contract_17.strata", "-o", "contract_17"]
+
+[[step]]
+run = ["./contract_17"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-contract_17.out"

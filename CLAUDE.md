@@ -11,6 +11,7 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
   expression, a new error) goes into the matching `compiler/` module in the same PR, with its test
   (tests/lex.rs, parse.rs, ast.rs, resolve.rs, check.rs, eval.rs compare the two). Edit it with
   `strata --file compiler/ edit MODULE` (start from `strata --file compiler render MODULE`).
+- Testing after Rust (docs/testing.md): the cargo tests are being ported to golden-output cases in `tests/cases`, run by `strata run tools/check -- --strata target/release/strata NAME…` (filters by case name), and to proofs and `test` blocks. A new CLI behaviour gets a case there too.
 - Never run the whole test suite. Run only the tests for what you are
   changing, by name: `cargo test --release --test cli <filter>` (or `--lib <filter>` for unit tests), with
   filters matching the feature (`verify`, `json`, `regex`, …) plus any test you add; they must pass before
@@ -27,7 +28,7 @@ Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the R
   re-encodes the repository's files ("Changing the format" in that doc); the format version stays 1 until
   the format is settled (user's call), so don't bump it.
 - Verify UI changes with headless Chrome screenshots:
-  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars --window-size=1700,1000 --virtual-time-budget=4000 --screenshot=out.png "http://127.0.0.1:PORT/#level=1&sel=core.run_worker"`.
+  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --hide-scrollbars --window-size=1700,1000 --virtual-time-budget=4000 --screenshot=out.png "http://127.0.0.1:PORT/#level=1&sel=model.run_worker"`.
   Start `strata ui --file examples/tasks --port PORT` in the background, and kill **only that port** afterwards (`kill $(lsof -ti tcp:PORT)`); the user may have their own viewers running.
   Viewer errors show in the page banner.
   To check hover: start Chrome with `--headless=new --remote-debugging-port=9333 --user-data-dir=<scratch>`, then a small Node 22 script (built-in `WebSocket`, Chrome DevTools protocol) opens the page, sends `Input.dispatchMouseEvent` (`mouseMoved`) over an `a.ref`, and calls `Page.captureScreenshot`. Kill only that port afterwards.

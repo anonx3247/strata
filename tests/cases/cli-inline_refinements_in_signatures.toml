@@ -1,0 +1,19 @@
+# cli.rs: inline_refinements_in_signatures
+[[step]]
+save = "i.strata"
+text = "fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }\nfn halve_up(n: Natural) -> Int where it * 2 <= n { (n + 1) / 2 }\n"
+
+[[step]]
+strata = ["--file", "i.strata", "verify"]
+fails = true
+has = ["does not satisfy `Int where it * 2 <= n`"]
+lacks = ["✗ pick "]
+
+[[step]]
+save = "c.strata"
+text = "fn pick(level: Int where 5 <= it && it <= 13) -> Int { level }\nfn caller() -> Int { pick(20) }\n"
+
+[[step]]
+strata = ["--file", "c.strata", "check"]
+fails = true
+has = ["20 does not satisfy `Int where 5 <= it && it <= 13`"]

@@ -1,0 +1,27 @@
+# cli.rs: smt_translates_unicode_regexes (bad_caseless and far refuted by
+# the solver; a character past U+2FFFF is no SMT character)
+[[step]]
+save = "r.strata"
+text = '''
+fn f(s: String where matches(it, "\d{3}")) -> String where matches(it, "\d+") { s }
+fn bad_f(s: String where matches(it, "\d+")) -> String where matches(it, "\d{3}") { s }
+fn word(s: String where matches(it, "[a-z]+")) -> String where matches(it, "\w+") { s }
+fn bad_word(s: String where matches(it, "\w+")) -> String where matches(it, "[a-z]+") { s }
+fn letters(s: String where matches(it, "\p{L}+")) -> String where matches(it, "\w+") { s }
+fn bad_letters(s: String where matches(it, "\w+")) -> String where matches(it, "\p{L}+") { s }
+fn spaces(s: String where matches(it, "\s*")) -> Bool ensures it { !matches(s, ".*\w.*") }
+fn nbsp() -> Bool ensures it { matches(" ", "\s") }
+fn caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { len(s.code_points()) == 3 }
+fn kelvin() -> Bool ensures it { matches("K", "(?i)k") }
+fn bad_caseless(s: String where matches(it, "(?i)abc")) -> Bool ensures it { s == "abc" }
+fn arabic() -> Bool ensures it { matches("٣", "\d") }
+fn ascii_only(s: String where matches(it, "\d")) -> Bool ensures it { matches(s, "[0-9]") }
+fn anchored(s: String where matches(it, "^ab$")) -> Bool ensures it { s == "ab" }
+fn far() -> Bool ensures it { len("󠁁".code_points()) == 9 }
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "verify", "--cases", "20", "--no-race"]
+fails = true
+has = ["✓ f ", "✓ word ", "✓ letters ", "✓ spaces ", "✓ nbsp ", "✓ caseless ", "✓ kelvin ", "✓ arabic ", "✓ anchored ", "✗ bad_f ", "✗ bad_word ", "✗ bad_letters ", "✗ ascii_only ", "✗ bad_caseless ", "✗ far "]
+lacks = ["bug in the prover"]

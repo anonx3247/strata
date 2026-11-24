@@ -1,0 +1,44 @@
+# cli.rs: string_primitives
+
+[[step]]
+save = "strings.strata"
+text = '''
+fn count_digits(s: String) -> Int { s.chars().count(c -> is_digit(c)) }
+
+test "strings" {
+  s := "héllo wörld"
+  assert len(s.code_points()) == 11 && len(s.graphemes()) == 11 && len(s.bytes()) == 13 && s.byte_len() == 13
+  assert s.chars().take(2) == ["h", "é"]
+  assert s.graphemes().get(1) == Some("é") && s.graphemes().get(99) == None
+  assert s.byte_slice(7, 13) == "wörld" && s.byte_slice(-3, 3) == "hé" && s.byte_slice(8, 3) == "" && s.byte_slice(0, 2) == "h"
+  assert [1, 2, 3, 4].slice(1, 3) == [2, 3]
+  assert s.index_of("wö") == Some(7) && s.index_of("z") == None
+  assert s.ends_with("rld") && s.starts_with("hé")
+  assert s.replace("l", "L") == "héLLo wörLd"
+  assert "a\nb\n".lines() == ["a", "b"]
+  assert "ab".repeat(3) == "ababab"
+  assert "abc".reverse() == "cba"
+  assert "Ab".to_upper() == "AB" && "Ab".to_lower() == "ab"
+  assert is_digit("42") && !is_digit("4a") && !is_digit("")
+  assert is_alpha("é") && is_space(" \t")
+  assert ord("A") == 65 && chr(233) == "é"
+  assert count_digits("a1b22") == 3
+  assert "a,b".split(",") == ["a", "b"] && contains("abc", "bc")
+}
+'''
+
+[[step]]
+strata = ["--file", "strings.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "strings.strata", "render"]
+capture = "strings.st"
+
+[[step]]
+save = "strings-r.strata"
+from_tmp = "strings.st"
+
+[[step]]
+strata = ["--file", "strings-r.strata", "render"]
+out_file = "strings.st"

@@ -1,0 +1,15 @@
+hello World: HELLO WORLD hello world false false false
+straße: STRASSE straße false true false
+ΟΔΥΣΣΕΥΣ: ΟΔΥΣΣΕΥΣ οδυσσευς false true false
+İstanbul: İSTANBUL i̇stanbul false true false
+ǅ: Ǆ ǆ false true false
+ﬃ: FFI ﬃ false true false
+123: 123 123 true false false
+١٢٣: ١٢٣ ١٢٣ false false false
+  	:   	   	 false false true
+:   false false false
+abc1: ABC1 abc1 false false false
+日本語: 日本語 日本語 false true false
+Ünïcödé: ÜNÏCÖDÉ ünïcödé false true false
+
+--- exit 0

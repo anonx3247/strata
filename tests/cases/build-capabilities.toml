@@ -1,0 +1,63 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "args.strata"
+from = "args.st"
+
+[[step]]
+strata = ["build", "args.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/capabilities-args.out"
+
+[[step]]
+save = "console.strata"
+from = "console.st"
+
+[[step]]
+strata = ["build", "console.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/capabilities-console.out"
+
+[[step]]
+save = "files_and_environment.strata"
+from = "files_and_environment.st"
+
+[[step]]
+strata = ["build", "files_and_environment.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/capabilities-files_and_environment.out"
+
+[[step]]
+save = "mut_params.strata"
+from = "mut_params.st"
+
+[[step]]
+strata = ["build", "mut_params.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/capabilities-mut_params.out"
+
+[[step]]
+save = "one_function_two_consoles.strata"
+from = "one_function_two_consoles.st"
+
+[[step]]
+strata = ["build", "one_function_two_consoles.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/capabilities-one_function_two_consoles.out"

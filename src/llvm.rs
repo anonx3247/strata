@@ -82,9 +82,6 @@ const SOFT_FAULTS: &[&str] = &[
     "@strata_float_to_int",
     "@strata_sqrt",
     "@strata_str_at_or_fault",
-    "@strata_str_split",
-    "@strata_str_replace",
-    "@strata_str_repeat",
     "@strata_str_ord",
     "@strata_str_byte_at",
     "@strata_str_chr",
@@ -815,7 +812,8 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     let mut statics: Vec<(&Symbol, &i64)> = env.statics.iter().collect();
     statics.sort();
     for (n, size) in statics {
-        writeln!(m.globals, "{} = internal global [{size} x i8] zeroinitializer, align 16", static_sym(n)).unwrap();
+        let tls = if env.thread_statics.contains(n) { "thread_local " } else { "" };
+        writeln!(m.globals, "{} = internal {tls}global [{size} x i8] zeroinitializer, align 16", static_sym(n)).unwrap();
     }
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
@@ -1164,6 +1162,20 @@ declare ptr @strata_raw_reserve(i64)
 declare i64 @strata_raw_size(ptr)
 declare void @strata_raw_fail(ptr)
 declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
+declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
+declare i32 @memcmp(ptr, ptr, i64)
+declare zeroext i1 @strata_soft_fault(i64, ptr)
+declare i64 @strata_trap_size()
+declare i64 @strata_trap_run(ptr, ptr)
+declare void @strata_trap_leave(ptr)
+declare void @strata_fd_write(i64, ptr, i64)
+declare void @strata_out_flush()
+declare void @strata_process_exit(i64)
+declare void @strata_thread_park()
+declare ptr @strata_task_origin()
+declare void @strata_contain_fault(i64, ptr)
+declare ptr @strata_run_begin()
+declare i64 @strata_run_end(ptr, i64)
 declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
@@ -1171,19 +1183,10 @@ declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
 declare ptr @strata_debug_str(ptr)
 declare void @strata_print(ptr)
-declare ptr @strata_str_split(ptr, ptr)
 declare ptr @strata_str_trim(ptr)
-declare i1 @strata_str_contains(ptr, ptr)
-declare i1 @strata_str_starts_with(ptr, ptr)
-declare i1 @strata_str_ends_with(ptr, ptr)
-declare i64 @strata_str_index_of(ptr, ptr)
-declare ptr @strata_str_reverse(ptr)
-declare ptr @strata_str_chars(ptr)
 declare ptr @strata_str_at(ptr, i64)
 declare ptr @strata_str_at_or_fault(ptr, i64)
 declare ptr @strata_str_slice(ptr, i64, i64)
-declare ptr @strata_str_replace(ptr, ptr, ptr)
-declare ptr @strata_str_repeat(ptr, i64)
 declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
 declare i1 @strata_str_is(ptr, i64, ptr, i64)
 declare i64 @strata_str_ord(ptr)
@@ -1448,6 +1451,25 @@ pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
 }
 
 /// The global holding a `builtin static` block.
+/// core.mem's builtins that call the C runtime (what stays C while tasks
+/// and output are its own): each one's C function, result and parameters.
+fn c_hook(name: &str) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+    const HOOKS: &[(&str, (&str, &str, &[&str]))] = &[
+        ("trap_size", ("strata_trap_size", "i64", &[])),
+        ("trap_run", ("strata_trap_run", "i64", &["ptr", "ptr"])),
+        ("trap_leave", ("strata_trap_leave", "void", &["ptr"])),
+        ("fd_write", ("strata_fd_write", "void", &["i64", "ptr", "i64"])),
+        ("out_flush", ("strata_out_flush", "void", &[])),
+        ("process_exit", ("strata_process_exit", "void", &["i64"])),
+        ("thread_park", ("strata_thread_park", "void", &[])),
+        ("task_origin", ("strata_task_origin", "ptr", &[])),
+        ("contain_fault", ("strata_contain_fault", "void", &["i64", "ptr"])),
+        ("run_begin", ("strata_run_begin", "ptr", &[])),
+        ("run_end", ("strata_run_end", "i64", &["ptr", "i64"])),
+    ];
+    HOOKS.iter().find(|(n, _)| *n == name).map(|(_, h)| *h)
+}
+
 fn static_sym(name: &str) -> String {
     format!("@\"static:{name}\"")
 }
@@ -1457,7 +1479,8 @@ fn static_sym(name: &str) -> String {
 /// named `strata_...` exported under that name, with C's calling convention
 /// (`Ptr` a pointer, `Bool` a `_Bool`, `()` nothing); the rest internal.
 pub fn compile_core_rt() -> Res<String> {
-    let prog = Program { decls: crate::core::module_decls("rt.strata").into_iter().filter(|d| !matches!(d.kind, DeclKind::Test(_))).collect() };
+    // (core.rt and the topic modules it calls, `core::RUNTIME`)
+    let prog = Program { decls: crate::core::runtime_files().iter().flat_map(|f| crate::core::module_decls(f)).filter(|d| !matches!(d.kind, DeclKind::Test(_))).collect() };
     let resolved = crate::resolve::resolve(&prog);
     if let Some(e) = resolved.errors.first() {
         return Err(format!("core.rt: {e:?}"));
@@ -1482,6 +1505,7 @@ pub fn compile_core_rt() -> Res<String> {
             TypeExpr::Unit => "void",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Ptr" => "ptr",
             TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Bool" => "i1",
+            TypeExpr::Named(n, a) if a.is_empty() && n.as_str() == "Float" => "double",
             TypeExpr::Named(n, a) if a.is_empty() && Width::of(n.as_str()).is_some() => word_ll(Width::of(n.as_str()).unwrap()),
             other => return Err(format!("core.rt: `{}` doesn't cross to C yet", crate::printer::ty(other))),
         })
@@ -2036,7 +2060,7 @@ impl<'a> Module<'a> {
         c.block("entry.body");
         // on the call stack a fault shows (the program's functions, as the interpreter's)
         // (nor core.rt's: the runtime, called from C)
-        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("core.rt.") && !name.starts_with("test \"") && name != COMPTIME;
+        let framed = !name.starts_with(PRELUDE_MODULE) && !crate::core::runtime_fn(name) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
             // a prelude trait's method by its short name (`ListIter.next`)
             let n = c.m.string(&crate::types::shown_name(name));
@@ -6254,6 +6278,107 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)", vs[0].1, vs[1].1, vs[2].1));
                 (Ty::Unit, "0".into())
             }
+            ("raw_copy", [_, _, _]) => {
+                self.emit(format!("call void @llvm.memmove.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", vs[0].1, vs[1].1, vs[2].1));
+                (Ty::Unit, "0".into())
+            }
+            ("raw_compare", [_, _, _]) => {
+                let (c, r) = (self.fresh("cmp"), self.fresh("cmp"));
+                self.emit(format!("{c} = call i32 @memcmp(ptr {}, ptr {}, i64 {})", vs[0].1, vs[1].1, vs[2].1));
+                self.emit(format!("{r} = sext i32 {c} to i64"));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("raw_fault", [_, _]) => {
+                let r = self.fresh("contained");
+                self.emit(format!("{r} = call zeroext i1 @strata_soft_fault(i64 {}, ptr {})", vs[0].1, vs[1].1));
+                bool_v(&r)
+            }
+            ("str_block", [_]) => (Ty::Con("Ptr".into(), vec![]), vs[0].1.clone()),
+            ("f64_bits", [_]) | ("f64_from_bits", [_]) => {
+                let r = self.fresh("bits");
+                let (from, to, ty) = if name == "f64_bits" { ("double", "i64", Ty::Con("I64".into(), vec![])) } else { ("i64", "double", Ty::Float) };
+                self.emit(format!("{r} = bitcast {from} {} to {to}", vs[0].1));
+                (ty, r)
+            }
+            ("f64_of_i64", [_]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = sitofp i64 {} to double", vs[0].1));
+                (Ty::Float, r)
+            }
+            ("f64_to_i64", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = fptosi double {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("f64_sqrt", [_]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = call double @llvm.sqrt.f64(double {})", vs[0].1));
+                (Ty::Float, r)
+            }
+            ("f64_rem", [_, _]) => {
+                let r = self.fresh("f");
+                self.emit(format!("{r} = frem double {}, {}", vs[0].1, vs[1].1));
+                (Ty::Float, r)
+            }
+            // core.mem's calls into the C runtime (what stays C while tasks
+            // and output are its own)
+            _ if c_hook(name).is_some() => {
+                let (sym, ret, params) = c_hook(name).unwrap();
+                let args: Vec<String> = params.iter().zip(&vs).map(|(t, v)| format!("{t} {}", v.1)).collect();
+                if ret == "void" {
+                    self.emit(format!("call void @{sym}({})", args.join(", ")));
+                    (Ty::Unit, "0".into())
+                } else {
+                    let r = self.fresh("c");
+                    self.emit(format!("{r} = call {ret} @{sym}({})", args.join(", ")));
+                    (Ty::Con(if ret == "ptr" { "Ptr" } else { "I64" }.into(), vec![]), r)
+                }
+            }
+            ("narrow_i32", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = trunc i64 {} to i32", vs[0].1));
+                (Ty::Con("I32".into(), vec![]), r)
+            }
+            ("widen_i32", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = sext i32 {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("widen_u8", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = zext i8 {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("low_u8", [_]) => {
+                let r = self.fresh("b");
+                self.emit(format!("{r} = trunc i64 {} to i8", vs[0].1));
+                (Ty::Con("U8".into(), vec![]), r)
+            }
+            ("div_trunc" | "rem_trunc" | "div_unsigned" | "rem_unsigned", [_, _]) => {
+                let ins = match name {
+                    "div_trunc" => "sdiv",
+                    "rem_trunc" => "srem",
+                    "div_unsigned" => "udiv",
+                    _ => "urem",
+                };
+                let r = self.fresh("q");
+                self.emit(format!("{r} = {ins} i64 {}, {}", vs[0].1, vs[1].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("load_u32", [_, _]) => {
+                let (a, w, r) = (self.fresh("at"), self.fresh("w"), self.fresh("w"));
+                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
+                self.emit(format!("{w} = load i32, ptr {a}, align 4"));
+                self.emit(format!("{r} = zext i32 {w} to i64"));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("store_u32", [_, _, _]) => {
+                let (a, w) = (self.fresh("at"), self.fresh("w"));
+                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
+                self.emit(format!("{w} = trunc i64 {} to i32", vs[2].1));
+                self.emit(format!("store i32 {w}, ptr {a}, align 4"));
+                (Ty::Unit, "0".into())
+            }
             ("ptr_offset", [p, _]) => {
                 let r = self.fresh("at");
                 self.emit(format!("{r} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
@@ -8194,12 +8319,17 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (pass, fail) = (self.fresh_label("assert.ok"), self.fresh_label("assert.fail"));
                 self.cond_br(&ok, &pass, &fail);
                 self.block(&fail);
+                // (what showing the sides makes, an `I64`'s `Int`, is only on
+                // this path, which the fault ends: not dropped after `pass`,
+                // where it isn't defined)
+                let made = self.scopes.last().unwrap().temps.len();
                 let mut parts = vec![Part::Lit(format!("{what}: {}", crate::printer::expr(x, 0)))];
                 if let Some((op, a, b)) = sides {
                     let (sa, sb) = (self.shown(&a)?, self.shown(&b)?);
                     parts.extend([Part::Lit(format!(" (left of {} = ", op.symbol())), Part::Val(sa), Part::Lit(", right = ".into()), Part::Val(sb), Part::Lit(")".into())]);
                 }
                 self.fault(Fault::Assert, parts)?;
+                self.scopes.last_mut().unwrap().temps.truncate(made);
                 self.block(&pass);
             }
         }

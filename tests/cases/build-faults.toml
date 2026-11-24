@@ -1,0 +1,123 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "assert.strata"
+from = "assert.st"
+
+[[step]]
+strata = ["build", "assert.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-assert.out"
+
+[[step]]
+save = "assignment.strata"
+from = "assignment.st"
+
+[[step]]
+strata = ["build", "assignment.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-assignment.out"
+
+[[step]]
+save = "division.strata"
+from = "division.st"
+
+[[step]]
+strata = ["build", "division.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-division.out"
+
+[[step]]
+save = "early_return.strata"
+from = "early_return.st"
+
+[[step]]
+strata = ["build", "early_return.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-early_return.out"
+
+[[step]]
+save = "ensures.strata"
+from = "ensures.st"
+
+[[step]]
+strata = ["build", "ensures.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-ensures.out"
+
+[[step]]
+save = "exit_code.strata"
+from = "exit_code.st"
+
+[[step]]
+strata = ["build", "exit_code.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-exit_code.out"
+
+[[step]]
+save = "floats.strata"
+from = "floats.st"
+
+[[step]]
+strata = ["build", "floats.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-floats.out"
+
+[[step]]
+save = "invariant.strata"
+from = "invariant.st"
+
+[[step]]
+strata = ["build", "invariant.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-invariant.out"
+
+[[step]]
+save = "loops.strata"
+from = "loops.st"
+
+[[step]]
+strata = ["build", "loops.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-loops.out"
+
+[[step]]
+save = "requires.strata"
+from = "requires.st"
+
+[[step]]
+strata = ["build", "requires.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/faults-requires.out"

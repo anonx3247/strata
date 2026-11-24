@@ -1,0 +1,5 @@
+Range { lo: 3, hi: 5 }
+fault (Refinement): assigning `r.lo`: Range { lo: 9, hi: 5 } does not satisfy `Range` (where it.lo <= it.hi)
+    stack: main
+
+--- exit 101

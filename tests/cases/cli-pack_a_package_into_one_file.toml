@@ -1,0 +1,42 @@
+# cli.rs: pack_a_package_into_one_file: a package is a folder of module files;
+# `pack` makes one bundle of it, which every command reads like the package
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "pack", "tasks.strata"]
+has = ["67 definitions"]
+
+[[step]]
+run = ["head", "-c", "6", "tasks.strata"]
+stdout = "STRATA"
+
+[[step]]
+strata = ["--file", "tasks.strata", "check"]
+has = ["67 definitions check"]
+
+[[step]]
+strata = ["--file", "tasks.strata", "test"]
+has = ["0 failed"]
+
+# the header, read without decoding the definitions
+[[step]]
+strata = ["header", "$ROOT/examples/tasks/model.strata"]
+has = ["module model:", "uses "]
+
+# rendered back as text, module by module, it is the package's text
+[[step]]
+strata = ["--file", "tasks.strata", "render", "--split", "out"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "model"]
+out_file = "out/model.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "memory"]
+out_file = "out/memory.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "print"]
+out_file = "out/print.st"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "sim"]
+out_file = "out/sim.st"

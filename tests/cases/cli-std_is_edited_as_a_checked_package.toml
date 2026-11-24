@@ -1,0 +1,27 @@
+# cli.rs: std_is_edited_as_a_checked_package
+
+# std's files and any submodules, not the `.strata` folder an edit of std leaves there
+[[step]]
+run = ["rsync", "-a", "--exclude", ".strata", "$ROOT/std/", "std/"]
+
+[[step]]
+strata = ["edit", "io"]
+dir = "std"
+text = "pub fn shout(s: String) -> String {\n  s + \"!\"\n}\n"
+has = ["std.io.shout"]
+
+[[step]]
+run = ["sh", "-c", "test ! -e std/strata.log && test ! -e std/io"]
+
+[[step]]
+strata = ["--file", "std", "edit", "std.io"]
+text = '''
+pub fn smallest(xs: List[Int], min: Int) -> Int {
+  fold(xs, min, (a, b) -> min(a, b))
+}
+'''
+fails = true
+has = ["`Int` is not a function", "nothing was changed"]
+
+[[step]]
+strata = ["--file", "std", "check"]

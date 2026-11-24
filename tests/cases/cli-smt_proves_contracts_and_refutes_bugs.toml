@@ -1,0 +1,55 @@
+# cli.rs: smt_proves_contracts_and_refutes_bugs
+[[step]]
+save = "s.strata"
+text = '''
+type Cents = Int where it >= 0
+type Quantity = Int where 1 <= it && it <= 99
+type Code = String where matches(it, "ord_[a-z0-9]{6}")
+type Line = { qty: Quantity, unit_price: Cents }
+
+fn dec(n: Int where it > 0) -> Natural { n - 1 }
+fn dec2(n: Int where it > 0) -> Natural { n - 2 }
+fn discount(amount: Cents) -> Cents
+  ensures it <= amount
+{
+  if amount >= 10000 { amount - amount / 10 } else { amount }
+}
+fn half(n: Int) -> Int { 100 / n }
+fn bump(q: Quantity) -> Quantity { q + 1 }
+fn code(s: String where matches(it, "[a-z]{6}")) -> Code { "ord_" + s }
+fn bad_code(s: String) -> Code { "ord_" + s }
+fn caller(x: Int) -> Natural { if x > 0 { dec(x) } else { 0 } }
+fn bad_caller(x: Int) -> Natural { dec(x) }
+fn count_up(n: Natural) -> Natural {
+  mut i := 0
+  while i < n {
+    i = i + 1
+  }
+  i
+}
+fn first_qty(xs: List[Quantity]) -> Quantity { match xs { [] => 1, [x, ..] => x } }
+fn line_total(l: Line) -> Cents { l.qty * l.unit_price }
+fn total(lines: List[Line]) -> Cents { sum(lines.map(line_total)) }
+fn checked(a: Int, b: Int) -> Int requires b != 0 { a % b }
+fn use_checked(a: Int) -> Int { checked(a, a - 3) }
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "verify", "--no-race"]
+fails = true
+has = ["✓ dec ", "✓ discount ", "✓ code ", "✓ caller ", "✓ count_up ", "✓ first_qty ", "✓ line_total ", "✓ total ", "✓ checked ", "✗ dec2 ", "✗ half ", "✗ bump ", "✗ bad_code ", "✗ bad_caller ", "✗ use_checked ", "division by zero", "100 does not satisfy `Quantity`"]
+counts = { "found by the solver" = 6 }
+
+# what can't be proven is fuzzed, with the reason
+[[step]]
+save = "f.strata"
+text = "fn mean(xs: List[Int]) -> Int where it >= 0 { if len(xs) == 0 { 0 } else { abs(xs.fold(0, (a, x) -> a + x)) / len(xs) } }\nfn neg(xs: List[Int]) -> Natural { xs.fold(0, (a, x) -> a + x) }\n"
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-race"]
+fails = true
+has = ["~ mean", "not proven: result of `mean`", "`fold` is not modelled", "✗ neg", "found by the fuzzer"]
+
+[[step]]
+strata = ["--file", "s.strata", "verify", "bad_caller", "--smt"]
+has = ["(check-sat)", "(assert (not (> v0 0)))"]

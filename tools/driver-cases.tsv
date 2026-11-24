@@ -1,0 +1,72 @@
+.	
+.	help
+.	bogus
+.	ui
+examples	--file math.strata check
+examples	--file hello check
+examples	--file tasks check
+examples	--file counter check
+examples/hello	check
+examples	--file nothing.strata check
+docs	check
+examples	run math.strata
+examples/hello	run -- x y
+examples	run hello -- a
+.	--file examples/wc run -- README.md
+examples	run counter
+examples	run traits.strata
+examples	run bank.strata
+examples	run orders.strata
+examples	build hello -o $OUT/hello
+examples	build math.strata -o $OUT/math
+examples	build counter -o $OUT/counter --no-verify
+examples	build bank.strata -o $OUT/bank --all-checks
+examples	--file math.strata test
+examples	--file bank.strata test
+examples	--file orders.strata test
+examples	--file tasks test
+examples	--file tasks test add
+examples	--file math.strata verify
+examples	--file bank.strata verify
+examples	--file math.strata verify --termination
+examples	--file hello verify
+examples	lex ../tests/data/smt/verify.st
+examples	builtins
+examples	parse ../tests/data/smt/verify.st
+examples	--file math.strata render
+examples	--file math.strata view
+examples	--file tasks interface model
+examples	--file wc build -o $OUT/wc
+examples	build-core -o $OUT/core.ll
+examples	run math.strata factorial 5
+examples	run math.strata factorial -1
+examples	run math.strata nope 1
+examples	run math.strata factorial "x"
+examples	run tasks model.done 1
+examples	--file wc check
+examples	--file wc verify
+# --json
+examples	builtins --json
+examples	--file math.strata check --json
+examples	--file orders.strata check --json
+examples	--file orders.strata holes --json
+examples	--file tasks check --json
+examples/wc	log --json
+# views
+examples	--file tasks render
+examples	--file tasks render model
+examples	--file tasks render nope
+examples	--file tasks view
+examples	--file tasks view --level 2
+examples/wc	log
+# test, run and build options
+examples	--file wc test --with-deps
+examples	--file math.strata test --release
+examples	run hello --release
+examples	build hello -o $OUT/hello-release --release
+# lex and parse of a package, core
+examples	--file tasks lex
+examples	--file tasks parse
+examples	--file tasks parse --stored
+examples	lex hello
+.	--file core check

@@ -1,0 +1,11 @@
+n8,n7,fizz6,n5,fizz3,n2,n1
+n8
+afizz0n1n2fizz3n4
+xy!
+7
+3626777458843887524118528
+onetwo
+Branch(Node { name: "n2", size: 1180591620717411303426, kids: Empty }, Branch(Node { name: "n1", size: 1180591620717411303425, kids: Empty }, Empty))
+yes!
+
+--- exit 0

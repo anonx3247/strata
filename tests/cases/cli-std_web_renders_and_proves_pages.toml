@@ -1,0 +1,41 @@
+# cli.rs: std_web_renders_and_proves_pages
+
+[[step]]
+strata = ["--file", "$ROOT/examples/page", "test"]
+has = ["6 passed"]
+
+[[step]]
+strata = ["run", "$ROOT/examples/page"]
+has = ["<!DOCTYPE html>", "&lt;script&gt;alert(1)&lt;/script&gt;", "<a href=\"/?sort=year\">By year</a>"]
+
+# an inline script can't be an attribute: caught when checking
+[[step]]
+save = "bad.strata"
+text = '''
+from std.web use Html, render, attr, button
+fn b() -> String { render(button([attr("onclick", "evil()")], [])) }
+'''
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["does not satisfy `std.web.AttrName`"]
+
+# nor can `Html` be built around the functions that check names
+[[step]]
+save = "sneak.strata"
+text = '''
+from std.web use Html, render
+fn b() -> String { render(Html { node: Element { tag: "x y", attrs: [], children: [] } }) }
+'''
+
+[[step]]
+strata = ["--file", "sneak.strata", "check"]
+fails = true
+has = ["`Element` is private to module `std.web`"]
+
+# names are checked where elements are made; `Html` itself has nothing to check;
+# the router's handlers too
+[[step]]
+strata = ["--file", "$ROOT/examples/page", "verify", "--no-cache", "--require", "proven"]
+has = ["✓ page", "✓ row", "✓ app", "✓ language", "✓ handle"]

@@ -1,0 +1,162 @@
+# build.rs: options_from_the_command_line_compile, the_jit_reads_options:
+# options read with the derived `from_args`, built and on the JIT
+
+[[step]]
+strata = ["build", "$ROOT/examples/hello", "-o", "hello"]
+
+[[step]]
+strata = ["build", "$ROOT/examples/wc", "-o", "wc"]
+
+[[step]]
+run = ["$TMP/hello"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-0-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-0-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "Ada", "--loud"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-1-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "Ada", "--loud"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-1-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "--times", "2", "Ada", "Bob"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-2-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--times", "2", "Ada", "Bob"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-2-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "--times=3"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-3-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--times=3"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-3-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "--times", "30"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-4-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--times", "30"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-4-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "--times", "x"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-5-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--times", "x"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-5-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "--help"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-6-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--help"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-6-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "-h"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-7-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "-h"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-7-hello.out"
+
+[[step]]
+run = ["$TMP/hello", "--bogus"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-8-hello.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--bogus"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-8-hello.out"
+
+[[step]]
+run = ["$TMP/wc", "--help"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-9-wc.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/wc", "--", "--help"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-9-wc.out"
+
+[[step]]
+run = ["$TMP/wc", "--only", "lines", "examples/wc/strata.toml", "README.md"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-10-wc.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/wc", "--", "--only", "lines", "examples/wc/strata.toml", "README.md"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-10-wc.out"
+
+[[step]]
+run = ["$TMP/wc", "--only", "bytes"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-11-wc.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/wc", "--", "--only", "bytes"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-11-wc.out"
+
+[[step]]
+run = ["$TMP/wc", "examples/wc/strata.toml"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-12-wc.out"
+
+[[step]]
+strata = ["run", "$ROOT/examples/wc", "--", "examples/wc/strata.toml"]
+dir = "$ROOT"
+golden = "tests/data/build/expected/options-12-wc.out"
+
+# a mutable options parameter, in a script
+[[step]]
+save = "opts.strata"
+from = "opts.st"
+
+[[step]]
+strata = ["build", "opts.strata", "-o", "opts"]
+
+[[step]]
+run = ["./opts", "--count", "4", "a", "b"]
+golden = "tests/data/build/expected/options-script-0.out"
+
+[[step]]
+run = ["./opts"]
+golden = "tests/data/build/expected/options-script-1.out"
+
+[[step]]
+run = ["./opts", "--count"]
+golden = "tests/data/build/expected/options-script-2.out"
+
+[[step]]
+run = ["./opts", "--help"]
+golden = "tests/data/build/expected/options-script-3.out"

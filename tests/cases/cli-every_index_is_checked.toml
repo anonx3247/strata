@@ -1,0 +1,24 @@
+# cli.rs: every_index_is_checked: an index into a list the prover doesn't
+# model as one (`??`'s result, a closure's) is checked too
+[[step]]
+save = "i.strata"
+text = '''
+fn first(d: Dict[String, List[Int]]) -> Int {
+  (d.get("a") ?? [])[0]
+}
+
+fn safe(d: Dict[String, List[Int]]) -> Int {
+  xs := d.get("a") ?? [7]
+  if len(xs) > 0 {
+    xs[0]
+  } else {
+    0
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "i.strata", "verify"]
+fails = true
+has = ["✗ first", "found by the solver"]
+lacks = ["bug in the prover", "✗ safe"]

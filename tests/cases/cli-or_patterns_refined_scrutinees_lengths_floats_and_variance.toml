@@ -1,0 +1,241 @@
+# cli.rs: or_patterns_refined_scrutinees_lengths_floats_and_variance
+
+[[step]]
+save = "or.strata"
+text = '''
+type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Triangle = { base: Positive, height: Positive }
+type Shape = Square | Circle | Triangle
+type Light = | Red | Amber | Green
+
+fn round(s: Shape) -> Bool {
+  match s {
+    Circle => true,
+    Square | Triangle => false,
+  }
+}
+fn go(l: Light) -> Bool {
+  match l { Green => true, Red | Amber => false }
+}
+fn small(n: Int) -> String {
+  match n { 0 | 1 | 2 => "tiny", _ => "big" }
+}
+fn pair_val(p: (Int, Int)) -> Int {
+  match p { (0, x) | (x, 0) => x, (a, b) => a * b }
+}
+test "or" {
+  assert round(Circle { radius: 1 })
+  assert !round(Square { side: 2 })
+  assert go(Green) && !go(Red)
+  assert small(2) == "tiny" && small(3) == "big"
+  assert pair_val((0, 5)) == 5 && pair_val((4, 0)) == 4 && pair_val((2, 3)) == 6
+}
+'''
+
+[[step]]
+strata = ["--file", "or.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "or.strata", "render"]
+capture = "or.st"
+
+[[step]]
+save = "or-r.strata"
+from_tmp = "or.st"
+
+[[step]]
+strata = ["--file", "or-r.strata", "render"]
+out_file = "or.st"
+
+[[step]]
+save = "dom.strata"
+text = '''
+type Chance = Float where 0.0 <= it && it <= 1.0
+
+fn f(n: Positive) -> String {
+  match n { 1 => "one", where it > 1 => "more" }
+}
+fn head(xs: NonEmpty[Int]) -> Int {
+  match xs { [x, ..] => x }
+}
+fn word(s: String) -> String {
+  match s { where len(it.code_points()) == 0 => "empty", where len(it.code_points()) > 0 => "some" }
+}
+fn ne(s: NonEmptyString) -> String {
+  match s { where len(it.code_points()) == 1 => "char", where len(it.code_points()) >= 2 => "word" }
+}
+fn temp(x: Float) -> String {
+  match x { where it < 0.0 => "freezing", where 0.0 <= it && it < 20.0 => "mild", where it >= 20.0 => "warm" }
+}
+fn odds(p: Chance) -> String {
+  match p { where it < 0.5 => "unlikely", where it >= 0.5 => "likely" }
+}
+fn nested(n: Int) -> String {
+  match n {
+    Positive => match n { 1 => "one", where it >= 2 => "many" },
+    _ => "none",
+  }
+}
+fn of_result() -> String {
+  match five() { 5 => "five" }
+}
+fn five() -> Int where it == 5 { 5 }
+fn lst(xs: List[Int]) -> Int {
+  match xs { [] => 0, where len(it) > 0 => 1 }
+}
+test "domains" {
+  assert f(1) == "one" && f(7) == "more"
+  assert head([4, 5]) == 4
+  assert word("") == "empty" && ne("ab") == "word"
+  assert temp(25.0) == "warm" && temp(5.5) == "mild" && temp(-1.0) == "freezing"
+  assert odds(0.7) == "likely"
+  assert nested(3) == "many"
+  assert lst([1]) == 1
+}
+'''
+
+[[step]]
+strata = ["--file", "dom.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "dom.strata", "render"]
+capture = "dom.st"
+
+[[step]]
+save = "dom-r.strata"
+from_tmp = "dom.st"
+
+[[step]]
+strata = ["--file", "dom-r.strata", "render"]
+out_file = "dom.st"
+
+[[step]]
+save = "bad.strata"
+text = '''
+fn f(n: Positive) -> String {
+  match n { 1 => "one", where it > 2 => "more" }
+}
+fn g(n: Positive) -> String {
+  match n { where it <= 0 => "never", _ => "x" }
+}
+fn temp(x: Float) -> String {
+  match x { where it < 0.0 => "a", where it > 0.0 => "b" }
+}
+fn word(s: String) -> String {
+  match s { where len(it.code_points()) > 3 => "long" }
+}
+fn m(mut n: Positive) -> String {
+  match n { 1 => "one", where it > 1 => "more" }
+}
+'''
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["non-exhaustive match on `Positive`: `2` is not covered", "unreachable match arm `where it <= 0`: no `Positive` matches it", "non-exhaustive match on `Float`: `where it == 0.0` is not covered", "non-exhaustive match on `String`: `where len(it.code_points()) <= 3` is not covered"]
+
+# a declared type holds for a variable's whole life, mutable or not
+[[step]]
+save = "mut.strata"
+text = '''
+fn m(mut n: Positive) -> String {
+  match n { 1 => "one", where it > 1 => "more" }
+}
+fn changes_in_arm(mut n: Positive) -> String {
+  match n {
+    where it > 5 => {
+      n = n - 1
+      match n { where it > 4 => "big", 1 | 2 | 3 | 4 => "small" }
+    },
+    _ => "tiny",
+  }
+}
+fn lit() -> Int {
+  mut x: Positive = 3
+  x = -1
+  x
+}
+fn set_neg(mut k: Int) { k = -3 }
+fn wb() -> Int {
+  mut p: Positive = 4
+  set_neg(mut p)
+  p
+}
+fn bump(mut k: Positive) { k = k + 1 }
+fn wb_ok() -> Int {
+  mut p: Natural = 1
+  bump(mut p)
+  p
+}
+'''
+
+[[step]]
+strata = ["--file", "mut.strata", "check"]
+fails = true
+counts = { "error in " = 2 }
+has = ["in lit: refinement violated at compile time in assigning `x`: -1 does not satisfy `Positive`", "in wb: call to `set_neg`, argument 1: `p` is declared `Positive`, but the `mut` parameter is `Int`"]
+
+[[step]]
+save = "mut_run.strata"
+text = "fn a(mut n: Positive) -> Int {\n  n = n - 10\n  n\n}\n"
+
+[[step]]
+strata = ["--file", "mut_run.strata", "run", "a", "3"]
+fails = true
+has = ["assigning `n`: -7 does not satisfy `Positive`"]
+
+[[step]]
+save = "or_bad.strata"
+text = '''
+type Light = | Red | Amber | Green
+fn a(l: Light) -> Bool { match l { Red | Amber => false } }
+fn b(p: (Int, Int)) -> Int { match p { (0, x) | (y, 0) => 1, _ => 2 } }
+'''
+
+[[step]]
+strata = ["--file", "or_bad.strata", "check"]
+fails = true
+has = ["`Green` is not covered", "must bind the same names"]
+
+[[step]]
+save = "variance.strata"
+text = '''
+type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Shape = Square | Circle
+type Err1 = | TooBig | TooSmall
+
+fn total(shapes: List[Shape]) -> Int { len(shapes) }
+fn grow(mut shapes: List[Shape]) { shapes = shapes + [Square { side: 1 }] }
+fn mixed(big: Bool) -> Int {
+  s := if big { Square { side: 2 } } else { Circle { radius: 1 } }
+  xs := [Square { side: 1 }, Circle { radius: 1 }]
+  total(xs)
+}
+fn ok_list() -> Int {
+  cs := [Circle { radius: 1 }]
+  total(cs)
+}
+fn bad_mut() -> Int {
+  mut cs := [Circle { radius: 1 }]
+  grow(mut cs)
+  len(cs)
+}
+fn inner() -> Result[Int, TooBig] { Err(TooBig) }
+fn outer() -> Result[Int, Err1] {
+  x := inner()!
+  Ok(x)
+}
+fn apply(f: (Circle) -> Shape) -> Int { 1 }
+fn id_shape(s: Shape) -> Circle { Circle { radius: 1 } }
+fn use_apply() -> Int { apply(id_shape) }
+'''
+
+[[step]]
+strata = ["--file", "variance.strata", "check"]
+fails = true
+counts = { "error in " = 1 }
+has = ["in bad_mut", "expected exactly `List[Circle | Square]`, found `List[Circle]`"]

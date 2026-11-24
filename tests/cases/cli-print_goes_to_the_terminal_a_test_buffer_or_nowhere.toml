@@ -1,0 +1,46 @@
+# cli.rs: print_goes_to_the_terminal_a_test_buffer_or_nowhere
+
+[[step]]
+save = "p.strata"
+text = '''
+from std.io use Console
+
+fn double(n: Int) -> Int {
+  print(f"doubling {n}")
+  n * 2
+}
+
+fn main(mut console: Console) {
+  print("plain")
+  print([1, 2])
+  mut console.print("console")
+  print(double(21))
+}
+
+test "passes" {
+  assert double(1) == 2
+}
+
+test "fails" {
+  assert double(2) == 5
+}
+'''
+
+# `print` is the prelude's even where `Console` (with its `print` method) is imported
+[[step]]
+strata = ["run", "p.strata"]
+stdout = "plain\n[1, 2]\nconsole\ndoubling 21\n42\n"
+
+# a test's output is shown only when it fails, once
+[[step]]
+strata = ["--file", "p.strata", "test"]
+fails = true
+has = ["✓ passes"]
+lacks = ["doubling 1"]
+counts = { "doubling 2" = 1 }
+
+# verify discards it
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+any_code = true
+lacks = ["doubling"]

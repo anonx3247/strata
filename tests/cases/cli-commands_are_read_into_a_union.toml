@@ -1,0 +1,117 @@
+# cli.rs: commands_are_read_into_a_union
+
+[[step]]
+write = "tool/strata.toml"
+text = "name = \"tool\"\n"
+
+[[step]]
+module = "main"
+into = "$TMP/tool/"
+text = '''
+from std.cli use CommandLine
+from std.io use Console
+
+/// A tool with commands.
+type Tool = {
+  /// The file or folder to work on.
+  file: Option[String],
+  /// -v Say more.
+  verbose: Bool,
+  command: Command,
+}
+
+/// The commands.
+type Command =
+  /// Show the history.
+  | Log
+  /// Replace definitions, read from standard input.
+  | Edit {
+    /// [module] The module to change (default: the root).
+    module: Option[String],
+    /// -m The log message.
+    message: Option[String],
+    /// --rm A definition to remove.
+    rm: List[String] = [],
+  }
+  /// Run the program.
+  | Run {
+    /// [path] The program.
+    path: Option[String],
+    /// Its arguments.
+    args: List[String],
+  }
+
+derive CommandLine for Tool
+
+derive CommandLine for Command
+
+fn main(mut console: Console, opts: Tool) {
+  print(opts)
+  match opts.command {
+    Edit { .. } => {
+      text := mut console.read_all()
+      print(f"stdin: {len(lines(text))} lines; interactive: {console.interactive()}")
+    },
+    _ => (),
+  }
+}
+'''
+
+# global options before the command, a command's optional positional,
+# short names, an option given again and again, standard input
+[[step]]
+strata = ["run", "tool", "--", "-v", "edit", "shop", "-m", "hi", "--rm", "a", "--rm", "b"]
+text = "one\ntwo\n"
+has = ["Tool { file: None, verbose: true, command: Edit { module: Some(\"shop\"), message: Some(\"hi\"), rm: [\"a\", \"b\"] } }", "stdin: 2 lines; interactive: false"]
+
+[[step]]
+strata = ["run", "tool", "--", "--file", "f.strata", "log"]
+has = ["Tool { file: Some(\"f.strata\"), verbose: false, command: Log }"]
+
+# an optional positional takes only what comes before `--`
+[[step]]
+strata = ["run", "tool", "--", "run", "x", "--", "--foo", "bar"]
+has = ["Run { path: Some(\"x\"), args: [\"--foo\", \"bar\"] }"]
+
+[[step]]
+strata = ["run", "tool", "--", "run", "--", "--foo"]
+has = ["Run { path: None, args: [\"--foo\"] }"]
+
+# the help lists the commands, with their docs; a command has its own
+[[step]]
+strata = ["run", "tool", "--", "--help"]
+has = ["A tool with commands.", "Usage: tool [OPTIONS] <command> [ARGS]...", "Commands:", "  log ", "Show the history.", "-v, --verbose", "Run `tool <command> --help`"]
+
+[[step]]
+strata = ["run", "tool", "--", "edit", "--help"]
+has = ["Replace definitions, read from standard input.", "Usage: tool edit [OPTIONS] [module]", "[module]", "The module to change (default: the root).", "-m, --message <String>", "--rm <String>..."]
+
+[[step]]
+strata = ["run", "tool", "--"]
+code = 2
+stdout = ""
+has = ["missing <command> (the commands are log, edit, run)"]
+
+[[step]]
+strata = ["run", "tool", "--", "bogus"]
+code = 2
+stdout = ""
+has = ["unknown command `bogus` (the commands are log, edit, run)"]
+
+[[step]]
+strata = ["run", "tool", "--", "edit", "-x"]
+code = 2
+stdout = ""
+has = ["unknown option `-x`"]
+
+[[step]]
+strata = ["run", "tool", "--", "edit", "a", "b"]
+code = 2
+stdout = ""
+has = ["unexpected argument `b`"]
+
+[[step]]
+strata = ["run", "tool", "--", "edit", "-m", "a", "-m", "b"]
+code = 2
+stdout = ""
+has = ["`--message` is given twice"]

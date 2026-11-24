@@ -1,0 +1,13 @@
+# regex.rs: the curated patterns of curated_patterns_read_as_regex_syntax_reads_them,
+# curated_relations_as_regex_decides_them, curated_samples_match and
+# curated_smt_models_as_before: std.regex's trees, relations, samples and SMT
+# models, recorded (tests/data/regex-curated.out) when they agreed with the
+# `regex` / `regex-syntax` crates (and the old Rust SMT translation). The
+# random-pattern runs of regex.rs leave with Rust.
+[[step]]
+save = "p.strata"
+from = "p.st"
+
+[[step]]
+strata = ["run", "p.strata"]
+golden = "tests/data/regex-curated.out"
