@@ -43,9 +43,9 @@ typedef struct {
 } Buf;
 
 static Proc procs[POOL_MAX];
-static char pool_solver[4096];
 static pthread_mutex_t pool_lock = PTHREAD_MUTEX_INITIALIZER;
-static char *last_result;
+// (each thread's own: workers encoding functions ask at the same time)
+static __thread char *last_result;
 // (a solver started that didn't answer a command as it read it: scripts go
 // to a process each from then on)
 static volatile int pool_broken;
@@ -235,10 +235,10 @@ static void memo_hash(const char *flags, const char *script, size_t n, uint64_t 
   *h2 = b;
 }
 
-// The answer kept for a script, copied into `result`; 0 when there is none.
-static int memo_get(uint64_t h1, uint64_t h2, size_t n, Buf *result) {
+// The answer kept for a script, copied into `result`; 0 when there is none
+// (`memo_lock` held).
+static int memo_find(uint64_t h1, uint64_t h2, size_t n, Buf *result) {
   int found = 0;
-  pthread_mutex_lock(&memo_lock);
   if (memo_cap) {
     size_t i = (size_t)(h1 % memo_cap);
     while (memo[i].answer) {
@@ -250,8 +250,26 @@ static int memo_get(uint64_t h1, uint64_t h2, size_t n, Buf *result) {
       i = (i + 1) % memo_cap;
     }
   }
-  pthread_mutex_unlock(&memo_lock);
   return found;
+}
+
+// The scripts running now (by their hashes and length), at most one per
+// worker: a second job of one waits for the first's answer instead of
+// running it again (a batch queued ahead by `solver_pool_prefetch`, then
+// asked for).
+typedef struct {
+  uint64_t h1, h2;
+  size_t len;
+} Running;
+
+static Running running[POOL_MAX];
+static int running_count;
+static pthread_cond_t running_done = PTHREAD_COND_INITIALIZER;
+
+static int running_has(uint64_t h1, uint64_t h2, size_t n) {
+  for (int i = 0; i < running_count; i++)
+    if (running[i].h1 == h1 && running[i].h2 == h2 && running[i].len == n) return 1;
+  return 0;
 }
 
 static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer) {
@@ -303,13 +321,7 @@ static void solver_log(const char *flags, size_t n, uint64_t h, double secs, con
 // One script's answers from process `p` (started when it isn't running),
 // with its flags (`-t:MS`, `-T:S`, `rlimit=N`): what the solver wrote
 // before the end mark, or, when it died or ran past `-T`, what it wrote.
-static void run_one(Proc *p, const char *solver, const char *flags, const char *script, size_t script_len, Buf *result) {
-  uint64_t h1, h2;
-  memo_hash(flags, script, script_len, &h1, &h2);
-  if (memo_get(h1, h2, script_len, result)) {
-    solver_log(flags, script_len, h1, 0, result->buf, result->len, "\tagain");
-    return;
-  }
+static void run_fresh(Proc *p, const char *solver, const char *flags, const char *script, size_t script_len, uint64_t h1, uint64_t h2, Buf *result) {
   long timeout_ms = 4294967295L, rlimit = 0;
   double hard = 0;
   const char *f = flags;
@@ -389,31 +401,180 @@ static void run_one(Proc *p, const char *solver, const char *flags, const char *
   free(out.buf);
 }
 
-typedef struct {
-  const char *solver;
-  char **flags, **scripts;
-  size_t *lens;
-  Buf *results;
-  int jobs, next;
-  pthread_mutex_t lock;
-} Work;
+// `run_fresh`, unless the script was answered before (the memo) or is
+// running on another worker now: then its answer, once it has one.
+static void run_one(Proc *p, const char *solver, const char *flags, const char *script, size_t script_len, Buf *result) {
+  uint64_t h1, h2;
+  memo_hash(flags, script, script_len, &h1, &h2);
+  pthread_mutex_lock(&memo_lock);
+  for (;;) {
+    if (memo_find(h1, h2, script_len, result)) {
+      pthread_mutex_unlock(&memo_lock);
+      solver_log(flags, script_len, h1, 0, result->buf, result->len, "\tagain");
+      return;
+    }
+    if (!running_has(h1, h2, script_len)) break;
+    pthread_cond_wait(&running_done, &memo_lock);
+  }
+  running[running_count++] = (Running){h1, h2, script_len};
+  pthread_mutex_unlock(&memo_lock);
+  run_fresh(p, solver, flags, script, script_len, h1, h2, result);
+  pthread_mutex_lock(&memo_lock);
+  for (int i = 0; i < running_count; i++) {
+    if (running[i].h1 == h1 && running[i].h2 == h2 && running[i].len == script_len) {
+      running[i] = running[--running_count];
+      break;
+    }
+  }
+  pthread_cond_broadcast(&running_done);
+  pthread_mutex_unlock(&memo_lock);
+}
 
+// The jobs given to the kept processes, by number, in a queue served by
+// worker threads (one per core, each with its own process, started on the
+// first job): `solver_pool_run` waits for its own jobs (from any number of
+// threads at once: the compiler's workers each encoding a function ask as
+// they go); `solver_pool_prefetch` queues jobs whose answers are only kept,
+// for a later run to find.
 typedef struct {
-  Work *w;
-  Proc *p;
-} Worker;
+  char *solver, *flags, *script;
+  size_t len;
+  Buf result;
+  int state;   // 0 queued, 1 running, 2 answered, 3 taken
+  int async;   // 0: run (waited for); 2: prefetched (only its answer kept)
+} Job;
+
+static Job *jobs;
+static long jobs_count, jobs_cap, jobs_next;
+static int workers_started;
+static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t queue_more = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t queue_done = PTHREAD_COND_INITIALIZER;
+static char proc_solver[POOL_MAX][4096];
+
+static void job_free(Job *j) {
+  free(j->solver);
+  free(j->flags);
+  free(j->script);
+  free(j->result.buf);
+  j->solver = j->flags = j->script = NULL;
+  j->result = (Buf){0};
+  j->state = 3;
+}
+
+// The next job to run (-1: none), under `queue_lock`: the first queued,
+// a prefetched one only when no other waits.
+static long next_job(void) {
+  while (jobs_next < jobs_count && jobs[jobs_next].state != 0) jobs_next++;
+  long later = -1;
+  for (long k = jobs_next; k < jobs_count; k++) {
+    if (jobs[k].state != 0) continue;
+    if (jobs[k].async != 2) return k;
+    if (later < 0) later = k;
+  }
+  return later;
+}
 
 static void *worker(void *arg) {
-  Worker *k = arg;
-  Work *w = k->w;
+  long i = (long)arg;
+  Proc *p = &procs[i];
+  pthread_mutex_lock(&queue_lock);
   for (;;) {
-    pthread_mutex_lock(&w->lock);
-    int i = w->next++;
-    pthread_mutex_unlock(&w->lock);
-    if (i >= w->jobs) break;
-    run_one(k->p, w->solver, w->flags[i], w->scripts[i], w->lens[i], &w->results[i]);
+    long k;
+    while ((k = next_job()) < 0) pthread_cond_wait(&queue_more, &queue_lock);
+    jobs[k].state = 1;
+    // (the job's fields stay where they are: `jobs` grows only by
+    // `realloc` under the lock, so a copy of them is taken here)
+    char *solver = jobs[k].solver, *flags = jobs[k].flags, *script = jobs[k].script;
+    size_t len = jobs[k].len;
+    pthread_mutex_unlock(&queue_lock);
+    if (strcmp(proc_solver[i], solver) != 0) {
+      proc_stop(p);
+      snprintf(proc_solver[i], sizeof proc_solver[i], "%s", solver);
+    }
+    Buf result = {0};
+    run_one(p, solver, flags, script, len, &result);
+    pthread_mutex_lock(&queue_lock);
+    jobs[k].result = result;
+    jobs[k].state = 2;
+    free(jobs[k].script);
+    jobs[k].script = NULL;
+    if (jobs[k].async == 2) job_free(&jobs[k]);
+    pthread_cond_broadcast(&queue_done);
   }
   return NULL;
+}
+
+// `jobs` (each `FLAGS 0x1f SCRIPT`, separated by 0x1e) queued, under
+// `queue_lock`; the number of the first, the others after it.
+static long queue_jobs(const char *solver, const char *text, int async) {
+  if (!workers_started) {
+    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    int threads = cores > 0 ? (int)cores : 4;
+    if (threads > POOL_MAX) threads = POOL_MAX;
+    // (a script written to a solver that has exited must not end this process)
+    signal(SIGPIPE, SIG_IGN);
+    for (long i = 0; i < threads; i++) {
+      pthread_t t;
+      pthread_attr_t a;
+      pthread_attr_init(&a);
+      pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+      pthread_create(&t, &a, worker, (void *)i);
+      pthread_attr_destroy(&a);
+    }
+    workers_started = 1;
+  }
+  long first = jobs_count;
+  const char *c = text;
+  if (!*c) return first;
+  for (;;) {
+    const char *end = strchr(c, 0x1e);
+    size_t n = end ? (size_t)(end - c) : strlen(c);
+    const char *sep = memchr(c, 0x1f, n);
+    if (jobs_count == jobs_cap) {
+      jobs_cap = jobs_cap ? 2 * jobs_cap : 256;
+      jobs = realloc(jobs, (size_t)jobs_cap * sizeof(Job));
+    }
+    Job *j = &jobs[jobs_count++];
+    memset(j, 0, sizeof *j);
+    j->solver = strdup(solver);
+    if (sep) {
+      j->flags = strndup(c, (size_t)(sep - c));
+      j->script = strndup(sep + 1, n - (size_t)(sep - c) - 1);
+    } else {
+      j->flags = strdup("");
+      j->script = strndup(c, n);
+    }
+    j->len = strlen(j->script);
+    j->async = async;
+    if (!end) break;
+    c = end + 1;
+  }
+  pthread_cond_broadcast(&queue_more);
+  return first;
+}
+
+
+// The answers to `jobs` (each `FLAGS 0x1f SCRIPT`, separated by 0x1e), in
+// order and separated by 0x1e, from as many of the kept processes at once
+// as there are cores.
+const char *solver_pool_run(const char *solver, const char *text) {
+  pthread_mutex_lock(&queue_lock);
+  free(last_result);
+  last_result = NULL;
+  long first = queue_jobs(solver, text, 0);
+  long last = jobs_count;
+  Buf all = {0};
+  buf_str(&all, "");
+  for (long k = first; k < last; k++) {
+    while (jobs[k].state != 2) pthread_cond_wait(&queue_done, &queue_lock);
+    if (k > first) buf_add(&all, "\x1e", 1);
+    if (jobs[k].result.len) buf_add(&all, jobs[k].result.buf, jobs[k].result.len);
+    job_free(&jobs[k]);
+  }
+  last_result = all.buf;
+  pthread_mutex_unlock(&queue_lock);
+  return last_result;
 }
 
 // Whether the program `solver` (looked up in PATH unless it holds a `/`)
@@ -490,67 +651,28 @@ int32_t solver_pool_usable(const char *solver) {
   return a;
 }
 
-// The answers to `jobs` (each `FLAGS 0x1f SCRIPT`, separated by 0x1e), in
-// order and separated by 0x1e, from as many of the kept processes at once
-// as there are cores.
-const char *solver_pool_run(const char *solver, const char *jobs) {
-  pthread_mutex_lock(&pool_lock);
-  if (strcmp(pool_solver, solver) != 0) {
-    for (int i = 0; i < POOL_MAX; i++) proc_stop(&procs[i]);
-    snprintf(pool_solver, sizeof pool_solver, "%s", solver);
-  }
-  free(last_result);
-  last_result = NULL;
-  // the jobs, cut apart in a copy
-  char *copy = strdup(jobs);
-  int n = 0;
-  for (char *c = copy; *c; c++)
-    if (*c == 0x1e) n++;
-  n += copy[0] != 0;
-  Work w = {solver, calloc(n + 1, sizeof(char *)), calloc(n + 1, sizeof(char *)), calloc(n + 1, sizeof(size_t)), calloc(n + 1, sizeof(Buf)), n, 0, PTHREAD_MUTEX_INITIALIZER};
-  char *c = copy;
-  for (int i = 0; i < n; i++) {
-    char *end = strchr(c, 0x1e);
-    if (end) *end = 0;
-    char *sep = strchr(c, 0x1f);
-    if (sep) {
-      *sep = 0;
-      w.flags[i] = c;
-      w.scripts[i] = sep + 1;
-    } else {
-      w.flags[i] = "";
-      w.scripts[i] = c;
-    }
-    w.lens[i] = strlen(w.scripts[i]);
-    c = end ? end + 1 : c + strlen(c);
-  }
-  long cores = sysconf(_SC_NPROCESSORS_ONLN);
-  int threads = cores > 0 ? (int)cores : 4;
-  if (threads > POOL_MAX) threads = POOL_MAX;
-  if (threads > n) threads = n;
-  // (a script written to a solver that has exited must not end this process)
-  signal(SIGPIPE, SIG_IGN);
-  Worker ks[POOL_MAX];
-  pthread_t ts[POOL_MAX];
-  for (int i = 0; i < threads; i++) {
-    ks[i] = (Worker){&w, &procs[i]};
-    if (i > 0) pthread_create(&ts[i], NULL, worker, &ks[i]);
-  }
-  if (threads > 0) worker(&ks[0]);
-  for (int i = 1; i < threads; i++) pthread_join(ts[i], NULL);
-  Buf all = {0};
-  buf_str(&all, "");
-  for (int i = 0; i < n; i++) {
-    if (i > 0) buf_add(&all, "\x1e", 1);
-    if (w.results[i].len) buf_add(&all, w.results[i].buf, w.results[i].len);
-    free(w.results[i].buf);
-  }
-  free(w.flags);
-  free(w.scripts);
-  free(w.lens);
-  free(w.results);
-  free(copy);
-  last_result = all.buf;
-  pthread_mutex_unlock(&pool_lock);
-  return last_result;
+// `jobs` (as `solver_pool_run` takes them) queued to run when nothing else
+// waits, their answers only kept (the memo): a later run of the same job
+// gets the answer, or waits for it if it is running.
+int32_t solver_pool_prefetch(const char *solver, const char *text) {
+  pthread_mutex_lock(&queue_lock);
+  queue_jobs(solver, text, 2);
+  pthread_mutex_unlock(&queue_lock);
+  return 0;
+}
+
+// Counters the compiler's workers take work by (`smt.counted_map`): each
+// worker asks for the next element as it finishes one, so a long one
+// doesn't hold up those shared out after it.
+static int64_t work_counters[1024];
+static int64_t work_counters_used;
+
+int64_t work_counter(void) {
+  int64_t id = __atomic_fetch_add(&work_counters_used, 1, __ATOMIC_SEQ_CST) % 1024;
+  __atomic_store_n(&work_counters[id], 0, __ATOMIC_SEQ_CST);
+  return id;
+}
+
+int64_t work_take(int64_t id) {
+  return __atomic_fetch_add(&work_counters[id], 1, __ATOMIC_SEQ_CST);
 }
