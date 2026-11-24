@@ -53,6 +53,13 @@ static int32_t fail(const std::string &m) {
 
 extern "C" {
 
+// Profiling (c/jit.c): every function defined keeps its frame pointer.
+void toolchain_frame_pointers(LLVMModuleRef mod);
+
+// `--timings` (c/driver.c): where a phase begins and ends.
+int32_t timings_begin(const char *name);
+int32_t timings_end(const char *name);
+
 // Why the last `toolchain_object` or `toolchain_link` failed ("" when it didn't).
 const char *toolchain_error(void) { return last_error.c_str(); }
 
@@ -79,7 +86,10 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
   LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata");
   LLVMModuleRef mod;
   char *msg = nullptr;
-  if (LLVMParseIRInContext(ctx, buf, &mod, &msg)) {
+  timings_begin("LLVM: parse IR");
+  LLVMBool rejected = LLVMParseIRInContext(ctx, buf, &mod, &msg);
+  timings_end("LLVM: parse IR");
+  if (rejected) {
     std::string m = std::string("LLVM rejected the generated IR: ") + (msg ? msg : "");
     LLVMDisposeMessage(msg);
     LLVMContextDispose(ctx);
@@ -95,6 +105,7 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
     return fail(m);
   }
   LLVMSetTarget(mod, triple);
+  toolchain_frame_pointers(mod);
   LLVMCodeGenOptLevel level = opt <= 0 ? LLVMCodeGenLevelNone
                               : opt == 1 ? LLVMCodeGenLevelLess
                               : opt == 2 ? LLVMCodeGenLevelDefault
@@ -110,7 +121,9 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
     char passes[32];
     snprintf(passes, sizeof passes, "default<O%d>", opt > 3 ? 3 : opt);
     LLVMPassBuilderOptionsRef po = LLVMCreatePassBuilderOptions();
+    timings_begin("LLVM: optimize");
     LLVMErrorRef e = LLVMRunPasses(mod, passes, tm, po);
+    timings_end("LLVM: optimize");
     LLVMDisposePassBuilderOptions(po);
     if (e) {
       char *m = LLVMGetErrorMessage(e);
@@ -118,10 +131,12 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
       LLVMDisposeErrorMessage(m);
     }
   }
+  timings_begin("LLVM: machine code");
   if (!r && LLVMTargetMachineEmitToFile(tm, mod, out, LLVMObjectFile, &msg)) {
     r = fail(std::string("can't write ") + out + ": " + (msg ? msg : ""));
     LLVMDisposeMessage(msg);
   }
+  timings_end("LLVM: machine code");
   LLVMDisposeTargetMachine(tm);
   LLVMDisposeModule(mod);
   LLVMContextDispose(ctx);
@@ -150,8 +165,10 @@ int32_t toolchain_link(const char *args) {
   // standard error itself: raw_fd_ostream's raw_ostream is its first base
   llvm::raw_ostream &out = reinterpret_cast<llvm::raw_ostream &>(llvm::outs());
   llvm::raw_ostream &err = reinterpret_cast<llvm::raw_ostream &>(llvm::errs());
+  timings_begin("link (lld)");
   bool ok = lld::macho::link({argv.data(), argv.size()}, out, err, false, false);
   lld::CommonLinkerContext::destroy();
+  timings_end("link (lld)");
   if (!ok) return fail("the linker failed");
   return 0;
 }

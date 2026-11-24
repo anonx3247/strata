@@ -19,6 +19,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <errno.h>
+#include <float.h>
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -2536,14 +2537,26 @@ _Noreturn void strata_overflow(void) {
   strata_fault(4, str_c("integer overflow"));
 }
 
-#ifndef STRATA_CORE_RT
+// Float show and parse are the C library's, with core.rt too: core.float's
+// exact versions over big numbers give the same text but took about 15
+// times as long (`snprintf` and `strtod` are correctly rounded).
+
 // The shortest decimal digits that read back as x (x is not 0): x is
 // 0.DIGITS * 10^kk. Returns whether x is negative.
 static int shortest(double x, char digits[32], int *kk) {
+  // (x rounded to 15 digits, without its trailing zeros, is the shortest
+  // that reads back, when one of 15 digits or fewer does: such a number is
+  // within half a unit of the 15th digit of x; else 16 digits, else 17.
+  // Not for a subnormal x, less precise: the fewest digits, one by one)
   char buf[64];
-  for (int prec = 0; prec < 17; prec++) {
-    snprintf(buf, sizeof buf, "%.*e", prec, x);
-    if (strtod(buf, NULL) == x) break;
+  if (fabs(x) < DBL_MIN) {
+    for (int prec = 0; prec < 17; prec++) {
+      snprintf(buf, sizeof buf, "%.*e", prec, x);
+      if (strtod(buf, NULL) == x) break;
+    }
+  } else if (snprintf(buf, sizeof buf, "%.14e", x), strtod(buf, NULL) != x) {
+    snprintf(buf, sizeof buf, "%.15e", x);
+    if (strtod(buf, NULL) != x) snprintf(buf, sizeof buf, "%.16e", x);
   }
   // buf is [-]d[.ddd]e[+-]XX: split into its digits and exponent
   char *p = buf, *out = digits;
@@ -2553,6 +2566,8 @@ static int shortest(double x, char digits[32], int *kk) {
     if (*p != '.') *out++ = *p;
     p++;
   }
+  // (the trailing zeros: 1.00000000000000e+00 is 1)
+  while (out > digits + 1 && out[-1] == '0') out--;
   *out = 0;
   *kk = atoi(p + 1) + 1;
   return neg;
@@ -2587,6 +2602,7 @@ Str *strata_show_float(double x) {
   return str_from(res, r - res);
 }
 
+#ifndef STRATA_CORE_RT
 // A float as Rust's `Display` writes it, in messages: shortest digits,
 // never an exponent, no `.0` on whole numbers (1, 0.1, 1000000000000000000000).
 static Str *show_float_plain(double x) {
@@ -4198,7 +4214,7 @@ _Bool strata_parse_int(Str *s, int64_t *out) {
 }
 #endif
 
-#ifndef STRATA_CORE_RT
+// (the C library's with core.rt too, as `strata_show_float`)
 static _Bool parse_float_trimmed(Str *t, double *out);
 
 _Bool strata_parse_float(Str *s, double *out) {
@@ -4261,14 +4277,13 @@ static _Bool parse_float_trimmed(Str *t, double *out) {
   *out = x;
   return 1;
 }
-#endif
 
 // ---- f-string format specs (`interp::format_spec`) ----
 //
 // `strata_format` is core.fmt's when core.rt is linked in (`STRATA_CORE_RT`).
 
-#ifndef STRATA_CORE_RT
-// A float with `p` decimals, as Rust's `{:.p}`.
+// A float with `p` decimals, as Rust's `{:.p}` (the C library's with
+// core.rt too, as `strata_show_float`).
 Str *strata_show_float_fixed(double x, int64_t p) {
   int n = snprintf(NULL, 0, "%.*f", (int)p, x);
   Str *s = str_alloc(n);
@@ -4278,7 +4293,6 @@ Str *strata_show_float_fixed(double x, int64_t p) {
   free(tmp);
   return s;
 }
-#endif
 
 #ifndef STRATA_CORE_RT
 // `body` padded to `width` characters: `fill` and `align` (`<`, `>`, `^`, or

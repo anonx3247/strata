@@ -55,6 +55,46 @@ int32_t jit_set_opt(int32_t level) {
   return 0;
 }
 
+// `--timings` (c/driver.c): where a phase begins and ends, and the
+// phases' times written out.
+int32_t timings_begin(const char *name);
+int32_t timings_end(const char *name);
+int32_t timings_report(void);
+
+// Whether code is compiled for profiling (`--profile`, or STRATA_PROFILE
+// set and not `0`): every function keeps its frame pointer
+// ("frame-pointer"="all"), so that a sampling profiler (macOS's `sample`)
+// walks through Strata's frames. Off by default: the code is as without it.
+static int profiling = -1;
+
+int32_t toolchain_profiling(void) {
+  if (profiling < 0) {
+    const char *p = getenv("STRATA_PROFILE");
+    profiling = p && *p && strcmp(p, "0") != 0;
+  }
+  return profiling;
+}
+
+// `--profile`: profiling on, for this process and the ones it starts.
+int32_t toolchain_set_profile(int32_t on) {
+  profiling = on != 0;
+  if (on) setenv("STRATA_PROFILE", "1", 1);
+  return 0;
+}
+
+// When profiling, every function the module defines keeps its frame
+// pointer.
+void toolchain_frame_pointers(LLVMModuleRef mod) {
+  if (!toolchain_profiling()) return;
+  LLVMContextRef ctx = LLVMGetModuleContext(mod);
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) {
+    if (LLVMIsDeclaration(f)) continue;
+    LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "frame-pointer", 13);
+    LLVMAddAttributeAtIndex(f, LLVMAttributeFunctionIndex,
+                               LLVMCreateStringAttribute(ctx, "frame-pointer", 13, "all", 3));
+  }
+}
+
 // A JIT's builder for `jit_opt`: the host's CPU and features, at its level.
 static LLVMOrcLLJITBuilderRef jit_builder(void) {
   LLVMOrcLLJITBuilderRef b = LLVMOrcCreateLLJITBuilder();
@@ -122,13 +162,19 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
   LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata");
   LLVMModuleRef mod;
   char *msg = NULL;
-  if (LLVMParseIRInContext(ctx, buf, &mod, &msg)) {
+  timings_begin("LLVM: parse IR");
+  LLVMBool rejected = LLVMParseIRInContext(ctx, buf, &mod, &msg);
+  timings_end("LLVM: parse IR");
+  if (rejected) {
     fprintf(stderr, "error: LLVM rejected the generated IR: %s\n", msg ? msg : "");
     LLVMDisposeMessage(msg);
     return NULL;
   }
   LLVMOrcLLJITRef jit;
+  toolchain_frame_pointers(mod);
+  timings_begin("LLVM: optimize");
   optimized(mod);
+  timings_end("LLVM: optimize");
   LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, jit_builder());
   if (e) return failed(e, "can't start"), NULL;
   // the loaded libraries, then the runtime: this process's own symbols
@@ -148,8 +194,14 @@ int32_t jit_run_main(const char *ir, const char *args) {
   LLVMOrcLLJITRef jit = compiled(ir);
   if (!jit) return 70;
   LLVMOrcExecutorAddress addr;
+  // (the JIT compiles the program when it is looked up)
+  timings_begin("JIT: machine code");
   LLVMErrorRef e = LLVMOrcLLJITLookup(jit, &addr, "main");
+  timings_end("JIT: machine code");
   if (e) return failed(e, "has no main");
+  // (the program's own time isn't the compiler's: the times are written
+  // before it runs)
+  timings_report();
   int (*entry)(int, char **) = (int (*)(int, char **))(uintptr_t)addr;
   // the program's name and arguments, separated by newlines
   char *copy = strdup(args);
@@ -199,7 +251,9 @@ static int32_t run_call(const char *ir, const char *probe, const char *fun) {
   LLVMOrcLLJITRef jit = compiled(ir);
   if (!jit) return 70;
   LLVMOrcExecutorAddress addr;
+  timings_begin("JIT: machine code");
   LLVMErrorRef e = LLVMOrcLLJITLookup(jit, &addr, "strata.call.0");
+  timings_end("JIT: machine code");
   if (e) return failed(e, "has no call");
   int32_t (*test)(void (*)(void)) = runtime_fn("strata_test");
   int64_t (*kept)(void) = runtime_fn("strata_ct_kept");
