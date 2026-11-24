@@ -112,6 +112,6 @@ run = ["cat", "v/seen2.st"]
 has = ["// ✗ error in tax: no version of `len` accepts (Bool); available:\n// ✗   len(List[A]) -> Int\n"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 dir = "pkg"
 has = ["amount / 5"]

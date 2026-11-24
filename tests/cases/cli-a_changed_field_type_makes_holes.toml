@@ -25,7 +25,7 @@ text = "type P = { name: Int, age: Int }\n"
 has = ["the edit breaks 1 use elsewhere", "?pending_1  in hello", "was: p.name", "why: `+` operands: expected `String`, found `Int`"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["\"hi \" + ?pending_1", "p.age + 1"]
 
 [[step]]

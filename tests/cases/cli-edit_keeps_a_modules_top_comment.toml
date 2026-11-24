@@ -34,7 +34,7 @@ pub type Token = | Word(String) | Space | Newline
 '''
 
 [[step]]
-strata = ["render", "lex"]
+strata = ["view", "lex"]
 has = ["// lex — the tokens of a text\n//\n// (the module's top comment)\n\n/// A token: a word, a space or a newline.\npub type Token"]
 
 # a top comment given replaces it
@@ -50,7 +50,7 @@ pub type Token = | Word(String) | Space | Newline
 '''
 
 [[step]]
-strata = ["render", "lex"]
+strata = ["view", "lex"]
 has = ["// lex — tokens\n//\n// (a new top comment)\n\n/// A token"]
 lacks = ["the module's top comment"]
 
@@ -64,5 +64,5 @@ pub fn count(xs: List[Int]) -> Int {
 '''
 
 [[step]]
-strata = ["render", "lex"]
+strata = ["view", "lex"]
 has = ["// lex — tokens\n//\n// (a new top comment)\n\npub fn count"]

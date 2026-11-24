@@ -27,11 +27,11 @@ strata = ["move", "test \"doubles. twice\"", "ops"]
 has = ["moved test \"doubles. twice\" from main to ops (ops.strata)"]
 
 [[step]]
-strata = ["render", "ops"]
+strata = ["view", "ops"]
 has = ["test \"doubles. twice\" {\n  assert double(2) == 4\n}"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 lacks = ["test"]
 
 [[step]]
@@ -44,7 +44,7 @@ strata = ["move", "ops.test \"doubles. twice\"", "main"]
 has = ["moved ops.test \"doubles. twice\" from ops to main"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["from ops use double", "test \"doubles. twice\""]
 
 [[step]]
