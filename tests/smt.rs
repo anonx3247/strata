@@ -335,3 +335,59 @@ fn verify_fuzzes_around_what_cant_be_compiled() {
     assert!(out.contains("~ sq                       fuzzed: 200 cases"), "{out}");
     assert!(out.contains("✓ a ") && out.contains("✓ b ") && out.contains("✓ c "), "{out}");
 }
+
+/// `compiler verify` on examples/traits.strata reports what Rust's verify
+/// does: its laws proven or refuted, and `Sku`'s values (a `distinct`
+/// string matching a regex) generated from its regex's samples, not as
+/// strings checked as if they were `Sku` blocks (which took gigabytes).
+#[test]
+fn verify_traits_example_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // (through `strata verify --compare`, which loads std's precompiled
+    // library into the drivers: compiling std into them takes minutes)
+    let file = root.join("examples/traits.strata");
+    let o = Command::new(STRATA).current_dir(root).arg("--file").arg(&file).args(["verify", "--compare", "--no-cache"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("compare: they agree"), "{out}{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// `xs = drop(xs, 2)` under 100 `if`s: each `if` makes the list "the one
+/// before, or the one before less two", and the encoder shares the one
+/// before (its length, its elements, whether it is positional) instead of
+/// following both branches, which doubled the work at each `if` (7 `if`s
+/// went past 5 GB). It must finish in seconds.
+#[test]
+fn smt_shares_lists_both_branches_drop_from() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("smt-ifs");
+    let mut text = String::from("fn f(args: List[String]) -> String {\n  mut files := args\n");
+    for k in 1..=100 {
+        text += &format!("  if get(files, 0) ?? \"\" == \"--o{k}\" {{\n    files = drop(files, 2)\n  }}\n");
+    }
+    text += "  get(files, 0) ?? \"\"\n}\n";
+    let file = dir.join("ifs.strata");
+    save(&file, &text);
+    let mut child = Command::new(compiler::exe()).current_dir(root).arg("smt").arg(&file).env("STRATA_CACHE", &dir).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            break;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("compiler smt on 100 ifs ran past 10 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let o = child.wait_with_output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("fn f"), "{}", String::from_utf8_lossy(&o.stdout));
+}
