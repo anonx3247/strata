@@ -82,9 +82,6 @@ const SOFT_FAULTS: &[&str] = &[
     "@strata_float_to_int",
     "@strata_sqrt",
     "@strata_str_at_or_fault",
-    "@strata_str_split",
-    "@strata_str_replace",
-    "@strata_str_repeat",
     "@strata_str_ord",
     "@strata_str_byte_at",
     "@strata_str_chr",
@@ -1164,6 +1161,9 @@ declare ptr @strata_raw_reserve(i64)
 declare i64 @strata_raw_size(ptr)
 declare void @strata_raw_fail(ptr)
 declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
+declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
+declare i32 @memcmp(ptr, ptr, i64)
+declare zeroext i1 @strata_soft_fault(i64, ptr)
 declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
@@ -1171,19 +1171,10 @@ declare ptr @strata_show_float(double)
 declare ptr @strata_show_bool(i1)
 declare ptr @strata_debug_str(ptr)
 declare void @strata_print(ptr)
-declare ptr @strata_str_split(ptr, ptr)
 declare ptr @strata_str_trim(ptr)
-declare i1 @strata_str_contains(ptr, ptr)
-declare i1 @strata_str_starts_with(ptr, ptr)
-declare i1 @strata_str_ends_with(ptr, ptr)
-declare i64 @strata_str_index_of(ptr, ptr)
-declare ptr @strata_str_reverse(ptr)
-declare ptr @strata_str_chars(ptr)
 declare ptr @strata_str_at(ptr, i64)
 declare ptr @strata_str_at_or_fault(ptr, i64)
 declare ptr @strata_str_slice(ptr, i64, i64)
-declare ptr @strata_str_replace(ptr, ptr, ptr)
-declare ptr @strata_str_repeat(ptr, i64)
 declare ptr @strata_str_case(ptr, ptr, i64, ptr, i64, i1)
 declare i1 @strata_str_is(ptr, i64, ptr, i64)
 declare i64 @strata_str_ord(ptr)
@@ -6254,6 +6245,57 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)", vs[0].1, vs[1].1, vs[2].1));
                 (Ty::Unit, "0".into())
             }
+            ("raw_copy", [_, _, _]) => {
+                self.emit(format!("call void @llvm.memmove.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", vs[0].1, vs[1].1, vs[2].1));
+                (Ty::Unit, "0".into())
+            }
+            ("raw_compare", [_, _, _]) => {
+                let (c, r) = (self.fresh("cmp"), self.fresh("cmp"));
+                self.emit(format!("{c} = call i32 @memcmp(ptr {}, ptr {}, i64 {})", vs[0].1, vs[1].1, vs[2].1));
+                self.emit(format!("{r} = sext i32 {c} to i64"));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("raw_fault", [_, _]) => {
+                let r = self.fresh("contained");
+                self.emit(format!("{r} = call zeroext i1 @strata_soft_fault(i64 {}, ptr {})", vs[0].1, vs[1].1));
+                bool_v(&r)
+            }
+            ("str_block", [_]) => (Ty::Con("Ptr".into(), vec![]), vs[0].1.clone()),
+            ("widen_u8", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = zext i8 {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("low_u8", [_]) => {
+                let r = self.fresh("b");
+                self.emit(format!("{r} = trunc i64 {} to i8", vs[0].1));
+                (Ty::Con("U8".into(), vec![]), r)
+            }
+            ("div_trunc" | "rem_trunc" | "div_unsigned" | "rem_unsigned", [_, _]) => {
+                let ins = match name {
+                    "div_trunc" => "sdiv",
+                    "rem_trunc" => "srem",
+                    "div_unsigned" => "udiv",
+                    _ => "urem",
+                };
+                let r = self.fresh("q");
+                self.emit(format!("{r} = {ins} i64 {}, {}", vs[0].1, vs[1].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("load_u32", [_, _]) => {
+                let (a, w, r) = (self.fresh("at"), self.fresh("w"), self.fresh("w"));
+                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
+                self.emit(format!("{w} = load i32, ptr {a}, align 4"));
+                self.emit(format!("{r} = zext i32 {w} to i64"));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
+            ("store_u32", [_, _, _]) => {
+                let (a, w) = (self.fresh("at"), self.fresh("w"));
+                self.emit(format!("{a} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
+                self.emit(format!("{w} = trunc i64 {} to i32", vs[2].1));
+                self.emit(format!("store i32 {w}, ptr {a}, align 4"));
+                (Ty::Unit, "0".into())
+            }
             ("ptr_offset", [p, _]) => {
                 let r = self.fresh("at");
                 self.emit(format!("{r} = getelementptr i8, ptr {}, i64 {}", vs[0].1, vs[1].1));
@@ -8194,12 +8236,17 @@ impl<'m, 'a> Func<'m, 'a> {
                 let (pass, fail) = (self.fresh_label("assert.ok"), self.fresh_label("assert.fail"));
                 self.cond_br(&ok, &pass, &fail);
                 self.block(&fail);
+                // (what showing the sides makes, an `I64`'s `Int`, is only on
+                // this path, which the fault ends: not dropped after `pass`,
+                // where it isn't defined)
+                let made = self.scopes.last().unwrap().temps.len();
                 let mut parts = vec![Part::Lit(format!("{what}: {}", crate::printer::expr(x, 0)))];
                 if let Some((op, a, b)) = sides {
                     let (sa, sb) = (self.shown(&a)?, self.shown(&b)?);
                     parts.extend([Part::Lit(format!(" (left of {} = ", op.symbol())), Part::Val(sa), Part::Lit(", right = ".into()), Part::Val(sb), Part::Lit(")".into())]);
                 }
                 self.fault(Fault::Assert, parts)?;
+                self.scopes.last_mut().unwrap().temps.truncate(made);
                 self.block(&pass);
             }
         }
