@@ -62,6 +62,14 @@ static int32_t fail(const std::string &m) {
 
 extern "C" {
 
+// Profiling (c/jit.c): every function defined keeps its frame pointer.
+void toolchain_frame_pointers(LLVMModuleRef mod);
+int32_t toolchain_profiling(void);
+
+// `--timings` (c/driver.c): where a phase begins and ends.
+int32_t timings_begin(const char *name);
+int32_t timings_end(const char *name);
+
 // Why the last `toolchain_object` or `toolchain_link` failed ("" when it didn't).
 const char *toolchain_error(void) { return last_error.c_str(); }
 
@@ -88,7 +96,10 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
   LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata");
   LLVMModuleRef mod;
   char *msg = nullptr;
-  if (LLVMParseIRInContext(ctx, buf, &mod, &msg)) {
+  timings_begin("LLVM: parse IR");
+  LLVMBool rejected = LLVMParseIRInContext(ctx, buf, &mod, &msg);
+  timings_end("LLVM: parse IR");
+  if (rejected) {
     std::string m = std::string("LLVM rejected the generated IR: ") + (msg ? msg : "");
     LLVMDisposeMessage(msg);
     LLVMContextDispose(ctx);
@@ -104,6 +115,7 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
     return fail(m);
   }
   LLVMSetTarget(mod, triple);
+  toolchain_frame_pointers(mod);
   LLVMCodeGenOptLevel level = opt <= 0 ? LLVMCodeGenLevelNone
                               : opt == 1 ? LLVMCodeGenLevelLess
                               : opt == 2 ? LLVMCodeGenLevelDefault
@@ -119,7 +131,9 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
     char passes[32];
     snprintf(passes, sizeof passes, "default<O%d>", opt > 3 ? 3 : opt);
     LLVMPassBuilderOptionsRef po = LLVMCreatePassBuilderOptions();
+    timings_begin("LLVM: optimize");
     LLVMErrorRef e = LLVMRunPasses(mod, passes, tm, po);
+    timings_end("LLVM: optimize");
     LLVMDisposePassBuilderOptions(po);
     if (e) {
       char *m = LLVMGetErrorMessage(e);
@@ -127,10 +141,12 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
       LLVMDisposeErrorMessage(m);
     }
   }
+  timings_begin("LLVM: machine code");
   if (!r && LLVMTargetMachineEmitToFile(tm, mod, out, LLVMObjectFile, &msg)) {
     r = fail(std::string("can't write ") + out + ": " + (msg ? msg : ""));
     LLVMDisposeMessage(msg);
   }
+  timings_end("LLVM: machine code");
   LLVMDisposeTargetMachine(tm);
   LLVMDisposeModule(mod);
   LLVMContextDispose(ctx);
@@ -459,6 +475,7 @@ std::string compile_part(const std::string &ir, const std::string &out, int32_t 
     return m;
   }
   LLVMSetTarget(mod, TRIPLE);
+  toolchain_frame_pointers(mod);
   LLVMCodeGenOptLevel level = opt <= 0 ? LLVMCodeGenLevelNone
                               : opt == 1 ? LLVMCodeGenLevelLess
                               : opt == 2 ? LLVMCodeGenLevelDefault
@@ -567,17 +584,23 @@ int32_t toolchain_objects(const char *ir, const char *scratch, const char *cache
   std::string_view text(ir);
   std::vector<std::string> parts;
   // (optimized, larger parts: more of what a function calls is beside it,
-  // to inline)
-  if (!split_ir(text, opt > 0 ? 512 * 1024 : 128 * 1024, 4 * 1024 * 1024, opt > 0 ? IMPORT_BYTES : 0,
+  // to inline; `STRATA_LLVM_PARTS=0`: the whole module as one part, to
+  // compare)
+  const char *whole = getenv("STRATA_LLVM_PARTS");
+  timings_begin("LLVM: split IR");
+  if ((whole && strcmp(whole, "0") == 0) ||
+      !split_ir(text, opt > 0 ? 512 * 1024 : 128 * 1024, 4 * 1024 * 1024, opt > 0 ? IMPORT_BYTES : 0,
                 parts)) {
     parts.clear();
     parts.push_back(std::string(text));
   }
+  timings_end("LLVM: split IR");
   unsigned major = 0, minor = 0, patch = 0;
   LLVMGetVersion(&major, &minor, &patch);
   char what[160];
-  snprintf(what, sizeof what, "strata object 1\n%s %s O%d LLVM %u.%u.%u\n", TRIPLE, CPU, (int)opt,
-           major, minor, patch);
+  // (`--profile` keeps frame pointers: other objects)
+  snprintf(what, sizeof what, "strata object 1\n%s %s O%d LLVM %u.%u.%u%s\n", TRIPLE, CPU, (int)opt,
+           major, minor, patch, toolchain_profiling() ? " profiling" : "");
   std::string dir = cache;
   if (!dir.empty()) make_dirs(dir);
   std::vector<std::string> outs(parts.size()), errs(parts.size());
@@ -600,6 +623,7 @@ int32_t toolchain_objects(const char *ir, const char *scratch, const char *cache
   unsigned n = threads > 0 ? (unsigned)threads : std::thread::hardware_concurrency();
   if (n == 0) n = 1;
   if (n > work.size()) n = (unsigned)work.size();
+  timings_begin("LLVM: parts (parallel)");
   std::atomic<size_t> next{0};
   auto worker = [&]() {
     for (;;) {
@@ -622,6 +646,7 @@ int32_t toolchain_objects(const char *ir, const char *scratch, const char *cache
   for (unsigned t = 1; t < n; t++) pool.emplace_back(worker);
   if (n > 0) worker();
   for (std::thread &t : pool) t.join();
+  timings_end("LLVM: parts (parallel)");
   for (size_t k = 0; k < parts.size(); k++)
     if (!errs[k].empty()) return fail(errs[k]) * -1;
   for (size_t k = 0; k < parts.size(); k++) objects_list += outs[k] + "\n";
@@ -650,8 +675,10 @@ int32_t toolchain_link(const char *args) {
   // standard error itself: raw_fd_ostream's raw_ostream is its first base
   llvm::raw_ostream &out = reinterpret_cast<llvm::raw_ostream &>(llvm::outs());
   llvm::raw_ostream &err = reinterpret_cast<llvm::raw_ostream &>(llvm::errs());
+  timings_begin("link (lld)");
   bool ok = lld::macho::link({argv.data(), argv.size()}, out, err, false, false);
   lld::CommonLinkerContext::destroy();
+  timings_end("link (lld)");
   if (!ok) return fail("the linker failed");
   return 0;
 }

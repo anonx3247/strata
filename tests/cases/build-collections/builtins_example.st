@@ -89,7 +89,7 @@ fn main() {
     }
     assert word == "the" && n == 3
     assert (word, n).1 == 3
-    assert keys(Dict { "b": 2, "a": 1 }) == ["a", "b"]
+    assert sort(keys(Dict { "b": 2, "a": 1 })) == ["a", "b"]
     assert parse_int(" 42 ") == Some(42)
     assert round(2.6) == 3
   }

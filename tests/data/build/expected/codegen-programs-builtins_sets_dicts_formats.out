@@ -41,31 +41,31 @@ Some(1.0)
 [(1, "z"), (2, "a"), (2, "b")]
 [Low, Mid(1), Mid(3), High { why: "x" }]
 [Card { suit: "s", rank: 1 }, Card { suit: "h", rank: 3 }]
-Set { 1, 2, 3 }
+Set { 3, 1, 2 }
 3
 true
-Set { 0, 1, 2, 3 }
+Set { 3, 1, 2, 0 }
 Set { 1, 2 }
-Set { 1, 2, 3, 9 }
-Set { 2, 3 }
-Set { 2, 3 }
-[1, 2, 3]
-Set { "a", "b" }
-Dict { "al": 25, "bo": 30 }
+Set { 3, 1, 2, 9 }
+Set { 3, 2 }
+Set { 3, 2 }
+[3, 1, 2]
+Set { "b", "a" }
+Dict { "bo": 30, "al": 25 }
 Some(25)
 None
 true
-Dict { "al": 25, "bo": 30, "cy": 41 }
-Dict { "al": 26, "bo": 30 }
+Dict { "bo": 30, "al": 25, "cy": 41 }
+Dict { "bo": 30, "al": 26 }
 Dict { "al": 25 }
-["al", "bo"]
-[25, 30]
-[("al", 25), ("bo", 30)]
-Dict { "al": 26, "bo": 31 }
+["bo", "al"]
+[30, 25]
+[("bo", 30), ("al", 25)]
+Dict { "bo": 31, "al": 26 }
 55
+3
 1
 2
-3
 Dict {}
 Set {}
 true

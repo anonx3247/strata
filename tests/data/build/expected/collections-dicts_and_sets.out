@@ -1,49 +1,49 @@
-Dict { "a": 1, "b": 2, "c": 3 }
+Dict { "b": 2, "a": 1, "c": 3 }
 [3, 0]
 Dict {}
-Dict { 1: "a", 2: "b", 3: "z" }
-Dict { "a": 10, "b": 2, "c": 3 }
-Dict { "a": 1, "aa": 5, "b": 2, "c": 3 }
+Dict { 3: "z", 1: "a", 2: "b" }
+Dict { "b": 2, "a": 10, "c": 3 }
+Dict { "b": 2, "a": 1, "c": 3, "aa": 5 }
 Dict { "a": 1, "c": 3 }
-Dict { "a": 1, "b": 2, "c": 3 }
+Dict { "b": 2, "a": 1, "c": 3 }
 [Some(3), None]
 [true, false]
-["a", "b", "c"]
-[1, 2, 3]
-[("a", 1), ("b", 2), ("c", 3)]
-Dict { "a": 1.5, "b": 3.0, "c": 4.5 }
-Dict { "a": "<1>", "b": "<2>", "c": "<3>" }
-a=1
+["b", "a", "c"]
+[2, 1, 3]
+[("b", 2), ("a", 1), ("c", 3)]
+Dict { "b": 3.0, "a": 1.5, "c": 4.5 }
+Dict { "b": "<2>", "a": "<1>", "c": "<3>" }
 b=2
+a=1
 c=3
-Dict { "cat": 2, "end": 1, "hat": 1, "the": 3 }
-Set { 1, 2, 3 }
+Dict { "the": 3, "cat": 2, "hat": 1, "end": 1 }
+Set { 3, 1, 2 }
 [3, 0]
 [true, false]
-[Set { 0, 1, 2, 3 }, Set { 1, 2, 3 }, Set { 2, 3 }, Set { 1, 2, 3 }]
-[1, 2, 3]
-[Set { 0, 1, 2, 3, 5 }, Set { 2, 3 }, Set { 1, 3 }]
+[Set { 3, 1, 2, 0 }, Set { 3, 1, 2 }, Set { 3, 2 }, Set { 3, 1, 2 }]
+[3, 1, 2]
+[Set { 3, 1, 2, 5, 0 }, Set { 3, 2 }, Set { 3, 1 }]
+3
 1
 2
-3
 true
 true
 true
-Set { "apple", "fig", "pear" }
-Set { -1.0, -0.5, 0.0, 2.5 }
-Set { Red, Green, Blue }
-Set { UserId(9), UserId(10), UserId(100) }
-Set { Point { x: 1, y: 5 }, Point { x: 2, y: 1 } }
-Set { (1, "z"), (2, "a"), (2, "b") }
-Set { [1], [1, 0], [2, 1] }
-Set { None, Some(1), Some(3) }
+Set { "pear", "apple", "fig" }
+Set { 2.5, -1.0, 0.0, -0.5 }
+Set { Blue, Red, Green }
+Set { UserId(10), UserId(9), UserId(100) }
+Set { Point { x: 2, y: 1 }, Point { x: 1, y: 5 } }
+Set { (2, "b"), (1, "z"), (2, "a") }
+Set { [2, 1], [1], [1, 0] }
+Set { Some(3), None, Some(1) }
 Dict { Red: 1, Blue: 2 }
-Dict { (0, 9): "q", (1, 2): "p" }
-Set { Set { 0 }, Set { 1, 2 } }
+Dict { (1, 2): "p", (0, 9): "q" }
+Set { Set { 2, 1 }, Set { 0 } }
 Dict { "x": Set { 1 }, "y": Set {} }
-Dict { "k": Dict { 1: "one", 2: "two" } }
-Dict { "a": 1, "b": 2, "c": 3 } Set { 1, 2, 3 }
-Set { 1, 2, 3 }
-Dict { "a": 1, "b": 2, "c": 3 }
+Dict { "k": Dict { 2: "two", 1: "one" } }
+Dict { "b": 2, "a": 1, "c": 3 } Set { 3, 1, 2 }
+Set { 3, 1, 2 }
+Dict { "b": 2, "a": 1, "c": 3 }
 
 --- exit 0

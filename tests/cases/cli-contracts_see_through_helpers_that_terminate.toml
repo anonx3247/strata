@@ -5,7 +5,10 @@ text = '''
 fn small(n: Int) -> Bool { 0 <= n && n < 10 }
 type Digit = Int where small(it)
 fn zero() -> Digit { 0 }
-fn ten() -> Digit { 10 }
+fn ten() -> Digit {
+  t := 10
+  t
+}
 fn up(n: Int) -> Bool { if n > 100 { true } else { up(n + 1) } }
 type Odd = Int where up(it)
 fn odd() -> Odd { 1 }

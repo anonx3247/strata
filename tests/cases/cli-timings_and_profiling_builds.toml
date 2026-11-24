@@ -1,0 +1,21 @@
+# `--timings` writes each phase's time on stderr when the command ends;
+# `--profile` builds with frame pointers (for `sample`), the program the same
+[[step]]
+save = "hello.strata"
+text = '''
+fn main() {
+  print(f"{1.5 + 1.0} {parse_float("2.25")}")
+}
+'''
+
+[[step]]
+strata = ["build", "hello.strata", "-o", "hello", "--timings", "--profile"]
+has = ["timings (s):", "codegen IR", "LLVM: machine code", "link (lld)", "in all"]
+
+[[step]]
+run = ["./hello"]
+stdout = "2.5 Some(2.25)\n"
+
+[[step]]
+strata = ["run", "hello.strata", "--timings"]
+has = ["timings (s):", "JIT: machine code", "2.5 Some(2.25)"]

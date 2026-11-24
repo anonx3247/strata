@@ -2,7 +2,7 @@
 # allocate) is refused by `strata codegen --core-rt`, nothing defined
 
 [[step]]
-run = ["sh", "-c", "cp -R \"$ROOT/core\" core && \"$STRATA\" --file core render gen > gen.st && printf \"\\nfn too_big(x: I64) -> Bool {\\n  x < 1023 + 62\\n}\\n\" >> gen.st"]
+run = ["sh", "-c", "cp -R \"$ROOT/core\" core && \"$STRATA\" --file core view gen > gen.st && printf \"\\nfn too_big(x: I64) -> Bool {\\n  x < 1023 + 62\\n}\\n\" >> gen.st"]
 
 [[step]]
 strata = ["--file", "core/", "edit", "gen"]

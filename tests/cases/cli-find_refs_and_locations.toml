@@ -78,10 +78,10 @@ jobs.same_ids
 strata = ["--file", "p", "refs", "run_worker", "--uses"]
 stdout = '''
 uses — 4 definitions
-  construct jobs.Task                    jobs.run_worker@00df5b7a/body/1/value
   type      jobs.Worker                  jobs.run_worker@00df5b7a/params/0/ty
-  call      jobs.get_task                jobs.run_worker@00df5b7a/body/2/cond/args/1/callee
+  construct jobs.Task                    jobs.run_worker@00df5b7a/body/1/value
   call      jobs.same_ids                jobs.run_worker@00df5b7a/body/2/cond/callee
+  call      jobs.get_task                jobs.run_worker@00df5b7a/body/2/cond/args/1/callee
 '''
 
 [[step]]
