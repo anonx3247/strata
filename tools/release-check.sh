@@ -4,7 +4,9 @@
 # STRATA_* variables, and a PATH of /usr/bin and /bin without clang, cc, ld,
 # xcrun or z3. Runs `strata --version`, hello on the JIT, wc built into an
 # executable (in-process objects, lld, the libSystem stub) and run, and
-# `verify` on a script (the shipped z3).
+# `verify` on a script (the shipped z3); then the commands a user types, in
+# a folder of their own (not the home): `run`, `build` (and the executable
+# run), `check`, `verify` and `test`, none saying `unreadable` or `error`.
 #
 #   tools/release-check.sh [ARCHIVE]
 set -e
@@ -43,4 +45,23 @@ printf 'a b c\nd e\n' > "$H/in.txt"
 clean "$H/wc.exe" "$H/in.txt" | grep -q '^2	5	10	' || fail "wc built"
 clean "$R/bin/strata" verify "$H/math.strata" > "$H/verify.out" 2>&1 || true
 grep -q 'proven' "$H/verify.out" || { cat "$H/verify.out" >&2; fail "verify"; }
+# the commands a user types, in a folder of their own: the compiler finds its
+# home (lib/strata) from where it is, whatever the current folder
+cd "$H"
+said() { ! grep -q -e 'unreadable' -e '^error' "$H/u.out" || { cat "$H/u.out" >&2; fail "$*: says unreadable or error"; }; }
+user() { clean "$R/bin/strata" "$@" > "$H/u.out" 2>&1 || { cat "$H/u.out" >&2; fail "$*"; }; said "$@"; }
+user run hello
+grep -q '^hello, world!$' "$H/u.out" || fail "run hello"
+user build wc -o wcx
+clean "$H/wcx" "$H/in.txt" | grep -q '^2	5	10	' || fail "wcx (built by \`strata build wc\`)"
+user --file wc run -- "$H/in.txt"
+grep -q '^2	5	10	' "$H/u.out" || fail "--file wc run"
+user check math.strata
+grep -q '^ok: ' "$H/u.out" || fail "check math.strata"
+# (math.strata holds functions verify refutes on purpose: exit 1)
+clean "$R/bin/strata" verify math.strata > "$H/u.out" 2>&1 || true
+said verify math.strata
+grep -q 'proven' "$H/u.out" || { cat "$H/u.out" >&2; fail "verify math.strata"; }
+user --file math.strata test
+grep -q ' passed, 0 failed$' "$H/u.out" || fail "--file math.strata test"
 echo "release-check: $ARCHIVE works without developer tools ($T)"

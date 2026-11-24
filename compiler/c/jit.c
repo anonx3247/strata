@@ -10,6 +10,8 @@
 #include <llvm-c/LLJIT.h>
 #include <llvm-c/Orc.h>
 #include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +43,66 @@ static LLVMErrorRef add_generators(LLVMOrcLLJITRef jit) {
   return NULL;
 }
 
+// How programs and tests are compiled (`jit_set_opt`): -1 as LLVM's JIT
+// does by default (its code generator at -O2, no IR passes: what `verify`'s
+// fuzzing and compile-time code get), 0 unoptimized (`strata run` and
+// `strata test`, as Rust's driver: several times faster to compile), 2 as
+// clang -O2 would (`--release`: the IR passes too).
+static int jit_opt = -1;
+
+int32_t jit_set_opt(int32_t level) {
+  jit_opt = level;
+  return 0;
+}
+
+// A JIT's builder for `jit_opt`: the host's CPU and features, at its level.
+static LLVMOrcLLJITBuilderRef jit_builder(void) {
+  LLVMOrcLLJITBuilderRef b = LLVMOrcCreateLLJITBuilder();
+  if (jit_opt < 0) return b;
+  char *triple = LLVMGetDefaultTargetTriple();
+  LLVMTargetRef target;
+  char *msg = NULL;
+  if (LLVMGetTargetFromTriple(triple, &target, &msg)) {
+    LLVMDisposeMessage(msg);
+    LLVMDisposeMessage(triple);
+    return b;
+  }
+  char *cpu = LLVMGetHostCPUName();
+  char *features = LLVMGetHostCPUFeatures();
+  LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, cpu, features,
+      jit_opt == 0 ? LLVMCodeGenLevelNone : LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelJITDefault);
+  LLVMDisposeMessage(cpu);
+  LLVMDisposeMessage(features);
+  LLVMDisposeMessage(triple);
+  // (the builder owns the target machine from here)
+  LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(b, LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine(tm));
+  return b;
+}
+
+// The module optimized as clang -O2 would, with `--release` (jit_opt 2).
+static void optimized(LLVMModuleRef mod) {
+  if (jit_opt < 2) return;
+  char *triple = LLVMGetDefaultTargetTriple();
+  LLVMTargetRef target;
+  char *msg = NULL;
+  if (!LLVMGetTargetFromTriple(triple, &target, &msg)) {
+    char *cpu = LLVMGetHostCPUName();
+    char *features = LLVMGetHostCPUFeatures();
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, cpu, features,
+        LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelJITDefault);
+    LLVMPassBuilderOptionsRef o = LLVMCreatePassBuilderOptions();
+    LLVMErrorRef e = LLVMRunPasses(mod, "default<O2>", tm, o);
+    if (e) LLVMConsumeError(e);
+    LLVMDisposePassBuilderOptions(o);
+    LLVMDisposeTargetMachine(tm);
+    LLVMDisposeMessage(cpu);
+    LLVMDisposeMessage(features);
+  } else {
+    LLVMDisposeMessage(msg);
+  }
+  LLVMDisposeMessage(triple);
+}
+
 static int failed(LLVMErrorRef e, const char *what) {
   char *m = LLVMGetErrorMessage(e);
   fprintf(stderr, "error: the JIT %s: %s\n", what, m);
@@ -66,7 +128,8 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
     return NULL;
   }
   LLVMOrcLLJITRef jit;
-  LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, LLVMOrcCreateLLJITBuilder());
+  optimized(mod);
+  LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, jit_builder());
   if (e) return failed(e, "can't start"), NULL;
   // the loaded libraries, then the runtime: this process's own symbols
   e = add_generators(jit);
@@ -243,7 +306,8 @@ int32_t jit_fuzz_load(const char *ir) {
     return -1;
   }
   LLVMOrcLLJITRef fuzz_jit;
-  LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, LLVMOrcCreateLLJITBuilder());
+  optimized(mod);
+  LLVMErrorRef e = LLVMOrcCreateLLJIT(&fuzz_jit, jit_builder());
   if (!e) {
     e = add_generators(fuzz_jit);
     if (!e) {
