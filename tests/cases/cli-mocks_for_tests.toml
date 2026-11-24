@@ -1,0 +1,134 @@
+# cli.rs: mocks_for_tests: fakes for tests, declared as types; their implementations may leave
+# methods out (generated); for tests only; hidden from views unless asked
+
+[[step]]
+save = "m.strata"
+text = '''
+from std.fs use Files, FsError
+
+/// An in-memory disk, for tests.
+mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
+
+impl Files for MemDisk {
+  fn read(self, path: String) -> Result[String, FsError] {
+    Ok(get(self.files, path) ?? "nothing")
+  }
+
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+}
+
+fn save_then_load(mut fs: Files, text: String) -> Result[String, FsError] {
+  (mut fs.write("a.txt", text))!
+  fs.read("a.txt")
+}
+
+test "saving then loading" {
+  mut fs := MemDisk {}
+  assert save_then_load(mut fs, "hi") == Ok("hi")
+  x := fs.exists("a.txt")
+  assert x || !x
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "render"]
+out = '''
+from std.fs use Files, FsError
+
+/// An in-memory disk, for tests.
+mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
+
+impl Files for MemDisk {
+  fn read(self, path: String) -> Result[String, FsError] {
+    Ok(get(self.files, path) ?? "nothing")
+  }
+
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+}
+
+fn save_then_load(mut fs: Files, text: String) -> Result[String, FsError] {
+  (mut fs.write("a.txt", text))!
+  fs.read("a.txt")
+}
+
+test "saving then loading" {
+  mut fs := MemDisk {}
+  assert save_then_load(mut fs, "hi") == Ok("hi")
+  x := fs.exists("a.txt")
+  assert x || !x
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "m.strata", "verify"]
+any_code = true
+has = ["assumed: `MemDisk` is a mock"]
+lacks = ["may not terminate"]
+
+[[step]]
+strata = ["--file", "m.strata", "view", "--level", "0"]
+has = ["save_then_load"]
+lacks = ["type   MemDisk"]
+
+[[step]]
+strata = ["--file", "m.strata", "view", "--level", "0", "--mocks"]
+has = ["type   MemDisk", "impl std.fs.Files for MemDisk"]
+
+# for tests only
+[[step]]
+save = "leak.strata"
+text = '''
+from std.fs use Files, FsError
+
+/// An in-memory disk, for tests.
+mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
+
+impl Files for MemDisk {
+  fn read(self, path: String) -> Result[String, FsError] {
+    Ok(get(self.files, path) ?? "nothing")
+  }
+
+  fn write(mut self, path: String, text: String) -> Result[(), FsError] {
+    self.files = insert(self.files, path, text)
+    Ok(())
+  }
+}
+
+fn save_then_load(mut fs: Files, text: String) -> Result[String, FsError] {
+  (mut fs.write("a.txt", text))!
+  fs.read("a.txt")
+}
+
+test "saving then loading" {
+  mut fs := MemDisk {}
+  assert save_then_load(mut fs, "hi") == Ok("hi")
+  x := fs.exists("a.txt")
+  assert x || !x
+}
+
+fn leak() -> Int {
+  len(MemDisk {}.files)
+}
+'''
+
+[[step]]
+strata = ["--file", "leak.strata", "check"]
+fails = true
+has = ["error in leak: `MemDisk` is a mock: it is for tests only"]
+
+# a mock holds data: a record
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = "mock M = Int\n"
+fails = true
+has = ["a mock holds the data of a fake"]

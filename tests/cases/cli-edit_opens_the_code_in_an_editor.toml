@@ -87,7 +87,7 @@ run = ["cat", "retry/seen2.st"]
 has = ["// ✗ error in total", "// ✗ not applied", "amount + true"]
 
 [[step]]
-run = ["head", "-c", "20", "retry/seen2.st"]
+run = ["head", "-n", "1", "retry/seen2.st"]
 has = ["// ✗ error in total"]
 
 [[step]]

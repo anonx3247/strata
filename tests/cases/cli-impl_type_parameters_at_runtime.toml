@@ -1,0 +1,409 @@
+# cli.rs: impl_type_parameters_at_runtime
+
+[[step]]
+strata = ["--file", "statics.strata", "edit"]
+text = '''
+trait Zero {
+  fn zero() -> Self
+}
+
+impl Zero for Int {
+  fn zero() -> Self { 0 }
+}
+
+impl Zero for String {
+  fn zero() -> Self { "z" }
+}
+
+impl[T: Zero] Zero for List[T] {
+  fn zero() -> Self { [T.zero(), T.zero()] }
+}
+
+impl[A: Zero, B: Zero] Zero for Dict[A, B] {
+  fn zero() -> Self { dict([(A.zero(), B.zero())]) }
+}
+
+fn zero_of[T: Zero]() -> T { T.zero() }
+
+fn nested[T: Zero]() -> List[List[T]] { zero_of() }
+
+fn a() -> List[Int] { zero_of() }
+
+fn b() -> List[List[String]] { zero_of() }
+
+fn c() -> Dict[String, List[Int]] { zero_of() }
+
+fn d() -> List[List[Int]] { nested() }
+
+fn main() {
+  print(a())
+  print(b())
+  print(c())
+  print(d())
+}
+'''
+
+[[step]]
+strata = ["run", "statics.strata"]
+out = '''
+[0, 0]
+[["z", "z"], ["z", "z"]]
+Dict { "z": [0, 0] }
+[[0, 0], [0, 0]]
+'''
+
+[[step]]
+strata = ["--file", "builtins.strata", "edit"]
+text = '''
+from std.json use Json, parse, stringify
+
+type P = { name: String, tags: List[String] }
+
+derive Json for P
+
+fn send[T: Json](x: T) -> String {
+  stringify(x.to_json() !! std.json.Null)
+}
+
+fn read[T: Json](text: String) -> Result[T, String] {
+  T.from_json(parse(text)!)
+}
+
+fn ints(text: String) -> Result[List[Int], String] {
+  read(text)
+}
+
+fn people(text: String) -> Result[Dict[String, List[P]], String] {
+  read(text)
+}
+
+fn main() {
+  print(send([1, 2, 3]))
+  print(send(dict([("a", [P { name: "x", tags: [] }])])))
+  print(send(Some(2.5)))
+  print(ints("[1, 2]"))
+  print(ints("[1, \"x\"]"))
+  print(people("{\"team\": [{\"name\": \"y\", \"tags\": [\"t\"]}]}"))
+  print(people("{\"team\": [{\"name\": 3, \"tags\": []}]}"))
+}
+'''
+
+[[step]]
+strata = ["run", "builtins.strata"]
+out = '''
+[1,2,3]
+{"a":[{"type":"P","name":"x","tags":[]}]}
+2.5
+Ok([1, 2])
+Err("[1]: expected an integer, got \"x\"")
+Ok(Dict { "team": [P { name: "y", tags: ["t"] }] })
+Err("team[0].name: expected a string, got 3")
+'''
+
+[[step]]
+strata = ["--file", "text.strata", "edit"]
+text = '''
+type Money = { cents: Int }
+
+impl Display for Money {
+  fn to_string(self) -> String { f"${self.cents / 100}.{self.cents % 100:02}" }
+}
+
+type Shape =
+  | Dot
+  | Rect(Int, Int)
+  | Circle { r: Float, label: String }
+
+distinct type Id = Int
+
+type Secret = { key: String }
+
+impl Debug for Secret {
+  fn debug(self) -> String { "Secret { key: *** }" }
+}
+
+fn show_all[T: Display](xs: List[T]) -> List[String] { xs.map(x -> x.to_string()) }
+
+fn main() {
+  print("plain text")
+  print([Dot, Rect(1, 2), Circle { r: 1.5, label: "c \"q\"\n" }])
+  print(Some("hi"))
+  print((1, "a", ()))
+  print(dict([("a", 1)]))
+  print(Id(3))
+  print(Money { cents: 1234 })
+  print([Money { cents: 5 }])
+  print(f"total: {Money { cents: 99 }} / {Money { cents: 7 }:>8}|")
+  print(Secret { key: "k" })
+  print(Some(Secret { key: "k" }))
+  print(debug("x"))
+  print(Money { cents: 1 }.debug())
+  print(to_string(Money { cents: 100 }))
+  print(show_all([1, 2]))
+  print(Ok(3) == Ok(3))
+  print(set([3, 1]))
+  print(Dict[String, Int] {})
+}
+'''
+
+[[step]]
+strata = ["run", "text.strata"]
+out = '''
+plain text
+[Dot, Rect(1, 2), Circle { r: 1.5, label: "c \"q\"\n" }]
+Some("hi")
+(1, "a", ())
+Dict { "a": 1 }
+Id(3)
+$12.34
+[Money { cents: 5 }]
+total: $0.99 /    $0.07|
+Secret { key: *** }
+Some(Secret { key: *** })
+"x"
+Money { cents: 1 }
+$1.00
+["1", "2"]
+true
+Set { 1, 3 }
+Dict {}
+'''
+
+[[step]]
+strata = ["--file", "self_methods.strata", "edit"]
+text = '''
+trait Zero {
+  fn zero() -> Self
+}
+
+impl Zero for Int {
+  fn zero() -> Self { 0 }
+}
+
+impl Zero for String {
+  fn zero() -> Self { "z" }
+}
+
+trait Pad {
+  fn padded(self, n: Int) -> Self
+}
+
+impl[T: Zero] Pad for List[T] {
+  fn padded(self, n: Int) -> Self {
+    mut out := self
+    while len(out) < n {
+      out = push(out, T.zero())
+    }
+    out
+  }
+}
+
+type Cell[T] = { v: Option[T] }
+
+impl[T: Zero] Cell[T] {
+  fn get_or_zero(self) -> T {
+    match self.v {
+      Some(x) => x,
+      None => T.zero(),
+    }
+  }
+}
+
+fn pad_all[T: Zero](xs: List[List[T]], n: Int) -> List[List[T]] {
+  xs.map(x -> x.padded(n))
+}
+
+fn ints() -> List[List[Int]] { pad_all([[1], []], 3) }
+
+fn main() {
+  let e: List[String] = []
+  print(e.padded(2))
+  print([1].padded(3))
+  print(Cell { v: None }.get_or_zero() + 1)
+  let c: Cell[String] = Cell { v: None }
+  print(c.get_or_zero())
+  print(ints())
+}
+'''
+
+[[step]]
+strata = ["run", "self_methods.strata"]
+out = "[\"z\", \"z\"]\n[1, 0, 0]\n1\nz\n[[1, 0, 0], [0, 0, 0]]\n"
+
+[[step]]
+strata = ["--file", "generic_derive.strata", "edit"]
+text = '''
+from std.json use Json, parse, stringify
+
+type Pair[T] = { a: T, b: T }
+
+derive Json for Pair
+
+type Box = { p: Pair[Int] }
+
+derive Json for Box
+
+fn main() {
+  print(stringify(Box { p: Pair { a: 1, b: 2 } }.to_json() !! std.json.Null))
+  print(Box.from_json(parse("{\"p\": {\"a\": 3, \"b\": 4}}") !! std.json.Null))
+}
+'''
+
+[[step]]
+strata = ["run", "generic_derive.strata"]
+out = '''
+{"type":"Box","p":{"type":"Pair","a":1,"b":2}}
+Ok(Box { p: Pair { a: 3, b: 4 } })
+'''
+
+[[step]]
+strata = ["--file", "option_option.strata", "edit"]
+text = '''
+from std.json use Json, stringify
+
+fn send[T: Json](x: T) -> String {
+  match x.to_json() {
+    Ok(j) => stringify(j),
+    Err(e) => f"error: {e}",
+  }
+}
+
+fn main() {
+  let a: Option[Option[Int]] = Some(None)
+  print(send(a))
+  let b: Option[Option[Int]] = Some(Some(2))
+  print(send(b))
+  let c: Option[Option[Int]] = None
+  print(send(c))
+}
+'''
+
+[[step]]
+strata = ["run", "option_option.strata"]
+out = '''
+error: `Some` of a value written as null can't be JSON: it would read back as `None`
+2
+null
+'''
+
+[[step]]
+strata = ["--file", "root_builtin_name.strata", "edit"]
+text = '''
+from std.io use Console, recorder, printed
+
+fn get(x: Int) -> Int { x * 10 }
+
+fn main() {
+  mut r := recorder([])
+  mut r.print("hi")
+  print(get(4))
+  print(printed(r))
+}
+'''
+
+[[step]]
+strata = ["run", "root_builtin_name.strata"]
+out = "40\n[\"hi\"]\n"
+
+[[step]]
+strata = ["--file", "refined.strata", "edit"]
+text = '''
+from std.json use Json, parse
+
+type Port = Int
+  where 1 <= it && it <= 65535
+
+fn read[T: Json](text: String) -> Result[T, String] {
+  T.from_json(parse(text)!)
+}
+
+fn ports(text: String) -> Result[List[Port], String] {
+  read(text)
+}
+
+fn maybe(text: String) -> Result[Option[Positive], String] {
+  read(text)
+}
+
+fn table(text: String) -> Result[Dict[String, Natural], String] {
+  read(text)
+}
+
+fn valid[T](x: T) -> String {
+  match T.check(x) {
+    Ok(_) => "ok",
+    Err(e) => e,
+  }
+}
+
+fn main() {
+  print(ports("[80, 443]"))
+  print(ports("[80, 70000]"))
+  print(maybe("null"))
+  print(maybe("0"))
+  print(table("{\"a\": 1, \"b\": -2}"))
+  let p: Port = 8080
+  print(valid(p))
+  print(Port.check(0))
+  print(Positive.check(3))
+}
+'''
+
+[[step]]
+strata = ["run", "refined.strata"]
+out = '''
+Ok([80, 443])
+Err("[1]: 70000 does not satisfy `Port` (where 1 <= it && it <= 65535)")
+Ok(None)
+Err("0 does not satisfy `Positive` (where it > 0)")
+Err("b: -2 does not satisfy `Natural` (where it >= 0)")
+ok
+Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")
+Ok(())
+'''
+
+[[step]]
+strata = ["--file", "refined_more.strata", "edit"]
+text = '''
+from std.json use Json, parse
+
+type Many[T] = List[T]
+  where len(it) >= 2
+
+fn read[T: Json](text: String) -> Result[T, String] {
+  T.from_json(parse(text)!)
+}
+
+fn pairs(text: String) -> Result[Many[Int], String] {
+  read(text)
+}
+
+fn evens(text: String) -> Result[List[Int where it % 2 == 0], String] {
+  read(text)
+}
+
+fn names(text: String) -> Result[Dict[String, String where it != ""], String] {
+  read(text)
+}
+
+fn main() {
+  print(pairs("[1, 2, 3]"))
+  print(pairs("[1]"))
+  print(evens("[2, 4]"))
+  print(evens("[2, 3]"))
+  print(names("{\"a\": \"x\", \"b\": \"\"}"))
+  let m: Many[String] = ["a", "b"]
+  print(len(m))
+}
+'''
+
+[[step]]
+strata = ["run", "refined_more.strata"]
+out = '''
+Ok([1, 2, 3])
+Err("[1] does not satisfy `Many` (where len(it) >= 2)")
+Ok([2, 4])
+Err("[1]: 3 does not satisfy `Int where it % 2 == 0`")
+Err("b: \"\" does not satisfy `String where it != \"\"`")
+2
+'''

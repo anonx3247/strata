@@ -1,0 +1,63 @@
+# cli.rs: run_mode_console_in_tests_and_trace: `RunMode` is hidden unless strata.toml says `mode = true` under `[run]`;
+# `--trace` records the console's calls
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+text = '''
+from std.io use Console
+from std.process use RunMode, Running, Testing, Tracing
+
+fn describe(mode: RunMode) -> String {
+  match mode {
+    Running => "running",
+    Testing => "testing",
+    Tracing => "tracing",
+  }
+}
+
+fn main(mut console: Console, mode: RunMode) {
+  mut console.print(describe(mode))
+}
+
+test "sees it" (mode: RunMode, mut console: Console) {
+  mut console.print("hidden: the test passes")
+  assert mode == Testing
+}
+
+test "fails" (mut console: Console) {
+  mut console.print("shown: the test fails")
+  assert false
+}
+'''
+
+# hidden by default
+[[step]]
+strata = ["--file", "p", "check"]
+fails = true
+has = ["test parameter `mode: RunMode`: how the program is run is hidden by default; say `mode = true` under `[run]`"]
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n\n[run]\nmode = true\n"
+
+[[step]]
+strata = ["--file", "p", "run"]
+out = "running\n"
+
+# under --trace: `Tracing`, and the console's calls are in the trace
+[[step]]
+strata = ["--file", "p", "run", "--trace"]
+stdout = "tracing\n"
+has = ["→ ", "std.io.Terminal", "\"tracing\""]
+
+# in a test: `Testing`, and the console's output is the test's, shown only if it fails
+[[step]]
+strata = ["--file", "p", "test"]
+fails = true
+has = ["✓ sees it", "✗ fails", "shown: the test fails"]
+lacks = ["hidden: the test passes"]

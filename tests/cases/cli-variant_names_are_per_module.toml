@@ -1,6 +1,10 @@
 # cli.rs: variant_names_are_per_module: another module's type of the same name is told apart by its module
 
 [[step]]
+write = "strata.toml"
+text = "name = \"vn\"\n"
+
+[[step]]
 strata = ["--file", "./", "edit", "geo"]
 text = '''
 pub type Shape =
@@ -26,12 +30,9 @@ fn main() {
 strata = ["run", "."]
 has = ["Circle { r: 1 } Circle { cx: 2 }"]
 
-[[step]]
-run = ["mkdir", "one"]
-
+# in one module, still an error
 [[step]]
 strata = ["--file", "one.strata", "edit"]
-dir = "one"
 text = '''
 type Shape =
   | Circle { r: Int }
@@ -42,6 +43,5 @@ type Circle = { cx: Int }
 
 [[step]]
 strata = ["--file", "one.strata", "check"]
-dir = "one"
 fails = true
 has = ["must be unique in its module"]

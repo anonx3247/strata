@@ -1,0 +1,31 @@
+# cli.rs: a_trait_method_named_like_a_builtin_leaves_the_builtin
+
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+trait Store {
+  fn find(self, k: Int) -> Option[String]
+}
+
+type Mem = { xs: List[(Int, String)] }
+
+impl Store for Mem {
+  fn find(self, k: Int) -> Option[String] {
+    match self.xs.find(p -> p.0 == k) {
+      Some(p) => Some(p.1),
+      None => None,
+    }
+  }
+}
+
+fn main() {
+  xs := [(1, "a"), (2, "b")]
+  print(xs.find(p -> p.0 == 2))
+  m := Mem { xs }
+  print(m.find(1))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+out = "Some((2, \"b\"))\nSome(\"a\")\n"

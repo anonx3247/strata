@@ -1,0 +1,49 @@
+# cli.rs: core_declares_the_builtins: `core`: the builtin types and functions are declared in it, and nowhere else
+
+# the files are those strata is built with, and they check
+[[step]]
+strata = ["--file", "$ROOT/core", "check"]
+has = ["ok: core checks"]
+
+[[step]]
+strata = ["--file", "$ROOT/core", "render", "builtins"]
+has = ['''
+builtin fn at[A](xs: List[A], i: Int) -> A
+  requires 0 <= i && i < len(xs)
+''']
+
+[[step]]
+strata = ["--file", "$ROOT/core", "render", "types"]
+has = ["builtin type Dict[K, V]\n", "type Option[T] ="]
+
+# `strata builtins` lists core's
+[[step]]
+strata = ["builtins"]
+has = ["at[A](List[A], Int) -> A", "builtin type Int"]
+
+# the syntax round-trips; anywhere but core, a `builtin` definition is refused
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = '''
+builtin type Pair[A, B]
+
+builtin fn first[A, B](p: Pair[A, B]) -> A
+  requires true
+'''
+any_code = true
+has = ["`builtin` definitions are only in `core`: `first`", "`builtin` definitions are only in `core`: `Pair`"]
+
+[[step]]
+strata = ["--file", "x.strata", "render"]
+out = '''
+builtin type Pair[A, B]
+
+builtin fn first[A, B](p: Pair[A, B]) -> A
+  requires true
+'''
+
+[[step]]
+strata = ["--file", "y.strata", "edit"]
+text = "builtin fn f() -> Int { 1 }\n"
+fails = true
+has = ["`builtin fn f` has no body: the compiler provides it"]

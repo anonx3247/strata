@@ -1,0 +1,27 @@
+# cli.rs: generic_impls_are_verified_at_a_whole_type: `verify` checks a generic impl's methods at a whole type whose type
+# arguments meet the impl's bounds
+
+[[step]]
+strata = ["--file", "z.strata", "edit"]
+text = '''
+trait Zero {
+  fn zero() -> Self
+}
+
+impl Zero for String {
+  fn zero() -> Self {
+    "z"
+  }
+}
+
+impl[T: Zero] Zero for List[T] {
+  fn zero() -> Self {
+    [T.zero(), T.zero()]
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "z.strata", "verify", "--cases", "10"]
+has = ["✓ List[T].zero"]
+lacks = ["✗"]

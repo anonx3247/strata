@@ -42,7 +42,7 @@ pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {
 '''
 
 [[step]]
-strata = ["render", "--file", "b.strata"]
+strata = ["render", "b"]
 has = ["rect_area(s, s)"]
 
 [[step]]

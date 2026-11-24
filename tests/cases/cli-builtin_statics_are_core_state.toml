@@ -1,0 +1,21 @@
+# cli.rs: builtin_statics_are_core_state
+
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n"
+any_code = true
+has = ["`builtin` definitions are only in `core`: `mine`"]
+
+[[step]]
+strata = ["--file", "x.strata", "render"]
+out = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n"
+
+[[step]]
+strata = ["--file", "y.strata", "edit"]
+text = "builtin static s: big\n"
+fails = true
+has = ["`builtin static s` needs its size in bytes"]
+
+[[step]]
+strata = ["--file", "$ROOT/core", "test"]
+has = ["✓ core.rt: a static block is one per program, zeroed at the start"]
