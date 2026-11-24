@@ -1,0 +1,26 @@
+# cli.rs: lambda_parameter_refinements_hold_at_runtime
+
+[[step]]
+save = "l.strata"
+text = '''
+fn apply(f: (Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+fn bad() -> Int {
+  apply((n: Positive) -> n * 2, -3)
+}
+
+fn good() -> Int {
+  apply((n: Positive) -> n * 2, 3)
+}
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "run", "good"]
+out = "6\n"
+
+[[step]]
+strata = ["--file", "l.strata", "run", "bad"]
+fails = true
+has = ["argument `n` of a lambda: -3 does not satisfy `Positive`"]

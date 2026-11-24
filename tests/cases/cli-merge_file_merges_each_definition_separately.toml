@@ -1,0 +1,236 @@
+# cli.rs: merge_file_merges_each_definition_separately
+
+# ours changes f and adds k; theirs changes g and adds h
+[[step]]
+save = "sep/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+save = "sep/a.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 10
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+
+fn k() -> Int {
+  f(2)
+}
+'''
+
+[[step]]
+save = "sep/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(x: Int) -> Int {
+  x * 20
+}
+
+fn h() -> Int {
+  g(1)
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "sep"
+
+[[step]]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+dir = "sep"
+out = '''
+fn f(x: Int) -> Int {
+  x + 10
+}
+
+fn g(x: Int) -> Int {
+  x * 20
+}
+
+fn h() -> Int {
+  g(1)
+}
+
+fn k() -> Int {
+  f(2)
+}
+'''
+
+# ours deletes f, theirs changes the next line (g's signature): a conflict
+# as text (plain git conflicts on these), not here
+[[step]]
+save = "adjacent/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+save = "adjacent/a.strata"
+text = "fn g(x: Int) -> Int {\n  x * 2\n}\n"
+
+[[step]]
+save = "adjacent/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(y: Int) -> Int {
+  y * 2
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "adjacent"
+
+[[step]]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+dir = "adjacent"
+out = "fn g(y: Int) -> Int {\n  y * 2\n}\n"
+
+# one definition changed on both sides, in different places: merged line by line
+[[step]]
+save = "lines/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 1
+  b := a * 2
+  c := b - 3
+  c
+}
+'''
+
+[[step]]
+save = "lines/a.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 100
+  b := a * 2
+  c := b - 3
+  c
+}
+'''
+
+[[step]]
+save = "lines/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 1
+  b := a * 2
+  c := b - 300
+  c
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "lines"
+
+[[step]]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+dir = "lines"
+has = ["x + 100", "b - 300"]
+
+# the same line changed on both sides: markers around that definition only
+[[step]]
+save = "conflict/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+save = "conflict/a.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 2
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+save = "conflict/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 3
+}
+
+fn g(x: Int) -> Int {
+  x * 3
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "conflict"
+fails = true
+has = ["conflict in f"]
+
+[[step]]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+dir = "conflict"
+has = ["<<<<<<< ours\n", "||||||| base\n", ">>>>>>> theirs", "fn g(x: Int) -> Int {\n  x * 3\n}\n"]
+
+# changed on one side, deleted on the other
+[[step]]
+save = "delete/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+save = "delete/a.strata"
+text = "fn g(x: Int) -> Int {\n  x * 2\n}\n"
+
+[[step]]
+save = "delete/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 2
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "delete"
+fails = true
+has = ["f (deleted in ours, changed in theirs)"]

@@ -1,0 +1,123 @@
+# cli.rs: sync_merges_main_with_the_driver_then_checks
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+save = "app.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "base"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "-b", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+save = "app.strata"
+text = "fn g(x: Int) -> Int {\n  x * 2\n}\n"
+
+[[step]]
+run = ["git", "commit", "-q", "-am", "feature: drop f"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+save = "app.strata"
+text = '''
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+fn g(y: Int) -> Int {
+  y * 20
+}
+'''
+
+[[step]]
+run = ["git", "commit", "-q", "-am", "main: g"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+# plain git conflicts: f's deletion touches the line before g's signature
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["merged main"]
+
+[[step]]
+strata = ["render", "--file", "app.strata"]
+out = "fn g(y: Int) -> Int {\n  y * 20\n}\n"
+
+[[step]]
+run = ["sh", "-c", "test $(git log -1 --format=%p | wc -w) -eq 2"]
+
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["already up to date"]
+
+# a merge that doesn't check is left staged, not committed
+[[step]]
+run = ["git", "checkout", "-q", "main"]
+
+[[step]]
+save = "app.strata"
+text = "fn g(x: Int, y: Int) -> Int {\n  x * y\n}\n"
+
+[[step]]
+run = ["git", "commit", "-q", "-am", "main: g takes two"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+save = "app.strata"
+text = "fn g(y: Int) -> Int {\n  y * 20\n}\n\nfn h() -> Int {\n  g(1)\n}\n"
+
+[[step]]
+run = ["git", "commit", "-q", "-am", "feature: h"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "rev-parse", "HEAD"]
+capture = "head"
+
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+fails = true
+has = ["doesn't check"]
+
+[[step]]
+run = ["git", "rev-parse", "HEAD"]
+out_file = "head"

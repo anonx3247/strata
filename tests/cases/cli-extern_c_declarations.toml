@@ -1,0 +1,122 @@
+# cli.rs: extern_c_declarations: foreign declarations, checked, kept in their module, never run by `verify`
+
+[[step]]
+module = "db"
+into = "$TMP/p/"
+text = '''
+/// An open database.
+extern c type Sqlite3
+
+extern c fn strlen(s: String) -> U64
+  ensures it >= 0
+
+extern c fn sqlite3_open(path: String, mut db: Sqlite3) -> I32
+
+pub fn length(s: String) -> U64 {
+  strlen(s)
+}
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+text = "use db\n\nfn main() {\n  print(db.length(\"abc\"))\n}\n"
+
+# the text round-trips
+[[step]]
+strata = ["--file", "p", "render", "db"]
+out = '''
+/// An open database.
+extern c type Sqlite3
+
+extern c fn strlen(s: String) -> U64
+  ensures it >= 0
+
+extern c fn sqlite3_open(path: String, mut db: Sqlite3) -> I32
+
+pub fn length(s: String) -> U64 {
+  strlen(s)
+}
+'''
+
+[[step]]
+strata = ["--file", "p", "check"]
+
+# code calling C is verified like any other: the C function's contract is assumed at the call
+[[step]]
+strata = ["--file", "p", "verify"]
+any_code = true
+has = ["✓ db.length ", "✓ main "]
+lacks = ["assumed"]
+
+# only its own module calls it, submodules included
+[[step]]
+module = "db.inner"
+into = "$TMP/p/"
+text = "fn sub() -> U64 { db.strlen(\"x\") }\n"
+
+[[step]]
+strata = ["--file", "p", "check"]
+fails = true
+has = ["`db.strlen` is a foreign function: only module `db` can call it"]
+
+[[step]]
+run = ["rm", "-r", "p/db"]
+
+# what crosses to C, and never `pub`
+[[step]]
+module = "bad"
+into = "$TMP/p/"
+text = '''
+pub extern c fn abs(x: Int) -> List[Int]
+
+extern c fn f(mut s: String)
+
+extern c type H
+
+fn forge() -> H { H(1) }
+'''
+
+[[step]]
+strata = ["--file", "p", "check"]
+fails = true
+has = ["`extern c` definitions are never `pub`", "`extern c fn abs`, parameter `x`: `Int` has no fixed size", "`extern c fn abs`, result: `List[Int]` doesn't cross to C", "`extern c fn f`, parameter `s`: a `String` can't be `mut`", "unknown constructor `bad.H`"]
+
+[[step]]
+run = ["rm", "p/bad.strata"]
+
+# a body, or another language, doesn't parse
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = "extern c fn f() -> I32 { 1 }\n"
+fails = true
+has = ["has no body: it is defined in C"]
+
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = "extern cobol fn f() -> I32\n"
+fails = true
+has = ["unknown foreign language `cobol`"]
+
+# its name is the C symbol: no rename
+[[step]]
+run = ["mkdir", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+strata = ["edit", "db", "--no-commit"]
+dir = "pkg"
+text = '''
+extern c fn strlen(s: String) -> U64
+
+pub fn length(s: String) -> U64 { strlen(s) }
+'''
+
+[[step]]
+strata = ["rename", "db.strlen", "c_strlen", "--no-commit"]
+dir = "pkg"
+fails = true
+has = ["`db.strlen` is a foreign function: its name is the symbol it is linked to"]

@@ -1,0 +1,103 @@
+# cli.rs: a_pending_change_handles_removed_and_added_variants
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "main.strata"
+text = '''
+type Status =
+  | Pending
+  | Shipped { tracking: String }
+  | Cancelled
+
+fn label(s: Status) -> String {
+  match s {
+    Pending => "pending",
+    Shipped { tracking, .. } => "shipped " + tracking,
+    Cancelled => "cancelled",
+  }
+}
+
+fn done(s: Status) -> Bool {
+  match s {
+    Shipped { .. } | Cancelled => true,
+    Pending => false,
+  }
+}
+
+fn only_cancelled(s: Status) -> Int {
+  match s {
+    Cancelled => 1,
+  }
+}
+
+fn cancel() -> Status {
+  Cancelled
+}
+
+test "labels" {
+  assert label(Pending) == "pending"
+}
+'''
+
+# a removed variant's arms go (or just its alternative); an added one gets an arm with a hole
+[[step]]
+strata = ["edit", "-m", "lost parcels"]
+text = '''
+type Status =
+  | Pending
+  | Shipped { tracking: String }
+  | Lost(Int)
+'''
+has = ["in label: dropped the arm for `Cancelled` (removed)", "in done: dropped `Cancelled` (removed) from an arm", "in label\n      why: `Lost` is a new variant of `Status`"]
+
+[[step]]
+strata = ["render", "main"]
+has = ['''
+    Shipped { tracking, .. } => "shipped " + tracking,
+    Lost(_) => ?pending_''', '''
+    Shipped { .. } => true,
+    Pending => false,
+    Lost(_) => ?pending_''', "fn only_cancelled(s: Status) -> Int\n  = ?pending_", "fn cancel() -> Status\n  = ?pending_"]
+
+[[step]]
+strata = ["holes"]
+any_code = true
+has = ["was:     Cancelled"]
+
+# filled, the change is one entry
+[[step]]
+strata = ["edit"]
+text = '''
+fn label(s: Status) -> String {
+  match s {
+    Pending => "pending",
+    Shipped { tracking, .. } => "shipped " + tracking,
+    Lost(n) => f"lost {n}",
+  }
+}
+'''
+
+[[step]]
+strata = ["edit"]
+text = '''
+fn done(s: Status) -> Bool {
+  match s {
+    Shipped { .. } | Lost(_) => true,
+    Pending => false,
+  }
+}
+'''
+
+[[step]]
+strata = ["edit", "--rm", "only_cancelled", "--rm", "cancel"]
+text = ""
+
+[[step]]
+strata = ["done"]
+has = ["recorded \"lost parcels\" as one change"]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]

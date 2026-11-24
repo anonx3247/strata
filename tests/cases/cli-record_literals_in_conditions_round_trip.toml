@@ -1,0 +1,38 @@
+# cli.rs: record_literals_in_conditions_round_trip: a record literal heading a loop, `if`, `match` or contract is rendered
+# in parentheses, as it must be written
+
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+text = '''
+type W = { ok: Bool }
+
+fn f(n: Int) -> Int
+  requires (W { ok: true }).ok
+{
+  while (W { ok: false }).ok {
+    print(1)
+  }
+  for x in (Dict { 1: 2 }) {
+    print(x)
+  }
+  if (W { ok: n > 0 }) == (W { ok: true }) {
+    print(2)
+  }
+  match (W { ok: true }) {
+    W { ok } => if ok { 1 } else { 2 },
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "render"]
+capture = "a.st"
+has = ["requires (W { ok: true }.ok)", "while (W { ok: false }.ok) {", "for x in (Dict { 1: 2 }) {", "if (W { ok: n > 0 } == W { ok: true }) {", "match (W { ok: true }) {"]
+
+[[step]]
+save = "b.strata"
+from_tmp = "a.st"
+
+[[step]]
+strata = ["--file", "b.strata", "render"]
+out_file = "a.st"

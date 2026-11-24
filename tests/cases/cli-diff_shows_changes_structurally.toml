@@ -1,0 +1,39 @@
+# cli.rs: diff_shows_changes_structurally: (the Rust test read `diff --json`'s structure; here its texts)
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["add", "$ROOT/examples/orders.strata"]
+
+[[step]]
+strata = ["rename", "line_total", "line_cents"]
+
+[[step]]
+strata = ["edit", "-m", "stronger discount"]
+text = '''
+/// 10% off orders of 100.00 or more, never below zero.
+fn discount(amount: Cents) -> Cents
+  ensures it <= amount
+  ensures it >= 0 {
+  if amount >= 10000 { amount - amount / 10 } else { amount }
+}
+'''
+
+[[step]]
+strata = ["edit", "-m", "a new error"]
+text = "type ShipError =\n  | NotFound\n  | NotPending\n  | Locked\n"
+
+[[step]]
+strata = ["diff", "--json"]
+has = ["line_cents", "stronger guarantee", "ensures it >= 0", "never below zero", "variant `Locked` added", "NotFound and NotPending unchanged"]
+
+# one step on its own, and the text form
+[[step]]
+strata = ["diff", "--step", "1"]
+has = ["↪ line_cents"]
+lacks = ["ShipError"]
+
+[[step]]
+strata = ["diff"]
+has = ["◀ stronger guarantee", "{+, never below zero+}"]

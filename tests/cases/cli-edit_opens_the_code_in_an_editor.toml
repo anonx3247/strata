@@ -1,0 +1,147 @@
+# cli.rs: edit_opens_the_code_in_an_editor
+
+[[step]]
+run = ["mkdir", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+save = "pkg/main.strata"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount / 10
+}
+
+fn total(amount: Int) -> Int {
+  amount + tax(amount)
+}
+
+fn double_tax(a: Int) -> Int {
+  tax(a) * 2
+}
+
+test "totals" {
+  assert total(100) == 110
+}
+'''
+
+[[step]]
+write = "one/v1.st"
+text = "fn tax(amount: Int) -> Int {\n  amount / 5\n}\n"
+
+[[step]]
+write = "one/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/one/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/one/count'
+cp "$1" '$TMP/one/seen'$n.st
+if [ -f '$TMP/one/v'$n.st ]; then cp '$TMP/one/v'$n.st "$1"; fi
+'''
+
+# one definition: the editor shows it alone, and what is saved is the edit
+[[step]]
+strata = ["edit", "tax", "--editor", "-m", "more tax"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/one/editor.sh'" }
+has = ["changed"]
+
+[[step]]
+run = ["cat", "one/seen1.st"]
+out = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n"
+
+[[step]]
+strata = ["render", "main"]
+dir = "pkg"
+has = ["amount / 5"]
+
+[[step]]
+run = ["grep", "-q", "more tax", "pkg/strata.log"]
+
+[[step]]
+write = "retry/v1.st"
+text = "fn total(amount: Int) -> Int {\n  amount + true\n}\n"
+
+[[step]]
+write = "retry/v2.st"
+text = "fn total(amount: Int) -> Int {\n  amount + tax(amount) + 1\n}\n"
+
+[[step]]
+write = "retry/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/retry/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/retry/count'
+cp "$1" '$TMP/retry/seen'$n.st
+if [ -f '$TMP/retry/v'$n.st ]; then cp '$TMP/retry/v'$n.st "$1"; fi
+'''
+
+# an edit that doesn't check: the editor opens again with the errors on top
+[[step]]
+strata = ["edit", "total", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/retry/editor.sh'" }
+
+[[step]]
+run = ["cat", "retry/seen2.st"]
+has = ["// ✗ error in total", "// ✗ not applied", "amount + true"]
+
+[[step]]
+run = ["head", "-c", "20", "retry/seen2.st"]
+has = ["// ✗ error in total"]
+
+[[step]]
+strata = ["render", "main"]
+dir = "pkg"
+has = ["amount + tax(amount) + 1"]
+
+# the whole module; a definition deleted from the buffer is removed
+[[step]]
+strata = ["render", "main"]
+dir = "pkg"
+capture = "../module-v1.st"
+
+[[step]]
+run = ["mkdir", "module"]
+
+[[step]]
+run = ["sh", "-c", "perl -0pe 's/fn double_tax\\(a: Int\\) -> Int \\{\\n  tax\\(a\\) \\* 2\\n\\}\\n\\n//' module-v1.st > module/v1.st"]
+
+[[step]]
+write = "module/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/module/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/module/count'
+cp "$1" '$TMP/module/seen'$n.st
+if [ -f '$TMP/module/v'$n.st ]; then cp '$TMP/module/v'$n.st "$1"; fi
+'''
+
+[[step]]
+strata = ["edit", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/module/editor.sh'" }
+has = ["removed"]
+
+[[step]]
+strata = ["render", "main"]
+dir = "pkg"
+lacks = ["double_tax"]
+
+[[step]]
+write = "same/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/same/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/same/count'
+cp "$1" '$TMP/same/seen'$n.st
+if [ -f '$TMP/same/v'$n.st ]; then cp '$TMP/same/v'$n.st "$1"; fi
+'''
+
+# saved unchanged: nothing happens
+[[step]]
+strata = ["edit", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/same/editor.sh'" }
+has = ["no changes"]
+
+[[step]]
+run = ["sh", "-c", "test $(wc -l < pkg/strata.log) -eq 3"]

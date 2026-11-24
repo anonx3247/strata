@@ -82,7 +82,7 @@ has = ["\"from\":\"a.size\"", "\"to\":\"a.length\""]
 
 # the files are the source; the log is next to them, to be committed
 [[step]]
-strata = ["render", "--file", "b.strata"]
+strata = ["render", "b"]
 has = ["fn total(b: Crate)"]
 
 [[step]]

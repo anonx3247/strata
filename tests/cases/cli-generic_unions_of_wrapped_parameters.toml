@@ -1,0 +1,66 @@
+# cli.rs: generic_unions_of_wrapped_parameters
+
+[[step]]
+strata = ["--file", "g.strata", "edit"]
+text = '''
+trait Show {
+  fn show(self) -> String
+}
+
+type Problem = { why: String }
+
+type Many[T] = List[T] | Problem
+
+impl[T] Show for Many[T] {
+  fn show(self) -> String {
+    match self {
+      List => f"{len(self)} items",
+      Problem => f"problem: {self.why}",
+    }
+  }
+}
+
+fn get(n: Int) -> Many[Int] {
+  if n > 0 {
+    [1, 2, n]
+  } else {
+    Problem { why: "none" }
+  }
+}
+
+fn main() {
+  print(get(3).show())
+  print(get(0).show())
+}
+'''
+
+[[step]]
+strata = ["run", "g.strata"]
+out = "3 items\nproblem: none\n"
+
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+text = '''
+type Problem = { why: String }
+
+type Many[T] = List[T] | Problem
+
+fn f(x: List[Int] | Problem) -> Int {
+  match x {
+    List => len(x),
+    Problem => 0,
+  }
+}
+
+fn main() {
+  print(f([1, 2]))
+}
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "render"]
+has = ["fn f(x: Many[Int]) -> Int"]
+
+[[step]]
+strata = ["run", "r.strata"]
+out = "2\n"

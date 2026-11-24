@@ -1,0 +1,98 @@
+# cli.rs: std_io_programs_run_with_capabilities_and_exit_codes: (the Rust test also verified all of std with --require proven: that is
+# `strata --file std verify 'std.module.*' --require proven` per changed module)
+
+# main gets the console and the command line; `()` exits 0
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "Ada", "Alan"]
+stdout = "hello, Ada and Alan!\n"
+
+# files, standard input, and an Err from main: written to stderr, exit code 1
+[[step]]
+write = "a.txt"
+text = "one two\nthree\n"
+
+[[step]]
+strata = ["run", "$ROOT/examples/wc", "--", "a.txt"]
+stdout = "2\t3\t14\ta.txt\n"
+
+[[step]]
+strata = ["run", "$ROOT/examples/wc"]
+text = "a b\nc\n"
+stdout = "2\t3\t6\t-\n"
+
+[[step]]
+strata = ["run", "$ROOT/examples/wc", "--", "missing.txt"]
+code = 1
+has = ["NotFound", "missing.txt"]
+
+# the same program's tests use stand-ins
+[[step]]
+strata = ["--file", "$ROOT/examples/wc", "test"]
+has = ["4 passed"]
+
+# an exit code, writing files and environment variables
+[[step]]
+save = "prog.strata"
+text = '''
+from std.io use Console
+from std.fs use Disk, FsError
+from std.process use Process, ExitCode
+
+fn main(mut console: Console, mut files: Disk, env: Process) -> Result[ExitCode, FsError] {
+  mut files.write("out/x.txt", "a")!
+  mut files.append("out/x.txt", "b")!
+  mut console.eprint(files.read("out/x.txt")!)
+  mut console.write(env.var("STRATA_TEST_VAR") or { "unset" })
+  Ok(len(files.list("out")!) + 6)
+}
+'''
+
+[[step]]
+run = ["mkdir", "out"]
+
+[[step]]
+strata = ["run", "prog.strata"]
+env = { "STRATA_TEST_VAR" = "set!" }
+code = 7
+stdout = "set!"
+out = "set!ab\n"
+
+# the host is the standard library's alone
+[[step]]
+save = "sneaky.strata"
+text = "fn main() {\n  host_write(1, \"hi\")\n}\n"
+
+[[step]]
+strata = ["run", "sneaky.strata"]
+fails = true
+stdout = ""
+has = ["internal to the standard library"]
+
+# `main` may only ask for capabilities the runtime has
+[[step]]
+save = "odd.strata"
+text = "fn main(n: Int) {\n  ()\n}\n"
+
+[[step]]
+strata = ["run", "odd.strata"]
+fails = true
+has = ["can ask for `Console`"]
+
+# verify never reaches the real system: capabilities are mocks there
+[[step]]
+save = "greet.strata"
+text = '''
+from std.io use Console
+
+fn greet(mut c: Console, n: Int) -> () {
+  mut c.print(f"MARKER {n}")
+}
+'''
+
+[[step]]
+strata = ["--file", "greet.strata", "verify", "--cases", "20"]
+any_code = true
+lacks = ["MARKER"]
+
+[[step]]
+strata = ["--file", "$ROOT/std", "check"]

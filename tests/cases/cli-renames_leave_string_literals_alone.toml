@@ -1,0 +1,23 @@
+# cli.rs: renames_leave_string_literals_alone: a string equal to the old name is text, not a reference
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "main.strata"
+text = '''
+fn greet() -> String {
+  "hello"
+}
+
+fn label() -> String {
+  "greet"
+}
+'''
+
+[[step]]
+strata = ["rename", "greet", "welcome", "--no-commit"]
+
+[[step]]
+strata = ["render", "main"]
+has = ["fn welcome()", "\"greet\""]

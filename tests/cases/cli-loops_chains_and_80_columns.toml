@@ -30,16 +30,6 @@ test "t" {
 [[step]]
 strata = ["--file", "l.strata", "test"]
 
-[[step]]
-strata = ["--file", "$ROOT/examples/tasks/model.strata", "render"]
-capture = "model.st"
-
-[[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "--split", "r"]
-
-# a couple of deeply nested lines still exceed 80 columns
-[[step]]
-run = ["sh", "-c", "cat r/*.st | LC_ALL=en_US.UTF-8 awk 'length > 82' | wc -l | tr -d ' '"]
-
-[[step]]
-run = ["sh", "-c", "test $(cat r/*.st | LC_ALL=en_US.UTF-8 awk 'length > 82' | wc -l) -le 2"]
+# (the Rust test also counted rendered lines over 80 columns, on the output
+# of `render` of the whole package, which is an error message: it checked
+# nothing)

@@ -1,0 +1,218 @@
+# cli.rs: merge_file_follows_renames_and_type_checks
+
+# ours renames `area` (as `strata rename` would); theirs adds a caller of the old name
+[[step]]
+save = "rename/o.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+'''
+
+[[step]]
+save = "rename/a.strata"
+text = '''
+fn rect_area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  rect_area(s, s)
+}
+'''
+
+[[step]]
+save = "rename/b.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+
+fn double_square(s: Int) -> Int {
+  area(s, s) * 2
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "rename"
+has = ["ours renamed area → rect_area; applied to theirs"]
+
+[[step]]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+dir = "rename"
+has = ["rect_area(s, s) * 2"]
+lacks = [" area(", "fn area"]
+
+# renamed and edited: recognised by the callers that follow the new name
+[[step]]
+save = "rename-edit/o.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+'''
+
+[[step]]
+save = "rename-edit/a.strata"
+text = '''
+/// width times height
+fn rect_area(w: Int, h: Int) -> Int {
+  h * w
+}
+
+fn square(s: Int) -> Int {
+  rect_area(s, s)
+}
+'''
+
+[[step]]
+save = "rename-edit/b.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+
+fn double_square(s: Int) -> Int {
+  area(s, s) * 2
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "rename-edit"
+
+[[step]]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+dir = "rename-edit"
+has = ["rect_area(s, s) * 2", "h * w"]
+lacks = [" area("]
+
+# a new definition that merely looks like a deleted one is not a rename
+[[step]]
+save = "not-rename/o.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+'''
+
+[[step]]
+save = "not-rename/a.strata"
+text = '''
+fn square(s: Int) -> Int {
+  s * s
+}
+
+fn cube(s: Int) -> Int {
+  s * s * s
+}
+'''
+
+[[step]]
+save = "not-rename/b.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "not-rename"
+lacks = ["renamed"]
+
+# each side checks on its own, but not together
+[[step]]
+save = "semantic/o.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+'''
+
+[[step]]
+save = "semantic/a.strata"
+text = '''
+fn area(w: Int, h: Int, d: Int) -> Int {
+  w * h * d
+}
+
+fn square(s: Int) -> Int {
+  area(s, s, 1)
+}
+'''
+
+[[step]]
+save = "semantic/b.strata"
+text = '''
+fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+fn square(s: Int) -> Int {
+  area(s, s)
+}
+
+fn double_square(s: Int) -> Int {
+  area(s, s) * 2
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "semantic"
+fails = true
+has = ["doesn't check", "double_square"]
+
+# sides that aren't module files are left alone: ours stays
+[[step]]
+write = "text/o.strata"
+text = "fn (\n"
+
+[[step]]
+write = "text/a.strata"
+text = "fn (\nours\n"
+
+[[step]]
+write = "text/b.strata"
+text = "fn (\n"
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "text"
+fails = true
+has = ["can't merge"]
+
+[[step]]
+run = ["cat", "a.strata"]
+dir = "text"
+out = "fn (\nours\n"

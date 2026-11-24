@@ -1,0 +1,132 @@
+# cli.rs: command_line_options_are_read_into_a_record
+
+[[step]]
+write = "tool/strata.toml"
+text = "name = \"tool\"\n"
+
+[[step]]
+save = "tool/kinds.strata"
+text = "pub type Mode =\n  | Fast\n  | DryRun\n"
+
+[[step]]
+save = "tool/main.strata"
+text = '''
+from std.cli use CommandLine
+from kinds use Mode, Fast, DryRun
+
+/// Copy things.
+type Options = {
+  /// Where from.
+  source: String,
+  /// How many copies.
+  copies: Positive,
+  /// Say more.
+  verbose: Bool,
+  /// How to go about it.
+  mode: Option[Mode],
+  /// A ratio.
+  ratio: Option[Float where 0.0 <= it && it <= 1.0],
+  extra: List[Int],
+}
+
+derive CommandLine for Options
+
+fn main(opts: Options) {
+  print(opts)
+}
+'''
+
+[[step]]
+strata = ["run", "tool", "--", "src", "3", "--verbose", "--mode", "dry-run", "--ratio=0.5", "7", "8"]
+has = ["source: \"src\"", "copies: 3", "verbose: true", "mode: Some(DryRun)", "ratio: Some(0.5)", "extra: [7, 8]"]
+
+# defaults: a flag is false, an option None, the list empty
+[[step]]
+strata = ["run", "tool", "--", "src", "1"]
+has = ["verbose: false", "mode: None", "extra: []"]
+
+# mistakes exit 2 and name the argument
+[[step]]
+strata = ["run", "tool", "--", "src"]
+code = 2
+stdout = ""
+has = ["missing <copies>: How many copies.", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "0"]
+code = 2
+stdout = ""
+has = ["<copies>: 0 does not satisfy", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "x"]
+code = 2
+stdout = ""
+has = ["<copies>: `x` is not a whole number", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "1", "--mode", "slow"]
+code = 2
+stdout = ""
+has = ["`slow` is not one of fast, dry-run", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "1", "--ratio", "2.0"]
+code = 2
+stdout = ""
+has = ["--ratio: 2.0 does not satisfy", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "1", "--colour"]
+code = 2
+stdout = ""
+has = ["unknown option `--colour`", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "1", "--verbose", "--verbose"]
+code = 2
+stdout = ""
+has = ["given twice", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "1", "--verbose=yes"]
+code = 2
+stdout = ""
+has = ["takes no value", "tool --help"]
+
+[[step]]
+strata = ["run", "tool", "--", "src", "1", "x"]
+code = 2
+stdout = ""
+has = ["[extra...]: `x` is not a whole number", "tool --help"]
+
+# `--` ends the options
+[[step]]
+strata = ["run", "tool", "--", "--", "--verbose", "2"]
+has = ["source: \"--verbose\""]
+
+# help comes from the doc comments
+[[step]]
+strata = ["run", "tool", "--", "--help"]
+has = ["Copy things.", "Usage: tool [OPTIONS] <source> <copies> [extra...]", "<copies>", "How many copies.", "--mode <fast|dry-run>", "--ratio <Float>", "(where 0.0 <= it && it <= 1.0)", "--verbose", "-h, --help"]
+
+# a record that can't be read from arguments is a check error
+[[step]]
+save = "bad.strata"
+text = '''
+from std.cli use CommandLine
+
+type Opts = { pairs: List[(Int, Int)] }
+
+derive CommandLine for Opts
+'''
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["`Opts.pairs` is a `List[(Int, Int)]`"]
+
+# field docs round-trip
+[[step]]
+strata = ["--file", "tool", "render", "main"]
+has = ["  /// How many copies.\n  copies: Positive,"]

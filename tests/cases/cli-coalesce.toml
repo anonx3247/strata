@@ -1,0 +1,42 @@
+# cli.rs: coalesce
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/coalesce.strata", "test"]
+has = ["2 passed"]
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/coalesce.strata", "render"]
+capture = "coalesce.st"
+
+[[step]]
+save = "again.strata"
+from_tmp = "coalesce.st"
+
+[[step]]
+strata = ["render", "--file", "again.strata"]
+out_file = "coalesce.st"
+
+# a short `or { value }` is written `??`, a short `except { value }` `!!`
+[[step]]
+save = "e.strata"
+text = '''
+fn f(s: String) -> Int { parse_int(s) or { 0 } }
+fn g(r: Result[Int, String]) -> Int { r except { 0 } }
+'''
+
+[[step]]
+strata = ["--file", "e.strata", "render"]
+has = ["parse_int(s) ?? 0", "r !! 0"]
+
+# each on its own type only
+[[step]]
+save = "w.strata"
+text = '''
+fn f(x: Option[Int]) -> Int { x except { 0 } }
+fn g(x: Result[Int, String]) -> Int { x ?? 0 }
+'''
+
+[[step]]
+strata = ["--file", "w.strata", "check"]
+fails = true
+has = ["in f: `except` / `!!` handle a Result", "in g: `or` / `??` handle an Option"]

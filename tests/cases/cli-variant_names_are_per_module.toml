@@ -1,0 +1,47 @@
+# cli.rs: variant_names_are_per_module: another module's type of the same name is told apart by its module
+
+[[step]]
+strata = ["--file", "./", "edit", "geo"]
+text = '''
+pub type Shape =
+  | Circle { r: Int }
+  | Square { s: Int }
+'''
+
+[[step]]
+strata = ["--file", "./", "edit", "main"]
+text = '''
+from geo use Shape
+
+type Circle = { cx: Int }
+
+fn main() {
+  a := geo.Circle { r: 1 }
+  b := Circle { cx: 2 }
+  print(f"{a} {b}")
+}
+'''
+
+[[step]]
+strata = ["run", "."]
+has = ["Circle { r: 1 } Circle { cx: 2 }"]
+
+[[step]]
+run = ["mkdir", "one"]
+
+[[step]]
+strata = ["--file", "one.strata", "edit"]
+dir = "one"
+text = '''
+type Shape =
+  | Circle { r: Int }
+  | Square { s: Int }
+
+type Circle = { cx: Int }
+'''
+
+[[step]]
+strata = ["--file", "one.strata", "check"]
+dir = "one"
+fails = true
+has = ["must be unique in its module"]

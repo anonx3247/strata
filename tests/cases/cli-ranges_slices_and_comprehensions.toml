@@ -1,0 +1,46 @@
+# cli.rs: ranges_slices_and_comprehensions: written as they were: the text read back in prints the same, also
+# through a bundle
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/sugar.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/sugar.strata", "render"]
+capture = "sugar.st"
+
+[[step]]
+save = "again.strata"
+from_tmp = "sugar.st"
+
+[[step]]
+strata = ["render", "--file", "again.strata"]
+out_file = "sugar.st"
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/sugar.strata", "pack", "sugar.strata"]
+
+[[step]]
+strata = ["--file", "sugar.strata", "render"]
+out_file = "sugar.st"
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/sugar.strata", "run", "first", "[]"]
+fails = true
+has = ["does not satisfy"]
+
+[[step]]
+save = "last.strata"
+text = "fn last(xs: List[Int]) -> Int { xs[len(xs) - 1] }"
+
+[[step]]
+strata = ["--file", "last.strata", "run", "last", "[]"]
+fails = true
+has = ["index -1 out of range (length 0)"]
+
+# it doesn't parse, so it can't be stored
+[[step]]
+strata = ["--file", "e.strata", "edit"]
+text = "fn f(xs: List[Int]) -> List[Int] { xs[1..=] }"
+fails = true
+has = ["`..=` needs an end"]

@@ -1,0 +1,47 @@
+# cli.rs: unions_naming_the_same_set_in_two_modules
+
+[[step]]
+strata = ["--file", "./", "edit", "shapes"]
+text = '''
+pub trait Show {
+  fn show(self) -> String
+}
+
+pub type Circle = { r: Int }
+
+pub type Square = { s: Int }
+'''
+
+[[step]]
+strata = ["--file", "./", "edit", "geo"]
+text = '''
+from shapes use Show, Circle, Square
+
+pub type Shape = Circle | Square
+
+impl Show for Shape {
+  fn show(self) -> String = "geo"
+}
+'''
+
+[[step]]
+strata = ["--file", "./", "edit", "ui"]
+text = '''
+from shapes use Circle, Square
+
+pub type Figure = Circle | Square
+'''
+
+[[step]]
+strata = ["--file", "./", "edit", "ui"]
+text = '''
+from shapes use Show, Circle, Square
+
+pub type Figure = Circle | Square
+
+impl Show for Figure {
+  fn show(self) -> String = "ui"
+}
+'''
+fails = true
+has = ["`ui.Figure` and `geo.Shape` name the same set and both implement `Show`"]

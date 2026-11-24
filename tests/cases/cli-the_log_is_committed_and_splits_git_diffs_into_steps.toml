@@ -1,0 +1,82 @@
+# cli.rs: the_log_is_committed_and_splits_git_diffs_into_steps
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "a.strata"
+text = "pub fn area(w: Int, h: Int) -> Int {\n  w * h\n}\n"
+
+[[step]]
+save = "b.strata"
+text = "from a use area\n\nfn square(s: Int) -> Int {\n  area(s, s)\n}\n"
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "base"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+# one commit: a rename and an edit through strata, then a change by hand
+[[step]]
+strata = ["rename", "area", "rect_area", "--no-commit"]
+
+[[step]]
+strata = ["edit", "--no-commit", "a", "-m", "areas are never negative"]
+text = '''
+pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {
+  w * h
+}
+'''
+
+[[step]]
+strata = ["render", "--file", "b.strata"]
+has = ["rect_area(s, s)"]
+
+[[step]]
+save = "b.strata"
+text = '''
+from a use rect_area
+
+fn square(s: Int) -> Int {
+  rect_area(s, s)
+}
+
+fn cube(s: Int) -> Int {
+  square(s) * s
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "rect areas"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["--file", ".", "diff", "HEAD~1"]
+has = ["rename a.area → a.rect_area", "areas are never negative", "rect areas: edits outside strata", "a.rect_area  (renamed from `area`, signature changed, stricter precondition)", "+ b.cube  (added)"]
+counts = { "step " = 3 }
+
+[[step]]
+strata = ["--file", ".", "diff", "HEAD~1", "--step", "3"]
+has = ["b.cube"]
+lacks = ["rect_area  (renamed"]
+
+# the log merges by union (both sides only append)
+[[step]]
+run = ["grep", "-q", "^strata.log.*merge=union", "$ROOT/.gitattributes"]

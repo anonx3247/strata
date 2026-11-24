@@ -1,0 +1,88 @@
+# cli.rs: move_a_definition_to_another_module
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "orders.strata"
+text = '''
+pub type Order = { id: String, total: Int }
+
+fn doubled(o: Order) -> Int {
+  o.total * 2
+}
+
+pub fn charge(o: Order) -> Int {
+  o.total + 1
+}
+
+pub fn ship(o: Order) -> Int {
+  charge(o) + doubled(o)
+}
+'''
+
+[[step]]
+save = "billing.strata"
+text = '''
+from orders use Order, charge
+
+pub fn invoice(o: Order) -> Int {
+  charge(o) + orders.ship(o)
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+from orders use Order, charge, ship
+
+test "charges" {
+  o := Order { id: "a", total: 1 }
+  assert charge(o) == 2
+  assert orders.charge(o) == 2
+  assert ship(o) == 4
+}
+'''
+
+[[step]]
+strata = ["move", "charge", "billing"]
+has = ["moved orders.charge from orders to billing (billing.strata)", "updated 3 definitions that refer to it: billing.invoice, test \"charges\", orders.ship", "orders: from billing use charge", "main: from billing use charge"]
+
+[[step]]
+strata = ["render", "orders"]
+has = ["from billing use charge\n"]
+lacks = ["fn charge"]
+
+[[step]]
+strata = ["render", "billing"]
+has = ["from orders use Order\n", "pub fn charge(o: Order) -> Int"]
+
+# `orders.charge(o)` was stored as a reference to the definition: now `billing.charge`, shown short since imported
+[[step]]
+strata = ["render", "main"]
+has = ["from billing use charge", "assert charge(o) == 2"]
+lacks = ["orders.charge"]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
+
+# private things stay in reach
+[[step]]
+strata = ["move", "ship", "billing"]
+fails = true
+has = ["`orders.ship` uses `orders.doubled`, which is private to `orders`"]
+
+[[step]]
+strata = ["move", "doubled", "billing"]
+fails = true
+has = ["`orders.doubled` is private and `orders.ship` uses it"]
+
+# a move is one change in the diff
+[[step]]
+strata = ["diff", "--step", "0"]
+has = ["billing.charge  (moved from `orders`)", "only its module changed"]
+
+[[step]]
+strata = ["log", "--json"]
+has = ["\"kind\":\"move\""]

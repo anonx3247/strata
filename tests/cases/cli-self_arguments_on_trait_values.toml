@@ -1,0 +1,93 @@
+# cli.rs: self_arguments_on_trait_values: a method taking another `Self` can't be called on a trait value with
+# what may be another implementation
+
+[[step]]
+strata = ["--file", "ok.strata", "edit"]
+text = '''
+trait Shape {
+  fn size(self) -> Int
+  fn grown(self) -> Self
+  fn bigger(self, other: Self) -> Bool
+  fn bigger_shape(self, other: Shape) -> Bool {
+    self.size() > other.size()
+  }
+}
+
+type Sq = { side: Int }
+
+type Ci = { r: Int }
+
+impl Shape for Sq {
+  fn size(self) -> Int { self.side }
+  fn grown(self) -> Sq { Sq { side: self.side + 1 } }
+  fn bigger(self, other: Sq) -> Bool { self.side > other.side }
+}
+
+impl Shape for Ci {
+  fn size(self) -> Int { self.r }
+  fn grown(self) -> Ci { Ci { r: self.r + 1 } }
+  fn bigger(self, other: Ci) -> Bool { self.r > other.r }
+}
+
+fn main() {
+  let xs: List[Shape] = [Sq { side: 2 }, Ci { r: 3 }]
+  for s in xs {
+    print(s.bigger(s.grown().grown()))
+    print(s.bigger_shape(xs[1]))
+  }
+  print(Sq { side: 1 }.bigger(Sq { side: 2 }))
+  print(Sq { side: 5 }.bigger_shape(Ci { r: 4 }))
+  
+}
+'''
+
+[[step]]
+strata = ["--file", "ok.strata", "run"]
+out = "false\nfalse\nfalse\nfalse\nfalse\ntrue\n"
+
+[[step]]
+strata = ["--file", "bad.strata", "edit"]
+text = '''
+trait Shape {
+  fn size(self) -> Int
+  fn grown(self) -> Self
+  fn bigger(self, other: Self) -> Bool
+  fn bigger_shape(self, other: Shape) -> Bool {
+    self.size() > other.size()
+  }
+}
+
+type Sq = { side: Int }
+
+type Ci = { r: Int }
+
+impl Shape for Sq {
+  fn size(self) -> Int { self.side }
+  fn grown(self) -> Sq { Sq { side: self.side + 1 } }
+  fn bigger(self, other: Sq) -> Bool { self.side > other.side }
+}
+
+impl Shape for Ci {
+  fn size(self) -> Int { self.r }
+  fn grown(self) -> Ci { Ci { r: self.r + 1 } }
+  fn bigger(self, other: Ci) -> Bool { self.r > other.r }
+}
+
+fn main() {
+  let xs: List[Shape] = [Sq { side: 2 }, Ci { r: 3 }]
+  for s in xs {
+    print(s.bigger(s.grown().grown()))
+    print(s.bigger_shape(xs[1]))
+  }
+  print(Sq { side: 1 }.bigger(Sq { side: 2 }))
+  print(Sq { side: 5 }.bigger_shape(Ci { r: 4 }))
+  print(xs[0].bigger(xs[1]))
+}
+'''
+fails = true
+has = ["written, but", "`bigger` takes `other: Self`"]
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["`bigger` takes `other: Self`, a value of the receiver's own type, but `xs[0]` is a `Shape`", "help: to accept any `Shape`, declare the parameter so: `other: Shape`"]

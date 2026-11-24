@@ -1,0 +1,112 @@
+# cli.rs: unions_that_add_nothing_are_refused
+
+[[step]]
+strata = ["--file", "u0.strata", "edit"]
+text = "type U = Int | Positive\n\nfn main() { }\n"
+fails = true
+has = ["`type U = Int | Positive` adds nothing: it is `Int`"]
+
+[[step]]
+strata = ["--file", "u1.strata", "edit"]
+text = '''
+type Circle = { r: Int }
+type Square = { s: Int }
+type Shape = Circle | Square
+type Figure = Square | Circle
+
+fn main() { }
+'''
+fails = true
+has = ["`type Figure = Square | Circle` adds nothing: it is `Shape`"]
+
+[[step]]
+strata = ["--file", "u2.strata", "edit"]
+text = "type Answer = Some(Int) | None\n\nfn main() { }\n"
+fails = true
+has = ["adds nothing: it is `Option`"]
+
+[[step]]
+strata = ["--file", "u3.strata", "edit"]
+text = '''
+type Level = Quiet | Loud
+type Mood = Loud | Quiet
+
+fn main() { }
+'''
+fails = true
+has = ["`type Mood = Loud | Quiet` adds nothing: it is `Level`"]
+
+[[step]]
+strata = ["--file", "u4.strata", "edit"]
+text = '''
+type Shape = Circle | Square { s: Int } | Dot
+type Circle = { r: Int }
+type Part = Square | Dot
+
+fn main() { }
+'''
+
+[[step]]
+strata = ["--file", "u5.strata", "edit"]
+text = '''
+type Circle = { r: Int }
+type Square = { s: Int }
+type Shape = Circle | Square
+distinct type Figure = Circle | Square
+fn f() -> Figure = Figure(Circle { r: 1 })
+
+fn main() { }
+'''
+
+[[step]]
+strata = ["--file", "u6.strata", "edit"]
+text = "distinct type Lv = Up | Down\n\nfn main() { }\n"
+fails = true
+has = ["`Lv` declares its members, so it is a type of its own already"]
+
+[[step]]
+strata = ["--file", "u7.strata", "edit"]
+text = '''
+type Problem = { why: String }
+type OrError[T] = T | Problem
+
+fn main() { }
+'''
+fails = true
+has = ["`T` can't be a member of `OrError` on its own: wrap it"]
+
+[[step]]
+strata = ["--file", "u8.strata", "edit"]
+text = "type Two[A, B] = List[A] | List[B]\n\nfn main() { }\n"
+fails = true
+has = ["`List[A]` can't be a member of `Two` next to another `List`"]
+
+[[step]]
+strata = ["--file", "u9.strata", "edit"]
+text = "type Many[T] = List[T] | Int\n\nfn main() { }\n"
+
+[[step]]
+strata = ["--file", "u10.strata", "edit"]
+text = '''
+type Many[T] = List[T] | Int
+type Ints = List[Int] | Int
+
+fn main() { }
+'''
+fails = true
+has = ["`type Ints = List[Int] | Int` adds nothing: it is `Many`"]
+
+[[step]]
+strata = ["--file", "u11.strata", "edit"]
+text = '''
+type Problem = { why: String }
+type OrError[T] = Value(T) | Problem
+
+fn main() { }
+'''
+
+[[step]]
+strata = ["--file", "w.strata", "edit"]
+text = "type Circle = { r: Int }\ntype Shape = Circel | Dot\n"
+has = ["warning: `Circel` in `Shape` is a new type (nothing has that name): did you mean `Circle`?"]
+lacks = ["`Dot`"]

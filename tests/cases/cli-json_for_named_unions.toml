@@ -1,0 +1,46 @@
+# cli.rs: json_for_named_unions
+
+[[step]]
+strata = ["--file", "j.strata", "edit"]
+text = '''
+from std.json use Json, parse, stringify
+
+type Circle = { r: Float }
+
+derive Json for Circle
+
+type Shape = Circle | Square { side: Float } | Moved(Int) | Dot
+
+derive Json for Shape
+
+type Id = Int | String
+
+derive Json for Id
+
+type Doc = { shapes: List[Shape], ids: List[Id] }
+
+derive Json for Doc
+
+fn main() {
+  d := Doc { shapes: [Circle { r: 1.0 }, Square { side: 2.0 }, Moved(3), Dot], ids: [1, "a"] }
+  match d.to_json() {
+    Ok(j) => {
+      print(stringify(j))
+      print(Doc.from_json(j) == Ok(d))
+    },
+    Err(e) => print(e),
+  }
+  match parse("{\"shapes\": [\"Dot\", {\"type\": \"Nope\"}], \"ids\": []}") {
+    Ok(j) => print(Doc.from_json(j)),
+    Err(e) => print(e),
+  }
+}
+'''
+
+[[step]]
+strata = ["run", "j.strata"]
+out = '''
+{"type":"Doc","shapes":[{"type":"Circle","r":1.0},{"type":"Square","side":2.0},{"type":"Moved","value":3},{"type":"Dot"}],"ids":[1,"a"]}
+true
+Err("shapes[1]: `Nope` is not one of Circle, Square, Moved, Dot")
+'''

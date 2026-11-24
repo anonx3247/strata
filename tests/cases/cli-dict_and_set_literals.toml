@@ -1,0 +1,24 @@
+# cli.rs: dict_and_set_literals
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/collections.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/collections.strata", "render"]
+capture = "collections.st"
+
+[[step]]
+save = "again.strata"
+from_tmp = "collections.st"
+
+[[step]]
+strata = ["render", "--file", "again.strata"]
+out_file = "collections.st"
+
+[[step]]
+strata = ["--file", "$ROOT/tests/data/collections.strata", "pack", "c.strata"]
+
+[[step]]
+strata = ["--file", "c.strata", "render"]
+out_file = "collections.st"
