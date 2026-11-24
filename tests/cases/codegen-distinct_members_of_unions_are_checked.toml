@@ -1,0 +1,39 @@
+# codegen.rs: distinct_members_of_unions_are_checked_on_their_field
+
+[[step]]
+save = "u.strata"
+text = '''
+distinct type Code = String where matches(it, "[a-z]+")
+
+type Thing = Code | Int
+
+fn as_thing(t: Thing) -> Thing {
+  t
+}
+
+fn name_of(t: Thing) -> String {
+  match t {
+    Code(c) => "code " + c,
+    _ => "int",
+  }
+}
+
+fn main() {
+  t := as_thing(Code("xyz"))
+  print(name_of(t))
+  print(name_of(as_thing(4)))
+  print(t == Code("xyz"))
+}
+'''
+
+[[step]]
+strata = ["build", "u.strata", "-o", "u"]
+
+[[step]]
+run = ["./u"]
+stdout = '''
+code xyz
+int
+true
+'''
+memory = true

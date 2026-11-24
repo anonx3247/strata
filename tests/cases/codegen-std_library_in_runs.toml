@@ -1,0 +1,20 @@
+# codegen.rs: jit_uses_the_std_library_not_the_compilers_copies: examples/hello run with std's
+# library (precompiled), its options (std.cli) read as Rust's run read them
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT/examples/hello\" && \"$STRATA\" run . -- Ann"]
+stdout = '''
+hello, Ann!
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT/examples/hello\" && \"$STRATA\" run . -- --times 2 --loud Bo"]
+stdout = '''
+HELLO, BO!
+HELLO, BO!
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT/examples/hello\" && \"$STRATA\" run . -- --times 11 Bo"]
+code = 2
+has = ["error: --times: 11 does not satisfy `Int where 1 <= it && it <= 10`", "Run `hello --help` for the options."]
