@@ -1,0 +1,22 @@
+# A hole's context shows each variable's type when the checker knows it:
+# a variable of a `for` over `xs.iter()` (core's iterators) was `line: _`
+# though `line` is a String
+
+[[step]]
+save = "h.strata"
+text = '''
+fn g(xs: List[String]) -> Int {
+  mut n := 0
+  it := xs.iter()
+  for line in xs.iter() {
+    for word in xs.iter().filter(x -> x != "") {
+      n += ?fill
+    }
+  }
+  n
+}
+'''
+
+[[step]]
+strata = ["--file", "h.strata", "holes"]
+has = ["?fill  in g", "goal:    Int", "context: it: ListIter[String], line: String, n: Int, word: String, xs: List[String]"]

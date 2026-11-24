@@ -180,7 +180,7 @@ a much larger proof and isn't needed for this one.
 
 The standard library gets a reference page per module on the docs site (`docs-site/`, Starlight), generated from its `///` doc comments instead of written by hand: the language guide only names the modules, and the hand-written table of what each has (docs/language-reference.md, "The standard library") goes once the pages exist. A `strata doc` command (or a step of `docs-site/sync.mjs`) would write Markdown per module: each public definition's interface (`render --level 1`) with its doc comment, grouped by kind, linked to the types it names. To settle: whether it is a `strata` command (usable on any package, as `cargo doc` is) or the site's script only, and how examples in doc comments are checked.
 
-### Finding code without grep: `find`, `refs`, `search`, locations (designed with the user 2026-11-24; not built)
+### Finding code without grep: `find`, `refs`, `search`, locations (designed with the user 2026-11-24; steps 1-2 built on branch `find-refs`, but for the runtime's side)
 
 Agents grep for: where a name is defined, every use of it before a change, where an error message comes from, half-remembered names, code shapes (every `match` on a type, every construction of a record, writes to a field, `.unwrap()` calls), functions by type, who implements a trait, comments and TODOs. Grep is blind to shapes and types and noisy on names (comments, other modules' namesakes). Today `view 'core.*' --level 0` lists definitions, `view slice:core.f` mixes uses and used-by in one list, `interface` gives a module's API; short names (`slice:run_worker`) match nothing, and nothing says where in a body a use is. Three commands and a location form fix that; they are written in Strata (`compiler/`), on `compiler/binary`, `resolve`, `check`.
 
@@ -212,6 +212,14 @@ Agents grep for: where a name is defined, every use of it before a change, where
 Later: saved rules in strata.toml (`[search.rules]`, in Strata) run by `check`, lint-style; search and refs panels in the viewer.
 
 Order: (1) `find`, `refs`; (2) locations in errors, `view LOCATION`; (3) `search` with `--text` and plain patterns; (4) typed holes and `--where`; (5) `--rewrite`.
+
+**Built (branch `find-refs`).** `compiler/locate` (locations: printed, read back, paths through a definition's tree with the names in scope at each node; code shown with `⋮`, enclosing blocks and `^^^`, through stand-in names the printer lays out like the nodes) and `compiler/finding` (`find`, `refs`, `view LOCATION`, check errors' places). Choices made while building:
+- A path's steps: a block's statements and its result by position (an expression statement is its expression), field names elsewhere (`callee`, `args/N`, `arms/N/pat`, `params/N/ty`, `methods/N/body`, a record argument by its field: `args/attempts`), a one-value wrapper's value as `value` (`return x`, `assert x`). The hash shown is the first 4 bytes of the definition's identity hash (comments included, since paths count comment statements).
+- `find` decodes the interfaces only (`binary.decode_interface`), every definition's, for members; signatures in stored form with the definition's own module's names short.
+- `refs`: a field's reads are told apart by the checker's `mark_field_reads`, a type's own method's calls by `own_methods_resolved` (both only on the definitions that name the field or method); a trait's or capability's method by name (calls not of a type's own method). Uses in a root-module definition skip locals of the same name (paths carry the names in scope). The candidates are the definitions whose header lists the target's definition (or owner) as a dependency. A name defined outside the package (`std.list.map`) is found by name in every definition.
+- Checker errors: the place is the first node written as code the message quotes (`` `y` ``, `` `+` ``, a field name), expressions before types; the checker doesn't track places itself. Printed as `--> LOCATION` and the code after `| ` (lines that start with two spaces are the checker's notes, which cases grep).
+
+Left of steps 1-2: runtime faults with each frame a location (the side table from compiled checks and calls to locations: codegen works on desugared, instantiated trees whose paths differ from the stored ones, so the table needs paths carried through desugaring and instantiation), `view --last-fault` (the runtime, core.fault, would keep the last fault), `--trace`'s `from` locations, verifier refutations with their location (the place of the failing call inside `verify_file`'s report).
 
 ### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below)
 
@@ -409,6 +417,17 @@ Since then: `assumed` is built (capabilities, `extern c`, mocks); loops keep the
 ### `mut` arguments are taken after the other arguments (coordinator, 2026-11-24; built, branch `mut-order`)
 
 `f(mut g, h(mut g))`: the call takes `g` once its other arguments have run, so what `h` did to `g` is what `f` is given, and `f`'s write-back keeps it. Before, the place was taken in argument order and `h`'s change was silently lost when `f` wrote its copy back (llvm.rs did the same; no test relied on it). #393 made that an error; now it is only an error to give the same variable `mut` twice in one call (`swap(mut g, mut g)`), where one write-back would undo the other. A receiver changed by the call (`mut g.add(bump(mut g))`) and an assignment inside a block argument follow the same rule.
+
+### Tool fixes: what agents ran into (decided with the user 2026-11-24; built, branch `tool-fixes`)
+
+Bugs and rough edges reported while working through `strata`, each with a case:
+- **Matches on another module's type are checked** (`check-matches_on_another_modules_type`). `compiler/exhaustive` read the program's sums by their own names, so a match in `main` on `ops.Op` (as stored) was never looked at: a variant added in `ops` was accepted and the program faulted at run time. Each module now sees the others' types by their full names. `verify`'s cross-check, which caught it, called it "a bug in the prover": a missing match arm is now said to be the code's. Left: a match on what the check can't type from the syntax (a field, `match p.op`) is still found only by `verify`.
+- **A literal returned is checked against a refined return type**, as arguments and fields were (`check-returned_literals_meet_refinements`): `0` from `-> Positive`, the function's value or a `return`'s.
+- **`edit` through `$EDITOR`**: its files are under `$TMPDIR`, not `.strata/edit` (git committed them, and the next commit deleted them); the commit never adds `.strata`. A text saved again that was rejected before (not only the last one: an editor alternating between two reopened it forever) gives up with its errors, exit 1; an error of several lines is marked on each line, so none is read back as code (`cli-editor_edits_stay_out_of_git_and_give_up`).
+- **A module's top comment survives edits** (`cli-edit_keeps_a_modules_top_comment`). It is stored on the first definition (its comments end with a blank line); `codebase.merge` keeps the comments set apart above a replaced definition when the edit gives none of its own, and puts a removed definition's on the next of its module. No format change.
+- **Tests move** (`strata move 'test "name"' MODULE`; `cli-move_a_test_to_another_module`).
+- **A record field's type changed**: the reads of it that no longer check are holes of the pending change (`?pending_N`), as changed calls were; before, the whole edit was rejected (`cli-a_changed_field_type_makes_holes`).
+- **Holes show the types the checker knows**: `strata holes` didn't know core's iterator methods (`xs.iter()` was `_`, so was each variable of a `for` over it), and a list's `Iterable` method didn't give its element type (`ListIter[_]`) (`cli-holes_show_the_types_of_iterators`).
 
 ### Termination and helpers (decided with the user, session 3; built)
 - Termination is reported for every function: terminates (with how) / may not terminate (with why) / assumed (`terminates` marker, after the contract). See docs/verification.md. The viewer shows "may not terminate" in orange; diffs show it in the verification word.
