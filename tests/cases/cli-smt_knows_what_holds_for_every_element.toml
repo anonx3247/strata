@@ -1,0 +1,14 @@
+# cli.rs: smt_knows_what_holds_for_every_element (tests/data/elements.strata)
+[[step]]
+strata = ["render", "--file", "$ROOT/tests/data/elements.strata"]
+capture = "e.st"
+
+[[step]]
+save = "e.strata"
+from_tmp = "e.st"
+
+[[step]]
+strata = ["--file", "e.strata", "verify", "--cases", "30"]
+fails = true
+has = ["✓ positives ", "✓ doubled ", "✓ digits ", "✓ lit ", "✓ pushed ", "✓ joined ", "✓ all_from ", "✓ first_big ", "✓ found ", "✓ rest_ok ", "✓ empty_is_fine ", "✗ bad_positives ", "✗ bad_doubled ", "✗ bad_digits ", "✗ bad_lit ", "✗ bad_pushed ", "✗ loop_push "]
+lacks = ["✓ bad_all"]

@@ -1,0 +1,24 @@
+# cli.rs: builtins_that_fault_are_checked: proven where the arguments allow
+# it, refuted with an input where they don't; float arithmetic (not
+# modelled) is never assumed finite
+[[step]]
+save = "f.strata"
+text = '''
+fn bad_chr(n: Int) -> String { chr(n) }
+fn good_chr(n: Int where 97 <= it && it <= 122) -> String ensures len(it.code_points()) == 1 { chr(n) }
+fn bad_ord(s: String) -> Int { ord(s) }
+fn good_ord(s: String) -> Int { if len(s.code_points()) == 1 { ord(s) } else { 0 } }
+fn each_ord(s: String) -> Int { chars(s).fold(0, (a, c) -> a + ord(c)) }
+fn round_trip() -> Bool ensures it { ord(chr(955)) == 955 }
+fn any_split(s: String, sep: String) -> Int { len(split(s, sep)) }
+fn any_repeat(s: String, n: Int) -> String { repeat(s, n) }
+fn good_repeat(n: Int where 0 <= it && it <= 10) -> String { repeat("ab", n) }
+fn floats(x: Float) -> Float { x * x }
+fn doubled(xs: List[Int]) -> List[Int] { xs.map(x -> x * 2) }
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--cases", "30", "--no-race"]
+fails = true
+has = ["✓ good_chr ", "✓ good_ord ", "✓ each_ord ", "✓ round_trip ", "✓ good_repeat ", "✓ any_split ", "✓ any_repeat ", "✓ doubled ", "✗ bad_chr ", "✗ bad_ord ", "~ floats ", "`*` gives a finite number"]
+counts = { "found by the solver" = 2 }

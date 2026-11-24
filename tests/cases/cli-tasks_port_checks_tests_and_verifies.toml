@@ -1,0 +1,11 @@
+# cli.rs: tasks_port_checks_tests_and_verifies
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "test"]
+has = ["0 failed"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "verify", "sim.simulate,model.run_worker,memory.mem_claim", "--cases", "300"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "run", "print.demo"]
+has = ["task-3: Done after 2"]

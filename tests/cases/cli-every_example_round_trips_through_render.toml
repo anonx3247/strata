@@ -1,0 +1,106 @@
+# cli.rs: every_example_round_trips_through_render
+
+[[step]]
+strata = ["--file", "$ROOT/examples/bank.strata", "render"]
+capture = "bank.st"
+
+[[step]]
+save = "bank.strata"
+from_tmp = "bank.st"
+
+[[step]]
+strata = ["--file", "bank.strata", "render"]
+out_file = "bank.st"
+
+[[step]]
+strata = ["--file", "bank.strata", "test"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/orders.strata", "render"]
+capture = "orders.st"
+
+[[step]]
+save = "orders.strata"
+from_tmp = "orders.st"
+
+[[step]]
+strata = ["--file", "orders.strata", "render"]
+out_file = "orders.st"
+
+[[step]]
+strata = ["--file", "orders.strata", "test"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/builtins.strata", "render"]
+capture = "builtins.st"
+
+[[step]]
+save = "builtins.strata"
+from_tmp = "builtins.st"
+
+[[step]]
+strata = ["--file", "builtins.strata", "render"]
+out_file = "builtins.st"
+
+[[step]]
+strata = ["--file", "builtins.strata", "test"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/traits.strata", "render"]
+capture = "traits.st"
+
+[[step]]
+save = "traits.strata"
+from_tmp = "traits.st"
+
+[[step]]
+strata = ["--file", "traits.strata", "render"]
+out_file = "traits.st"
+
+[[step]]
+strata = ["--file", "traits.strata", "test"]
+
+# a package: one file per module; the text read back in, module by module,
+# prints the same
+[[step]]
+strata = ["--file", "$ROOT/examples/tasks", "render", "--split", "t1"]
+
+[[step]]
+run = ["mkdir", "-p", "t2"]
+
+[[step]]
+run = ["cp", "$ROOT/examples/tasks/strata.toml", "t2/strata.toml"]
+
+[[step]]
+save = "t2/model.strata"
+from_tmp = "t1/model.st"
+
+[[step]]
+save = "t2/memory.strata"
+from_tmp = "t1/memory.st"
+
+[[step]]
+save = "t2/print.strata"
+from_tmp = "t1/print.st"
+
+[[step]]
+save = "t2/sim.strata"
+from_tmp = "t1/sim.st"
+
+[[step]]
+strata = ["--file", "t2", "render", "--split", "t3"]
+
+[[step]]
+run = ["diff", "t1/model.st", "t3/model.st"]
+
+[[step]]
+run = ["diff", "t1/memory.st", "t3/memory.st"]
+
+[[step]]
+run = ["diff", "t1/print.st", "t3/print.st"]
+
+[[step]]
+run = ["diff", "t1/sim.st", "t3/sim.st"]
+
+[[step]]
+strata = ["--file", "t2", "test"]
