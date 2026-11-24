@@ -3310,7 +3310,12 @@ fn compiler_fuzzes_as_verify_fuzzes() {
 /// closure; a `match` used as a statement whose arms give `()` and a
 /// value; a capability trait's value (`Files`) held in an `Option` field;
 /// a dictionary's `remove` in a module importing `Files` (stored as
-/// `std.fs.remove`); `s.graphemes()` (std.unicode's).
+/// `std.fs.remove`); `s.graphemes()` (std.unicode's); a concrete value
+/// made a trait's value where a trait type is wanted (a record's field, an
+/// annotated variable, a list's elements and `push`, the branches of an
+/// `if` or `match` a function returns), a `mut self` method through a
+/// trait value (examples/tasks' `print.demo`), and a trait value matched
+/// against a constructor's pattern.
 const COMPILER_CONSTRUCTS: &[(&str, &str)] = &[
     ("self_calls", "trait Named {
   fn name(self) -> String
@@ -3415,6 +3420,79 @@ fn main() {
   print(has(c, \"b.txt\"))
   print(without(Dict { \"a\": 1, \"b\": 2 }, \"a\"))
   print(len(\"e\\u{301}x\".graphemes()))
+}
+"),
+    ("trait_places", "trait Out {
+  fn put(mut self, line: String)
+  fn count(self) -> Int
+}
+
+type Log = { lines: List[String] }
+
+impl Out for Log {
+  fn put(mut self, line: String) {
+    self.lines = push(self.lines, line)
+  }
+  fn count(self) -> Int {
+    len(self.lines)
+  }
+}
+
+type Tally = { n: Int }
+
+impl Out for Tally {
+  fn put(mut self, line: String) {
+    self.n = self.n + byte_len(line)
+  }
+  fn count(self) -> Int {
+    self.n
+  }
+}
+
+type Holder = { out: Out }
+
+fn make(big: Bool) -> Out {
+  if big {
+    Log { lines: [\"x\"] }
+  } else {
+    Tally { n: 0 }
+  }
+}
+
+fn pick(k: Int) -> Out {
+  match k {
+    0 => Log { lines: [] },
+    _ => Tally { n: k },
+  }
+}
+
+fn main() {
+  h := Holder { out: Log { lines: [\"x\"] } }
+  print(h.out.count())
+  mut o: Out = Log { lines: [] }
+  mut o.put(\"a\")
+  mut o.put(\"b\")
+  print(o.count())
+  o = Tally { n: 5 }
+  mut o.put(\"abc\")
+  print(o.count())
+  let xs: List[Out] = [Log { lines: [\"p\"] }, Tally { n: 2 }]
+  ys := push(xs, Tally { n: 7 })
+  print(ys.map(x -> x.count()))
+  print(make(true).count() + make(false).count())
+  print(pick(0).count() + pick(3).count())
+  let opt: Option[Out] = Some(Tally { n: 9 })
+  match opt {
+    Some(x) => print(x.count()),
+    None => (),
+  }
+  mut h2 := Holder { out: Log { lines: [\"x\"] } }
+  mut h2.out.put(\"a\")
+  match h2.out {
+    Log { lines } => print(lines),
+    _ => print(\"other\"),
+  }
+  print(\"ok\")
 }
 "),
 ];
