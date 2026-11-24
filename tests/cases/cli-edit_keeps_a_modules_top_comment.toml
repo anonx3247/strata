@@ -1,0 +1,68 @@
+# A module's top comment is stored on its first definition: replacing that
+# definition with `edit` dropped it (it happened to `Token`'s module). The
+# comments set apart above a definition stay when the edit gives none of
+# its own, and a removed definition's go to the next of its module
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "lex"]
+text = '''
+// lex — the tokens of a text
+//
+// (the module's top comment)
+
+/// A token.
+pub type Token = | Word(String) | Space
+
+/// How many words.
+pub fn words(ts: List[Token]) -> Int {
+  len(ts.filter(t -> t is Word))
+}
+
+pub fn spaces(ts: List[Token]) -> Int {
+  len(ts.filter(t -> t is Space))
+}
+'''
+
+[[step]]
+strata = ["edit", "lex"]
+text = '''
+/// A token: a word, a space or a newline.
+pub type Token = | Word(String) | Space | Newline
+'''
+
+[[step]]
+strata = ["render", "lex"]
+has = ["// lex — the tokens of a text\n//\n// (the module's top comment)\n\n/// A token: a word, a space or a newline.\npub type Token"]
+
+# a top comment given replaces it
+[[step]]
+strata = ["edit", "lex"]
+text = '''
+// lex — tokens
+//
+// (a new top comment)
+
+/// A token: a word, a space or a newline.
+pub type Token = | Word(String) | Space | Newline
+'''
+
+[[step]]
+strata = ["render", "lex"]
+has = ["// lex — tokens\n//\n// (a new top comment)\n\n/// A token"]
+lacks = ["the module's top comment"]
+
+# the first definition removed: the comment goes to the next
+[[step]]
+strata = ["edit", "lex", "--rm", "lex.Token", "--rm", "lex.words", "--rm", "lex.spaces"]
+text = '''
+pub fn count(xs: List[Int]) -> Int {
+  len(xs)
+}
+'''
+
+[[step]]
+strata = ["render", "lex"]
+has = ["// lex — tokens\n//\n// (a new top comment)\n\npub fn count"]
