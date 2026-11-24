@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Writes `std.unicode_tables` (Strata text) from regex-syntax's Unicode tables.
 
-    python3 tools/unicode_tables.py ~/.cargo/registry/src/*/regex-syntax-0.8.12/src/unicode_tables \
+    python3 tools/unicode_tables.py REGEX_SYNTAX/src/unicode_tables \
       DerivedCoreProperties.txt > /tmp/unicode_tables.st
-    cd std && ../target/release/strata edit unicode_tables < /tmp/unicode_tables.st
+    cd std && ../target/strata edit unicode_tables < /tmp/unicode_tables.st
+
+(REGEX_SYNTAX: a checkout of the regex-syntax crate's source, 0.8.12.)
 
 regex-syntax's tables are made by ucd-generate from the Unicode Character
 Database; taking them keeps `std.regex` and the `regex` crate (the reference

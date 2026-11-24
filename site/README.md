@@ -5,7 +5,7 @@
 `tour.html` is a presentation of Strata as slides. It starts from how an agent works in a codebase of text files today (an illustration), then shows Strata's three ideas: types as contracts, proving over testing, and the code is the AST. Each comes with recorded examples. It ends with the rest of the language, briefly.
 
 ```sh
-cargo build --release
+tools/bootstrap.sh                        # target/strata (or STRATA=… a strata installed)
 node site/build.mjs                       # re-record everything from the real CLI
 cd site && python3 -m http.server 8000    # then open http://127.0.0.1:8000
 ```

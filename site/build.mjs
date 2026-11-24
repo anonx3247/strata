@@ -2,7 +2,7 @@
 // real `strata` CLI: every command output and every viewer snapshot shown on
 // the page is recorded here, nothing is written by hand.
 //
-//   cargo build --release && node site/build.mjs
+//   tools/bootstrap.sh && node site/build.mjs   (or STRATA=PATH node site/build.mjs)
 //
 // Writes site/data/*.js (one `STRATA[...] = {...}` per scene). The docs are a
 // site of their own, built by docs-site/.
@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const SITE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(SITE);
-const STRATA = process.env.STRATA || join(ROOT, 'target/release/strata');
+const STRATA = process.env.STRATA || join(ROOT, 'target/strata');
 const EX = join(ROOT, 'examples');
 const WORK = mkdtempSync(join(tmpdir(), 'strata-site-'));
 let port = 7861 + Math.floor(Math.random() * 100);
