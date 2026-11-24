@@ -91,6 +91,7 @@ void toolchain_fast_isel(void);
 // The IR text as a module, in a context of its own (c/ir.c): 0, else 1
 // and why.
 int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
+int32_t ir_module(const char *ir, size_t len, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
 
 // `--timings` (c/driver.c): where a phase begins and ends.
 int32_t timings_begin(const char *name);
@@ -635,14 +636,13 @@ static void hex_sha256(char hex[65], const char *prefix, size_t pn, const char *
 // (malloc'd).
 static char *compile_part(const char *ir, size_t size, const char *out, int32_t opt) {
   Buf r = {0};
-  LLVMContextRef ctx = LLVMContextCreate();
-  LLVMMemoryBufferRef mb = LLVMCreateMemoryBufferWithMemoryRange(ir, size, "strata", 1);
+  LLVMContextRef ctx;
   LLVMModuleRef mod;
   char *msg = NULL;
-  if (LLVMParseIRInContext(ctx, mb, &mod, &msg)) {
+  // (c/ir.c's reader, or LLParser where it can't: the same module)
+  if (ir_module(ir, size, &ctx, &mod, &msg)) {
     say(&r, "LLVM rejected the generated IR: ", msg ? msg : "", NULL);
     LLVMDisposeMessage(msg);
-    LLVMContextDispose(ctx);
     return r.p;
   }
   LLVMTargetRef target;
