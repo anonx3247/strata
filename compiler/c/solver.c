@@ -44,7 +44,8 @@ typedef struct {
 
 static Proc procs[POOL_MAX];
 static pthread_mutex_t pool_lock = PTHREAD_MUTEX_INITIALIZER;
-static char *last_result;
+// (each thread's own: workers encoding functions ask at the same time)
+static __thread char *last_result;
 // (a solver started that didn't answer a command as it read it: scripts go
 // to a process each from then on)
 static volatile int pool_broken;
@@ -431,21 +432,20 @@ static void run_one(Proc *p, const char *solver, const char *flags, const char *
 
 // The jobs given to the kept processes, by number, in a queue served by
 // worker threads (one per core, each with its own process, started on the
-// first job): `solver_pool_run` waits for its own jobs; `solver_pool_submit`
-// returns at once, and `solver_pool_take` gives the answers of the jobs it
-// submitted as they come (so a caller goes on with what is answered while
-// the rest still runs).
+// first job): `solver_pool_run` waits for its own jobs (from any number of
+// threads at once: the compiler's workers each encoding a function ask as
+// they go); `solver_pool_prefetch` queues jobs whose answers are only kept,
+// for a later run to find.
 typedef struct {
   char *solver, *flags, *script;
   size_t len;
   Buf result;
   int state;   // 0 queued, 1 running, 2 answered, 3 taken
-  int async;   // 0: run (waited for); 1: submitted (taken by
-               // `solver_pool_take`); 2: prefetched (only its answer kept)
+  int async;   // 0: run (waited for); 2: prefetched (only its answer kept)
 } Job;
 
 static Job *jobs;
-static long jobs_count, jobs_cap, jobs_next, async_open, take_from;
+static long jobs_count, jobs_cap, jobs_next;
 static int workers_started;
 static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_more = PTHREAD_COND_INITIALIZER;
@@ -547,7 +547,6 @@ static long queue_jobs(const char *solver, const char *text, int async) {
     }
     j->len = strlen(j->script);
     j->async = async;
-    if (async == 1) async_open++;
     if (!end) break;
     c = end + 1;
   }
@@ -572,47 +571,6 @@ const char *solver_pool_run(const char *solver, const char *text) {
     if (k > first) buf_add(&all, "\x1e", 1);
     if (jobs[k].result.len) buf_add(&all, jobs[k].result.buf, jobs[k].result.len);
     job_free(&jobs[k]);
-  }
-  last_result = all.buf;
-  pthread_mutex_unlock(&queue_lock);
-  return last_result;
-}
-
-// `jobs` (as `solver_pool_run` takes them) queued to run while the caller
-// goes on: the number of the first (the others numbered after it), whose
-// answers `solver_pool_take` gives.
-int64_t solver_pool_submit(const char *solver, const char *text) {
-  pthread_mutex_lock(&queue_lock);
-  long first = queue_jobs(solver, text, 1);
-  pthread_mutex_unlock(&queue_lock);
-  return first;
-}
-
-// The answers of submitted jobs not given yet, waiting for at least one
-// when none is ready: each `NUMBER 0x1f ANSWER`, separated by 0x1e, in the
-// order of their numbers; `""` when every submitted job's answer was given.
-const char *solver_pool_take(void) {
-  pthread_mutex_lock(&queue_lock);
-  free(last_result);
-  last_result = NULL;
-  Buf all = {0};
-  buf_str(&all, "");
-  for (;;) {
-    int any = 0;
-    while (take_from < jobs_count && jobs[take_from].state == 3) take_from++;
-    for (long k = take_from; k < jobs_count; k++) {
-      if (jobs[k].async == 1 && jobs[k].state == 2) {
-        char num[32];
-        snprintf(num, sizeof num, "%s%ld\x1f", any ? "\x1e" : "", k);
-        buf_str(&all, num);
-        if (jobs[k].result.len) buf_add(&all, jobs[k].result.buf, jobs[k].result.len);
-        job_free(&jobs[k]);
-        async_open--;
-        any = 1;
-      }
-    }
-    if (any || async_open == 0) break;
-    pthread_cond_wait(&queue_done, &queue_lock);
   }
   last_result = all.buf;
   pthread_mutex_unlock(&queue_lock);
