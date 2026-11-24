@@ -1,0 +1,47 @@
+.	
+.	help
+.	bogus
+.	ui
+examples	--file math.strata check
+examples	--file hello check
+examples	--file tasks check
+examples	--file counter check
+examples/hello	check
+examples	--file nothing.strata check
+docs	check
+examples	run math.strata
+examples/hello	run -- x y
+examples	run hello -- a
+examples	--file wc run -- README.md
+examples	run counter
+examples	run traits.strata
+examples	run bank.strata
+examples	run orders.strata
+examples	build hello -o $OUT/hello
+examples	build math.strata -o $OUT/math
+examples	build counter -o $OUT/counter --no-verify
+examples	build bank.strata -o $OUT/bank --all-checks
+examples	--file math.strata test
+examples	--file bank.strata test
+examples	--file orders.strata test
+examples	--file tasks test
+examples	--file tasks test add
+examples	--file math.strata verify
+examples	--file bank.strata verify
+examples	--file math.strata verify --termination
+examples	--file hello verify
+examples	lex ../tests/data/smt/verify.st
+examples	builtins
+examples	parse ../tests/data/smt/verify.st
+examples	--file math.strata render
+examples	--file math.strata view
+examples	--file tasks interface model
+examples	--file wc build -o $OUT/wc
+examples	build-core -o $OUT/core.ll
+examples	run math.strata factorial 5
+examples	run math.strata factorial -1
+examples	run math.strata nope 1
+examples	run math.strata factorial "x"
+examples	run tasks model.done 1
+examples	--file wc check
+examples	--file wc verify

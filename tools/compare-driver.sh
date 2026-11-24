@@ -3,10 +3,11 @@
 # package) with the Rust one, command by command: the same arguments, in
 # the same folder, the same stdout, stderr and exit code.
 #
-#   tools/compare-driver.sh OURS [RUST] < cases
+#   tools/compare-driver.sh OURS [RUST] < tools/driver-cases.tsv
 #
 # Each case is a line `DIR<TAB>ARGS...` (DIR relative to the repository;
-# ARGS split on spaces); `#` lines are comments. RUST defaults to
+# ARGS split on spaces; `$OUT` is a scratch folder, for what a command
+# writes); `#` lines are comments. RUST defaults to
 # target/release/strata. Each command runs under a 300 s limit, each side
 # with a cache of its own (CACHE, default a new folder: `rust/` and `ours/`),
 # so that what one verified isn't the other's `(cached)`. Prints each
@@ -25,6 +26,8 @@ plain() { grep -v -e '^building the Strata compiler' -e 'using llvm.rs$' "$1" ||
 same=0; differ=0
 while IFS=$'\t' read -r dir args; do
   case "$dir" in ''|'#'*) continue ;; esac
+  mkdir -p "$scratch/out"
+  args=$(printf '%s' "$args" | sed 's#\$OUT#'"$scratch/out"'#g')
   for side in rust ours; do
     exe=$rust; [ $side = ours ] && exe=$ours
     (cd "$root/$dir" && STRATA_HOME=$root STRATA_CACHE=$cache/$side limit "$exe" $args > "$scratch/$side.out" 2> "$scratch/$side.err" < /dev/null; echo $? > "$scratch/$side.code")
