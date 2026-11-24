@@ -17,7 +17,7 @@ name = "compiler"
 [native]
 # (zstd, which LLVM's compression calls, statically too: Homebrew's
 # libzstd.dylib isn't on a user's machine; zlib is macOS's)
-sources = ["c/jit.c", "c/driver.c", "c/toolchain.cpp", "/opt/homebrew/opt/zstd/lib/libzstd.a"]
+sources = ["c/jit.c", "c/driver.c", "c/cache.c", "c/toolchain.cpp", "/opt/homebrew/opt/zstd/lib/libzstd.a"]
 libs = [
   "LLVMLTO",
   "LLVMExtensions",
