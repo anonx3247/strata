@@ -36,10 +36,11 @@ built program with `STRATA_MEMORY=check`: it must free everything it made.
 executable checked. Each command's `verify` verdicts are kept in the folder it
 runs in (`STRATA_VERDICTS`). The steps are `tools/check`'s `Step` record.
 
-Cases run one at a time: `std.process` runs started from parallel tasks leak
-their pipes into each other's programs (a child's standard input stays open),
-and `std.fs` calls from parallel tasks were seen to act on another task's
-paths (removing files of `tests/cases`). See "Found" below.
+Cases run 4 at a time (`--jobs N`; `--jobs 1` for one at a time), each in a
+task of its own. Parallel runs once hung and removed files of `tests/cases`:
+the runtime's `std.process` runs leaked their pipes into each other's
+programs, and its `std.fs` calls shared one buffer for the path (fixed in
+runtime.c; `build-parallel_io` checks both).
 
 ## Where each cargo test goes
 
