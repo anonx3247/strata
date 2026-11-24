@@ -1,0 +1,315 @@
+# smt.rs: smt_valid_lists_shared_by_both_branches: 100 `if`s keeping a list valid: proven, in well
+# under 10 s
+
+[[step]]
+save = "ifs.strata"
+text = '''
+fn f(args: List[Natural], k: Int) -> List[Natural] {
+  mut xs := args
+  if k == 1 {
+    xs = drop(xs, 1)
+  }
+  if k == 2 {
+    xs = drop(xs, 1)
+  }
+  if k == 3 {
+    xs = drop(xs, 1)
+  }
+  if k == 4 {
+    xs = drop(xs, 1)
+  }
+  if k == 5 {
+    xs = drop(xs, 1)
+  }
+  if k == 6 {
+    xs = drop(xs, 1)
+  }
+  if k == 7 {
+    xs = drop(xs, 1)
+  }
+  if k == 8 {
+    xs = drop(xs, 1)
+  }
+  if k == 9 {
+    xs = drop(xs, 1)
+  }
+  if k == 10 {
+    xs = drop(xs, 1)
+  }
+  if k == 11 {
+    xs = drop(xs, 1)
+  }
+  if k == 12 {
+    xs = drop(xs, 1)
+  }
+  if k == 13 {
+    xs = drop(xs, 1)
+  }
+  if k == 14 {
+    xs = drop(xs, 1)
+  }
+  if k == 15 {
+    xs = drop(xs, 1)
+  }
+  if k == 16 {
+    xs = drop(xs, 1)
+  }
+  if k == 17 {
+    xs = drop(xs, 1)
+  }
+  if k == 18 {
+    xs = drop(xs, 1)
+  }
+  if k == 19 {
+    xs = drop(xs, 1)
+  }
+  if k == 20 {
+    xs = drop(xs, 1)
+  }
+  if k == 21 {
+    xs = drop(xs, 1)
+  }
+  if k == 22 {
+    xs = drop(xs, 1)
+  }
+  if k == 23 {
+    xs = drop(xs, 1)
+  }
+  if k == 24 {
+    xs = drop(xs, 1)
+  }
+  if k == 25 {
+    xs = drop(xs, 1)
+  }
+  if k == 26 {
+    xs = drop(xs, 1)
+  }
+  if k == 27 {
+    xs = drop(xs, 1)
+  }
+  if k == 28 {
+    xs = drop(xs, 1)
+  }
+  if k == 29 {
+    xs = drop(xs, 1)
+  }
+  if k == 30 {
+    xs = drop(xs, 1)
+  }
+  if k == 31 {
+    xs = drop(xs, 1)
+  }
+  if k == 32 {
+    xs = drop(xs, 1)
+  }
+  if k == 33 {
+    xs = drop(xs, 1)
+  }
+  if k == 34 {
+    xs = drop(xs, 1)
+  }
+  if k == 35 {
+    xs = drop(xs, 1)
+  }
+  if k == 36 {
+    xs = drop(xs, 1)
+  }
+  if k == 37 {
+    xs = drop(xs, 1)
+  }
+  if k == 38 {
+    xs = drop(xs, 1)
+  }
+  if k == 39 {
+    xs = drop(xs, 1)
+  }
+  if k == 40 {
+    xs = drop(xs, 1)
+  }
+  if k == 41 {
+    xs = drop(xs, 1)
+  }
+  if k == 42 {
+    xs = drop(xs, 1)
+  }
+  if k == 43 {
+    xs = drop(xs, 1)
+  }
+  if k == 44 {
+    xs = drop(xs, 1)
+  }
+  if k == 45 {
+    xs = drop(xs, 1)
+  }
+  if k == 46 {
+    xs = drop(xs, 1)
+  }
+  if k == 47 {
+    xs = drop(xs, 1)
+  }
+  if k == 48 {
+    xs = drop(xs, 1)
+  }
+  if k == 49 {
+    xs = drop(xs, 1)
+  }
+  if k == 50 {
+    xs = drop(xs, 1)
+  }
+  if k == 51 {
+    xs = drop(xs, 1)
+  }
+  if k == 52 {
+    xs = drop(xs, 1)
+  }
+  if k == 53 {
+    xs = drop(xs, 1)
+  }
+  if k == 54 {
+    xs = drop(xs, 1)
+  }
+  if k == 55 {
+    xs = drop(xs, 1)
+  }
+  if k == 56 {
+    xs = drop(xs, 1)
+  }
+  if k == 57 {
+    xs = drop(xs, 1)
+  }
+  if k == 58 {
+    xs = drop(xs, 1)
+  }
+  if k == 59 {
+    xs = drop(xs, 1)
+  }
+  if k == 60 {
+    xs = drop(xs, 1)
+  }
+  if k == 61 {
+    xs = drop(xs, 1)
+  }
+  if k == 62 {
+    xs = drop(xs, 1)
+  }
+  if k == 63 {
+    xs = drop(xs, 1)
+  }
+  if k == 64 {
+    xs = drop(xs, 1)
+  }
+  if k == 65 {
+    xs = drop(xs, 1)
+  }
+  if k == 66 {
+    xs = drop(xs, 1)
+  }
+  if k == 67 {
+    xs = drop(xs, 1)
+  }
+  if k == 68 {
+    xs = drop(xs, 1)
+  }
+  if k == 69 {
+    xs = drop(xs, 1)
+  }
+  if k == 70 {
+    xs = drop(xs, 1)
+  }
+  if k == 71 {
+    xs = drop(xs, 1)
+  }
+  if k == 72 {
+    xs = drop(xs, 1)
+  }
+  if k == 73 {
+    xs = drop(xs, 1)
+  }
+  if k == 74 {
+    xs = drop(xs, 1)
+  }
+  if k == 75 {
+    xs = drop(xs, 1)
+  }
+  if k == 76 {
+    xs = drop(xs, 1)
+  }
+  if k == 77 {
+    xs = drop(xs, 1)
+  }
+  if k == 78 {
+    xs = drop(xs, 1)
+  }
+  if k == 79 {
+    xs = drop(xs, 1)
+  }
+  if k == 80 {
+    xs = drop(xs, 1)
+  }
+  if k == 81 {
+    xs = drop(xs, 1)
+  }
+  if k == 82 {
+    xs = drop(xs, 1)
+  }
+  if k == 83 {
+    xs = drop(xs, 1)
+  }
+  if k == 84 {
+    xs = drop(xs, 1)
+  }
+  if k == 85 {
+    xs = drop(xs, 1)
+  }
+  if k == 86 {
+    xs = drop(xs, 1)
+  }
+  if k == 87 {
+    xs = drop(xs, 1)
+  }
+  if k == 88 {
+    xs = drop(xs, 1)
+  }
+  if k == 89 {
+    xs = drop(xs, 1)
+  }
+  if k == 90 {
+    xs = drop(xs, 1)
+  }
+  if k == 91 {
+    xs = drop(xs, 1)
+  }
+  if k == 92 {
+    xs = drop(xs, 1)
+  }
+  if k == 93 {
+    xs = drop(xs, 1)
+  }
+  if k == 94 {
+    xs = drop(xs, 1)
+  }
+  if k == 95 {
+    xs = drop(xs, 1)
+  }
+  if k == 96 {
+    xs = drop(xs, 1)
+  }
+  if k == 97 {
+    xs = drop(xs, 1)
+  }
+  if k == 98 {
+    xs = drop(xs, 1)
+  }
+  if k == 99 {
+    xs = drop(xs, 1)
+  }
+  if k == 100 {
+    xs = drop(xs, 1)
+  }
+  xs
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" perl -e \"alarm 10; exec @ARGV\" \"$STRATA\" smt \"$TMP/ifs.strata\""]
+has = ["proven result of `f`: List[Natural]"]

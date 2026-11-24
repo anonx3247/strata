@@ -1,0 +1,315 @@
+# smt.rs: smt_shares_lists_both_branches_drop_from: 100 `if`s dropping from one list: encoded in
+# well under 10 s (each branch's list shared, not copied)
+
+[[step]]
+save = "ifs.strata"
+text = '''
+fn f(args: List[String]) -> String {
+  mut files := args
+  if get(files, 0) ?? "" == "--o1" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o2" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o3" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o4" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o5" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o6" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o7" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o8" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o9" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o10" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o11" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o12" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o13" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o14" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o15" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o16" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o17" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o18" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o19" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o20" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o21" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o22" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o23" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o24" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o25" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o26" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o27" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o28" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o29" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o30" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o31" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o32" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o33" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o34" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o35" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o36" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o37" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o38" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o39" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o40" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o41" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o42" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o43" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o44" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o45" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o46" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o47" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o48" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o49" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o50" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o51" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o52" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o53" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o54" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o55" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o56" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o57" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o58" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o59" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o60" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o61" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o62" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o63" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o64" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o65" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o66" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o67" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o68" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o69" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o70" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o71" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o72" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o73" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o74" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o75" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o76" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o77" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o78" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o79" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o80" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o81" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o82" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o83" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o84" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o85" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o86" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o87" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o88" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o89" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o90" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o91" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o92" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o93" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o94" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o95" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o96" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o97" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o98" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o99" {
+    files = drop(files, 2)
+  }
+  if get(files, 0) ?? "" == "--o100" {
+    files = drop(files, 2)
+  }
+  get(files, 0) ?? ""
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" perl -e \"alarm 10; exec @ARGV\" \"$STRATA\" smt \"$TMP/ifs.strata\""]
+has = ["fn f"]

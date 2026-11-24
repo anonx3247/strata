@@ -1,0 +1,19 @@
+# codegen.rs: refuses_what_it_does_not_compile_yet: `strata codegen FILE` says what it can't compile
+# (an iterator in a record's field of a trait type: its element type is lost)
+
+[[step]]
+save = "iterator_field.strata"
+text = '''
+type Holder = { it: Iterator[Int] }
+
+fn main() {
+    h := Holder { it: [1, 2].iter() }
+    for x in h.it {
+        print(x)
+    }
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen \"$TMP/iterator_field.strata\" | head -1"]
+has = ["error: in `"]

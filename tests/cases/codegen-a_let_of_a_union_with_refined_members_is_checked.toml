@@ -1,0 +1,24 @@
+# codegen.rs: a_let_of_a_union_with_refined_members_is_checked
+
+[[step]]
+save = "refined_let.strata"
+text = '''
+type Small = Int where it < 10
+
+type Id = Small | String
+
+fn main() {
+    let j: Id = 5
+    print(j)
+    let k: Id = 50
+    print(k)
+}
+'''
+
+[[step]]
+strata = ["build", "refined_let.strata", "-o", "rl", "--all-checks"]
+
+[[step]]
+run = ["./rl"]
+code = 101
+has = ["5\n", "fault (Refinement): let binding: 50 is not a `Small | String`"]
