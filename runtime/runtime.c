@@ -279,6 +279,7 @@ int64_t *strata_memory_made(int64_t i);
 void strata_memory_start(_Bool check);
 void strata_memory_threaded(_Bool on);
 void strata_memory_thread_end(void);
+void strata_memory_spawning(void);
 #endif
 
 // A string has nothing in it to drop.
@@ -1379,6 +1380,10 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
     pthread_mutex_unlock(&chan_lock);
   }
   if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(1);
+#ifdef STRATA_CORE_RT
+  // this thread's open arenas are kept: the task may hold their objects
+  strata_memory_spawning();
+#endif
   // counted in its run from now: a task not started yet isn't waiting
   pthread_mutex_lock(&chan_lock);
   t->run_of = this_run();

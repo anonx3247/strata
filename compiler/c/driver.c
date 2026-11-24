@@ -188,3 +188,15 @@ int32_t timings_report(void) {
   fprintf(stderr, "             %8.3f %8s %7s  in all\n", wall, "", "");
   return 0;
 }
+
+// How many threads the compiler's parallel work may use: STRATA_JOBS when
+// set (at least 1), else the cores the machine has online.
+int64_t driver_jobs(void) {
+  const char *j = getenv("STRATA_JOBS");
+  if (j && *j) {
+    long n = atol(j);
+    return n < 1 ? 1 : n;
+  }
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  return n < 1 ? 1 : n;
+}
