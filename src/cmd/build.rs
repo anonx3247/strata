@@ -150,12 +150,12 @@ pub fn build_core(args: &Args) -> Result<bool, String> {
     Ok(true)
 }
 
-/// FNV-1a over core.rt's and core.mem's module files, as build.rs computes it
+/// FNV-1a over core.mem's and the runtime's module files (`core::RUNTIME`), as build.rs computes it
 /// from the files on disk: whether a core_rt.ll still matches them.
 pub fn core_stamp() -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for (f, bytes) in crate::core::FILES {
-        if *f == "rt.strata" || *f == "mem.strata" {
+        if *f == "mem.strata" || crate::core::runtime_files().iter().any(|r| r == f) {
             for b in bytes.iter() {
                 h ^= *b as u64;
                 h = h.wrapping_mul(0x100000001b3);
