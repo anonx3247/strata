@@ -1,0 +1,85 @@
+# A loop whose invariant inference had to search (more of the solver's
+# resource units than a proof may take, 2M: `found_by_search`) gets what it
+# found written into the code as `invariant` clauses, once: verify says so,
+# and the next run only proves them. A loop whose invariants are found at
+# once stays implicit (`early`). (`quoted_end`'s search takes about 3M units
+# with Z3 4.x.) All the searches of a run draw on one budget of resource
+# units: once it is used up, the loops left are reported, with how to go
+# on. std is never written: only the program verified is.
+
+[[step]]
+save = "q.strata"
+from = "q.st"
+
+[[step]]
+strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache"]
+has = [
+  "✓ quoted_end ",
+  '''edited quoted_end: added `invariant lx.at <= n` to `while lx.at < n && char_at(lx, lx.at) != "\""` (found by search in ''',
+  "✓ early ",
+]
+lacks = ["edited early"]
+
+[[step]]
+strata = ["--file", "q.strata", "view", "main"]
+has = ['''  while lx.at < n && char_at(lx, lx.at) != "\""
+    invariant lx.at <= n {''', "  while i < 10 {"]
+
+# the definition changed: verified again, its written invariant proven, not
+# searched for (nothing more is written)
+[[step]]
+strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache", "--checks", "--show-searches"]
+has = [
+  "✓ quoted_end ",
+  '''proven:  invariant `lx.at <= n` after a pass of `while lx.at < n && char_at(lx, lx.at) != "\""`''',
+  "✓ early ",
+]
+lacks = ["edited", "by search"]
+
+# `--no-write` leaves the code as it is
+[[step]]
+save = "n.strata"
+from = "q.st"
+
+[[step]]
+strata = ["--file", "n.strata", "verify", "--no-race", "--no-cache", "--no-write"]
+has = ["✓ quoted_end "]
+lacks = ["edited"]
+
+[[step]]
+strata = ["--file", "n.strata", "view", "main"]
+lacks = ["invariant"]
+
+# no budget left: nothing is searched, and every loop is reported
+[[step]]
+save = "b.strata"
+from = "q.st"
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--no-race", "--no-cache", "--no-write", "--search-budget", "0"]
+has = [
+  '''note: `quoted_end`: the invariant search budget was used up before `while lx.at < n && char_at(lx, lx.at) != "\""` was searched: write an `invariant` for that loop, or verify again with a larger budget (`--search-budget N`; this run's was 0k solver resource units)''',
+  "note: `early`: the invariant search budget was used up before `while i < 10` was searched",
+]
+lacks = ["edited", "✓ early "]
+
+# std's loops are searched as the program reaches them, never written
+[[step]]
+run = ["sh", "-c", "cat $ROOT/std/*.strata | shasum > std-before"]
+
+[[step]]
+save = "s.strata"
+text = '''
+use std.toml
+
+fn quoted(s: String) -> String {
+  toml.quote(s)
+}
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "verify", "--no-race", "--no-cache"]
+lacks = ["edited"]
+
+[[step]]
+run = ["sh", "-c", "cat $ROOT/std/*.strata | shasum | diff - std-before"]

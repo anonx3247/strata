@@ -318,6 +318,18 @@ static void solver_log(const char *flags, size_t n, uint64_t h, double secs, con
   fclose(lf);
 }
 
+// Whether `flags` (words separated by spaces) hold the word `w`.
+static int has_word(const char *flags, const char *w) {
+  size_t n = strlen(w);
+  const char *f = flags;
+  while (*f) {
+    while (*f == ' ') f++;
+    if (strncmp(f, w, n) == 0 && (f[n] == ' ' || f[n] == 0)) return 1;
+    while (*f && *f != ' ') f++;
+  }
+  return 0;
+}
+
 // One script's answers from process `p` (started when it isn't running),
 // with its flags (`-t:MS`, `-T:S`, `rlimit=N`): what the solver wrote
 // before the end mark, or, when it died or ran past `-T`, what it wrote.
@@ -391,9 +403,16 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
   }
   if (out.len) fix_lines(result, out.buf, out.len, base);
   solver_log(flags, script_len, h1, now_s() - started, out.buf, out.len, "");
+  if (!done && dead == 2) buf_str(result, "timeout\n");
+  if (has_word(flags, "budget")) {
+    // (a search: how long it took, kept with its answer, so a later ask
+    // of it is told the same)
+    char took[64];
+    snprintf(took, sizeof took, "(:strata-micros %lld)\n", (long long)((now_s() - started) * 1e6));
+    buf_str(result, took);
+  }
   if (!done) {
     proc_stop(p);
-    if (dead == 2) buf_str(result, "timeout\n");
   } else {
     memo_put(h1, h2, script_len, result->buf ? result->buf : "");
   }
@@ -401,11 +420,49 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
   free(out.buf);
 }
 
+// The search budget of a run (`solver_budget`): the solver's resource
+// units the scripts flagged `budget` (loop-invariant searches) may use in
+// all, -1 for no limit; the units they used (each script's `(:rlimit N)`,
+// else its whole `rlimit`: it was stopped), and how many were refused once
+// it was used up. A script answered before (the memo) costs nothing, so the
+// units used are the same whichever worker asks first.
+static int64_t budget_units = -1, budget_used, budget_refused;
+
+// The resource units a script's answer says it used (`(:rlimit N)`), else
+// its whole limit (`rlimit=N` in its flags).
+static int64_t units_used(const char *flags, const Buf *result) {
+  const char *at = result->buf ? strstr(result->buf, "(:rlimit ") : NULL;
+  if (at) return atoll(at + 9);
+  const char *r = strstr(flags, "rlimit=");
+  return r ? atoll(r + 7) : 0;
+}
+
+// The search budget from now on (`units` < 0: none), nothing used yet.
+int64_t solver_budget(int64_t units) {
+  __atomic_store_n(&budget_units, units, __ATOMIC_SEQ_CST);
+  __atomic_store_n(&budget_used, 0, __ATOMIC_SEQ_CST);
+  __atomic_store_n(&budget_refused, 0, __ATOMIC_SEQ_CST);
+  return 0;
+}
+
+// The units the searches used so far.
+int64_t solver_budget_used(void) {
+  return __atomic_load_n(&budget_used, __ATOMIC_SEQ_CST);
+}
+
+// How many searches were refused, the budget used up.
+int64_t solver_budget_refused(void) {
+  return __atomic_load_n(&budget_refused, __ATOMIC_SEQ_CST);
+}
+
 // `run_fresh`, unless the script was answered before (the memo) or is
-// running on another worker now: then its answer, once it has one.
+// running on another worker now: then its answer, once it has one. A
+// script flagged `budget` (a search) isn't run once the search budget is
+// used up: its answer is `budget`.
 static void run_one(Proc *p, const char *solver, const char *flags, const char *script, size_t script_len, Buf *result) {
   uint64_t h1, h2;
   memo_hash(flags, script, script_len, &h1, &h2);
+  int charged = has_word(flags, "budget");
   pthread_mutex_lock(&memo_lock);
   for (;;) {
     if (memo_find(h1, h2, script_len, result)) {
@@ -416,9 +473,20 @@ static void run_one(Proc *p, const char *solver, const char *flags, const char *
     if (!running_has(h1, h2, script_len)) break;
     pthread_cond_wait(&running_done, &memo_lock);
   }
+  if (charged) {
+    int64_t limit = __atomic_load_n(&budget_units, __ATOMIC_SEQ_CST);
+    if (limit >= 0 && __atomic_load_n(&budget_used, __ATOMIC_SEQ_CST) >= limit) {
+      pthread_mutex_unlock(&memo_lock);
+      __atomic_fetch_add(&budget_refused, 1, __ATOMIC_SEQ_CST);
+      buf_str(result, "budget\n");
+      solver_log(flags, script_len, h1, 0, result->buf, result->len, "\tbudget");
+      return;
+    }
+  }
   running[running_count++] = (Running){h1, h2, script_len};
   pthread_mutex_unlock(&memo_lock);
   run_fresh(p, solver, flags, script, script_len, h1, h2, result);
+  if (charged) __atomic_fetch_add(&budget_used, units_used(flags, result), __ATOMIC_SEQ_CST);
   pthread_mutex_lock(&memo_lock);
   for (int i = 0; i < running_count; i++) {
     if (running[i].h1 == h1 && running[i].h2 == h2 && running[i].len == script_len) {
@@ -675,4 +743,12 @@ int64_t work_counter(void) {
 
 int64_t work_take(int64_t id) {
   return __atomic_fetch_add(&work_counters[id], 1, __ATOMIC_SEQ_CST);
+}
+
+// The current time, in nanoseconds since the epoch (for strata.log's
+// entries `verify` writes).
+int64_t solver_clock_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 }

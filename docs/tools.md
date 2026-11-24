@@ -12,6 +12,8 @@ curl -fsSL https://strata-lang.dev/install.sh | sh
 
 It goes in `~/.strata` (`bin/strata` and `lib/`) and prints how to add `~/.strata/bin` to your PATH. `STRATA_VERSION=v0.1` pins a release, `STRATA_INSTALL=DIR` installs elsewhere, `STRATA_MODIFY_PATH=1` adds the line to your shell's rc file. Running it again upgrades in place.
 
+For coding agents, `strata skill install` writes a short skill, `strata/SKILL.md`, where they look for skills: `~/.agents/skills` (Codex, Pi, OpenCode), and `~/.claude/skills` and `~/.codex/skills` when those agents are installed (`--dir DIR` for one folder, such as a project's `.claude/skills`). It tells them that `.strata` files are binary and that they read and change code through `strata`, and it lists the commands; `strata skill` prints it.
+
 Building strata from source needs LLVM 23's libraries, zstd and clang (linked into strata, not needed to run it) and lld's libraries, built once into `target/lld`; strata is written in Strata, so a `strata` builds the next (`STRATA_SEED`, else one on the PATH, else the latest release, downloaded):
 
 ```sh

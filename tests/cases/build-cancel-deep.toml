@@ -1,0 +1,64 @@
+# Cancellation reaching a loser deep in calls, through a closure (a lambda,
+# a function value, a list's `map`) and through a trait value (and a type
+# parameter bounded by the trait): every loser leaves its wait and frees
+# what its frames held (STRATA_MEMORY=check). Only calls that may reach a
+# wait are followed by a cancellation check (compiler/codegen's
+# `waits_of`): none in `pure` or in `Fixed`'s `take`, and none at all in a
+# program whose tasks can't be cancelled (no `race`, no `supervised`).
+
+[[step]]
+save = "cancel.strata"
+from = "cancel.st"
+
+[[step]]
+strata = ["build", "cancel.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "won 50 of 50\nlate\n"
+
+[[step]]
+strata = ["run", "cancel.strata"]
+memory = true
+stdout = "won 50 of 50\nlate\n"
+
+[[step]]
+strata = ["build", "cancel.strata", "--emit-llvm", "-o", "cancel.ll"]
+
+[[step]]
+run = ["sh", "-c", "awk '/^define/ { f = $3 } /strata_cancel_any monotonic/ && f ~ /pure|Fixed.Source.take/ { n++ } END { print n + 0 }' cancel.ll"]
+stdout = "0\n"
+
+[[step]]
+save = "spawned.strata"
+text = """
+fn work(n: Int) -> Int {
+  if n < 2 {
+    n
+  } else {
+    work(n - 1) + work(n - 2)
+  }
+}
+
+fn main() {
+  r := scope {
+    a := spawn work(20)
+    b := spawn work(21)
+    (await a) + (await b)
+  }
+  print(r)
+}
+"""
+
+[[step]]
+strata = ["build", "spawned.strata", "--emit-llvm", "-o", "spawned.ll"]
+
+[[step]]
+run = ["sh", "-c", "grep -c 'strata_cancel_any monotonic' spawned.ll || true"]
+stdout = "0\n"
+
+[[step]]
+strata = ["run", "spawned.strata"]
+memory = true
+stdout = "17711\n"

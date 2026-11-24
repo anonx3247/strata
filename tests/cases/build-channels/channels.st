@@ -84,9 +84,17 @@ fn merge() {
   }
 }
 
+/// `slow(22)` once `go` says so (the first tick has happened: `ticks` doesn't
+/// depend on how fast `slow` runs)
+fn gated(go: Receiver[Int]) -> Int {
+  _ := go.recv()
+  slow(22)
+}
+
 fn ticks() {
   r := scope {
-    t := spawn slow(22)
+    (go_tx, go_rx) := channel(1)
+    t := spawn gated(go_rx)
     (tx, rx) := channel(1)
     mut ticks := 0
     loop {
@@ -98,6 +106,10 @@ fn ticks() {
         tx.send(ticks) => {
           ticks += 1
           _ := rx.recv()
+          if ticks == 1 {
+            go_tx.send(1)
+            go_tx.close()
+          }
         },
       }
     }

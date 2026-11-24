@@ -168,6 +168,22 @@ fn triangle_closed(n: Natural) -> Natural
     terminates: `while i < n` ends: `n - i` goes down on every pass
 ```
 
+**Invariants found by search are written down.** Most loops' invariants are found at once (a few queries, a few thousand of the solver's resource units) and stay implicit. When finding them takes a real search (more resource units than a proof may use, 2M), `verify` writes what it found into the code as `invariant` clauses on that loop, so later runs only prove them and readers see them. It says so, a line per definition:
+
+```text
+edited quoted_end: added `invariant lx.at <= n` to `while lx.at < n && char_at(lx, lx.at) != "\""` (found by search in 0.6 s, 3M solver resource units)
+```
+
+All of a run's invariants are written in one edit, after its verdicts: only the module files of the changed definitions are encoded again (an `invariant` clause changes no signature, and `verify` has just proven it), and only clauses that print as Strata and read back as the same tree are written. In a package opened from its folder (`strata verify`, `strata build` without `--file`), the change is logged in `strata.log` as made by `verify` (`"by":"verify"`) and committed, as an edit is; with `--file` it is written as `--file F edit` writes. Only the program verified is written: std and core never are when they are dependencies. An invariant that speaks of a value before the loop (`x₀`) can't be written as code: it stays in the verdict cache, and the loop is searched again when its verdict isn't cached. `--no-write` writes nothing. A loop with written invariants isn't searched: they are proven, and what else holds is asked only at a proof's size (0.5M units a question, giving up at the first unanswered).
+
+**One search budget per run.** All of a run's loop-invariant searches (termination's and verification's) draw on one pool of the solver's resource units (deterministic, unlike time), 2,000M by default, about twice what all of the compiler's loops take with nothing cached (std's take 53M, the examples' under 0.1M). A search answered before in the run costs nothing. Once the pool is used up, the loops not yet searched are reported, and their verdicts aren't kept:
+
+```text
+note: `quoted_end`: the invariant search budget was used up before `while …` was searched: write an `invariant` for that loop, or verify again with a larger budget (`--search-budget N`; this run's was 0k solver resource units)
+```
+
+`--search-budget N` sets it (a negative N: no limit). Which loops are left when it runs out depends on the order the workers reach them; `--show-searches` lists what each loop's search took and found.
+
 A written invariant is also checked when the program runs, at the loop's head: on entry, after every pass and `continue`, and when the loop ends normally (not at a `break`, whose state it needn't describe). `for` and `loop` take them too. A `for` loop's invariant can't name the loop's variable: it holds before the first element and after the last, where there is none.
 
 Termination is never assumed. Whether the Collatz sequence always reaches 1 is an open problem, so:
