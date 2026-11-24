@@ -1,0 +1,24 @@
+# cli.rs: the_fuzzer_stops_a_slow_solver: a failure the fuzzer finds stops
+# the solver's processes (a solver that takes 30 s on `bump`'s queries; the
+# Rust test also required the run to take under 20 s)
+[[step]]
+write = "slow-solver"
+text = '''
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo slow 1.0; exit 0; fi
+if grep -q 99; then sleep 30; fi
+echo unknown
+'''
+
+[[step]]
+run = ["chmod", "755", "slow-solver"]
+
+[[step]]
+save = "b.strata"
+text = "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n"
+
+[[step]]
+strata = ["--file", "b.strata", "verify"]
+env = { STRATA_SOLVER = "$TMP/slow-solver" }
+fails = true
+has = ["✗ bump", "found by the fuzzer"]

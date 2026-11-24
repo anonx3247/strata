@@ -1,0 +1,53 @@
+# cli.rs: union_members_on_their_own_or_inline
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+type Dot
+
+type Moved(Int)
+
+type Square = { side: Int }
+
+type Shape = Square | Dot | Moved
+
+type Mark = Dot | Moved
+
+fn f(s: Shape) -> String {
+  match s {
+    Square => f"square {s.side}",
+    Dot => "dot",
+    Moved(n) => f"moved {n}",
+  }
+}
+
+fn g(m: Mark) -> Int = match m { Dot => 0, Moved(n) => n }
+
+fn main() {
+  print(f(Dot))
+  print(f(Moved(2)))
+  print(f(Square { side: 3 }))
+  print(g(Moved(5)))
+}
+'''
+
+[[step]]
+strata = ["run", "s.strata"]
+stdout = "dot\nmoved 2\nsquare 3\n5\n"
+
+[[step]]
+strata = ["--file", "s.strata", "render", "--members", "inline"]
+capture = "inline.st"
+has = ["type Shape =\n  | Square { side: Int }\n  | Mark\n", "type Mark =\n  | Dot\n  | Moved(Int)\n"]
+
+[[step]]
+strata = ["--file", "i.strata", "edit"]
+from_tmp = "inline.st"
+
+[[step]]
+strata = ["run", "i.strata"]
+stdout = "dot\nmoved 2\nsquare 3\n5\n"
+
+[[step]]
+strata = ["--file", "i.strata", "render", "--members", "separate"]
+has = ["type Square = { side: Int }\n", "type Dot\n", "type Moved(Int)\n", "type Shape = Square | Mark\n"]

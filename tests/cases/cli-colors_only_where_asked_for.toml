@@ -1,0 +1,44 @@
+# cli.rs: colors_only_where_asked_for: a pipe gets plain text, FORCE_COLOR colors (the Rust test ran each with
+# `--rust` too)
+
+[[step]]
+save = "a.strata"
+text = '''
+from std.io use Console
+from std.term use Output, Errors
+
+fn main(mut console: Console) -> Result[(), String] {
+  p := console.paint(Output)
+  mut console.print(p.green("ok"))
+  Err("no")
+}
+'''
+
+[[step]]
+strata = ["run", "a.strata"]
+fails = true
+stdout = "ok\n"
+has = ["error: no\n"]
+
+[[step]]
+strata = ["run", "a.strata"]
+env = { "FORCE_COLOR" = "1" }
+fails = true
+stdout = "\u001b[32mok\u001b[0m\n"
+has = ["error:\u001b["]
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--help"]
+env = { "FORCE_COLOR" = "1" }
+has = ["\u001b[1mUsage:\u001b[0m hello"]
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--times", "0"]
+env = { "FORCE_COLOR" = "1" }
+fails = true
+has = ["error:", "\u001b["]
+
+[[step]]
+strata = ["run", "$ROOT/examples/hello", "--", "--times", "0"]
+fails = true
+has = ["error: --times"]

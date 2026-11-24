@@ -1,0 +1,19 @@
+# cli.rs: comparing_with_a_bare_constructor_is_a_tag_test
+
+[[step]]
+save = "eq.strata"
+text = '''
+type Pick =
+  | Nothing
+  | Apply { f: (Int) -> Int }
+
+fn main() {
+  let f: Option[(Int) -> Int] = Some(x -> x + 1)
+  let p: Pick = Apply { f: x -> x }
+  print(f"{f == None} {f != None} {None == f} {p == Nothing} {Nothing != p}")
+}
+'''
+
+[[step]]
+strata = ["run", "eq.strata"]
+has = ["false true false false true"]

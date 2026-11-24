@@ -1,0 +1,32 @@
+# cli.rs: codebase_edits_are_checked_and_atomic
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["add", "$ROOT/examples/orders.strata"]
+
+[[step]]
+strata = ["edit"]
+text = "fn discount(amount: Cents) -> Cents ensures it <= amount { amount }"
+has = ["implementation only"]
+
+# an edit that doesn't check in itself is rejected
+[[step]]
+strata = ["edit"]
+text = "fn total(lines: List[Cents]) -> Cents { sum(lines) + true }"
+fails = true
+has = ["rejected"]
+
+# one that breaks a caller isn't committed: it opens a pending change, with a
+# hole for the caller
+[[step]]
+strata = ["edit"]
+text = "fn total(lines: List[Cents]) -> Cents { sum(lines) }"
+has = ["it is now a hole, in a pending change", "was: total(lines)"]
+
+[[step]]
+strata = ["abort"]
+
+[[step]]
+strata = ["render"]
+has = ["fn total(lines: NonEmpty[Line])"]

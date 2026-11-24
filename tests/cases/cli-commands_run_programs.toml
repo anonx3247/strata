@@ -1,0 +1,86 @@
+# cli.rs: commands_run_programs: `Commands` (std.process): `main` names `Launcher` and runs real programs,
+# never through a shell; code that takes `Commands` is tested with mocks
+
+[[step]]
+run = ["mkdir", "sub"]
+
+[[step]]
+save = "cmds.strata"
+text = '''
+from std.process use Commands, Launcher
+
+fn show(mut c: Commands, program: String, args: List[String], dir: String) {
+  match mut c.run(program, args, dir) {
+    Ok(f) => print(f"{f.code}|{f.out}|{f.err}"),
+    Err(e) => print(f"err {e}"),
+  }
+}
+
+fn main(mut launcher: Launcher) {
+  show(mut launcher, "echo", ["hello", "a b"], "")
+  show(mut launcher, "sh", ["-c", "echo oops >&2; exit 3"], "")
+  show(mut launcher, "sh", ["-c", "basename $(pwd)"], "sub")
+  show(mut launcher, "no-such-program-strata", [], "")
+  show(mut launcher, "echo", ["*"], "no-such-folder")
+}
+'''
+
+[[step]]
+strata = ["run", "cmds.strata"]
+capture = "out.txt"
+has = ["0|hello a b\n|\n3||oops\n\n0|sub\n", "err can't run `no-such-program-strata`", "err can't run `echo` in no-such-folder"]
+
+# the built executable runs them the same way
+[[step]]
+strata = ["--file", "cmds.strata", "build", "-o", "cmds"]
+
+[[step]]
+run = ["./cmds"]
+out_file = "out.txt"
+
+# tests: a mock type answering what is expected, `mock Commands`, and the
+# real one when a test names it
+[[step]]
+save = "lib.strata"
+text = '''
+from std.process use Commands, Finished, Launcher
+
+fn status_code(mut commands: Commands) -> Int
+  ensures it >= 0
+{
+  match mut commands.run("git", ["status"], "") {
+    Ok(f) => f.code,
+    Err(_) => 0,
+  }
+}
+
+mock GitFailing = {}
+
+impl Commands for GitFailing {
+  fn run(mut self, program: String, args: List[String], dir: String) -> Result[Finished, String] {
+    if program == "git" { Ok(Finished { code: 1, out: "", err: "" }) } else { Err("unexpected") }
+  }
+}
+
+test "git failing" {
+  mut c := GitFailing {}
+  assert status_code(mut c) == 1
+}
+
+test "any commands" {
+  mut c := mock Commands
+  assert status_code(mut c) >= 0
+}
+
+test "the real one" (mut launcher: Launcher) {
+  assert (mut launcher.run("sh", ["-c", "exit 4"], "") except { Finished { code: 0, out: "", err: "" } }).code == 4
+}
+'''
+
+[[step]]
+strata = ["--file", "lib.strata", "test"]
+has = ["3 passed"]
+
+[[step]]
+strata = ["--file", "lib.strata", "verify"]
+has = ["status_code", "proven"]

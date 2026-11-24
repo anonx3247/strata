@@ -1,0 +1,250 @@
+# cli.rs: unions_variants_as_types_and_narrowing
+
+[[step]]
+save = "u.strata"
+text = '''
+type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Triangle = { base: Positive, height: Positive }
+type Shape = Square | Circle | Triangle
+
+type ShapeError = | NonEmptyErr | TooBig { max: Int }
+
+fn area(s: Shape) -> Int {
+  match s {
+    Square => s.side * s.side,
+    Circle => 3 * s.radius * s.radius,
+    Triangle => s.base * s.height / 2,
+  }
+}
+
+fn size(n: Int) -> String {
+  match n {
+    where it < 3 => "small",
+    where 3 <= it && it <= 5 => "medium",
+    where it > 5 => "large",
+  }
+}
+
+fn sign(x: Int) -> String {
+  match x {
+    Positive => "positive",
+    0 => "zero",
+    where it < 0 => "negative",
+  }
+}
+
+fn describe(v: Int | String) -> String {
+  match v {
+    Int => f"number {v + 1}",
+    String => f"text {len(v.code_points())}",
+  }
+}
+
+fn check(s: Shape) -> Result[Shape, ShapeError] {
+  if area(s) > 100 { Err(TooBig { max: 100 }) } else { Ok(s) }
+}
+
+fn max_of(e: TooBig) -> Int { e.max }
+
+fn explain(r: Result[Shape, ShapeError]) -> String {
+  match r {
+    Ok(s) => f"ok {area(s)}",
+    Err(e) => match e {
+      NonEmptyErr => "empty",
+      TooBig => f"too big, max {max_of(e)}",
+    },
+  }
+}
+
+fn first_word(s: String) -> String {
+  match lines(s) as ls {
+    [] => "",
+    _ => match get(ls, 0) { Some(w) => w, None => "" },
+  }
+}
+
+test "unions and narrowing" {
+  assert area(Square { side: 3 }) == 9
+  assert area(Circle { radius: 2 }) == 12
+  assert size(4) == "medium"
+  assert size(-10) == "small"
+  assert sign(-2) == "negative"
+  assert sign(0) == "zero"
+  assert describe(41) == "number 42"
+  assert describe("abc") == "text 3"
+  assert explain(check(Square { side: 20 })) == "too big, max 100"
+  assert explain(check(Circle { radius: 1 })) == "ok 3"
+  assert Square { side: 1 } is Square
+  assert 5 is Positive
+  assert !(-5 is Positive)
+}
+'''
+
+[[step]]
+save = "t.strata"
+text = '''
+trait Named { fn name(self) -> String }
+type Dog = { n: String }
+type Cat = { n: String }
+type Status = | Open | Closed { why: String }
+type Ticket = { id: Int, status: Status }
+impl Named for Dog { fn name(self) -> String { "dog " + self.n } }
+impl Named for Cat { fn name(self) -> String { "cat " + self.n } }
+impl Named for Closed { fn name(self) -> String { "closed: " + self.why } }
+
+fn greet(p: Dog | Cat) -> String { p.name() }
+fn label(t: Ticket) -> String {
+  match t.status {
+    Open => "open",
+    Closed => t.status.why,
+  }
+}
+fn closed_name(c: Closed) -> String { c.name() }
+fn reset(n: Int) -> Int {
+  mut x := n
+  match x {
+    Positive => {
+      x = -1
+      x
+    }
+    _ => 0,
+  }
+}
+fn maybe(n: Int) -> Int | () {
+  if n > 0 { n } else { () }
+}
+fn use_maybe(n: Int) -> Int {
+  match maybe(n) as m {
+    Int => m,
+    Unit => 0,
+  }
+}
+test "traits, paths, mut" {
+  assert greet(Cat { n: "tom" }) == "cat tom"
+  assert label(Ticket { id: 1, status: Closed { why: "done" } }) == "done"
+  assert closed_name(Closed { why: "x" }) == "closed: x"
+  assert reset(5) == -1
+  assert use_maybe(3) == 3
+  assert use_maybe(-3) == 0
+}
+'''
+
+[[step]]
+strata = ["--file", "u.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "u.strata", "render"]
+capture = "u.st"
+
+[[step]]
+save = "u-r.strata"
+from_tmp = "u.st"
+
+[[step]]
+strata = ["--file", "u-r.strata", "render"]
+out_file = "u.st"
+
+[[step]]
+strata = ["--file", "t.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "t.strata", "render"]
+capture = "t.st"
+
+[[step]]
+save = "t-r.strata"
+from_tmp = "t.st"
+
+[[step]]
+strata = ["--file", "t-r.strata", "render"]
+out_file = "t.st"
+
+# an argument of a union type is a value of one of its members
+[[step]]
+strata = ["--file", "u.strata", "run", "area", "Circle { radius: 2 }"]
+stdout = "12\n"
+
+[[step]]
+strata = ["--file", "u.strata", "run", "max_of", "NonEmptyErr"]
+fails = true
+has = ["expected `TooBig`, found `ShapeError`"]
+
+[[step]]
+save = "bad.strata"
+text = '''
+type Square = { side: Positive }
+type Circle = { radius: Positive }
+type Shape = Square | Circle
+
+fn gap(n: Int) -> String {
+  match n {
+    where it < 3 => "small",
+    where it > 5 => "large",
+  }
+}
+
+fn missing_member(v: Int | String) -> String {
+  match v {
+    Int => "n",
+  }
+}
+
+fn dead(n: Int) -> String {
+  match n {
+    Int => "any",
+    Positive => "never",
+  }
+}
+
+fn dead2(n: Int) -> String {
+  match n {
+    where it >= 0 => "a",
+    where it < 0 => "b",
+    7 => "c",
+  }
+}
+
+fn wrong(s: Shape) -> Int {
+  match s {
+    String => 1,
+    _ => 2,
+  }
+}
+
+fn opaque(s: String) -> Int {
+  match s {
+    NonEmptyString => 1,
+  }
+}
+
+fn no_field(s: Shape) -> Int { s.side }
+
+fn mixed() -> Int {
+  x := if true { Square { side: 1 } } else { Circle { radius: 1 } }
+  1
+}
+'''
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["non-exhaustive match on `Int`: `where 3 <= it && it <= 5` is not covered", "non-exhaustive match on `Int | String`: `String` is not covered", "unreachable match arm `Positive`", "unreachable match arm `7`", "pattern `String`: expected `Circle | Square`, found `String`", "non-exhaustive match on `String`: `where len(it.code_points()) == 0` is not covered", "not every `Circle | Square` does"]
+lacks = ["unreachable match arm `String`"]
+
+# a variant is a type, so its name is unique in its module; two modules
+# may each have a `Done` (told apart as `a.Done`, `b.Done`)
+[[step]]
+module = "a"
+into = "$TMP/clash/"
+text = "pub type Status = | Done | Open\n"
+
+[[step]]
+module = "b"
+into = "$TMP/clash/"
+text = "pub type Outcome = | Done | Failed\n"
+
+[[step]]
+strata = ["--file", "clash", "check"]

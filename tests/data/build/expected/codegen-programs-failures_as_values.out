@@ -1,0 +1,14 @@
+Ok(42)
+Err("not a number: x")
+Some(40)
+None
+7
+15
+100
+99
+2
+12
+8
+error: not a number: nope
+
+--- exit 1

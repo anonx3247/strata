@@ -1,0 +1,137 @@
+/// Order identifiers: `ord_` followed by 6 lowercase letters or digits.
+type OrderId = String
+  where matches(it, "ord_[a-z0-9]{6}")
+
+/// How many units of an item can be on a single line.
+type Quantity = Int
+  where 1 <= it && it <= 99
+
+/// Prices are in cents and never negative.
+type Cents = Int
+  where it >= 0
+
+type Line = { sku: NonEmptyString, qty: Quantity, unit_price: Cents }
+
+type Order =
+  | Pending { id: OrderId, lines: NonEmpty[Line] }
+  | Shipped { id: OrderId, lines: NonEmpty[Line], tracking: NonEmptyString }
+  | Cancelled { id: OrderId, reason: NonEmptyString }
+
+type ShipError =
+  | NotFound
+  | NotPending
+
+/// Persistent storage for orders.
+trait Db {
+  fn load(self, id: OrderId) -> Option[Order]
+  fn save(mut self, o: Order)
+}
+
+/// A store holding a single order: enough for tests, and it records saves.
+type OneOrder = { order: Option[Order] }
+
+impl Db for OneOrder {
+  fn load(self, id: OrderId) -> Option[Order] {
+    match self.order {
+      Some(o) => if order_id(o) == id {
+        Some(o)
+      } else {
+        None
+      },
+      None => None,
+    }
+  }
+
+  fn save(mut self, o: Order) {
+    self.order = Some(o)
+  }
+}
+
+fn order_id(o: Order) -> OrderId {
+  match o {
+    Pending { id, .. } => id,
+    Shipped { id, .. } => id,
+    Cancelled { id, .. } => id,
+  }
+}
+
+fn line_total(l: Line) -> Cents
+  ensures it == l.qty * l.unit_price {
+  l.qty * l.unit_price
+}
+
+fn total(lines: NonEmpty[Line]) -> Cents {
+  sum(lines.map(line_total))
+}
+
+/// 10% off orders of 100.00 or more.
+fn discount(amount: Cents) -> Cents
+  ensures it <= amount {
+  if amount >= 10000 {
+    amount - amount / 10
+  } else {
+    amount
+  }
+}
+
+/// Works with any `Db`: pass the real one in production, a fake in tests.
+fn ship(
+  mut db: Db,
+  id: OrderId,
+  tracking: NonEmptyString,
+) -> Result[Order, ShipError]
+  ensures match it {
+    Ok(o) => o is Shipped,
+    Err(_) => true,
+  } {
+  order := db.load(id) or { return Err(NotFound) }
+  match order {
+    Pending { id, lines } => {
+      o := Shipped { id, lines, tracking }
+      mut db.save(o)
+      Ok(o)
+    },
+    _ => Err(NotPending),
+  }
+}
+
+/// Refunds are not designed yet: the hole has a type and a contract,
+/// so callers can already be checked against it.
+fn refund(o: Order) -> Cents
+  ensures it >= 0
+  = ?refund_policy
+
+fn main() {
+  {
+    line := Line { sku: "tea", qty: 2, unit_price: 450 }
+    mut db := OneOrder {
+      order: Some(Pending { id: "ord_abc123", lines: [line] }),
+    }
+    r := ship(mut db, "ord_abc123", "TRK1")
+    assert r is Ok
+    assert db.order == Some(
+      Shipped { id: "ord_abc123", lines: [line], tracking: "TRK1" },
+    )
+  }
+  {
+    mut db := OneOrder {
+      order: Some(Cancelled { id: "ord_abc123", reason: "fraud" }),
+    }
+    r := ship(mut db, "ord_abc123", "TRK1")
+    assert r == Err(NotPending)
+  }
+  {
+    mut db := mock Db
+    r := ship(mut db, "ord_zzz999", "TRK9")
+    assert r is Ok || r is Err
+  }
+  {
+    lines := [
+      Line { sku: "a", qty: 3, unit_price: 100 },
+      Line { sku: "b", qty: 1, unit_price: 50 },
+    ]
+    assert total(lines) == 350
+    assert discount(20000) == 18000
+  }
+  print("all asserts hold")
+}

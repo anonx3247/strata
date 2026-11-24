@@ -1,0 +1,16 @@
+# build.rs: run_compiles_by_default_with_the_jit
+[[step]]
+save = "big.strata"
+from = "big.st"
+
+[[step]]
+strata = ["run", "big.strata"]
+stdout = "1180591620717411303424\n"
+
+[[step]]
+save = "regex.strata"
+from = "regex.st"
+
+[[step]]
+strata = ["run", "regex.strata"]
+stdout = "true\n"

@@ -1,0 +1,26 @@
+# cli.rs: run_a_binary_file
+[[step]]
+strata = ["--file", "$ROOT/examples/hello", "pack", "hello.strata"]
+
+[[step]]
+strata = ["run", "hello.strata"]
+has = ["hello, world!"]
+
+[[step]]
+run = ["printf", 'STRATA\001\000\005']
+capture = "bad.strata"
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["corrupt binary Strata file"]
+
+# text is not read: it goes in through an edit
+[[step]]
+write = "text.strata"
+text = "fn main() { print(1) }\n"
+
+[[step]]
+strata = ["run", "text.strata"]
+fails = true
+has = ["text goes in through `strata edit`"]

@@ -1,0 +1,15 @@
+# cli.rs: fuzzes_strings_a_refinement_pattern_matches: inputs made by
+# `std.regex.samples`
+[[step]]
+save = "g.strata"
+text = '''
+fn shout(s: String where matches(it, "\p{L}{2,4}")) -> String ensures len(it.code_points()) >= 1 { to_upper(s) }
+fn edge(s: String where matches(it, "a\b b?|\bx\w+")) -> String ensures len(it.code_points()) >= 0 { to_lower(s) }
+fn sku(s: String where matches(it, "[A-Z]{3}-[0-9]{4}")) -> Int ensures it == 99 { len(to_lower(s).code_points()) }
+'''
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "30"]
+fails = true
+has = ["~ shout", "fuzzed: 30 cases", "✗ sku", "input:   \""]
+lacks = ["skipped", "internal error"]

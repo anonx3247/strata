@@ -1,0 +1,119 @@
+# cli.rs: sync_follows_member_renames
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "shapes.strata"
+text = '''
+pub type Shape =
+  | Circle { radius: Int }
+  | Square(Int)
+
+pub type Line = { sku: String, qty: Int }
+
+pub trait Sized {
+  fn size(self) -> Int
+}
+
+impl Sized for Line {
+  fn size(self) -> Int {
+    self.qty
+  }
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+from shapes use Shape, Circle, Square, Line, Sized
+
+fn area(s: Shape) -> Int {
+  match s {
+    Circle { radius } => 3 * radius * radius,
+    Square(n) => n * n,
+  }
+}
+
+fn bigger(l: Line) -> Line {
+  Line { ..l, qty: l.qty + 1 }
+}
+
+test "shapes" {
+  assert area(Circle { radius: 1 }) == 3
+  assert Square(2) is Square
+  l := Line { sku: "a", qty: 2 }
+  assert bigger(l).size() == 3
+  assert l.size() == 2
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "base"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+# feature renames a variant and a field; main adds code that uses the old names
+[[step]]
+run = ["git", "checkout", "-q", "-b", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["rename", "Circle", "Round"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["rename", "Line.qty", "quantity"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+save = "extra.strata"
+text = '''
+from shapes use Shape, Circle, Line
+
+fn unit() -> Shape {
+  Circle { radius: 1 }
+}
+
+fn doubled(l: Line) -> Int {
+  l.qty * 2
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "extra"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["merged main"]
+
+[[step]]
+strata = ["render", "extra"]
+has = ["Round { radius: 1 }", "l.quantity * 2"]

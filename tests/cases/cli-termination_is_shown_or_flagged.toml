@@ -1,0 +1,97 @@
+# cli.rs: termination_is_shown_or_flagged (the Rust test also checked which
+# function each line follows)
+[[step]]
+save = "t.strata"
+text = '''
+fn fact(n: Natural) -> Positive { if n == 0 { 1 } else { n * fact(n - 1) } }
+fn gcd(a: Natural, b: Natural) -> Natural { if b == 0 { a } else { gcd(b, a % b) } }
+fn length(xs: List[Int]) -> Natural { match xs { [] => 0, [_, ..rest] => 1 + length(rest) } }
+fn count_up(n: Natural) -> Natural {
+  mut i := 0
+  while i < n {
+    i = i + 1
+  }
+  i
+}
+fn forever(n: Int) -> Int { forever(n) }
+fn spin(n: Int) -> Int {
+  mut k := n
+  loop {
+    if k == 1 { break }
+    k = k - 1
+  }
+  k
+}
+fn trusted(n: Int) -> Int
+  terminates
+{
+  spin(n)
+}
+fn uses_spin(n: Int) -> Int { spin(n) + 1 }
+fn uses_trusted(n: Int) -> Int { trusted(n) + 1 }
+fn up(n: Int) -> Int { if n > 100 { n } else { up(n + 1) } }
+fn search(xs: List[Int], t: Int, lo: Int, hi: Int) -> Bool {
+  if lo >= hi {
+    false
+  } else {
+    mid := (lo + hi) / 2
+    match get(xs, mid) {
+      Some(x) => if x < t { search(xs, t, mid + 1, hi) } else { x == t || search(xs, t, lo, mid) },
+      None => false,
+    }
+  }
+}
+fn ack(m: Natural, n: Natural) -> Natural {
+  if m == 0 { n + 1 } else { if n == 0 { ack(m - 1, 1) } else { ack(m - 1, ack(m, n - 1)) } }
+}
+fn total(xs: List[Int]) -> Int { if len(xs) == 0 { 0 } else { total(drop(xs, 1)) } }
+fn skip2(n: Int) -> Int { if n == 0 { 0 } else { skip2(n - 2) } }
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--checks", "--cases", "20"]
+any_code = true
+has = [
+  "terminates: `n` goes down on every recursive call",
+  "terminates: `b` goes down on every recursive call",
+  "terminates: `100 - n` goes down on every recursive call",
+  "terminates: `hi - lo` goes down on every recursive call",
+  "terminates: the pair (`m`, `n`), compared in order, goes down on every recursive call",
+  "terminates: `len(xs)` goes down on every recursive call",
+  "smaller piece of `xs`",
+  "`n - i` goes down",
+  "may not terminate: it calls itself",
+  "may not terminate: it has a `loop`",
+  "it calls `spin`, which may not terminate",
+  "terminates if `trusted` does (marked `terminates`",
+]
+
+# policies
+[[step]]
+strata = ["--file", "t.strata", "verify", "--require", "terminates", "--cases", "20"]
+fails = true
+has = ["policy: `spin` may not terminate"]
+lacks = ["policy: `uses_trusted`"]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "fact,count_up", "--require", "no-recursion"]
+fails = true
+has = ["policy: `fact` is recursive"]
+lacks = ["`count_up` is recursive"]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "count_up", "--require", "terminates,proven"]
+
+# `terminates` round-trips
+[[step]]
+strata = ["--file", "t.strata", "render"]
+capture = "r.st"
+has = ["fn trusted(n: Int) -> Int\n  terminates {"]
+
+[[step]]
+save = "r.strata"
+from_tmp = "r.st"
+
+[[step]]
+strata = ["--file", "r.strata", "render"]
+out_file = "r.st"

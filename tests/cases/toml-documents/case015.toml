@@ -1,0 +1,12 @@
+# The standard library.
+name = "std"
+exports = ["io", "fs"]
+
+[deps]
+http = { git = "https://example.com/http.git", rev = "v1" }
+
+[verify]
+proven = ["main"]
+
+[json]
+unknown_keys = "error"

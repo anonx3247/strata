@@ -1,0 +1,6 @@
+Some(3)
+Set { 1, 2 }
+Dict { "a": 1 }
+Ok(4)
+
+--- exit 0

@@ -1,0 +1,179 @@
+// Traits describe what a *type* can do; the implementation is chosen by the
+// type of the value. A type can implement any number of traits: the
+// relationships form a graph, not a hierarchy.
+
+/// Something with a price in cents.
+trait Priced {
+  fn price(self) -> Natural
+}
+
+/// A human-readable one-liner.
+trait Describe {
+  fn describe(self) -> String
+    ensures it != ""
+}
+
+/// A line for a receipt. Anything that can be described and priced gets
+/// `summary` for free; implementing it requires `Describe` and `Priced`.
+trait Summary: Describe + Priced {
+  fn summary(self) -> String {
+    f"{self.describe()}: {self.price()}c"
+  }
+}
+
+/// Combining two values of the same kind into one.
+trait Combine {
+  fn combine(self, other: Self) -> Self
+  law associative(a: Self, b: Self, c: Self):
+    a.combine(b).combine(c) == a.combine(b.combine(c))
+}
+
+type Item = { name: NonEmptyString, cents: Natural }
+
+/// A type can also have methods of its own, with no trait. One without
+/// `self` is called on the type: `Item.free("napkin")`.
+impl Item {
+  fn free(name: NonEmptyString) -> Item {
+    Item { name, cents: 0 }
+  }
+
+  fn discounted(self, percent: Int where 0 <= it && it <= 100) -> Item {
+    Item { ..self, cents: self.cents * (100 - percent) / 100 }
+  }
+}
+
+type Bundle = { items: NonEmpty[Item], discount: Int where 0 <= it && it <= 50 }
+
+impl Priced for Item {
+  fn price(self) -> Natural {
+    self.cents
+  }
+}
+
+impl Describe for Item {
+  fn describe(self) -> String {
+    self.name
+  }
+}
+
+impl Summary for Item {}
+
+impl Priced for Bundle {
+  fn price(self) -> Natural {
+    sum(self.items.map(price)) * (100 - self.discount) / 100
+  }
+}
+
+impl Describe for Bundle {
+  fn describe(self) -> String {
+    "bundle of " + join(self.items.map(describe), ", ")
+  }
+}
+
+impl Summary for Bundle {}
+
+/// Traits can be implemented for built-in types too.
+impl Describe for Int {
+  fn describe(self) -> String {
+    f"the number {self}"
+  }
+}
+
+/// A stock-keeping unit: a separate type, so it can't be confused with any
+/// other string.
+distinct type Sku = String
+  where matches(it, "[A-Z]{3}-[0-9]{1,4}")
+
+impl Describe for Sku {
+  fn describe(self) -> String {
+    f"SKU {self.value}"
+  }
+}
+
+type Money = { cents: Int }
+
+impl Combine for Money {
+  fn combine(self, other: Self) -> Self {
+    Money { cents: self.cents + other.cents }
+  }
+}
+
+/// One implementation for every list, whatever its elements.
+impl[T] Combine for List[T] {
+  fn combine(self, other: Self) -> Self {
+    self + other
+  }
+}
+
+/// A starting value. A method without `self` is called on a type:
+/// `Money.empty()`, or `T.empty()` in generic code.
+trait Empty: Combine {
+  fn empty() -> Self
+  law identity(a: Self): Self.empty().combine(a) == a
+}
+
+impl Empty for Money {
+  fn empty() -> Money {
+    Money { cents: 0 }
+  }
+}
+
+impl[T] Empty for List[T] {
+  fn empty() -> List[T] {
+    []
+  }
+}
+
+/// Like `combine_all`, but an empty list is fine: it gives `T.empty()`.
+fn combine_any[T: Empty](xs: List[T]) -> T {
+  fold(xs, T.empty(), (acc, x) -> acc.combine(x))
+}
+
+/// Wrong on purpose: averaging is not associative, and `verify` says so.
+type Midpoint = { at: Int }
+
+impl Combine for Midpoint {
+  fn combine(self, other: Self) -> Self {
+    Midpoint { at: (self.at + other.at) / 2 }
+  }
+}
+
+/// Generic code states what it needs from a type, nothing more.
+fn receipt[T: Summary](lines: List[T]) -> List[String] {
+  lines.map(summary)
+}
+
+fn total[T: Priced](xs: List[T]) -> Natural {
+  sum(xs.map(price))
+}
+
+fn combine_all[T: Combine](first: T, rest: List[T]) -> T {
+  fold(rest, first, (acc, x) -> acc.combine(x))
+}
+
+fn main() {
+  {
+    tea := Item { name: "tea", cents: 450 }
+    cake := Item { name: "cake", cents: 300 }
+    assert tea.summary() == "tea: 450c"
+    assert receipt([tea, cake]) == ["tea: 450c", "cake: 300c"]
+    b := Bundle { items: [tea, cake], discount: 10 }
+    assert b.summary() == "bundle of tea, cake: 675c"
+    assert total([tea, cake]) == 750
+    assert 42.describe() == "the number 42"
+    assert Item.free("napkin").price() == 0
+    assert tea.discounted(20).summary() == "tea: 360c"
+    assert Sku("TEA-7").describe() == "SKU TEA-7"
+  }
+  {
+    assert combine_all(
+      Money { cents: 1 },
+      [Money { cents: 2 }, Money { cents: 3 }],
+    ) == Money { cents: 6 }
+    assert combine_all([1], [[2, 3], [4]]) == [1, 2, 3, 4]
+    let no_money: List[Money] = []
+    assert combine_any(no_money) == Money.empty()
+    assert combine_any([[1], [2, 3]]) == [1, 2, 3]
+  }
+  print("all asserts hold")
+}

@@ -1,0 +1,86 @@
+# cli.rs: shared_method_names_across_modules
+
+[[step]]
+write = "strata.toml"
+text = "name = \"xmod\"\n"
+
+[[step]]
+module = "a"
+into = "$TMP/"
+text = "pub trait Sized {\n  fn size(self) -> Int\n}\n"
+
+[[step]]
+module = "b"
+into = "$TMP/"
+text = "pub trait Weighed {\n  fn size(self) -> Int\n}\n"
+
+[[step]]
+module = "main"
+into = "$TMP/"
+text = '''
+from a use Sized
+from b use Weighed
+
+type Box = { n: Int }
+type Bag = { n: Int }
+type Both = { n: Int }
+
+impl Sized for Box {
+  fn size(self) -> Int { self.n }
+}
+impl Weighed for Bag {
+  fn size(self) -> Int { self.n * 100 }
+}
+impl Both {
+  fn size(self) -> Int { 7 }
+}
+impl Sized for Both {
+  fn size(self) -> Int { 1 }
+}
+impl Weighed for Both {
+  fn size(self) -> Int { 2 }
+}
+
+fn via_sized(x: Sized) -> Int { x.size() }
+fn via_weighed[T: Weighed](x: T) -> Int { x.size() }
+
+test "each call means its receiver's size" {
+  assert Box { n: 3 }.size() == 3
+  assert Bag { n: 3 }.size() == 300
+  assert via_sized(Box { n: 4 }) == 4
+  assert via_weighed(Bag { n: 4 }) == 400
+  b := Both { n: 0 }
+  assert b.size() == 7
+  assert via_sized(b) == 1
+  assert via_weighed(b) == 2
+}
+'''
+
+[[step]]
+strata = ["--file", ".", "test"]
+has = ["1 passed"]
+
+# two traits of the receiver have the name, from different modules: an error, as within one
+[[step]]
+module = "amb"
+into = "$TMP/"
+text = '''
+from a use Sized
+from b use Weighed
+
+type Two = { n: Int }
+impl Sized for Two {
+  fn size(self) -> Int { 1 }
+}
+impl Weighed for Two {
+  fn size(self) -> Int { 2 }
+}
+
+fn concrete(x: Two) -> Int { x.size() }
+fn bounded[T: Sized + Weighed](x: T) -> Int { x.size() }
+'''
+
+[[step]]
+strata = ["--file", ".", "check"]
+fails = true
+has = ["`Two` implements `Sized` and `Weighed`, which both have `size`", "`T` is known only as `Sized` and `Weighed`"]

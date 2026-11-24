@@ -1,0 +1,87 @@
+# cli.rs: sync_follows_moves
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "orders.strata"
+text = '''
+pub type Order = { id: String, total: Int }
+
+pub fn charge(o: Order) -> Int {
+  o.total + 1
+}
+'''
+
+[[step]]
+save = "billing.strata"
+text = '''
+from orders use Order
+
+pub fn invoice(o: Order) -> Int {
+  o.total
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "base"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+# feature moves `charge`; main adds code that calls it where it was
+[[step]]
+run = ["git", "checkout", "-q", "-b", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["move", "charge", "billing"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+save = "report.strata"
+text = '''
+from orders use Order, charge
+
+fn twice(o: Order) -> Int {
+  charge(o) + orders.charge(o)
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "report"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "checkout", "-q", "feature"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["sync", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["merged main", "follows the rename orders.charge → billing.charge"]
+
+# both calls name the same definition: stored alike, shown short where it is imported
+[[step]]
+strata = ["render", "report"]
+has = ["from orders use Order", "from billing use charge", "charge(o) + charge(o)"]

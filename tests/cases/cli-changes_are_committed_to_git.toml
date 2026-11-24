@@ -1,0 +1,131 @@
+# cli.rs: changes_are_committed_to_git
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+run = ["mkdir", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+save = "pkg/main.strata"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount / 10
+}
+
+fn total(amount: Int) -> Int {
+  amount + tax(amount)
+}
+
+fn double_tax(a: Int) -> Int {
+  tax(a) * 2
+}
+
+test "totals" {
+  assert total(100) == 110
+}
+'''
+
+[[step]]
+run = ["git", "add", "."]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "base"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+# a change that checks is a commit, with its message; what else is staged stays out
+[[step]]
+write = "notes.txt"
+text = "mine"
+
+[[step]]
+run = ["git", "add", "notes.txt"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+strata = ["edit", "-m", "cheaper tax"]
+dir = "pkg"
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+text = "fn tax(amount: Int) -> Int { amount / 20 }"
+has = ["committed to git:", "cheaper tax"]
+
+[[step]]
+run = ["sh", "-c", "test $(git rev-list --count HEAD) -eq 2"]
+
+[[step]]
+run = ["git", "log", "-1", "--format=%s"]
+stdout = "cheaper tax\n"
+
+[[step]]
+run = ["git", "status", "--porcelain"]
+has = ["A  notes.txt"]
+
+# a pending change is committed once, when it's done
+[[step]]
+strata = ["edit", "-m", "tax takes a rate"]
+dir = "pkg"
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+text = "fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }"
+
+[[step]]
+strata = ["edit"]
+dir = "pkg"
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+text = "fn total(amount: Int) -> Int { amount + tax(amount, 10) }"
+
+[[step]]
+strata = ["edit"]
+dir = "pkg"
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+text = "fn double_tax(a: Int) -> Int { tax(a, 10) * 2 }"
+
+[[step]]
+run = ["sh", "-c", "test $(git rev-list --count HEAD) -eq 2"]
+
+[[step]]
+strata = ["done"]
+dir = "pkg"
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["committed to git:"]
+
+[[step]]
+run = ["sh", "-c", "test $(git rev-list --count HEAD) -eq 3"]
+
+[[step]]
+run = ["git", "log", "-1", "--format=%s"]
+stdout = "tax takes a rate\n"
+
+# off for one command, or for the package
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "pkg"
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+text = "fn total(amount: Int) -> Int { amount + tax(amount, 12) }"
+
+[[step]]
+run = ["sh", "-c", "test $(git rev-list --count HEAD) -eq 3"]
+
+[[step]]
+write = "pkg/strata.toml"
+text = "name = \"pkg\"\nauto_commit = false\n"
+
+[[step]]
+strata = ["edit"]
+dir = "pkg"
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+text = "fn total(amount: Int) -> Int { amount + tax(amount, 15) }"
+
+[[step]]
+run = ["sh", "-c", "test $(git rev-list --count HEAD) -eq 3"]

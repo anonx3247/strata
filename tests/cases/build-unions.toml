@@ -1,0 +1,27 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "union_methods.strata"
+from = "union_methods.st"
+
+[[step]]
+strata = ["build", "union_methods.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/unions-union_methods.out"
+
+[[step]]
+save = "unions.strata"
+from = "unions.st"
+
+[[step]]
+strata = ["build", "unions.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/unions-unions.out"

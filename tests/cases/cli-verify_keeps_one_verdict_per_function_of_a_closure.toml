@@ -1,0 +1,20 @@
+# cli.rs: verify_keeps_one_verdict_per_function_of_a_closure: functions that
+# call each other share a closure hash, not a verdict
+[[step]]
+save = "c.strata"
+text = "type Small = Int where 0 <= it && it <= 10\nfn a(x: Small) -> Int\n  ensures it >= 0\n{\n  if x == 0 { 0 } else { b(x - 1) }\n}\nfn b(x: Small) -> Int {\n  if x == 0 { 1 } else { a(x - 1) }\n}\n"
+
+[[step]]
+strata = ["--file", "c.strata", "verify", "--cases", "20"]
+any_code = true
+capture = "first.txt"
+
+[[step]]
+strata = ["--file", "c.strata", "verify", "--cases", "20"]
+any_code = true
+capture = "second.txt"
+has = ["(cached)"]
+
+# the same verdicts, each its own
+[[step]]
+run = ["sh", "-c", "sed 's/ (cached)//' second.txt | diff first.txt -"]

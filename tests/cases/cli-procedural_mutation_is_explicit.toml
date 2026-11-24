@@ -1,0 +1,116 @@
+# cli.rs: procedural_mutation_is_explicit
+
+[[step]]
+save = "m.strata"
+text = '''
+type Line = { qty: Int where 1 <= it && it <= 99 }
+fn restock(mut line: Line, extra: Int) { line.qty = line.qty + extra }
+fn sum(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs { s = s + x }
+  s
+}
+test "ok" {
+  mut l := Line { qty: 2 }
+  restock(mut l, 3)
+  assert l.qty == 5
+  assert sum([1, 2, 3]) == 6
+}
+test "refined" {
+  mut l := Line { qty: 98 }
+  restock(mut l, 5)
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "test"]
+fails = true
+has = ["✓ ok", "103 does not satisfy"]
+
+[[step]]
+save = "e.strata"
+text = '''
+fn f() -> Int {
+  x := 1
+  x = 2
+  x
+}
+fn g() -> Int {
+  mut y := 0
+  add := z -> { y = y + z; y }
+  add(1)
+}
+'''
+
+[[step]]
+strata = ["--file", "e.strata", "check"]
+fails = true
+has = ["`x`: it is not mutable", "a closure cannot change `y`"]
+
+# a call that can change an argument says so: `mut` at the call site
+[[step]]
+save = "c.strata"
+text = '''
+type Line = { qty: Int }
+trait Counter { fn tick(mut self) -> ()  fn peek(self) -> Int }
+impl Counter for Line { fn tick(mut self) { self.qty = self.qty + 1 }  fn peek(self) -> Int { self.qty } }
+fn restock(mut line: Line, extra: Int) { line.qty = line.qty + extra }
+fn qty(line: Line) -> Int { line.qty }
+fn unmarked() -> Int {
+  mut l := Line { qty: 1 }
+  restock(l, 2)
+  l.qty
+}
+fn needless() -> Int {
+  mut l := Line { qty: 1 }
+  qty(mut l)
+}
+fn builtin() -> Int {
+  mut xs := [1]
+  len(mut xs)
+}
+fn receiver() -> Int {
+  mut l := Line { qty: 1 }
+  mut l.tick()
+  restock(mut l, 1)
+  l.qty
+}
+fn unmarked_receiver() {
+  mut l := Line { qty: 1 }
+  l.tick()
+}
+fn needless_receiver() -> Int {
+  mut l := Line { qty: 1 }
+  mut l.peek()
+}
+fn stray() -> Int {
+  mut n := 1
+  m := mut n
+  m
+}
+type Box = { n: Int }
+impl Box { fn bump(mut self) { self.n = self.n + 1 }  fn twice(mut self) { self.bump()
+ mut self.bump() } }
+fn own_unmarked() {
+  mut b := Box { n: 1 }
+  b.bump()
+}
+fn first(ls: List[Line]) -> Line { Line { qty: 1 } }
+'''
+
+[[step]]
+strata = ["--file", "c.strata", "check"]
+fails = true
+has = ["in unmarked: `restock` can change its `mut line` parameter: write `mut l` to show that `l` may change", "in needless: `mut` on an argument of `qty`, but its parameter `line` is not `mut`", "in builtin:", "in unmarked_receiver: `tick` changes its receiver (`mut self`): write `mut l.tick(…)`", "in needless_receiver: `mut l.peek(…)`: `peek` doesn't change its receiver", "in stray: `mut n` marks an argument", "in own_unmarked: `bump` changes its receiver (`mut self`): write `mut b.bump(…)`", "in impl Box: `bump` changes its receiver (`mut self`): write `mut self.bump(…)`"]
+lacks = ["in receiver"]
+
+# results are not places: name them first
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+text = "fn f(xs: List[Int]) {\n  mut first(xs).tick()\n}\n"
+fails = true
+has = ["only a variable or a field can be `mut`"]
+
+[[step]]
+strata = ["--file", "c.strata", "render"]
+has = ["restock(mut l, 1)"]

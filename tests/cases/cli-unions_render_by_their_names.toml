@@ -1,0 +1,45 @@
+# cli.rs: unions_render_by_their_names
+
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+text = '''
+type B = { x: Int }
+
+type C = { y: Int }
+
+type D = { z: Int }
+
+type A = B | C
+
+type Problem =
+  | Empty
+  | TooBig { max: Int }
+
+distinct type Wrapped = B | D
+
+type S2 = B | C | D
+
+fn f(x: B | C) -> Int = 1
+
+fn g(x: B | C | D) -> Int = 2
+
+fn h(e: Empty | TooBig) -> Int = 3
+
+fn k(w: B | D) -> Int = 4
+
+fn main() { }
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "render"]
+capture = "r.st"
+has = ["type S2 = A | D\n", "fn f(x: A) -> Int", "fn g(x: S2) -> Int", "fn h(e: Problem) -> Int", "fn k(w: B | D) -> Int"]
+
+# and it reads back as the same program
+[[step]]
+strata = ["--file", "r2.strata", "edit"]
+from_tmp = "r.st"
+
+[[step]]
+strata = ["--file", "r2.strata", "render"]
+out_file = "r.st"

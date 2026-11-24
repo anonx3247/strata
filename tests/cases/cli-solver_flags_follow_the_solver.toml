@@ -1,0 +1,56 @@
+# cli.rs: solver_flags_follow_the_solver: fake solvers that record how they
+# are called: cvc5 gets its own flags; a function's queries in one process
+# take a time limit per query (`-t` for Z3)
+[[step]]
+save = "b.strata"
+text = "type Quantity = Int where 1 <= it && it <= 99\nfn clamp(q: Quantity) -> Quantity { if q < 99 { q + 1 } else { q } }\n"
+
+[[step]]
+write = "fake-cvc5"
+text = '''
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'This is cvc5 version 1.4.2'; exit 0; fi
+echo "$@" >> $TMP/cvc5.log
+cat > /dev/null
+echo unsat
+'''
+
+[[step]]
+write = "fake-z3"
+text = '''
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo 'Z3 version 4.15.0 - 64 bit'; exit 0; fi
+echo "$@" >> $TMP/z3.log
+cat > /dev/null
+echo unsat
+'''
+
+[[step]]
+run = ["chmod", "755", "fake-cvc5", "fake-z3"]
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--cross-check", "0"]
+env = { STRATA_SOLVER = "$TMP/fake-cvc5" }
+has = ["✓ clamp"]
+
+# every call has cvc5's flags
+[[step]]
+run = ["grep", "-v", "^--lang smt2 --produce-models --dt-nested-rec --rlimit-per=", "cvc5.log"]
+code = 1
+stdout = ""
+
+[[step]]
+run = ["test", "-s", "cvc5.log"]
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--cross-check", "0", "--no-cache"]
+env = { STRATA_SOLVER = "$TMP/fake-z3" }
+has = ["✓ clamp"]
+
+[[step]]
+run = ["grep", "-v", "-e", "^-in -T:20 rlimit=", "-e", "^-in -t:20000 rlimit=", "z3.log"]
+code = 1
+stdout = ""
+
+[[step]]
+run = ["test", "-s", "z3.log"]

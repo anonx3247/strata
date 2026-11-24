@@ -1,0 +1,34 @@
+# cli.rs: a_task_panic_fails_only_its_test: the test's thread, waiting on a channel, stops, and the
+# next test runs; a `race` in a test
+
+[[step]]
+save = "t.strata"
+text = '''
+fn pick(xs: List[Int], i: Int) -> Int {
+  xs[i]
+}
+
+test "a task panics while the test waits" {
+  (tx, rx) := channel()
+  scope {
+    spawn pick([1], 3)
+    for x in rx {
+      print(x)
+    }
+  }
+  tx.close()
+}
+
+test "the next test runs" {
+  r := race {
+    pick([1, 2], 1) as a => a,
+    pick([5], 0) as b => b,
+  }
+  assert r == 2 || r == 5
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "test"]
+fails = true
+has = ["index 3 out of range (length 1)", "1 passed, 1 failed"]

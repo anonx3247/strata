@@ -1,0 +1,51 @@
+# codegen.rs: compiler_constructs_do_what_rust_compiled_ones_do:
+# built, run, and compared with what the build of llvm.rs printed
+# (recorded in tests/data/build/expected/codegen-constructs-NAME.out)
+
+[[step]]
+save = "self_calls.strata"
+from = "self_calls.st"
+
+[[step]]
+strata = ["build", "self_calls.strata", "-o", "self_calls"]
+
+[[step]]
+run = ["./self_calls"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-constructs-self_calls.out"
+
+[[step]]
+save = "inferred.strata"
+from = "inferred.st"
+
+[[step]]
+strata = ["build", "inferred.strata", "-o", "inferred"]
+
+[[step]]
+run = ["./inferred"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-constructs-inferred.out"
+
+[[step]]
+save = "std_traits.strata"
+from = "std_traits.st"
+
+[[step]]
+strata = ["build", "std_traits.strata", "-o", "std_traits"]
+
+[[step]]
+run = ["./std_traits"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-constructs-std_traits.out"
+
+[[step]]
+save = "trait_places.strata"
+from = "trait_places.st"
+
+[[step]]
+strata = ["build", "trait_places.strata", "-o", "trait_places"]
+
+[[step]]
+run = ["./trait_places"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-constructs-trait_places.out"

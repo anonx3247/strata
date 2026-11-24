@@ -1,0 +1,95 @@
+# cli.rs: rename_updates_every_reference: a package written by hand: its files are its modules
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "a.strata"
+text = '''
+/// The size of `xs`; see also size_of.
+pub fn size(xs: List[Int]) -> Int { len(xs) }
+pub type Box = { items: List[Int] }
+pub fn twice(xs: List[Int]) -> Int {
+  n := size(xs)
+  tally := x -> x + n
+  tally(size(xs))
+}
+'''
+
+[[step]]
+save = "b.strata"
+text = '''
+from a use size, Box
+fn count(x: Int) -> Int { x }
+fn total(b: Box) -> Int { a.size(b.items) + size([]) + count(1) }
+test "boxes" {
+  assert total(Box { items: [1, 2] }) == 3
+}
+'''
+
+# a name a local or another definition has can't capture a reference: each
+# is stored in full, and where the short name is taken, shown in full
+[[step]]
+run = ["sh", "-c", "mkdir e && cp strata.toml a.strata b.strata e/"]
+
+[[step]]
+strata = ["rename", "a.size", "count", "--no-commit"]
+dir = "e"
+
+[[step]]
+strata = ["render", "--file", "e/b.strata"]
+has = ["a.count(b.items) + a.count([]) + count(1)"]
+
+[[step]]
+strata = ["rename", "a.count", "tally", "--no-commit"]
+dir = "e"
+
+[[step]]
+strata = ["render", "--file", "e/a.strata"]
+has = ["a.tally(xs)"]
+
+[[step]]
+strata = ["test"]
+dir = "e"
+
+[[step]]
+strata = ["rename", "Box", "crate"]
+fails = true
+has = ["uppercase"]
+
+[[step]]
+strata = ["rename", "size", "length"]
+has = ["renamed a.size → a.length", "a.twice", "b.total", "docs or comments still mention `size` in: a.length"]
+
+[[step]]
+strata = ["rename", "a.Box", "Crate"]
+
+[[step]]
+strata = ["render", "a"]
+has = ["pub fn length(xs: List[Int])", "n := length(xs)", "tally(length(xs))"]
+
+[[step]]
+strata = ["render", "b"]
+has = ["from a use length, Crate", "length(b.items) + length([])", "fn total(b: Crate)", "Crate { items: [1, 2] }"]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["log", "--json"]
+has = ["\"from\":\"a.size\"", "\"to\":\"a.length\""]
+
+# the files are the source; the log is next to them, to be committed
+[[step]]
+strata = ["render", "b"]
+has = ["fn total(b: Crate)"]
+
+[[step]]
+run = ["sh", "-c", "test $(wc -l < strata.log) -eq 2"]
+
+# the log replays backwards from the files: the first step starts from what was written by hand
+[[step]]
+strata = ["diff", "--from", "0", "--step", "0"]
+has = ["↪ a.length  (renamed from `size`)", "3 references updated"]
+lacks = ["a.Crate  (renamed"]

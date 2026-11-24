@@ -1,0 +1,70 @@
+# cli.rs: named_unions_have_impls: for a value typed by the union (or by the same set written out), the
+# union's; a member's own for a member
+
+[[step]]
+strata = ["--file", "u.strata", "edit"]
+text = '''
+trait Show {
+  fn show(self) -> String
+}
+
+type Circle = { r: Int }
+
+type Shape = Circle | Square { side: Int } | Dot
+
+impl Show for Shape {
+  fn show(self) -> String {
+    match self {
+      Circle => f"circle {self.r}",
+      Square => f"square {self.side}",
+      Dot => "dot",
+    }
+  }
+}
+
+impl Show for Circle {
+  fn show(self) -> String = "a circle on its own"
+}
+
+impl Shape {
+  fn area(self) -> Int {
+    match self {
+      Circle => 3 * self.r * self.r,
+      Square => self.side * self.side,
+      Dot => 0,
+    }
+  }
+}
+
+fn describe[T: Show](x: T) -> String = x.show()
+
+fn shapes() -> List[Shape] = [Circle { r: 1 }, Square { side: 2 }, Dot]
+
+fn written(x: Circle | Square | Dot) -> String = x.show()
+
+fn main() {
+  for s in shapes() {
+    print(s.show())
+    print(s.area())
+    print(describe(s))
+  }
+  print(Circle { r: 5 }.show())
+  print(written(Circle { r: 2 }))
+}
+'''
+
+[[step]]
+strata = ["run", "u.strata"]
+stdout = '''
+circle 1
+3
+circle 1
+square 2
+4
+square 2
+dot
+0
+dot
+a circle on its own
+circle 2
+'''

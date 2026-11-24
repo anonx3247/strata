@@ -1,0 +1,114 @@
+# cli.rs: parts_of_values_are_made_when_read: the cost follows what a
+# function reads, not the size of its types (the Rust test also capped the
+# run at 1 GB and 120 s)
+[[step]]
+save = "t.strata"
+text = '''
+type Pos = Int where it > 0
+type Node =
+  | V0(Node, Node, Int)
+  | V1(Node, Node, Int)
+  | V2(Node, Node, Int)
+  | V3(Node, Node, Int)
+  | V4(Node, Node, Int)
+  | V5(Node, Node, Int)
+  | V6(Node, Node, Int)
+  | V7(Node, Node, Int)
+  | V8(Node, Node, Int)
+  | V9(Node, Node, Int)
+  | V10(Node, Node, Int)
+  | V11(Node, Node, Int)
+  | V12(Node, Node, Int)
+  | V13(Node, Node, Int)
+  | V14(Node, Node, Int)
+  | V15(Node, Node, Int)
+  | V16(Node, Node, Int)
+  | V17(Node, Node, Int)
+  | V18(Node, Node, Int)
+  | V19(Node, Node, Int)
+  | V20(Node, Node, Int)
+  | V21(Node, Node, Int)
+  | V22(Node, Node, Int)
+  | V23(Node, Node, Int)
+  | V24(Node, Node, Int)
+  | V25(Node, Node, Int)
+  | V26(Node, Node, Int)
+  | V27(Node, Node, Int)
+  | V28(Node, Node, Int)
+  | V29(Node, Node, Int)
+  | V30(Node, Node, Int)
+  | V31(Node, Node, Int)
+  | V32(Node, Node, Int)
+  | V33(Node, Node, Int)
+  | V34(Node, Node, Int)
+  | V35(Node, Node, Int)
+  | V36(Node, Node, Int)
+  | V37(Node, Node, Int)
+  | V38(Node, Node, Int)
+  | V39(Node, Node, Int)
+  | V40(Node, Node, Int)
+  | V41(Node, Node, Int)
+  | V42(Node, Node, Int)
+  | V43(Node, Node, Int)
+  | V44(Node, Node, Int)
+  | V45(Node, Node, Int)
+  | V46(Node, Node, Int)
+  | V47(Node, Node, Int)
+  | V48(Node, Node, Int)
+  | V49(Node, Node, Int)
+  | P(Node, Pos)
+  | Leaf
+fn count(xs: List[Node]) -> Int {
+  mut i := 0
+  mut n := 0
+  while i < len(xs) {
+    x := get(xs, i)
+    if x is Some {
+      n += 1
+    }
+    i += 1
+  }
+  n
+}
+fn deep(n: Node) -> Int
+  ensures it > 0
+{
+  match n {
+    P(P(P(P(P(_, p), _), _), _), _) => p,
+    _ => 1,
+  }
+}
+fn same(a: Node, b: Node) -> Bool
+  requires a == b
+  ensures it
+{
+  match a {
+    P(P(x, _), _) => match b {
+      P(P(y, _), _) => x == y,
+      _ => false,
+    },
+    _ => true,
+  }
+}
+fn down(t: Node, c: Bool) -> Bool
+  ensures it
+{
+  x := if c {
+    t
+  } else {
+    match t {
+      P(l, _) => l,
+      _ => t,
+    }
+  }
+  match x {
+    P(P(_, p), _) => p > 0,
+    _ => x == x,
+  }
+}
+fn main() { print(count([])) }
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "count,deep,same,down", "--cases", "5"]
+has = ["✓ count ", "✓ deep ", "✓ same ", "✓ down "]

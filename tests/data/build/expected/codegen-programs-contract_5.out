@@ -1,0 +1,5 @@
+Range { lo: 1, hi: 5 }
+fault (Refinement): constructing `Range`: Range { lo: 1, hi: 0 } does not satisfy `Range` (where it.lo <= it.hi)
+    stack: main
+
+--- exit 101

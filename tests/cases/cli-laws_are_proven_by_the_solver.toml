@@ -1,0 +1,5 @@
+# cli.rs: laws_are_proven_by_the_solver (Midpoint breaks associativity)
+[[step]]
+strata = ["--file", "$ROOT/examples/traits.strata", "verify", "--no-race"]
+fails = true
+has = ["✓ law associative for Money", "✓ law associative for List[T]", "✓ law identity for Money", "✓ law identity for List[T]", "✗ law associative for Midpoint", "found by the solver"]

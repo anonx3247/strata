@@ -1,0 +1,32 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "fault.strata"
+from = "fault.st"
+
+[[step]]
+strata = ["build", "fault.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/tasks-fault.out"
+
+[[step]]
+save = "tasks.strata"
+from = "tasks.st"
+
+[[step]]
+strata = ["build", "tasks.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/tasks-tasks.out"
+
+[[step]]
+strata = ["run", "tasks.strata"]
+memory = true
+golden = "tests/data/build/expected/tasks-tasks.out"

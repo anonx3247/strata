@@ -1,0 +1,144 @@
+# cli.rs: edit_opens_modules_and_the_whole_package
+
+[[step]]
+run = ["mkdir", "-p", "pkg/shop"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+save = "pkg/main.strata"
+text = '''
+from shop.orders use price
+
+fn total() -> Int {
+  price() + 1
+}
+'''
+
+[[step]]
+save = "pkg/shop/orders.strata"
+text = "pub fn price() -> Int {\n  10\n}\n"
+
+[[step]]
+write = "whole/editor.sh"
+text = '''
+#!/bin/sh
+for f in "$@"; do echo "$f" >> '$TMP/whole/files'; done
+for f in "$@"; do case "$f" in */shop/orders.st) sed 's/10/12/' "$f" > "$f.new" && mv "$f.new" "$f";; esac; done
+'''
+
+# the whole package: one file per module, given to the editor together
+[[step]]
+strata = ["edit", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/whole/editor.sh'" }
+has = ["changed"]
+
+[[step]]
+run = ["sh", "-c", "test $(wc -l < whole/files) -eq 2 && grep -q 'main.st' whole/files && grep -q 'shop/orders.st' whole/files"]
+
+[[step]]
+strata = ["render", "shop.orders"]
+dir = "pkg"
+has = ["12"]
+
+[[step]]
+write = "module/v1.st"
+text = "pub fn price() -> Int {\n  15\n}\n"
+
+[[step]]
+write = "module/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/module/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/module/count'
+cp "$1" '$TMP/module/seen'$n.st
+if [ -f '$TMP/module/v'$n.st ]; then cp '$TMP/module/v'$n.st "$1"; fi
+'''
+
+# a module by name: only its file
+[[step]]
+strata = ["edit", "shop.orders", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/module/editor.sh'" }
+
+[[step]]
+run = ["cat", "module/seen1.st"]
+stdout = "pub fn price() -> Int {\n  12\n}\n"
+
+[[step]]
+strata = ["render", "shop.orders"]
+dir = "pkg"
+has = ["15"]
+
+[[step]]
+write = "new/v1.st"
+text = "pub fn tax() -> Int {\n  2\n}\n"
+
+[[step]]
+write = "new/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/new/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/new/count'
+cp "$1" '$TMP/new/seen'$n.st
+if [ -f '$TMP/new/v'$n.st ]; then cp '$TMP/new/v'$n.st "$1"; fi
+'''
+
+# a new module, by its file
+[[step]]
+strata = ["edit", "shop/tax.strata", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/new/editor.sh'" }
+has = ["added"]
+
+[[step]]
+strata = ["render", "shop.tax"]
+dir = "pkg"
+has = ["pub fn tax"]
+
+[[step]]
+write = "root-def/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/root-def/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/root-def/count'
+cp "$1" '$TMP/root-def/seen'$n.st
+if [ -f '$TMP/root-def/v'$n.st ]; then cp '$TMP/root-def/v'$n.st "$1"; fi
+'''
+
+# `main` is the root module; `main.total` is its definition `total`
+[[step]]
+strata = ["edit", "main.total", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/root-def/editor.sh'" }
+has = ["no changes"]
+
+[[step]]
+run = ["cat", "root-def/seen1.st"]
+stdout = "fn total() -> Int {\n  price() + 1\n}\n"
+
+[[step]]
+write = "root-module/editor.sh"
+text = '''
+#!/bin/sh
+n=$(cat '$TMP/root-module/count' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '$TMP/root-module/count'
+cp "$1" '$TMP/root-module/seen'$n.st
+if [ -f '$TMP/root-module/v'$n.st ]; then cp '$TMP/root-module/v'$n.st "$1"; fi
+'''
+
+[[step]]
+strata = ["edit", "main", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/root-module/editor.sh'" }
+
+[[step]]
+run = ["head", "-c", "26", "root-module/seen1.st"]
+stdout = "from shop.orders use price"
+
+# neither a module nor a definition
+[[step]]
+strata = ["edit", "nothing_here", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "true" }
+fails = true
+has = ["is no module"]

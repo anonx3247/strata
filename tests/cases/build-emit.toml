@@ -1,0 +1,8 @@
+# build.rs: emits_llvm_ir
+[[step]]
+save = "p.strata"
+from = "p.st"
+
+[[step]]
+strata = ["build", "p.strata", "--emit-llvm"]
+has = ['define i64 @"strata:twice"(i64 %p.n)', "define i32 @main(i32 %argc, ptr %argv)"]

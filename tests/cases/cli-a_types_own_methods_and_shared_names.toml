@@ -1,0 +1,184 @@
+# cli.rs: a_types_own_methods_and_shared_names
+
+[[step]]
+save = "o.strata"
+text = '''
+trait Describe {
+  fn describe(self) -> String
+    ensures it != ""
+}
+
+trait Log {
+  fn describe(self) -> String
+}
+
+type Item = { name: NonEmptyString, cents: Natural }
+
+impl Item {
+  fn new(name: NonEmptyString, cents: Natural) -> Item {
+    Item { name, cents }
+  }
+
+  fn describe(self) -> String {
+    f"own {self.name}"
+  }
+}
+
+impl Describe for Item {
+  fn describe(self) -> String {
+    f"describe {self.name}"
+  }
+}
+
+impl Log for Item {
+  fn describe(self) -> String {
+    f"log {self.name}"
+  }
+}
+
+type Sku = { code: NonEmptyString }
+
+impl Describe for Sku {
+  fn describe(self) -> String {
+    "SKU " + self.code
+  }
+}
+
+fn show(d: Describe) -> String {
+  d.describe()
+}
+
+fn shout[T: Log](x: T) -> String {
+  to_upper(x.describe())
+}
+
+fn all_of(xs: List[Describe]) -> List[String] {
+  xs.map(x -> x.describe())
+}
+
+test "which describe runs" {
+  i := Item.new("tea", 3)
+  assert i.describe() == "own tea"
+  assert show(i) == "describe tea"
+  assert shout(i) == "LOG TEA"
+  assert all_of([i]) == ["describe tea"]
+  assert show(Sku { code: "AB" }) == "SKU AB"
+  assert describe(Sku { code: "X" }) == "SKU X"
+}
+'''
+
+[[step]]
+strata = ["--file", "o.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "o.strata", "verify"]
+any_code = true
+has = ["Item.new ", "Item.describe ", "Item.describe (Describe)", "Item.describe (Log)"]
+lacks = ["✗"]
+
+[[step]]
+strata = ["render", "--file", "o.strata"]
+capture = "o.st"
+
+[[step]]
+strata = ["--file", "o.strata", "render"]
+out_file = "o.st"
+
+[[step]]
+save = "bad.strata"
+text = '''
+trait A {
+  fn tag(self) -> String
+}
+
+trait B {
+  fn tag(self) -> String
+}
+
+type P = { x: Int }
+
+impl A for P {
+  fn tag(self) -> String {
+    "a"
+  }
+}
+
+impl B for P {
+  fn tag(self) -> String {
+    "b"
+  }
+}
+
+type Q = { y: Int }
+
+impl Q {
+  fn tag(self) -> String {
+    "q"
+  }
+}
+
+impl A for Q {
+  fn tag(self) -> String {
+    "qa"
+  }
+}
+
+impl B for Q {
+  fn tag(self) -> String {
+    "qb"
+  }
+}
+
+fn concrete_without_own(p: P) -> String {
+  p.tag()
+}
+
+fn concrete_with_own(q: Q) -> String {
+  q.tag()
+}
+
+fn through_a(x: A) -> String {
+  x.tag()
+}
+
+fn either(x: A | B) -> String {
+  x.tag()
+}
+
+fn both[T: A + B](x: T) -> String {
+  x.tag()
+}
+
+fn as_value(q: Q) -> List[String] {
+  [q].map(tag)
+}
+'''
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = ["error in concrete_without_own: `P` implements `A` and `B`, which both have `tag`: define `tag` in `impl P`", "error in either: `tag` is ambiguous here: the value is a `A | B`", "error in both: `tag` is ambiguous here: `T` is known only as `A` and `B`", "error in as_value: which `tag` runs depends on the type of the value"]
+lacks = ["concrete_with_own", "through_a"]
+counts = { "error in" = 4 }
+
+[[step]]
+save = "misc.strata"
+text = '''
+type Q = { y: Int }
+
+impl Int {
+  fn twice(self) -> Int {
+    self * 2
+  }
+}
+
+fn g() -> Int {
+  Q.nope()
+}
+'''
+
+[[step]]
+strata = ["--file", "misc.strata", "check"]
+fails = true
+has = ["`impl Int`: methods can only be added to a record, sum or `distinct` type", "`Q` has no method `nope` called on the type"]

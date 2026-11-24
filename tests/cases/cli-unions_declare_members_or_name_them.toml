@@ -1,0 +1,59 @@
+# cli.rs: unions_declare_members_or_name_them
+
+[[step]]
+strata = ["--file", "u.strata", "edit"]
+text = '''
+type Circle = { r: Int }
+
+type Shape = Circle | Square { side: Int } | Dot
+
+type Level = Quiet | Loud
+
+type Old =
+  | Up
+  | Down(Int)
+
+type Both = Shape | Old
+
+fn area(s: Shape) -> Int {
+  match s {
+    Circle => 3 * s.r * s.r,
+    Square => s.side * s.side,
+    Dot => 0,
+  }
+}
+
+fn name(b: Both) -> String {
+  match b {
+    Circle | Square | Dot => "shape",
+    Up => "up",
+    Down(n) => f"down {n}",
+  }
+}
+
+fn main() {
+  print(area(Circle { r: 1 }))
+  print(area(Square { side: 2 }))
+  print(area(Dot))
+  print(name(Down(3)))
+  print(name(Dot))
+  print([Quiet, Loud])
+}
+'''
+
+[[step]]
+strata = ["run", "u.strata"]
+stdout = "3\n4\n0\ndown 3\nshape\n[Quiet, Loud]\n"
+
+[[step]]
+strata = ["--file", "u.strata", "render"]
+has = ['''
+type Shape =
+  | Circle { r: Int }
+  | Square { side: Int }
+  | Dot
+''']
+
+[[step]]
+strata = ["--file", "u.strata", "render", "--members", "separate"]
+has = ["type Circle = { r: Int }\n", "type Shape = Circle | Square | Dot\n"]

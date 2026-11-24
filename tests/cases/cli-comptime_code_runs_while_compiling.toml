@@ -1,0 +1,127 @@
+# cli.rs: comptime_code_runs_while_compiling: compile-time code that computes: a function of the program, a lambda, a
+# big integer; a fault in it and a runaway loop are errors of the `derive`
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+from std.typing use Record
+
+fn shout(s: String) -> String {
+  s + "!"
+}
+
+fn spin(n: Int) -> Int {
+  mut i := n
+  while i > 0 { i = i + 1 }
+  i
+}
+
+derivable(Record) trait Names
+  requires len(Self.fields) > 1 {
+  derived fn names(self) -> List[String] {
+    comptime Self.fields.map(f -> shout(f.name))
+  }
+  derived fn count(self) -> Int {
+    comptime (99999999999999999999999 * len(Self.fields))
+  }
+}
+
+type P = { x: Int, label: String }
+
+derive Names for P
+
+fn main() {
+  p := P { x: 1, label: "a" }
+  print(p.names())
+  print(p.count())
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "c.strata", "run"]
+stdout = "[\"x!\", \"label!\"]\n199999999999999999999998\n"
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+from std.typing use Record
+
+fn shout(s: String) -> String {
+  s + "!"
+}
+
+fn spin(n: Int) -> Int {
+  mut i := n
+  while i > 0 { i = i + 1 }
+  i
+}
+
+derivable(Record) trait Names
+  requires len(Self.fields) > 1 {
+  derived fn names(self) -> List[String] {
+    comptime Self.fields.map(f -> shout(f.name))
+  }
+  derived fn count(self) -> Int {
+    comptime (len(Self.fields) / 0)
+  }
+}
+
+type P = { x: Int, label: String }
+
+derive Names for P
+
+fn main() {
+  p := P { x: 1, label: "a" }
+  print(p.names())
+  print(p.count())
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "c.strata", "run"]
+fails = true
+has = ["deriving `count`: `comptime len(Self.fields) / 0` failed: division by zero"]
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+from std.typing use Record
+
+fn shout(s: String) -> String {
+  s + "!"
+}
+
+fn spin(n: Int) -> Int {
+  mut i := n
+  while i > 0 { i = i + 1 }
+  i
+}
+
+derivable(Record) trait Names
+  requires len(Self.fields) > 1 {
+  derived fn names(self) -> List[String] {
+    comptime Self.fields.map(f -> shout(f.name))
+  }
+  derived fn count(self) -> Int {
+    comptime spin(1)
+  }
+}
+
+type P = { x: Int, label: String }
+
+derive Names for P
+
+fn main() {
+  p := P { x: 1, label: "a" }
+  print(p.names())
+  print(p.count())
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "c.strata", "run"]
+fails = true
+has = ["`comptime spin(1)` ran for more than 5000000 steps: compile-time code must finish"]

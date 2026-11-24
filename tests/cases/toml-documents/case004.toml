@@ -1,0 +1,10 @@
+bare_key = 1
+bare-key = 2
+1234 = 3
+"127.0.0.1" = 4
+"ʎǝʞ" = 5
+'quoted "value"' = 6
+"" = 7
+site."google.com" = true
+a . b . c = 8
+3.14159 = "pi"

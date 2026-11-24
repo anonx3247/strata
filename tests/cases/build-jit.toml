@@ -1,0 +1,16 @@
+# build.rs: the_jit_runs_as_the_interpreter (a pattern built at run time:
+# std.regex's engine and messages, on the JIT and built)
+[[step]]
+save = "lists.strata"
+from = "lists.st"
+
+[[step]]
+strata = ["run", "lists.strata"]
+golden = "tests/data/build/expected/jit-regex.out"
+
+[[step]]
+strata = ["build", "lists.strata", "-o", "lists"]
+
+[[step]]
+run = ["./lists"]
+golden = "tests/data/build/expected/jit-regex.out"

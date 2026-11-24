@@ -1,0 +1,30 @@
+# cli.rs: generic_static_methods_are_fuzzed: a generic implementation's method without `self` is fuzzed through a
+# wrapper calling it on the whole instance
+
+[[step]]
+save = "g.strata"
+text = '''
+trait Make {
+  fn make(n: Int) -> Option[Self]
+}
+
+impl Make for Int {
+  fn make(n: Int) -> Option[Int] {
+    Some(n)
+  }
+}
+
+impl[T: Make] Make for List[T] {
+  fn make(n: Int) -> Option[List[T]] {
+    match T.make(n) {
+      Some(x) => Some([x]),
+      None => None,
+    }
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "g.strata", "verify"]
+has = ["✓ List[T].make"]
+lacks = ["can't be fuzzed"]

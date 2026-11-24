@@ -1,0 +1,82 @@
+# cli.rs: upgrade_rewrites_files_and_packages_check_their_settings
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+write = "shop/strata.toml"
+text = "name = \"shop\"\nexports = [\"orders.total\"]\n"
+
+# main is stored before orders exists: its header says `run` uses nothing
+[[step]]
+save = "shop/main.strata"
+text = "from orders use total\n\nfn run() -> Int {\n  total([1, 2])\n}\n"
+
+[[step]]
+save = "shop/orders.strata"
+text = "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n"
+
+# a package nested in another is a separate program
+[[step]]
+write = "shop/tools/strata.toml"
+text = "name = \"tools\"\n"
+
+[[step]]
+save = "shop/tools/main.strata"
+text = "fn one() -> Int {\n  1\n}\n"
+
+# a file outside every package is a script
+[[step]]
+save = "loose.strata"
+text = "fn x() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["upgrade"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["shop/main.strata: rewritten"]
+lacks = ["orders.strata", "loose.strata"]
+
+[[step]]
+strata = ["upgrade"]
+env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
+has = ["every file is already in the current form"]
+
+# exports must name a module or a `pub` definition
+[[step]]
+write = "shop/strata.toml"
+text = "name = \"shop\"\nexports = [\"orders.totl\", \"run\"]\n"
+
+[[step]]
+strata = ["check"]
+dir = "shop"
+fails = true
+has = ["exports `orders.totl`, which is neither", "exports `run`, which isn't `pub`"]
+
+[[step]]
+write = "shop/strata.toml"
+text = "name = \"shop\"\nversion = 1\n"
+
+[[step]]
+strata = ["check"]
+dir = "shop"
+any_code = true
+has = ["unknown field `version`"]
+
+# `init` names the package after its folder
+[[step]]
+run = ["mkdir", "billing"]
+
+[[step]]
+strata = ["init"]
+dir = "billing"
+
+[[step]]
+run = ["cat", "billing/strata.toml"]
+stdout = "name = \"billing\"\n"

@@ -1,0 +1,30 @@
+# cli.rs: traits_laws_and_distinct_types
+
+[[step]]
+strata = ["--file", "$ROOT/examples/traits.strata", "test"]
+has = ["0 failed"]
+
+# bounded generics checked at an implementing type
+[[step]]
+strata = ["--file", "$ROOT/examples/traits.strata", "verify"]
+fails = true
+has = ["law `associative` does not hold for `Midpoint`", "✓ law associative for Money"]
+lacks = ["✗ combine_all ", "✗ receipt "]
+
+[[step]]
+save = "e.strata"
+text = '''
+type Name = String
+distinct type UserId = String where matches(it, "u_[0-9]+")
+distinct type OrderId = String where matches(it, "o_[0-9]+")
+trait Priced { fn price(self) -> Int }
+fn mixed(o: OrderId) -> UserId { o }
+fn lit() -> UserId { UserId("alice") }
+fn nobound[T](xs: List[T]) -> Int { sum(xs.map(price)) }
+fn notimpl() -> Int { true.price() }
+'''
+
+[[step]]
+strata = ["--file", "e.strata", "check"]
+fails = true
+has = ["`type Name = String` adds nothing", "expected `UserId`, found `OrderId`", "\"alice\" does not satisfy `UserId`", "`T` is not known to implement `Priced` (add a bound: `[T: Priced]`)", "`Bool` does not implement `Priced`"]

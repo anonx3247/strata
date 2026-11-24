@@ -1,0 +1,5 @@
+3
+fault (Runtime): division by zero
+    stack: main -> divide
+
+--- exit 101

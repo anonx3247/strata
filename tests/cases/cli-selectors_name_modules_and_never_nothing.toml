@@ -1,0 +1,15 @@
+# cli.rs: selectors_name_modules_and_never_nothing: `std.json` is that
+# module's definitions, as `std.json.*`; a part that names nothing is an error
+[[step]]
+strata = ["--file", "$ROOT/std", "view", "std.json.*", "--level", "0"]
+capture = "by_glob.txt"
+
+[[step]]
+strata = ["--file", "$ROOT/std", "view", "std.json", "--level", "0"]
+has = ["std.json."]
+out_file = "by_glob.txt"
+
+[[step]]
+strata = ["--file", "$ROOT/std", "verify", "std.json.nothing_here"]
+fails = true
+has = ["`std.json.nothing_here` names no definition and no module"]

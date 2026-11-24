@@ -1,0 +1,54 @@
+# cli.rs: clock_arms_are_checked: `clock.after(d)` in a `select`: `d` is a `Duration`, and the arm names
+# nothing; a test may ask for the `SystemClock`
+
+[[step]]
+save = "c.strata"
+text = '''
+from std.time use SystemClock, ms
+
+fn named(clock: SystemClock, rx: Receiver[Int]) -> Int {
+  select {
+    rx.recv() as x => 1,
+    clock.after(ms(5)) as t => 2,
+  }
+}
+
+fn plain(clock: SystemClock, rx: Receiver[Int]) -> Int {
+  select {
+    rx.recv() as x => 1,
+    clock.after(5) => 2,
+  }
+}
+
+fn not_a_clock(n: Int, rx: Receiver[Int]) -> Int {
+  select {
+    rx.recv() as x => 1,
+    n.after(ms(5)) => 2,
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "c.strata", "check"]
+fails = true
+has = ["error in named: an `after` arm gives nothing to name", "error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`", "error in not_a_clock: an `after` arm waits on a clock: `Int` doesn't implement `Clock`"]
+
+[[step]]
+save = "t.strata"
+text = '''
+from std.time use SystemClock, ms
+
+test "the clock in a test" (clock: SystemClock) {
+  (tx, rx) := channel()
+  r := select {
+    rx.recv() as x => 1,
+    clock.after(ms(1)) => 2,
+  }
+  tx.close()
+  assert r == 2
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "test"]
+has = ["1 passed, 0 failed"]

@@ -1,0 +1,63 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "mut_field_breaks_invariant.strata"
+from = "mut_field_breaks_invariant.st"
+
+[[step]]
+strata = ["build", "mut_field_breaks_invariant.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/dyn-mut_field_breaks_invariant.out"
+
+[[step]]
+save = "mut_proven_fits.strata"
+from = "mut_proven_fits.st"
+
+[[step]]
+strata = ["build", "mut_proven_fits.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/dyn-mut_proven_fits.out"
+
+[[step]]
+save = "trait_values_are_values.strata"
+from = "trait_values_are_values.st"
+
+[[step]]
+strata = ["build", "trait_values_are_values.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/dyn-trait_values_are_values.out"
+
+[[step]]
+save = "trait_values_in_fields.strata"
+from = "trait_values_in_fields.st"
+
+[[step]]
+strata = ["build", "trait_values_in_fields.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/dyn-trait_values_in_fields.out"
+
+[[step]]
+save = "trait_values_in_lists.strata"
+from = "trait_values_in_lists.st"
+
+[[step]]
+strata = ["build", "trait_values_in_lists.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/dyn-trait_values_in_lists.out"

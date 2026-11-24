@@ -1,0 +1,48 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "builtins.strata"
+from = "builtins.st"
+
+[[step]]
+strata = ["build", "builtins.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/supervised-builtins.out"
+
+[[step]]
+strata = ["run", "builtins.strata"]
+memory = true
+golden = "tests/data/build/expected/supervised-builtins.out"
+
+[[step]]
+save = "supervised.strata"
+from = "supervised.st"
+
+[[step]]
+strata = ["build", "supervised.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/supervised-supervised.out"
+
+[[step]]
+strata = ["run", "supervised.strata"]
+memory = true
+golden = "tests/data/build/expected/supervised-supervised.out"
+
+# a stack overflow in a supervised task: the task dies alone
+[[step]]
+save = "overflow.strata"
+from = "overflow.st"
+
+[[step]]
+strata = ["run", "overflow.strata"]
+env = { STRATA_MEMORY = "check" }
+has = ["Limit: stack overflow (recursion too deep)\nstill running\n"]
+lacks = [" 0 live"]

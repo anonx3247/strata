@@ -1,0 +1,15 @@
+# cli.rs: math_example_verifies_as_documented (docs/verification.md)
+[[step]]
+strata = ["--file", "$ROOT/examples/math.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/math.strata", "verify", "--checks"]
+fails = true
+has = [
+  "✓ factorial ", "✓ gcd ", "✓ power ", "✓ digit_sum ", "✓ ackermann ", "✓ triangle ", "✓ collatz_steps ", "✓ positive_squares ", "✓ is_prime ", "✓ primes ", "✓ first_or_one ",
+  "✓ isqrt", "invariant of `while (r + 1) * (r + 1) <= n`: it * it <= n (it = r) (inferred)",
+  "✓ triangle_closed", "proven:  invariant `2 * total == i * (i + 1)` after a pass of `while i < n`",
+  "the pair (`m`, `n`), compared in order", "may not terminate: the loop `while x != 1`",
+  "✗ average", "input:   []\n", "✗ next_digit", "input:   9\n",
+]

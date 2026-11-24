@@ -1,0 +1,49 @@
+# cli.rs: code_capability_reads_the_codebase
+
+[[step]]
+write = "pkg/strata.toml"
+text = "name = \"demo\"\n"
+
+[[step]]
+module = "core"
+into = "$TMP/pkg/"
+text = '''
+/// Doubles.
+pub fn double(x: Int) -> Int { x * 2 }
+
+fn quad(x: Int) -> Int { double(double(x)) }
+'''
+
+# the program is outside the package it reads (the current folder)
+[[step]]
+save = "prog/show.strata"
+text = '''
+from std.code use Codebase
+fn main(code: Codebase) {
+  match code.snapshot() {
+    Ok(s) => {
+      for x in s.definitions {
+        print(f"{x.name} {x.kind} deps={x.deps} refs={x.refs} doc={x.doc} iface={x.interface}")
+      }
+      print(f"log={len(s.log)} same={s.version == code.version()}")
+    },
+    Err(e) => print(f"error {e}"),
+  }
+}
+'''
+
+[[step]]
+strata = ["run", "$TMP/prog/show.strata"]
+dir = "pkg"
+has = ["core.double fn deps=[] refs=[\"core.quad\"] doc=Doubles. iface=pub fn double(x: Int) -> Int", "core.quad fn deps=[\"core.double\"] refs=[]", "same=true"]
+
+# a file that doesn't decode is an `Err`, not a fault
+[[step]]
+write = "pkg/core.strata"
+text = "garbage"
+
+[[step]]
+strata = ["run", "$TMP/prog/show.strata"]
+dir = "pkg"
+any_code = true
+has = ["error ", "core.strata"]

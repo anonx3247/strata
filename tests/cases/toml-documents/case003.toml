@@ -1,0 +1,22 @@
+basic = "tab\t nl\n quote\" back\\ uni\u00e9 big\U0001F600 esc\e hex\x41 \b\f\r"
+literal = 'C:\Users\nodejs\templates'
+multi = """
+Roses are red
+Violets are blue"""
+joined = """\
+       The quick brown \
+       fox jumps over \
+       the lazy dog.\
+       """
+quotes = """Here are two quotation marks: "". Simple enough."""
+five = """"This," she said, "is just a pointless statement.""""
+raw = '''
+The first newline is
+trimmed in raw strings.
+   All other whitespace
+   is preserved.
+'''
+rawquotes = '''Here are fifteen quotation marks: """""""""""""""'''
+apos = ''''That,' she said, 'is still pointless.''''
+unicode = "Ελληνικά 日本語 🎉"
+empty = ""

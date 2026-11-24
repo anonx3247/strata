@@ -1,0 +1,19 @@
+# cli.rs: core_rt_is_compiled_for_the_c_runtime: `strata build-core` compiles core.rt for the C runtime, the same every time
+
+[[step]]
+strata = ["build-core"]
+capture = "rt.ll"
+has = ["; core.rt ", "define zeroext i1 @strata_unique(ptr %a0)"]
+lacks = ["declare i1 @strata_unique"]
+
+[[step]]
+run = ["head", "-c", "10", "rt.ll"]
+stdout = "; core.rt "
+
+[[step]]
+strata = ["build-core"]
+out_file = "rt.ll"
+
+[[step]]
+strata = ["--file", "$ROOT/core", "test"]
+has = ["✓ core.rt: an object held once is unique"]

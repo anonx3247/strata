@@ -1,0 +1,27 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "mock.strata"
+from = "mock.st"
+
+[[step]]
+strata = ["build", "mock.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/mock-mock.out"
+
+[[step]]
+save = "orders.strata"
+from = "orders.st"
+
+[[step]]
+strata = ["build", "orders.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/mock-orders.out"

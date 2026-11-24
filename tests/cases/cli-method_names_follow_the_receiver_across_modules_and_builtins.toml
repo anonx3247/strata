@@ -1,0 +1,59 @@
+# cli.rs: method_names_follow_the_receiver_across_modules_and_builtins: `Console.write` / `Files.write` from two modules, `Files.remove` / the builtin `remove`
+
+[[step]]
+save = "main.strata"
+text = '''
+from std.io use Console, recorder, printed
+from std.fs use Disk, Files, NotFound, mem_files
+
+fn save(mut console: Console, mut files: Files) {
+  mut files.write("a.txt", "hi") except { () }
+  mut console.write("saved ")
+  mut console.print(files.read("a.txt") except { "?" })
+  mut files.remove("a.txt") except { () }
+  mut console.print(f"{files.exists("a.txt")}")
+}
+
+fn shout[C: Console](mut c: C, s: String) {
+  mut c.write(to_upper(s))
+  mut c.print("!")
+}
+
+fn main(mut console: Console, mut files: Disk) {
+  mut files.write("x.txt", "disk") except { () }
+  shout(mut console, files.read("x.txt") except { "?" })
+  mut files.remove("x.txt") except { () }
+}
+
+test "each call means its receiver's method" {
+  mut c := recorder([])
+  mut f := mem_files([("b.txt", "x")])
+  save(mut c, mut f)
+  assert printed(c) == ["saved hi", "false"]
+  shout(mut c, "yo")
+  assert printed(c) == ["saved hi", "false", "YO!"]
+  dict_ := dict([("k", 1), ("j", 2)])
+  assert keys(dict_.remove("k")) == ["j"]
+  assert keys(remove(dict_, "j")) == ["k"]
+  assert to_list(set([1, 2]).remove(1)) == [2]
+  assert f.list("nope") == Err(NotFound { path: "nope" })
+}
+'''
+
+[[step]]
+strata = ["--file", "main.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["run", "main.strata"]
+stdout = "DISK!\n"
+
+[[step]]
+run = ["test", "-f", "x.txt"]
+code = 1
+
+# verify picks a stand-in for `C: Console`, never the real terminal
+[[step]]
+strata = ["--file", "main.strata", "verify", "--cases", "20"]
+any_code = true
+lacks = ["needs the real system", "YO"]

@@ -1,0 +1,29 @@
+# cli.rs: cross_check_catches_a_wrong_prover: a "solver" that proves
+# everything: the cross-check still catches the bug
+[[step]]
+write = "fake-solver"
+text = '''
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo fake 1.0; exit 0; fi
+cat > /dev/null
+echo unsat
+'''
+
+[[step]]
+run = ["chmod", "755", "fake-solver"]
+
+[[step]]
+save = "b.strata"
+text = "type Quantity = Int where 1 <= it && it <= 99\nfn bump(q: Quantity) -> Quantity { q + 1 }\n"
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--no-race"]
+env = { STRATA_SOLVER = "$TMP/fake-solver" }
+fails = true
+has = ["✗ bump", "found by the cross-check", "a bug in the prover"]
+
+# without the cross-check the wrong proof stands
+[[step]]
+strata = ["--file", "b.strata", "verify", "--cross-check", "0", "--no-race"]
+env = { STRATA_SOLVER = "$TMP/fake-solver" }
+has = ["✓ bump"]

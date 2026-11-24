@@ -1,0 +1,54 @@
+# build.rs: programs built (`strata build`) and run with arguments, their
+# output and exit code as recorded (tests/data/build/expected), every object
+# freed (STRATA_MEMORY=check)
+
+[[step]]
+save = "deadlock.strata"
+from = "deadlock.st"
+
+[[step]]
+strata = ["build", "deadlock.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/waits-deadlock.out"
+
+[[step]]
+save = "not-deadlocked.strata"
+from = "not-deadlocked.st"
+
+[[step]]
+strata = ["build", "not-deadlocked.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/waits-not-deadlocked.out"
+
+[[step]]
+strata = ["run", "not-deadlocked.strata"]
+memory = true
+golden = "tests/data/build/expected/waits-not-deadlocked.out"
+
+[[step]]
+save = "virtual-time.strata"
+from = "virtual-time.st"
+
+[[step]]
+strata = ["build", "virtual-time.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog", "one", "two words"]
+memory = true
+golden = "tests/data/build/expected/waits-virtual-time.out"
+
+[[step]]
+strata = ["run", "virtual-time.strata"]
+memory = true
+golden = "tests/data/build/expected/waits-virtual-time.out"
+
+[[step]]
+strata = ["run", "deadlock.strata"]
+code = 101
+has = ["deadlock: every task is waiting"]

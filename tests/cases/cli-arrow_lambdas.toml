@@ -1,0 +1,55 @@
+# cli.rs: arrow_lambdas
+
+[[step]]
+save = "lambdas.strata"
+text = '''
+
+fn apply(f: (Int) -> Int, x: Int) -> Int { f(x) }
+test "arrows" {
+  assert [1, 2, 3].map(x -> x * 2) == [2, 4, 6]
+  assert fold([1, 2, 3], 0, (acc, x) -> acc + x) == 6
+  assert apply((n: Int) -> n + 1, 1) == 2
+  k := () -> 7
+  assert k() == 7
+  f := x -> {
+    y := x + 1
+    y * y
+  }
+  assert f(2) == 9
+  assert (1, x -> x).0 == 1
+}
+'''
+
+[[step]]
+strata = ["--file", "lambdas.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "lambdas.strata", "render"]
+capture = "lambdas.st"
+
+[[step]]
+save = "lambdas-r.strata"
+from_tmp = "lambdas.st"
+
+[[step]]
+strata = ["--file", "lambdas-r.strata", "render"]
+out_file = "lambdas.st"
+
+[[step]]
+write = "oldlambda.src"
+text = "fn f() -> List[Int] { [1].map(|x| x) }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file oldlambda.strata edit < oldlambda.src && \"$STRATA\" --file oldlambda.strata check"]
+fails = true
+has = ["lambdas are written `x -> body`"]
+
+[[step]]
+write = "lambdatype.src"
+text = "fn f() -> List[Int] { [1].map((s: String) -> 1) }"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file lambdatype.strata edit < lambdatype.src && \"$STRATA\" --file lambdatype.strata check"]
+fails = true
+has = ["lambda parameter `s`"]

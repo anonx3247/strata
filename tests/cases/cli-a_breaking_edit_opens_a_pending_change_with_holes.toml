@@ -1,0 +1,91 @@
+# cli.rs: a_breaking_edit_opens_a_pending_change_with_holes
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "main.strata"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount / 10
+}
+
+fn total(amount: Int) -> Int {
+  amount + tax(amount)
+}
+
+fn double_tax(a: Int) -> Int {
+  tax(a) * 2
+}
+
+test "totals" {
+  assert total(100) == 110
+}
+'''
+
+# the edit itself checks; the uses it breaks become holes that remember what they were
+[[step]]
+strata = ["edit", "-m", "tax takes a rate"]
+text = "fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }"
+has = ["the edit breaks 2 uses elsewhere", '''
+?pending_1  in total
+      was: tax(amount)
+      why: call to `tax`: expects 2 arguments, got 1''']
+
+[[step]]
+strata = ["render", "main"]
+has = ["amount + ?pending_1", "?pending_2 * 2"]
+
+# nothing logged yet
+[[step]]
+run = ["cat", "strata.log"]
+stdout = ""
+
+[[step]]
+strata = ["holes"]
+any_code = true
+has = ["?pending_1  in total\n  goal:    Int\n  was:     tax(amount)"]
+
+# an edit that doesn't check in itself is still rejected
+[[step]]
+strata = ["edit"]
+text = "fn total(amount: Int) -> Int { amount + true }"
+fails = true
+has = ["rejected"]
+
+# fill one, rename along the way (it joins the change), and `done` waits for the other
+[[step]]
+strata = ["edit"]
+text = "fn total(amount: Int) -> Int { amount + tax(amount, 10) }"
+
+[[step]]
+strata = ["rename", "double_tax", "twice_tax"]
+
+[[step]]
+strata = ["status"]
+has = ["pending change: tax takes a rate  (1 hole left, 1 filled)", "?pending_2  in twice_tax"]
+
+[[step]]
+strata = ["done"]
+fails = true
+has = ["1 hole of this change is still open"]
+
+[[step]]
+strata = ["edit"]
+text = "fn twice_tax(a: Int) -> Int { tax(a, 10) * 2 }"
+
+[[step]]
+strata = ["done"]
+has = ["recorded \"tax takes a rate\" as one change"]
+
+# one log entry for the whole change, with its rename
+[[step]]
+run = ["sh", "-c", "test $(wc -l < strata.log) -eq 1 && grep -q '\"from\":\"double_tax\"' strata.log"]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["status"]
+has = ["no pending change"]

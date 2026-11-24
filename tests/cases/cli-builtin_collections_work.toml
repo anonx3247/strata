@@ -1,0 +1,16 @@
+# cli.rs: builtin_collections_work
+[[step]]
+strata = ["--file", "$ROOT/examples/builtins.strata", "test"]
+has = ["2 passed"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/builtins.strata", "verify"]
+
+[[step]]
+save = "e.strata"
+text = "fn f(x: Int) -> Float { x * 1.5 }\nfn g(b: Bool) -> Int { len(b) }\n"
+
+[[step]]
+strata = ["--file", "e.strata", "check"]
+fails = true
+has = ["no version of `len` accepts (Bool)", "expected `Int`, found `Float`"]
