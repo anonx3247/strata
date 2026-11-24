@@ -660,3 +660,19 @@ int32_t solver_pool_prefetch(const char *solver, const char *text) {
   pthread_mutex_unlock(&queue_lock);
   return 0;
 }
+
+// Counters the compiler's workers take work by (`smt.counted_map`): each
+// worker asks for the next element as it finishes one, so a long one
+// doesn't hold up those shared out after it.
+static int64_t work_counters[1024];
+static int64_t work_counters_used;
+
+int64_t work_counter(void) {
+  int64_t id = __atomic_fetch_add(&work_counters_used, 1, __ATOMIC_SEQ_CST) % 1024;
+  __atomic_store_n(&work_counters[id], 0, __ATOMIC_SEQ_CST);
+  return id;
+}
+
+int64_t work_take(int64_t id) {
+  return __atomic_fetch_add(&work_counters[id], 1, __ATOMIC_SEQ_CST);
+}
