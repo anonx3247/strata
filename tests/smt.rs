@@ -337,6 +337,30 @@ fn verify_fuzzes_around_what_cant_be_compiled() {
     assert!(out.contains("✓ a ") && out.contains("✓ b ") && out.contains("✓ c "), "{out}");
 }
 
+/// `byte_at(s, i)` is checked for `0 <= i < byte_len(s)`: a call that may
+/// be out of range is refuted by the solver (not proven, then caught by the
+/// cross-check, as Rust's verify still does), one inside the string is
+/// proven, and its byte is 0 to 255.
+#[test]
+fn verify_checks_byte_at_offsets() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-byte-at");
+    let file = dir.join("b.strata");
+    save(&file, include_str!("data/smt/verify_byte_at.st"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
+    let out = String::from_utf8_lossy(&ours.stdout);
+    for f in ["any_offset", "before_start", "padded_wrong"] {
+        assert!(out.contains(&format!("✗ {f:<24} Runtime violation (found by the solver)")), "{f}: {out}");
+    }
+    for f in ["inside", "slashes", "ascii_code"] {
+        assert!(out.contains(&format!("✓ {f:<24} proven")), "{f}: {out}");
+    }
+}
+
 /// One compile names every fuzz driver that can't be compiled, those whose
 /// function only calls what can't (`longer` and `longest` through `units`),
 /// each with why: `verify` leaves them all out at once, not by halving the
