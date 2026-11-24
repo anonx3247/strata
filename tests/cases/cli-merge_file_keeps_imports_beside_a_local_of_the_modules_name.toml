@@ -52,4 +52,4 @@ lacks = ["util.helper"]
 [[step]]
 strata = ["--file", ".", "check"]
 dir = "p"
-has = ["ok: 4 definitions check"]
+has = ["ok: 5 definitions check"]
