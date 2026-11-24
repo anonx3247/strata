@@ -2535,14 +2535,14 @@ fn core_rt_strings_and_integers_as_in_c() {
     let rt = dir.join("core_rt.ll");
     std::fs::write(&rt, &ir).unwrap();
     // each program's output, error output and exit code, with core.rt and with C
-    let both = |name: &str, text: &str| -> String {
+    let run = |name: &str, text: &str, sides: &[bool]| -> Vec<String> {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
         let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
         let ll = dir.join(format!("{name}.ll"));
         std::fs::write(&ll, &prog.stdout).unwrap();
         let mut outs = vec![];
-        for with_rt in [true, false] {
+        for &with_rt in sides {
             let exe = dir.join(format!("{name}-{}", if with_rt { "rt" } else { "c" }));
             let mut c = Command::new("clang");
             c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(root.join("src/llvm/runtime.c"));
@@ -2554,6 +2554,10 @@ fn core_rt_strings_and_integers_as_in_c() {
             let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
             outs.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
         }
+        outs
+    };
+    let both = |name: &str, text: &str| -> String {
+        let mut outs = run(name, text, &[true, false]);
         assert_eq!(outs[0], outs[1], "{name}: core.rt (left) and C (right) differ");
         outs.remove(0)
     };
@@ -2567,8 +2571,94 @@ fn core_rt_strings_and_integers_as_in_c() {
         let out = both(&format!("fault{i}"), &format!("fn main() {{\n  print(\"start\")\n  x := {e}\n  print(x)\n}}\n"));
         assert!(out.contains("fault (Runtime): ") && out.ends_with("Some(101)"), "{out}");
     }
+    let out = both("integers", CORE_RT_INTEGERS);
+    assert!(out.starts_with("123456789012345678901234567890 -123456789012345678901234567890 4611686018427387904 -4611686018427387905 15241578753238836750495351562536198787501905199875019052100 0\n"), "{out}");
+    // Euclidean: the remainder is never negative
+    assert!(out.contains("\n1 4611686018427387904 17636684144620811271604938270 3 -17636684144620811271604938270 4\n-17636684144620811271604938270 3 17636684144620811271604938271 4 1 123456789012345678901234567890\n-4 1 -3 1 0\n"), "{out}");
+    assert!(out.contains("\n1180591620717411303424 -36893488147419103232 15432098626543209862654320986 -15432098626543209862654320987 0 -1 11529215046068469760 -13835058055282163712\n"), "{out}");
+    assert!(out.contains("\n6148914691236517205 5 4611686018427387904 3 9223372036854775807 18446744073709551616 -9223372036854775808\n"), "{out}");
+    assert!(out.contains("division by zero\n0\ndivision by zero\n0\n`<<` by a negative number of bits\n0\n`300` doesn't fit in `U8`\n0\n`-123456789012345678901234567890` doesn't fit in `U8`\n0\n`<<` by a negative number of bits\n0\n"), "{out}");
+    // -2^62 / -1 is 2^62, a big integer (C read it as one's address and
+    // crashed, until this test)
+    let out = both("past_small", "fn main() {\n  x := byte_len(\"\") - 4611686018427387904\n  print(x / -1)\n}\n");
+    assert!(out.starts_with("4611686018427387904\n") && out.ends_with("Some(0)"), "{out}");
+    for (i, e) in ["1 << -1", "5 / (byte_len(\"\") * 1)", "7 % (byte_len(\"\") * 1)", "1 << 5000000000", "to_u8(-1)", "to_i8(128)"].iter().enumerate() {
+        let out = both(&format!("int_fault{i}"), &format!("fn main() {{\n  print(\"start\")\n  x := {e}\n  print(x)\n}}\n"));
+        assert!(out.contains("fault (") && out.ends_with("Some(101)"), "{out}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+const CORE_RT_INTEGERS: &str = r#"fn div0(a: Int, b: Int) -> Int {
+  a / b
+}
+
+fn mod0(a: Int, b: Int) -> Int {
+  a % b
+}
+
+fn shift(a: Int, n: Int) -> Int {
+  a << n
+}
+
+fn fit(n: Int) -> U8 {
+  to_u8(n)
+}
+
+fn word_shift(a: I64, n: I64) -> I64 {
+  a << n
+}
+
+fn main() {
+  big := 123456789012345678901234567890
+  small := 4611686018427387903
+  print(f"{big} {-big} {small + 1} {-small - 2} {big * big} {big - big}")
+  print(f"{big + 1 - big} {(small + 1) * 2 / 2} {(big + 3) / 7} {(big + 3) % 7} {-big / 7} {(-big - 3) % 7}")
+  print(f"{(big + 3) / -7} {(big + 3) % -7} {(-big - 3) / -7} {(-big - 3) % -7} {big / big} {big % (big + 1)}")
+  print(f"{-7 / 2} {-7 % 2} {7 / -2} {7 % -2} {-4611686018427387904 % -1}")
+  print(f"{abs(-big)} {abs(-4611686018427387904)} {big == big + 0} {big < big + 1} {-big < big} {big > small}")
+  print(f"{big & 255} {big | 1} {big ^ big} {-big & 65535} {-big | 3} {-big ^ 12345678901234567890123}")
+  print(f"{1 << 70} {-1 << 65} {big >> 3} {-big >> 3} {big >> 200} {-big >> 200} {5 << 61} {-3 << 62}")
+  print(f"{parse_int("123456789012345678901234567890123")} {parse_int("-1_000")} {parse_int("+0")} {parse_int("1x")}")
+  print(f"{to_i64(-9223372036854775808)} {to_u64(18446744073709551615)} {wrap_u64(-1)} {wrap_i64(big)}")
+  let x: U64 = to_u64(18446744073709551615)
+  let y: I64 = to_i64(-9223372036854775807)
+  print(f"{x / to_u64(3)} {x % to_u64(10)} {y / to_i64(-2)} {y % to_i64(10)} {y / to_i64(-1)} {to_int(x) + 1} {to_int(y) - 1}")
+  print(f"{float(big)} {float(-small - 2)}")
+  scope {
+    h := supervised spawn div0(5, 0)
+    print(await h except p {
+      print(p.message)
+      0
+    })
+    g := supervised spawn mod0(big, 0)
+    print(await g except p {
+      print(p.message)
+      0
+    })
+    k := supervised spawn shift(3, -1)
+    print(await k except p {
+      print(p.message)
+      0
+    })
+    m := supervised spawn fit(300)
+    print(await m except p {
+      print(p.message)
+      to_u8(0)
+    })
+    n := supervised spawn fit(-big)
+    print(await n except p {
+      print(p.message)
+      to_u8(0)
+    })
+    w := supervised spawn word_shift(to_i64(1), to_i64(-2))
+    print(await w except p {
+      print(p.message)
+      to_i64(0)
+    })
+  }
+}
+"#;
 
 const CORE_RT_STRINGS: &str = r#"fn bad_byte(s: String) -> Int {
   byte_at(s, 10)

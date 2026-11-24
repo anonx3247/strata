@@ -1730,6 +1730,11 @@ static void finish_open_scopes(void) {
 
 // ---- integers ----
 //
+// Written in Strata in core.rt (core/rt.strata), as the strings are: these
+// are the first stage's. What stays C under `STRATA_CORE_RT` (`digits`,
+// `num_of`, `trim`, `int_of`) is the float conversions' (`float(n)`,
+// `floor` and the like), until floats move too.
+//
 // An `Int` never overflows (as the interpreter's): one in [-2^62, 2^62) is
 // itself, and any other is a big integer, a pointer kept in the 64-bit
 // values outside that range: above it for positive ones, below for
@@ -1761,6 +1766,7 @@ static Big *big_at(int64_t v) {
   return (Big *)(uintptr_t)(k << 3);
 }
 
+#ifndef STRATA_CORE_RT
 // One holder more, or fewer, of a big integer (the generated code tests
 // whether an `Int` is big before calling these).
 void strata_int_dup(int64_t v) {
@@ -1770,6 +1776,13 @@ void strata_int_dup(int64_t v) {
 void strata_int_drop(int64_t v) {
   if (is_big(v) && strata_release(big_at(v))) strata_free(big_at(v));
 }
+#else
+// (core.rt's: the integer functions, below too)
+void strata_int_dup(int64_t v);
+void strata_int_drop(int64_t v);
+Str *strata_show_int(int64_t n);
+int64_t strata_int_from_i64(int64_t raw);
+#endif
 
 static uint32_t *digits(int64_t n) {
   uint32_t *d = calloc((size_t)(n > 0 ? n : 1), 4);
@@ -1820,6 +1833,7 @@ static int64_t int_of(Num x) {
   return x.sign > 0 ? (int64_t)(((uint64_t)1 << 62) + k) : -(int64_t)(((uint64_t)1 << 62) + k) - 1;
 }
 
+#ifndef STRATA_CORE_RT
 static int mag_cmp(const uint32_t *a, int64_t an, const uint32_t *b, int64_t bn) {
   if (an != bn) return an < bn ? -1 : 1;
   for (int64_t i = an - 1; i >= 0; i--)
@@ -1961,6 +1975,8 @@ int64_t strata_int_abs(int64_t a) {
   return int_of(x);
 }
 
+int64_t strata_int_from_i64(int64_t raw);
+
 // `a / b` for a `b` that isn't 0: what `verify` proved (`no division by
 // zero`), so the compiled code calls this without the check.
 int64_t strata_div_nz(int64_t a, int64_t b) {
@@ -1968,7 +1984,7 @@ int64_t strata_div_nz(int64_t a, int64_t b) {
     // Euclidean: the remainder is never negative
     int64_t q = a / b, r = a % b;
     if (r < 0) q = b > 0 ? q - 1 : q + 1;
-    return is_big(q) ? int_of(num_of(q)) : q;
+    return strata_int_from_i64(q);  // (-2^62 / -1 is 2^62: a big integer)
   }
   Num x = num_of(a), y = num_of(b);
   int64_t q, r;
@@ -2003,7 +2019,9 @@ int64_t strata_mod(int64_t a, int64_t b) {
   if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
   return strata_mod_nz(a, b);
 }
+#endif
 
+#ifndef STRATA_CORE_RT
 // ---- bits: `&`, `|`, `^`, `<<`, `>>` ----
 //
 // On two's complement, infinitely sign-extended (as Python's integers): a
@@ -2153,6 +2171,9 @@ int64_t strata_int_lit(Str *s) {
   x.sign = x.n ? (neg ? -1 : 1) : 0;
   return int_of(x);
 }
+#endif
+
+Str *strata_show_int(int64_t n);
 
 // `float(n)`: the nearest Float (Rust's `to_f64`: rounded to nearest, ties even).
 double strata_int_to_float(int64_t v) {
@@ -2173,7 +2194,7 @@ double strata_int_to_float(int64_t v) {
   double d = ldexp((double)top, (int)shift);
   free(x.d);
   if (!isfinite(d)) {
-    Str *m = big_show(v);
+    Str *m = strata_show_int(v);
     soft_fault(4, strata_concat_owned(m, str_c(" is too large for a Float")));
     return 0.0;
   }
@@ -2186,6 +2207,7 @@ double strata_fmod(double a, double b) {
   return r;
 }
 
+#ifndef STRATA_CORE_RT
 Str *strata_show_int(int64_t n) {
   if (is_big(n)) return big_show(n);
   char buf[32];
@@ -2201,6 +2223,7 @@ int64_t strata_int_from_i64(int64_t raw) {
   if (m >> 32) x.d[x.n++] = (uint32_t)(m >> 32);
   return int_of(x);
 }
+#endif
 
 // ---- sized integers (`I8` … `U64`) ----
 //
@@ -2208,6 +2231,7 @@ int64_t strata_int_from_i64(int64_t raw) {
 // modulo 2^bits. The generated code passes a signed type's value sign-extended
 // to 64 bits, an unsigned one's zero-extended, and truncates the result.
 
+#ifndef STRATA_CORE_RT
 // Euclidean `/` and `%` (the remainder is never negative), as `Int`'s.
 int64_t strata_word_div(int64_t a, int64_t b) {
   if (b == 0 && soft_fault(4, str_c("division by zero"))) return 0;
@@ -2253,11 +2277,13 @@ int64_t strata_int_fit(int64_t n, int64_t lo, int64_t hi, Str *ty) {
   }
   return strata_int_bits(n);
 }
+#endif
 
 // ---- foreign calls (`extern c`) ----
 //
 // What the generated code converts a value with, on its way to C and back.
 
+#ifndef STRATA_CORE_RT
 // An `Int` as its low 64 bits: an `I64` or a `U64` (two's complement), which
 // its refinement already keeps in range.
 int64_t strata_int_bits(int64_t v) {
@@ -2275,6 +2301,7 @@ int64_t strata_int_from_u64(uint64_t raw) {
   x.d[x.n++] = (uint32_t)(raw >> 32);
   return int_of(x);
 }
+#endif
 
 // A `String` for C: a NUL-terminated copy (freed with `strata_cstr_free`
 // after the call). C can't see past a NUL, so a string holding one is a fault.
@@ -3338,6 +3365,10 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
 // indexed by character (code point). What depends on Unicode's tables (case
 // mappings, `is_alpha`) takes a table the compiler made from Rust's own
 // (`llvm.rs`, `unicode_table`), so both agree.
+//
+// Written in Strata in core.rt (core/rt.strata), which replaces these when it
+// is linked in (`STRATA_CORE_RT`); they stay for the first stage of strata's
+// build. `utf8_put` is the f-string format specs' (below).
 
 // A character in UTF-8 at `o`: how many bytes it took.
 static int utf8_put(int32_t c, char *o) {
@@ -3572,11 +3603,11 @@ Str *strata_str_chr(int64_t c) {
 }
 #endif
 
+#ifndef STRATA_CORE_RT
 // `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
 // digit, then digits and `_`. False when it isn't a number; a fault when it
 // doesn't fit in 64 bits (big integers are not compiled yet).
 static _Bool parse_int_trimmed(Str *t, int64_t *out);
-static _Bool parse_float_trimmed(Str *t, double *out);
 
 _Bool strata_parse_int(Str *s, int64_t *out) {
   Str *t = strata_str_trim(s);
@@ -3584,6 +3615,9 @@ _Bool strata_parse_int(Str *s, int64_t *out) {
   str_drop(t);
   return ok;
 }
+#endif
+
+static _Bool parse_float_trimmed(Str *t, double *out);
 
 _Bool strata_parse_float(Str *s, double *out) {
   Str *t = strata_str_trim(s);
@@ -3592,6 +3626,7 @@ _Bool strata_parse_float(Str *s, double *out) {
   return ok;
 }
 
+#ifndef STRATA_CORE_RT
 static _Bool parse_int_trimmed(Str *t, int64_t *out) {
   int64_t i = 0, n = t->len;
   int neg = 0;
@@ -3617,6 +3652,7 @@ static _Bool parse_int_trimmed(Str *t, int64_t *out) {
   *out = int_of(v);
   return 1;
 }
+#endif
 
 // `parse_float`, as Rust's `f64::from_str` reads the trimmed string (no hex,
 // no `_`; `inf` and `NaN` are not finite, so not numbers either).
