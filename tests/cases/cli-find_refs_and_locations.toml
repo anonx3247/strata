@@ -125,3 +125,9 @@ fails = true
 strata = ["check", "c.strata"]
 fails = true
 has = ["error in f: unknown variable `undefined_fn`\n--> f@", "/body/right/callee\n| fn f(t: T) -> Int {\n|   t.b + undefined_fn(2)\n|         ^^^^^^^^^^^^\n| }\n"]
+
+# on a terminal: the location dim, the code highlighted, the marks in their color
+[[step]]
+strata = ["--file", "p", "refs", "Task.attempts", "--kind", "write"]
+env = { FORCE_COLOR = "1" }
+has = ["\u001b[38;2;111;112;121mjobs.retried@5ce7a5fb/body/1/place  write\u001b[0m", "\u001b[38;2;218;119;242mfn\u001b[0m", "\u001b[38;2;142;162;255m  ^^^^^^^^^^\u001b[0m"]
