@@ -25,18 +25,18 @@ from counter use Counter
 
 type Twice = { f: (Natural) -> Natural }
 
-/// A function named like `Counter`'s method (in another module): `k.bump()`
+/// A function named like `Counter`'s method (in another module): `mut k.bump()`
 /// is still the method.
 fn bump(c: Counter) -> Natural {
   mut k := c
-  k.bump()
+  mut k.bump()
   k.n
 }
 
 /// A local named like the function hides it: this is not recursion.
 fn fresh() -> Counter {
   mut fresh := Counter { n: 0 }
-  fresh.bump()
+  mut fresh.bump()
   fresh
 }
 
