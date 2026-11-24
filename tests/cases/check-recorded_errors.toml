@@ -1,0 +1,738 @@
+# check.rs: the `*_as_in_rust` programs (and derives_as_in_rust's): the errors `strata check`
+# gives them (lines `error in ...` and their indented notes, sorted), recorded while the Strata
+# checker gave exactly Rust's
+
+[[step]]
+save = "arity.strata"
+from = "arity.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file arity.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in g: call to `f`: expects 2 arguments, got 1
+error in g: unknown variable `zz`
+error in h: call to `f`: expects 2 arguments, got 1
+error in h: constructor `Rc` expects 2 positional arguments
+error in h: unknown variable `yy`
+error in m: constructor `Sq` needs 1 fields
+error in n: constructor `Pt` expects 2 positional arguments
+'''
+
+[[step]]
+save = "bad_derives.strata"
+from = "bad_derives.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file bad_derives.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in derive std.json.Json for Bad: deriving `to_json_at`: `Some("Bad").type`: a field named `type` can't be written to JSON, where "type" names the type
+error in derive std.json.Json for Outer: deriving `from_json_at`: `Inner` doesn't implement `Json`: write `derive Json for Inner`
+error in derive std.json.Json for Pairs: deriving `to_json_at`: `Two` has several positional fields: name them (`Two { .. }`) to write it to JSON
+'''
+
+[[step]]
+save = "bounds.strata"
+from = "bounds.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file bounds.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `String`, found `Int`
+error in b: calling `total`: `Pt` does not implement `Area`
+error in c: function body: expected `String`, found `Int`
+error in d: function body: expected `String`, found `Int`
+error in impl Box[T]: function body: expected `Int`, found `T`
+'''
+
+[[step]]
+save = "builtins.strata"
+from = "builtins.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file builtins.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+  abs(Float) -> Float
+  abs(Int) -> Int
+error in a: function body: expected `String`, found `Int`
+error in b: no version of `abs` accepts (String); available:
+error in c: function body: expected `String`, found `Int`
+error in d: call to `push`, argument 2: expected `Int`, found `String`
+error in d: function body: expected `Int`, found `List[Int]`
+error in e: function body: expected `Int`, found `List[String]`
+error in f: call to `join`, argument 2: expected `String`, found `Int`
+error in g: function body: expected `Int`, found `Float`
+error in h: function body: expected `Int`, found `List[Int]`
+error in k: call to `starts_with`, argument 2: expected `String`, found `Int`
+error in m: function body: expected `String`, found `Int`
+'''
+
+[[step]]
+save = "capabilities.strata"
+from = "capabilities.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file capabilities.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in cabs: `extern c` definitions are never `pub`: wrap them in this module's own functions or a capability, which can be
+error in chans: `tx` is never closed here, so its receivers would wait forever: call `tx.close()` when this task is done sending (each task holding it closes its own)
+error in chans: the task holds a copy of `tx` and never closes it: call `tx.close()` in it when it is done sending
+error in empty: a `select` needs at least one arm
+error in lamp: `NightLamp` is a capability: only the runtime makes one, for `main` or a test that asks for it (`night_lamp: NightLamp`); call its functions on that value
+error in loose: `spawn` outside a `scope`: tasks are started in a `scope { … }`, which waits for them (a function that starts tasks opens its own)
+error in none: a `race` needs at least one arm
+error in racer: `return` can't leave a task (a `spawn`, a `race` arm): the expression is the task's result (move the code into a function to return early)
+error in sel: a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`
+error in sel: a `send` arm gives nothing to name: drop its `as`
+error in tasks: `?` can't return from a task (a `spawn`, a `race` arm): handle the Option with `except` or `match`, or give it back as the task's result
+error in tasks: `return` can't leave a task (a `spawn`, a `race` arm): the expression is the task's result (move the code into a function to return early)
+error in tasks: `spawn` outside a `scope`: tasks are started in a `scope { … }`, which waits for them (a function that starts tasks opens its own)
+error in test "asks": test parameter `n: Int`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`
+error in test "asks": test parameter `p: Pt`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`
+'''
+
+[[step]]
+save = "clashes.strata"
+from = "clashes.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file clashes.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in E: variant `Line` of `E` has the same name as the type `Line`: a variant is a type of its own, so its name must be unique in its module (rename one)
+error in Option: `Option` is already defined in the prelude (use it, or pick another name)
+'''
+
+[[step]]
+save = "contracts.strata"
+from = "contracts.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file contracts.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in Bad: refinement: expected `Bool`, found `Int`
+error in Pt: the default of `n`, "abcd", does not satisfy `Name`
+error in Pt: the default of `x`, -1, does not satisfy `Int where it >= 0`
+error in Sh: the default of `side`, 0, does not satisfy `Pos`
+error in Sz: ensures clause: expected `Bool`, found `Float`
+error in Sz: law `nonneg`: expected `Bool`, found `Int`
+error in Sz: requires clause: expected `Bool`, found `Int`
+error in f: ensures clause: expected `Bool`, found `String`
+error in f: requires clause: expected `Bool`, found `Int`
+error in f: unknown variable `it`
+error in g: ensures clause: expected `Bool`, found `Int`
+error in g: refinement `where 3`: expected `Bool`, found `Int`
+error in g: requires clause: expected `Bool`, found `Float`
+error in h: refinement violated at compile time in assigning `n`: "" does not satisfy `Name`
+error in h: refinement violated at compile time in assigning `p`: -3 does not satisfy `Pos`
+error in h: refinement violated at compile time in assigning `p`: 0 does not satisfy `Pos`
+error in h: refinement violated at compile time in assigning `p`: 0 does not satisfy `Pos`
+error in h: refinement violated at compile time in assigning `q`: 15 does not satisfy `Int where it < 10 || it == 20`
+error in impl Sz for Pt: ensures clause: expected `Bool`, found `Int`
+error in impl Sz for Pt: requires clause: expected `Bool`, found `Int`
+error in test "t": test parameter `n: Int`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`
+error in test "t": test parameter `xs: List[Int]`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`
+'''
+
+[[step]]
+save = "core_mem.strata"
+from = "core_mem.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file core_mem.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in hidden: `Ptr` is core's: only core's modules can use raw memory (`core.mem`)
+error in hidden: `Ptr` is core's: only core's modules can use raw memory (`core.mem`)
+error in hidden: `raw_alloc` is core's: only core's modules can use raw memory (`core.mem`)
+error in keep: `Ptr` is core's: only core's modules can use raw memory (`core.mem`)
+error in keep: `Ptr` is core's: only core's modules can use raw memory (`core.mem`)
+error in keep: `Ptr` is core's: only core's modules can use raw memory (`core.mem`)
+error in main: `load_i64` is core's: only core's modules can use raw memory (`core.mem`)
+error in main: `raw_alloc` is core's: only core's modules can use raw memory (`core.mem`)
+error in main: `store_i64` is core's: only core's modules can use raw memory (`core.mem`)
+'''
+
+[[step]]
+save = "core_static.strata"
+from = "core_static.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file core_static.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in mine: `builtin` definitions are only in `core`: `mine` is what the compiler provides, declared there
+'''
+
+[[step]]
+save = "declarations.strata"
+from = "declarations.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file declarations.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in Bad: supertrait `Pt` is not a trait
+error in a: unknown type `Nope`
+error in b: type `Box` expects 1 type arguments, got 2
+error in c: unknown constructor `Ghost`
+error in d: pattern `Rc {..}` does not mention every field; add `..`
+error in d: pattern `Sq` expects 1 fields, got 2
+error in e: the alternatives of `Sq(n) | Rc { w: m, .. }` must bind the same names (`Rc { w: m, .. }` binds ["m"])
+error in f: `Self` only means something inside a trait or an impl
+error in f: `f` is both a function and a method of trait `Bad`
+error in g: `break` outside a loop
+error in h: `Ghosty` is not a trait
+error in impl Area for Pt: `extra` is not a method of trait `Area`
+error in impl Area for Pt: missing method `name` required by `Area`
+error in impl Pt: `dup` is defined twice in `impl Pt`
+error in k: unknown constructor `Zap` in pattern
+error in k: unreachable match arm `_`: the arms above already cover it
+'''
+
+[[step]]
+save = "derive_builtins.strata"
+from = "derive_builtins.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file derive_builtins.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = ""
+
+[[step]]
+save = "early.strata"
+from = "early.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file early.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: `!` returns the error early, so the result type must be `Result[_, String]`, found `Int` (handle it here with `except`)
+error in b: `?` returns `None` early, so the result type must be `Option[_]`, found `Int` (handle it here with `except`)
+error in c: `!` returns the error early, so the result type must be `Result[_, String]`, found `Option[Int]` (handle it here with `except`)
+error in d: `!` returns the error early, so the result type must be `Result[Int, String]`, found `Result[Int, Int]` (handle it here with `except`)
+'''
+
+[[step]]
+save = "front.strata"
+from = "front.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file front.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in Name: `type Name = String` adds nothing: constrain it (`type Name = String where …`) or make it a separate type (`distinct type Name = String`)
+error in abs: `extern c fn abs`, parameter `x`: `Int` has no fixed size: use a sized integer (`I32`, `I64`, `U8`, ...)
+error in abs: `extern c fn abs`, result: `List[Int]` doesn't cross to C: use a sized integer, `Float`, `Bool`, `String`, `()`, an `extern c type` or an `Option` of one
+error in builtin: `mut xs`: `len` has no `mut` parameters
+error in fill: `extern c fn fill`, parameter `s`: a `String` can't be `mut` (an out-pointer): return it instead
+error in forge: unknown constructor `Handle`
+error in impl Line: `tick` changes its receiver (`mut self`): write `mut self.tick(…)` to show that `self` may change
+error in impl Line: `tick` changes its receiver (`mut self`): write `mut self.tick(…)` to show that `self` may change
+error in needless: `mut l.peek(…)`: `peek` doesn't change its receiver (it doesn't take `mut self`)
+error in nobound: calling `price`: `T` is not known to implement `Priced` (add a bound: `[T: Priced]`)
+error in not_a_clock: an `after` arm waits on a clock: `Int` doesn't implement `Clock` (std.time)
+error in notimpl: calling `price`: `Bool` does not implement `Priced`
+error in over_param: `for` needs a List, Set, Dict or an `Iterator`: `I` is not known to implement `Iterator` (add a bound: `[I: Iterator]`)
+error in over_record: `for` needs a List, Set, Dict or an `Iterator`: `Line` does not implement `Iterator`
+error in over_string: `for` needs a List, Set, Dict or an `Iterator`, found `String`
+error in own_unmarked: `bump` changes its receiver (`mut self`): write `mut b.bump(…)` to show that `b` may change
+error in plain: the time an `after` arm waits: expected `std.time.Duration`, found `Int`
+error in unmarked: `tick` changes its receiver (`mut self`): write `mut l.tick(…)` to show that `l` may change
+'''
+
+[[step]]
+save = "generic_derive.strata"
+from = "generic_derive.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file generic_derive.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = ""
+
+[[step]]
+save = "generics.strata"
+from = "generics.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file generics.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `String`, found `Int`
+error in b: call to `first`, argument 2: expected `Int`, found `String`
+error in c: function body: expected `Int`, found `T`
+error in d: field `Box.item`: expected `Int`, found `String`
+error in e: function body: expected `Int`, found `String`
+error in f: argument of `Some`: expected `Int`, found `String`
+error in g: argument of `Err`: expected `String`, found `Int`
+error in h: `or` fallback: expected `Int`, found `String`
+error in k: argument of `Some`: expected `String`, found `Int`
+error in m: function body: expected `Option[Int]`, found `Int`
+'''
+
+[[step]]
+save = "handles.strata"
+from = "handles.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file handles.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: `keep` is declared outside the `scope`, so a task's handle can't be stored in it
+error in a: `keep` is declared outside the `scope`, so a task's handle can't be stored in it
+error in a: `spawn` outside a `scope`: tasks are started in a `scope { … }`, which waits for them (a function that starts tasks opens its own)
+error in b: a closure or `spawn` can't hold `h`, a task's handle: await it where it was spawned
+error in c: a closure or `spawn` can't hold `h`, a task's handle: await it where it was spawned
+'''
+
+[[step]]
+save = "imports.strata"
+from = "imports.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file imports.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `String`, found `List[Int]`
+error in b: call to `std.utf8.encode`, argument 1: expected `String`, found `Int`
+error in c: function body: expected `String`, found `Option[String]`
+error in d: function body: expected `String`, found `Int`
+error in e: call to `std.unicode.next_code`, argument 1: expected `Int`, found `String`
+'''
+
+[[step]]
+save = "json.strata"
+from = "json.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file json.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = ""
+
+[[step]]
+save = "matches.strata"
+from = "matches.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file matches.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: non-exhaustive match on `Sh`: `Rc` is not covered
+error in b: non-exhaustive match on `Option[Int]`: `None` is not covered
+error in c: non-exhaustive match on `Result[Int, String]`: `Ok` is not covered
+error in d: non-exhaustive match on `Bool`: `false` is not covered
+error in g: non-exhaustive match on `Option[Sh]`: `Some` is not covered
+error in m: non-exhaustive match on `Option[Sh]`: `Some` is not covered
+'''
+
+[[step]]
+save = "methods.strata"
+from = "methods.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file methods.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `String`, found `Int`
+error in b: call to `scale`, argument 2: expected `Int`, found `String`
+error in c: call to `scale`: expects 2 arguments, got 3
+error in impl Pt: function body: expected `String`, found `Int`
+'''
+
+[[step]]
+save = "misuse.strata"
+from = "misuse.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file misuse.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: `except` / `!!` handle a Result, found `Int`
+error in b: `except` / `!!` handle a Result; an Option is handled with `or { … }` / `??`
+error in c: `!` needs a Result, found `Int` (use `?` on an Option)
+error in d: `?` needs an Option, found `Result[Int, String]` (use `!` on a Result)
+error in e: `for` needs a List, Set, Dict or an `Iterator`, found `Int`
+error in f: cannot access field `size` on `Int`
+error in g: call to `n`: `Int` is not a function
+error in h: format spec `.2`: `.N` applies to a Float (decimal places) or a String (most characters), not `Int`
+error in k: format spec `+`: `+` and `0` apply to numbers, not `String`
+'''
+
+[[step]]
+save = "muts.strata"
+from = "muts.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file muts.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: `bump` can change its `mut n` parameter: write `mut 3` to show that `3` may change
+error in a: `bump` can change its `mut n` parameter: write `mut y` to show that `y` may change
+error in a: `mut y` marks an argument passed to a `mut` parameter (`f(mut y)`) or a call that changes its receiver (`mut y.m()`)
+error in a: `mut y`: the closure `f` has no `mut` parameters
+error in a: `mut` on an argument of `show`, but its parameter `n` is not `mut`
+error in a: `shift` can change its `mut p` parameter: write `mut r` to show that `r` may change
+error in a: a closure cannot change `y`, which belongs to the enclosing function
+error in a: can only let `bump` change (its `mut n` parameter) a variable or one of its fields
+error in a: cannot assign to `i`: it is not mutable (declare it with `mut i := …`, or make it a `mut` parameter)
+error in a: cannot assign to `p`: it is not mutable (declare it with `mut p := …`, or make it a `mut` parameter)
+error in a: cannot assign to `x`: it is not mutable (declare it with `mut x := …`, or make it a `mut` parameter)
+error in a: cannot assign to `y`: it is not mutable (declare it with `mut y := …`, or make it a `mut` parameter)
+error in a: cannot let `bump` change (its `mut n` parameter) `x`: it is not mutable (declare it with `mut x := …`, or make it a `mut` parameter)
+error in a: cannot let `shift` change (its `mut p` parameter) `p`: it is not mutable (declare it with `mut p := …`, or make it a `mut` parameter)
+error in b: cannot assign to `n`: it is not mutable (declare it with `mut n := …`, or make it a `mut` parameter)
+error in b: cannot let `bump` change (its `mut n` parameter) `n`: it is not mutable (declare it with `mut n := …`, or make it a `mut` parameter)
+error in c: cannot assign to `n`: it is not mutable (declare it with `mut n := …`, or make it a `mut` parameter)
+'''
+
+[[step]]
+save = "narrowed.strata"
+from = "narrowed.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file narrowed.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: match arm: expected `Int`, found `Sq`
+error in b: match arm: expected `String`, found `Int`
+error in e: match arm: expected `Int`, found `Dot | Sq`
+error in f: variant `Rc` has no field `z`
+error in h: `return` value: expected `Int`, found `Sh`
+'''
+
+[[step]]
+save = "raw_values.strata"
+from = "raw_values.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file raw_values.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in main: `Raw` is core's: reading compiled values (`core.values`) is for core's modules and a package whose strata.toml says `read = true` under `[values]`
+error in peek: `Raw` is core's: reading compiled values (`core.values`) is for core's modules and a package whose strata.toml says `read = true` under `[values]`
+'''
+
+[[step]]
+save = "records.strata"
+from = "records.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file records.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: field `Pt.y`: expected `Int`, found `String`
+error in b: function body: expected `String`, found `Int`
+error in c: argument of `Sq`: expected `Int`, found `String`
+error in d: field `Rc.w`: expected `Int`, found `Bool`
+error in e: match arm: expected `Int`, found `String`
+error in f: function body: expected `Int`, found `Sh`
+error in g: field `Pt.x`: expected `Int`, found `String`
+error in h: type `Pt` has no field `z` (match on variants to access their fields)
+error in k: match arm: expected `String`, found `Int`
+error in m: `==` operands: expected `Pt`, found `Sh`
+error in m: function body: expected `Int`, found `Bool`
+'''
+
+[[step]]
+save = "refined.strata"
+from = "refined.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file refined.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = ""
+
+[[step]]
+save = "results.strata"
+from = "results.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file results.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: argument of `Ok`: expected `String`, found `Int`
+error in b: `except` fallback: expected `Int`, found `String`
+error in b: function body: expected `String`, found `Int`
+error in c: `except` fallback: expected `Int`, found `String`
+error in d: function body: expected `String`, found `Int`
+error in e: function body: expected `Int`, found `List[Int]`
+error in f: function body: expected `String`, found `List[Int]`
+error in g: call to `at`, argument 2: expected `Int`, found `String`
+error in h: argument of `Some`: expected `String`, found `Int`
+'''
+
+[[step]]
+save = "sized.strata"
+from = "sized.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file sized.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in bad: `+` operands: `Int` and `U32` don't mix: convert one first (`x.to_int()`, `n.to_u32()`, `n.wrap_u32()`)
+error in bad: `+` operands: `U32` and `Int` don't mix: convert one first (`x.to_int()`, `n.to_u32()`, `n.wrap_u32()`)
+error in bad: `-1` doesn't fit in `U32` (0 ..= 4294967295)
+error in bad: `300` doesn't fit in `U8` (0 ..= 255)
+error in bad: `<<` operands: `U32` and `Int` don't mix: convert one first (`x.to_int()`, `n.to_u32()`, `n.wrap_u32()`)
+error in bad: `==` operands: expected `U32`, found `I8`
+error in bad: let annotation: expected `U32`, found `Int`
+'''
+
+[[step]]
+save = "statements.strata"
+from = "statements.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file statements.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `()`, found `Int`
+error in b: if branch: expected `Int`, found `()`
+error in d: if branch: expected `()`, found `Int`
+error in e: `return` value: expected `Int`, found `String`
+error in e: assert: expected `Bool`, found `Int`
+error in e: assignment: expected `Int`, found `String`
+error in e: operand of `!`: expected `Bool`, found `Int`
+error in e: operand of `-` must be Int or Float, found `Bool`
+error in e: while condition: expected `Bool`, found `Int`
+error in h: match arm: expected `Int`, found `String`
+error in k: let annotation: expected `String`, found `Int`
+error in l: invariant: expected `Bool`, found `Int`
+'''
+
+[[step]]
+save = "static.strata"
+from = "static.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file static.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `Int`, found `Item`
+error in b: call to `Item.new`, argument 1: expected `Int`, found `String`
+error in c: `Item` has no method `make` called on the type (one without `self`, in `impl Item`)
+error in d: function body: expected `Int`, found `T`
+error in e: unknown function `nope`
+error in f: function body: expected `String`, found `Item`
+'''
+
+[[step]]
+save = "sums.strata"
+from = "sums.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file sums.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `Int`, found `Sh`
+error in e: function body: expected `String`, found `Option[Int]`
+error in f: match arm: expected `String`, found `Int`
+error in g: function body: expected `String`, found `Int`
+error in h: `==` operands: expected `Sh`, found `Int`
+'''
+
+[[step]]
+save = "tasks.strata"
+from = "tasks.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file tasks.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: `await` takes a task's handle (what `spawn` gives), or a tuple or list of them; found `Int`
+error in b: function body: expected `String`, found `Int`
+error in c: a task's handle can't leave its `scope` (its result is `Task[Int]`): await it inside
+error in c: function body: expected `Int`, found `Task[Int]`
+'''
+
+[[step]]
+save = "trait_values.strata"
+from = "trait_values.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file trait_values.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: `or` / `??` handle an Option, found `Shape`
+error in a: function body: expected `String`, found `Int`
+error in b: using it as a `Shape`: `Pt` does not implement `Shape`
+error in c: function body: expected `String`, found `Int`
+error in d: using it as a `Shape`: `Int` does not implement `Shape`
+error in e: function body: expected `String`, found `Int`
+'''
+
+[[step]]
+save = "traits.strata"
+from = "traits.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file traits.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `String`, found `Int`
+error in b: call to `twice`, argument 2: expected `Int`, found `String`
+error in impl Area for Pt: function body: expected `Int`, found `String`
+error in impl Pt: function body: expected `Pt`, found `Int`
+'''
+
+[[step]]
+save = "tuples.strata"
+from = "tuples.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file tuples.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: function body: expected `(Int, String)`, found `(Int, Int)`
+error in b: function body: expected `Int`, found `String`
+error in c: function body: expected `String`, found `Int`
+error in d: `+` operands: expected `String`, found `Int`
+error in e: `+` operands: expected `Int`, found `String`
+error in f: `+` operands: expected `Int`, found `String`
+error in g: tuple `(Int, Int)` has no element 2
+error in h: `*` needs Int or Float operands, found `String` (convert with `float(n)` / `round(x)`)
+error in h: `*` operands: expected `String`, found `Int`
+error in h: function body: expected `List[Int]`, found `List[String]`
+'''
+
+[[step]]
+save = "types.strata"
+from = "types.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file types.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in f: `+` operands: expected `Int`, found `String`
+error in g: function body: expected `String`, found `Int`
+error in h: call to `f`, argument 1: expected `Int`, found `String`
+error in k: `<` operands: expected `Int`, found `Float`
+error in m: `+` needs Int or Float operands, found `Bool` (convert with `float(n)` / `round(x)`)
+error in m: `+` operands: expected `Bool`, found `Int`
+error in m: function body: expected `Int`, found `Bool`
+error in n: list element: expected `Int`, found `String`
+error in o: if branch: expected `Int`, found `String`
+error in p: function body: expected `Float`, found `Int`
+'''
+
+[[step]]
+save = "union_arms.strata"
+from = "union_arms.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file union_arms.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: if branch: expected `String`, found `Int | String`
+error in a: if branch: expected `String`, found `Int | String`
+error in b: function body: expected `Bool`, found `Int | String`
+error in c: match arm: expected `Bool`, found `Int`
+'''
+
+[[step]]
+save = "unions.strata"
+from = "unions.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file unions.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a2: function body: expected `Float`, found `Bool | Int | String`
+error in a: function body: expected `String`, found `Int`
+error in b2: if branch: expected `Float`, found `Int`
+error in b2: if branch: expected `Float`, found `String`
+error in c: function body: expected `Bool`, found `Int | String`
+error in d2: function body: expected `Float`, found `Int | String`
+error in d: function body: expected `Int | String`, found `Float`
+error in e2: function body: expected `Float`, found `Int | String`
+error in f: function body: expected `String`, found `Int`
+error in k: function body: expected `Int`, found `Int | String`
+'''
+
+[[step]]
+save = "unknown.strata"
+from = "unknown.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file unknown.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in f: unknown variable `c`
+error in f: unknown variable `d`
+error in g: unknown variable `k`
+error in g: unknown variable `nowhere`
+error in g: unknown variable `q`
+error in g: unknown variable `r`
+error in g: unknown variable `v`
+error in g: unknown variable `w`
+error in g: unknown variable `y`
+error in l: unknown variable `m`
+error in main: unknown variable `nope`
+'''
+
+[[step]]
+save = "unreachable.strata"
+from = "unreachable.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file unreachable.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: unreachable match arm `_`: the arms above already cover it
+error in b: unreachable match arm `Dot`: the arms above already cover it
+error in c: unreachable match arm `Dot`: the arms above already cover it
+error in d: unreachable match arm `_`: the arms above already cover it
+error in e: unreachable match arm `x`: the arms above already cover it
+error in f: unreachable match arm `3`: the arms above already cover it
+error in go: `go` is both a function and a method of trait `T`
+'''
+
+[[step]]
+save = "whole_arms.strata"
+from = "whole_arms.st"
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file whole_arms.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
+stdout = '''
+error in a: match arm: expected `Bool`, found `Int | String`
+error in b: match arm: expected `Int`, found `Sh`
+error in c: match arm: expected `Int`, found `Sh`
+error in d: match arm: expected `String`, found `Option[Int]`
+error in e: match arm: expected `Int`, found `Sh`
+'''
+
+# same_name_in_two_modules: a call is to its own module's function, never another's private one
+[[step]]
+write = "sn/strata.toml"
+text = '''
+name = "p"
+'''
+
+[[step]]
+strata = ["--file", "sn/", "edit", "util"]
+text = '''
+fn report(a: Int) -> Int { a }
+pub fn other(x: Int) -> Int { report(x, 2) }
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "sn/", "edit", "main"]
+text = '''
+use util
+fn report(a: Int, b: Int, c: Int) -> Int { a + b + c }
+fn main() { print(report(1, 2, 3) + util.other(1)) }
+'''
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file sn check 2>&1 | grep -E \"^(error in |  )\""]
+stdout = '''
+error in util.other: call to `util.report`: expects 1 arguments, got 2
+'''
+
+# resolve.rs use_errors_as_in_rust: a `use` of a module there isn't, of what a module lacks, of a private
+# definition; a mock, a foreign function, a module not used
+[[step]]
+write = "ue/strata.toml"
+text = '''
+name = "p"
+'''
+
+[[step]]
+strata = ["--file", "ue/", "edit", "util"]
+text = '''
+pub fn shown(x: Int) -> Int { x }
+fn secret() -> Int { 1 }
+pub mock Fake = {}
+pub extern c fn strlen(s: String) -> U64
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "ue/", "edit", "main"]
+text = '''
+from nothere use x
+from util use shown, missing, secret, Fake
+fn main() { print(shown(1) + util.secret()) f := Fake {} n := util.strlen("a") }
+fn g() -> Int { j := std.json.parse("1") 0 }
+test "fake" { f := Fake {} }
+'''
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file ue/ check 2>&1 | grep -E \"error in use |is private to|internal to the standard library|is a mock|foreign function|which this module doesn.t use\""]
+stdout = '''
+error in use nothere: there is no module `nothere`
+error in use util: module `util` has no `missing`
+error in use util: `secret` is private to module `util` (only `pub` definitions are part of its contract)
+error in main: `util.secret` is private to module `util` (only `pub` definitions are part of its contract)
+error in main: `Fake` is a mock: it is for tests only (a `test`, another mock, or an `impl` for one), so a fake never reaches a real run
+error in main: `util.strlen` is a foreign function: only module `util` can call it (give the rest of the program a capability from `util` instead)
+error in g: `std.json.parse` is in module `std.json`, which this module doesn't use: add `use std.json` (then write `json.parse`) or `from std.json use parse`
+'''

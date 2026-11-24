@@ -1,0 +1,37 @@
+# cli.rs: std_termination_is_kept_between_runs, against compiler/cache's keys: what verify finds
+# about the std functions a program reaches (their termination included) is the same run after
+# run, and kept under its code's hash (verify-strata, with std's fingerprint in the settings): a
+# second run reads every verdict back
+
+[[step]]
+run = ["sh", "-c", "cp \"$ROOT\"/examples/hello/*.strata \"$ROOT\"/examples/hello/strata.toml ."]
+
+[[step]]
+strata = ["--file", ".", "verify", "--no-cache"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+capture = "first.txt"
+any_code = true
+
+[[step]]
+strata = ["--file", ".", "verify", "--no-cache"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+out_file = "first.txt"
+
+# kept: a second run reads them all back, and says the same
+[[step]]
+strata = ["--file", ".", "verify"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+has = ["std.cli."]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", ".", "verify"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+capture = "cached.txt"
+
+[[step]]
+run = ["sh", "-c", "grep -c \"^[✓~✗○-] \" cached.txt > n; test $(grep -c \" (cached)$\" cached.txt) -eq $(cat n) && sed \"s/ (cached)$//\" cached.txt | diff - first.txt && ls cache/verify-strata | head -1"]
+has = ["\n"]

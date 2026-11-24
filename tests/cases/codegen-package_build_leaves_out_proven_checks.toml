@@ -1,0 +1,56 @@
+# codegen.rs: package_build_leaves_out_what_verify_proved: a package's build verifies, then leaves
+# out the proven checks (its modules' too); `--all-checks` keeps them
+
+[[step]]
+write = "pk/strata.toml"
+text = '''
+name = "pk"
+'''
+
+[[step]]
+strata = ["--file", "pk/", "edit", "util"]
+text = '''
+pub fn second(xs: List[Int]) -> Int
+    requires len(xs) >= 2
+{
+    xs[1]
+}
+'''
+
+[[step]]
+strata = ["--file", "pk/", "edit", "main"]
+text = '''
+use util
+
+fn pick(xs: List[Int], i: Int) -> Int
+    requires 0 <= i && i < len(xs)
+{
+    xs[i]
+}
+
+fn main() {
+    print(pick([1, 2, 3], 1) + util.second([4, 5]))
+}
+'''
+
+[[step]]
+strata = ["build", ".", "-o", "fast"]
+dir = "pk"
+has = ["(compiler/codegen)"]
+
+[[step]]
+strata = ["build", ".", "-o", "slow", "--all-checks"]
+dir = "pk"
+has = ["(compiler/codegen)"]
+
+[[step]]
+run = ["./pk/fast"]
+stdout = '''
+7
+'''
+
+[[step]]
+run = ["sh", "-c", "! grep -qF 'precondition of `pick`' pk/fast && grep -qF 'precondition of `pick`' pk/slow"]
+
+[[step]]
+run = ["sh", "-c", "! grep -qF 'precondition of `util.second`' pk/fast && grep -qF 'precondition of `util.second`' pk/slow"]

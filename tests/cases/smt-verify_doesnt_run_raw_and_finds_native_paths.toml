@@ -1,0 +1,42 @@
+# smt.rs: verify_doesnt_run_raw_and_finds_absolute_native_paths: a function reading compiled values
+# (`Raw`) isn't run on made-up ones; a package's C with an absolute include folder compiles
+
+[[step]]
+write = "include/seven.h"
+text = '''
+#define SEVEN 7
+'''
+
+[[step]]
+write = "rw/c/lib.c"
+text = '''
+#include <seven.h>
+#include <stdint.h>
+int64_t seven(void) { return SEVEN; }
+'''
+
+[[step]]
+run = ["sh", "-c", "printf 'name = \"rw\"\\n\\n[native]\\nsources = [\"c/lib.c\"]\\ninclude_dirs = [\"%s/include\"]\\n\\n[values]\\nread = true\\n' \"$PWD\" > rw/strata.toml"]
+
+[[step]]
+strata = ["--file", "rw/", "edit", "main"]
+text = '''
+fn first_word(r: Raw) -> Int
+  ensures it >= 0 {
+  r.word(0).to_int()
+}
+
+extern c fn seven() -> I64
+
+fn plus(n: Int) -> Int
+  ensures it != n {
+  n + seven().to_int()
+}
+'''
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verify --no-cache \"$TMP/rw\""]
+any_code = true
+has = ["first_word               assumed: it reads compiled values (`Raw`)"]
+lacks = ["failed on the package's C"]

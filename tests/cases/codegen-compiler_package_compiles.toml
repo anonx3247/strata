@@ -1,0 +1,9 @@
+# codegen.rs: compiler_package_compiles_with_codegen: the compiler package, compiled by compiler/codegen
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen \"$ROOT/compiler\" > \"$TMP/ir.ll\"; grep -c \"^error\" \"$TMP/ir.ll\"; grep -q \"define i32 @main(\" \"$TMP/ir.ll\" && echo main"]
+any_code = true
+stdout = '''
+0
+main
+'''

@@ -1,0 +1,58 @@
+# codegen.rs: leaves_out_what_verify_proved: `strata codegen --proofs FILE` leaves out the checks
+# the proofs list (a result, a division, a `let`, an index, an entry check)
+
+[[step]]
+save = "proven.strata"
+text = '''
+fn half(n: Natural) -> Natural {
+    n * 2
+}
+
+fn pick(xs: List[Int], i: Int) -> Int
+    requires 0 <= i && i < len(xs)
+{
+    xs[i]
+}
+
+fn safe(a: Int, b: Int) -> Int {
+    if b == 0 {
+        0
+    } else {
+        a / b
+    }
+}
+
+fn main() {
+    let x: Positive = 3
+    print(half(x) + pick([1, 2, 3], 1) + safe(7, 2))
+}
+'''
+
+[[step]]
+write = "proofs.txt"
+text = '''
+proven	half	result of `half`: Natural
+proven	safe	no division by zero
+proven	main	`let` annotated `Positive`
+proven	pick	index in range
+entry	half	argument n
+entry	pick	requires 0
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen \"$TMP/proven.strata\" | grep -o -e \"does not satisfy\" -e \"precondition of\" -e \"out of range\" -e \"@strata_div(\" | sort -u | wc -l | tr -d \" \""]
+stdout = '''
+4
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen --proofs \"$TMP/proofs.txt\" \"$TMP/proven.strata\" | grep -o -e \"does not satisfy\" -e \"precondition of\" -e \"out of range\" -e \"@strata_div(\" | sort -u | wc -l | tr -d \" \""]
+stdout = '''
+0
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen --proofs \"$TMP/proofs.txt\" \"$TMP/proven.strata\" | grep -q \"@strata_div_nz(\" && echo divides"]
+stdout = '''
+divides
+'''

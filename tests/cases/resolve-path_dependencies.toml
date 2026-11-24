@@ -1,0 +1,118 @@
+# resolve.rs: path_dependencies: a dependency's modules are named with its package's name (`json`,
+# `json.text`); private names stay private; a missing package and a cycle are errors (`strata package`)
+
+[[step]]
+write = "json/strata.toml"
+text = '''
+name = "json"
+[deps]
+'''
+
+[[step]]
+strata = ["--file", "json/", "edit", "main"]
+text = '''
+pub type Tok = { n: Int }
+pub fn parse(s: String) -> Tok { Tok { n: helper(s) } }
+fn helper(s: String) -> Int { 1 }
+'''
+any_code = true
+
+[[step]]
+write = "json/strata.toml"
+text = '''
+name = "json"
+[deps]
+'''
+
+[[step]]
+strata = ["--file", "json/", "edit", "text"]
+text = '''
+pub fn twice(s: String) -> Int { parse(s).n + helper(s) }
+'''
+any_code = true
+
+[[step]]
+write = "app/strata.toml"
+text = '''
+name = "app"
+[deps]
+json = { path = "../json" }
+'''
+
+[[step]]
+strata = ["--file", "app/", "edit", "main"]
+text = '''
+from json use parse, Tok
+use json.text
+fn first(t: Tok) -> Int { t.n }
+fn main() { print(first(parse("x")) + text.twice("y")) }
+'''
+any_code = true
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+has = ["fn first(t: json.Tok)", "json.parse(\"x\")", "json.text.twice(\"y\")"]
+lacks = ["error"]
+
+[[step]]
+write = "private/strata.toml"
+text = '''
+name = "private"
+[deps]
+json = { path = "../json" }
+'''
+
+[[step]]
+strata = ["--file", "private/", "edit", "main"]
+text = '''
+from json use helper
+fn main() { print(helper("x")) }
+'''
+any_code = true
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "private"]
+any_code = true
+has = ["error in main: `helper` is private to module `json`"]
+
+[[step]]
+write = "missing/strata.toml"
+text = '''
+name = "missing"
+[deps]
+nope = { path = "../nope" }
+'''
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "missing"]
+any_code = true
+has = ["error: dependency `nope`: no package at"]
+
+[[step]]
+write = "a/strata.toml"
+text = '''
+name = "a"
+[deps]
+b = { path = "../b" }
+'''
+
+[[step]]
+write = "b/strata.toml"
+text = '''
+name = "b"
+[deps]
+c = { path = "../c" }
+'''
+
+[[step]]
+write = "c/strata.toml"
+text = '''
+name = "c"
+[deps]
+a = { path = "../a" }
+'''
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "a"]
+any_code = true
+has = ["error: dependency cycle: a -> b -> c -> a"]

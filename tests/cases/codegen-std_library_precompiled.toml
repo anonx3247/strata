@@ -1,0 +1,23 @@
+# codegen.rs: std_precompiled_once_links_with_programs: `strata codegen --library` compiles std's
+# functions once; programs built with it run and free everything
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen --library > \"$TMP/std.ll\"; grep -c \"^; precompiled \" \"$TMP/std.ll\" | awk '{ print ($1 > 100) }'; grep -c \"^error\" \"$TMP/std.ll\"; grep -c \"^; precompiled std.json.parse$\" \"$TMP/std.ll\""]
+any_code = true
+stdout = '''
+1
+0
+1
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT/examples/wc\" && \"$STRATA\" build . -o \"$TMP/wc\" 2>&1 | tail -1"]
+has = ["built"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT/examples/page\" && \"$STRATA\" build . -o \"$TMP/page\" 2>&1 | tail -1"]
+has = ["built"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT/examples/page\" && STRATA_MEMORY=check \"$TMP/page\" > /dev/null"]
+has = [" 0 live"]

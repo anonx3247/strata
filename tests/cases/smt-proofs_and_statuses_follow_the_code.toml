@@ -1,0 +1,72 @@
+# smt.rs: proofs_and_statuses_follow_the_code: `strata verify` keeps what it proved (`strata proofs`,
+# what builds leave out) and each function's status (`strata verdicts`), for the code as it is: a
+# change drops them until verified again
+
+[[step]]
+save = "p.strata"
+text = '''
+fn clamp(x: Int, lo: Int, hi: Int) -> Int
+  requires lo <= hi
+  ensures lo <= it && it <= hi
+{
+  if x < lo { lo } else if x > hi { hi } else { x }
+}
+
+fn main() {
+  print(to_string(clamp(15, 0, 10)))
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verify --quiet \"$TMP/p.strata\""]
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" proofs \"$TMP/p.strata\""]
+has = ["proven\tclamp\tensures lo <= it && it <= hi\n", "proven\tmain\tprecondition of `clamp`: requires lo <= hi\n", "entry\tclamp\trequires 0\n"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verdicts \"$TMP/p.strata\""]
+stdout = '''
+clamp	proven
+main	proven
+'''
+
+# `clamp` broken: its proofs and `main`'s are gone until verified again, which finds the counterexample
+[[step]]
+save = "p.strata"
+text = '''
+fn clamp(x: Int, lo: Int, hi: Int) -> Int
+  requires lo <= hi
+  ensures lo <= it && it <= hi
+{
+  if x < lo { lo } else { x }
+}
+
+fn main() {
+  print(to_string(clamp(15, 0, 10)))
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" proofs \"$TMP/p.strata\""]
+stdout = ""
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verdicts \"$TMP/p.strata\""]
+stdout = ""
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verify --quiet \"$TMP/p.strata\""]
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" proofs \"$TMP/p.strata\""]
+lacks = ["proven\tclamp"]
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verdicts \"$TMP/p.strata\""]
+stdout = '''
+clamp	COUNTEREXAMPLE
+main	COUNTEREXAMPLE
+'''

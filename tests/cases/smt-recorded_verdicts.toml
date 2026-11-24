@@ -1,0 +1,575 @@
+# smt.rs: smt_outcomes_as_in_rust, termination_as_in_rust, verify_as_in_rust (and the other
+# `*_as_in_rust` on tests/data/smt): the Strata verifier's verdicts on those programs, recorded
+# while they agreed with Rust's (verify_byte_at, verify_capability: recorded as the Strata
+# verifier gives them, where the Rust one had a prover bug, or proved what it fuzzes elsewhere)
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step1.strata edit < \"$ROOT/tests/data/smt/step1.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step1.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ half                     proven (1 check)
+✓ safe_div                 proven (1 check)
+✗ unsafe_div               Runtime violation (found by the solver)
+    input:   0, 0
+    division by zero (stack: unsafe_div)
+✓ clamp                    proven (1 check)
+✗ wrong_clamp              Refinement violation (found by the solver)
+    input:   100
+    result of `wrong_clamp`: 100 does not satisfy `Small` (where 0 <= it && it < 100) (stack: wrong_clamp)
+✓ twice_half               proven (1 check)
+✗ bad_half                 Requires violation (found by the solver)
+    input:   1
+    precondition of `half` violated: requires n % 2 == 0 (with n = 1) (stack: bad_half -> half)
+✓ abs                      proven (2 checks)
+✓ count                    proven (1 check)
+✓ checks                   proven (3 checks)
+✓ masks                    proven (1 check)
+✗ shifts                   Runtime violation (found by the solver)
+    input:   0, -1
+    `<<` by a negative number of bits (stack: shifts)
+✓ greet                    proven (1 check)
+✓ bump                     proven (1 check)
+✓ use_bump                 proven (5 checks)
+✗ bad_assign               Refinement violation (found by the solver)
+    input:   1
+    assigning `e`: 1 does not satisfy `Even` (where it % 2 == 0) (stack: bad_assign)
+✓ good_assign              proven (2 checks)
+✓ short                    proven (1 check)
+✓ shorter                  proven (1 check)
+✓ implied                  proven (2 checks)
+✓ named                    proven (1 check)
+✓ joined                   proven (1 check)
+~ formatted                fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: result of `formatted`: Name: the solver found a possible counterexample: n = 0 (depends on f-strings (only their parts are checked)), but running it did not fail
+~ floats                   fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: `+` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+✓ lits                     proven (nothing to check)
+✓ masked                   proven (1 check)
+✓ bounded                  proven (1 check)
+✗ neg_shift                Runtime violation (found by the solver)
+    input:   0
+    `>>` by a negative number of bits (stack: neg_shift)
+✓ chain                    proven (2 checks)
+✗ wrong_chain              Refinement violation (found by the solver)
+    input:   5
+    result of `wrong_chain`: 5 does not satisfy `Even` (where it % 2 == 0) (stack: wrong_chain)
+✓ twice                    proven (1 check)
+✓ calls                    proven (3 checks)
+✗ bad_calls                Refinement violation (found by the solver)
+    input:   1
+    argument `n` of `twice`: 1 does not satisfy `Even` (where it % 2 == 0) (stack: bad_calls -> twice)
+✓ strings                  proven (1 check)
+✓ unicode                  proven (nothing to check)
+✓ nested                   proven (2 checks)
+✓ eq_bools                 proven (1 check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step10.strata edit < \"$ROOT/tests/data/smt/step10.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step10.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ Box.size                 proven (1 check)
+✓ bigger                   proven (1 check)
+✓ nonneg                   proven (1 check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step13.strata edit < \"$ROOT/tests/data/smt/step13.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step13.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ area                     proven (1 check)
+✗ bad_area                 Refinement violation (found by the solver)
+    input:   Square { side: 1 }
+    result of `bad_area`: 0 does not satisfy `Positive` (where it > 0) (stack: bad_area)
+✓ pick                     proven (3 checks)
+✓ pick_area                proven (2 checks)
+✓ make                     proven (3 checks)
+✗ bad_make                 Refinement violation (found by the solver)
+    input:   false
+    result of `bad_make`: 1 does not satisfy `Int where it > 2` (stack: bad_make)
+✓ describe                 proven (1 check)
+✗ bad_describe             Refinement violation (found by the solver)
+    input:   ""
+    result of `bad_describe`: 0 does not satisfy `Positive` (where it > 0) (stack: bad_describe)
+✓ is_sq                    proven (1 check)
+✗ always_sq                Ensures violation (found by the solver)
+    input:   Circle { radius: 1 }
+    postcondition of `always_sq` violated: ensures it (it = false) (stack: always_sq)
+✓ lit                      proven (1 check)
+✓ nonzero                  proven (1 check)
+✗ bad_nonzero              Refinement violation (found by the solver)
+    input:   0
+    result of `bad_nonzero`: 0 is not a `Positive | Negative` (stack: bad_nonzero)
+✓ variants                 proven (1 check)
+✗ bad_variants             Ensures violation (found by the solver)
+    input:   C
+    postcondition of `bad_variants` violated: ensures it (it = false) (stack: bad_variants)
+✓ opt                      proven (1 check)
+✗ bad_opt                  Refinement violation (found by the solver)
+    input:   Some(-1)
+    result of `bad_opt`: -1 does not satisfy `Natural` (where it >= 0) (stack: bad_opt)
+✓ self_eq                  proven (1 check)
+✗ bad_eq                   Ensures violation (found by the solver)
+    input:   "!0!", "!1!"
+    postcondition of `bad_eq` violated: ensures it (it = false) (stack: bad_eq)
+✗ bad_field                Ensures violation (found by the solver)
+    input:   Holder { s: Square { side: 1 } }
+    postcondition of `bad_field` violated: ensures it (it = false) (stack: bad_field)
+✓ common                   proven (1 check)
+✗ bad_common               Refinement violation (found by the solver)
+    input:   One { n: 1, a: 2 }
+    result of `bad_common`: 0 does not satisfy `Positive` (where it > 0) (stack: bad_common)
+✓ pos_test                 proven (1 check)
+✗ bad_pos_test             Ensures violation (found by the solver)
+    input:   0
+    postcondition of `bad_pos_test` violated: ensures it (it = false) (stack: bad_pos_test)
+✓ shape_or_int             proven (1 check)
+✓ kind                     proven (1 check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step14.strata edit < \"$ROOT/tests/data/smt/step14.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step14.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ count_up                 proven (10 checks)
+✓ seen_while               proven (2 checks)
+✓ spin                     proven (2 checks)
+    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`)
+✓ uses_spin                proven (1 check)
+    may not terminate: it calls `spin`, which may not terminate
+✓ first_loop               proven (nothing to check)
+    may not terminate: it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)
+✓ uses_loop                proven (1 check)
+    may not terminate: it calls `first_loop`, which may not terminate
+✓ marked                   proven (nothing to check)
+    terminates if `marked` does (marked `terminates`, not proven)
+✓ uses_marked              proven (3 checks)
+    terminates if `marked` does (marked `terminates`, not proven)
+✓ sum_to                   proven (2 checks)
+✓ total                    proven (1 check)
+✓ apply_sum                proven (2 checks)
+✓ uses_apply               proven (1 check)
+✓ halve                    proven (nothing to check)
+✓ apply_halve              proven (nothing to check)
+✓ uses_halve               proven (1 check)
+✓ apply_total              proven (1 check)
+✓ uses_total               proven (1 check)
+✓ down                     proven (4 checks)
+~ uses_down                fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == (down(n) >= 0): the solver found a possible counterexample: n = 0, but running it did not fail
+~ sees_down                fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == (down(2) == 2): the solver found a possible counterexample: , but running it did not fail
+~ sees_count               fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == (count_up(2) == 2): the solver found a possible counterexample: , but running it did not fail
+~ sees_spin                fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == (spin(4) == 0): the solver found a possible counterexample:  (depends on the result of `spin` (only its contract is known)), but running it did not fail
+    may not terminate: it calls `spin`, which may not terminate
+~ sees_loop                fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == (first_loop(2) == 3): the solver found a possible counterexample:  (depends on the result of `first_loop` (only its contract is known)), but running it did not fail
+    may not terminate: it calls `first_loop`, which may not terminate
+~ sees_marked              fuzzed: 1 cases, 0 discarded by `requires`; 1 of 2 checks proven
+    not proven: ensures it == (marked(3) == 0): the solver found a possible counterexample: , but running it did not fail
+    terminates if `marked` does (marked `terminates`, not proven)
+✓ sees_halve               proven (1 check)
+✓ iter_sum                 proven (nothing to check)
+~ sees_iter                fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == (iter_sum([]) == 0): the solver found a possible counterexample: xs = [] (depends on the result of `iter_sum` (only its contract is known)), but running it did not fail
+✓ twice                    proven (3 checks)
+~ sees_twice               fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == (twice(0) == 0): the solver found a possible counterexample:  (depends on the result of `twice` (only its contract is known)), but running it did not fail
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step2.strata edit < \"$ROOT/tests/data/smt/step2.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step2.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ width                    proven (1 check)
+✓ make_range               proven (3 checks)
+✗ bad_range                Refinement violation (found by the solver)
+    input:   0, -1
+    constructing `Range`: Range { lo: 0, hi: -1 } does not satisfy `Range` (where it.lo <= it.hi) (stack: bad_range)
+✓ widen                    proven (2 checks)
+✗ shrink                   Refinement violation (found by the solver)
+    input:   Range { lo: 0, hi: 0 }
+    constructing `Range`: Range { lo: 0, hi: -1 } does not satisfy `Range` (where it.lo <= it.hi) (stack: shrink)
+✗ area                     Refinement violation (found by the solver)
+    input:   Rect { w: 1, h: -1 }
+    result of `area`: -1 does not satisfy `Natural` (where it >= 0) (stack: area)
+✓ safe_area                proven (1 check)
+✓ is_dot                   proven (1 check)
+✓ mid                      proven (nothing to check)
+✓ swap                     proven (nothing to check)
+✓ first_pos                proven (1 check)
+✓ grow                     proven (2 checks)
+✗ bad_box                  Refinement violation (found by the solver)
+    input:   0
+    constructing `Box`: Box.size: 0 does not satisfy `Pos` (where it > 0) (stack: bad_box)
+✓ opt_or                   proven (nothing to check)
+✓ opt_pos                  proven (1 check)
+✗ opt_bad                  Refinement violation (found by the solver)
+    input:   Some(0)
+    result of `opt_bad`: 0 does not satisfy `Pos` (where it > 0) (stack: opt_bad)
+✓ parse_pos                proven (1 check)
+✓ twice_pos                proven (2 checks)
+✓ add_opt                  proven (nothing to check)
+✓ fallback                 proven (1 check)
+✓ meters                   proven (nothing to check)
+✓ depth                    proven (1 check)
+✓ same_point               proven (1 check)
+✓ shapes_eq                proven (1 check)
+✓ pick                     proven (1 check)
+✓ nested                   proven (nothing to check)
+✓ let_pattern              proven (nothing to check)
+✓ sign                     proven (1 check)
+✓ parity                   proven (1 check)
+✗ thirds                   Runtime violation (found by the solver)
+    input:   2
+    no match arm for 2 (stack: thirds)
+✓ radius_of                proven (2 checks)
+✓ generic_eq               proven (nothing to check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step3.strata edit < \"$ROOT/tests/data/smt/step3.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step3.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ first                    proven (1 check)
+✗ unchecked_first          Runtime violation (found by the solver)
+    input:   []
+    index 0 out of range (length 0) (stack: unchecked_first)
+✓ second_or                proven (nothing to check)
+✓ total                    proven (1 check)
+✗ bad_total                Refinement violation (found by the solver)
+    input:   [-1]
+    result of `bad_total`: -1 does not satisfy `Natural` (where it >= 0) (stack: bad_total)
+✓ positives                proven (1 check)
+✓ doubled                  proven (1 check)
+✗ bad_shift                Refinement violation (found by the solver)
+    input:   [1, 1, 1, 1, 1, 1]
+    result of `bad_shift`: [0]: 0 does not satisfy `Pos` (where it > 0) (stack: bad_shift)
+✓ all_pos                  proven (1 check)
+✓ some_big                 proven (1 check)
+✓ literal                  proven (1 check)
+✗ bad_literal              Refinement violation (found by the solver)
+    input:   
+    result of `bad_literal`: [1]: 0 does not satisfy `Pos` (where it > 0) (stack: bad_literal)
+✓ pushed                   proven (2 checks)
+✓ joined                   proven (1 check)
+✓ head_tail                proven (nothing to check)
+✗ pair                     Runtime violation (found by the solver)
+    input:   [0, 0]
+    division by zero (stack: pair)
+✓ window                   proven (1 check)
+✓ taken                    proven (1 check)
+✓ counting                 proven (2 checks)
+✓ bag_first                proven (2 checks)
+✓ bag_add                  proven (2 checks)
+✓ found                    proven (1 check)
+✓ sorted_head              proven (3 checks)
+✓ lens                     proven (1 check)
+✓ starts                   proven (1 check)
+✓ digits                   proven (nothing to check)
+✓ same_lists               proven (1 check)
+✓ copies                   proven (1 check)
+✓ shown                    proven (nothing to check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step4.strata edit < \"$ROOT/tests/data/smt/step4.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step4.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ sum_to                   proven (8 checks)
+✓ count_down               proven (3 checks)
+✗ bad_loop                 Refinement violation (found by the solver)
+    input:   0
+    result of `bad_loop`: 0 does not satisfy `Pos` (where it > 0) (stack: bad_loop)
+✓ with_invariant           proven (5 checks)
+✗ wrong_invariant          Assert violation (found by the solver)
+    input:   0
+    invariant failed: i < n (left of < = 0, right = 0) (stack: wrong_invariant)
+✓ find_first               proven (4 checks)
+~ total                    fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: result of `total`: Natural: the solver found a possible counterexample: xs = [], but running it did not fail
+✓ first_big                proven (nothing to check)
+✓ skip_odd                 proven (nothing to check)
+✓ forever                  proven (nothing to check)
+    may not terminate: it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)
+✗ divide_all               Runtime violation (found by the solver)
+    input:   [0], 0
+    division by zero (stack: divide_all)
+✓ ensures_loop             proven (9 checks)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step5.strata edit < \"$ROOT/tests/data/smt/step5.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step5.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ Box.size                 proven (1 check)
+✓ area                     proven (1 check)
+✓ double                   proven (1 check)
+✓ halve                    proven (nothing to check)
+✗ halves                   Requires violation (found by the fuzzer)
+    input:   [1000, 796, -621]
+    precondition of `halve` violated: requires n % 2 == 0 (with n = -621) (stack: halves -> halve)
+✓ pick                     proven (nothing to check)
+~ pick_pos                 fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
+    not proven: result of `pick_pos`: Pos: the solver found a possible counterexample: a = 1, b = 1 (depends on values of the generic type `T` are not known), but running it did not fail
+✓ doubled                  proven (3 checks)
+✓ quadruple                proven (2 checks)
+✗ wrong_quadruple          Ensures violation (found by the solver)
+    input:   1
+    postcondition of `wrong_quadruple` violated: ensures it == double(n) (it = 4) (stack: wrong_quadruple)
+~ halved                   fuzzed: 50 cases, 22 discarded by `requires`; 0 of 1 checks proven
+    not proven: ensures it == halve(n): the solver found a possible counterexample: n = 0 (depends on the result of `halve` (only its contract is known)), but running it did not fail
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file step7.strata edit < \"$ROOT/tests/data/smt/step7.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "step7.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ make_sku                 proven (1 check)
+✗ bad_sku                  Refinement violation (found by the solver)
+    input:   "aaa-0"
+    result of `bad_sku`: "aaa-0" does not satisfy `Sku` (where matches(it, "[a-z]{3}-[0-9]{2}")) (stack: bad_sku)
+✓ upper                    proven (1 check)
+✓ not_both                 proven (1 check)
+✓ letters                  proven (1 check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file termination.strata edit < \"$ROOT/tests/data/smt/termination.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "termination.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ count_down               proven (4 checks)
+✓ search                   proven (4 checks)
+✓ spin                     proven (2 checks)
+    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`)
+✓ forever                  proven (nothing to check)
+    may not terminate: it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)
+✓ fact                     proven (1 check)
+✓ up                       proven (1 check)
+✗ ack                      Limit violation (found by the fuzzer)
+    input:   515, 796
+    too many steps (stack: ack (8939 times))
+✓ sum                      proven (nothing to check)
+✓ size                     proven (nothing to check)
+✓ even                     proven (nothing to check)
+    may not terminate: it is recursive through `odd`
+✓ odd                      proven (nothing to check)
+    may not terminate: it is recursive through `even`
+✓ collatz                  proven (nothing to check)
+    terminates if `collatz` does (marked `terminates`, not proven)
+✓ uses_collatz             proven (nothing to check)
+    terminates if `collatz` does (marked `terminates`, not proven)
+✓ uses_spin                proven (nothing to check)
+    may not terminate: it calls `spin`, which may not terminate
+✓ double                   proven (nothing to check)
+✓ half                     proven (nothing to check)
+✓ checked                  proven (nothing to check)
+✓ Square.area              proven (nothing to check)
+✓ Square.twice             proven (nothing to check)
+✓ total_area               proven (nothing to check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file verify.strata edit < \"$ROOT/tests/data/smt/verify.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "verify.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ clamp                    proven (1 check)
+✗ bad_abs                  Refinement violation (found by the solver)
+    input:   -1
+    result of `bad_abs`: -1 does not satisfy `Natural` (where it >= 0) (stack: bad_abs)
+✓ width                    proven (1 check)
+✗ bad_total                Refinement violation (found by the fuzzer)
+    input:   [515, -924]
+    result of `bad_total`: -409 does not satisfy `Natural` (where it >= 0) (stack: bad_total)
+✓ first_pos                proven (1 check)
+✗ divide_all               Runtime violation (found by the solver)
+    input:   [0], 0
+    division by zero (stack: divide_all)
+~ half                     fuzzed: 50 cases, 0 discarded by `requires`; 0 of 2 checks proven
+    not proven: `/` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+    not proven: ensures it <= x || x < 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+✗ wrong                    Ensures violation (found by the fuzzer)
+    input:   -999.2508503161262
+    postcondition of `wrong` violated: ensures it > x (it = -1998.5017006322523) (stack: wrong)
+✓ checked                  proven (nothing to check)
+✓ sum_to                   proven (8 checks)
+✓ fact                     proven (2 checks)
+✓ spin                     proven (nothing to check)
+    may not terminate: it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)
+✓ collatz                  proven (nothing to check)
+    terminates if `collatz` does (marked `terminates`, not proven)
+○ todo_later               incomplete: reached unfilled hole `?rest` (via todo_later)
+✓ label                    proven (1 check)
+✓ main                     proven (1 check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file verify_byte_at.strata edit < \"$ROOT/tests/data/smt/verify_byte_at.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "verify_byte_at.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✗ any_offset               Runtime violation (found by the solver)
+    input:   "þ", -1
+    byte -1 out of range (2 bytes) (stack: any_offset)
+✗ before_start             Runtime violation (found by the solver)
+    input:   "Ⱦ"
+    byte -1000 out of range (2 bytes) (stack: before_start)
+✗ padded_wrong             Runtime violation (found by the solver)
+    input:   "þ", 4
+    byte -996 out of range (2 bytes) (stack: padded_wrong)
+✓ inside                   proven (2 checks)
+✓ slashes                  proven (1 check)
+✓ ascii_code               proven (2 checks)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file verify_capability.strata edit < \"$ROOT/tests/data/smt/verify_capability.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "verify_capability.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+- top                      skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+- opt                      skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+- held                     skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+- nested                   skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+- files                    skipped: it takes the capability `Files`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+~ plain                    fuzzed: 50 cases, 0 discarded by `requires`; 0 of 2 checks proven
+    not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+    not proven: ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file verify_sized.strata edit < \"$ROOT/tests/data/smt/verify_sized.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "verify_sized.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ add_u8                   proven (nothing to check)
+✓ widen                    proven (1 check)
+✓ flip                     proven (nothing to check)
+✓ narrow                   proven (1 check)
+✗ bad_narrow               Runtime violation (found by the solver)
+    input:   256
+    `256` doesn't fit in `U8` (stack: bad_narrow)
+✓ wrapped                  proven (1 check)
+✓ sum32                    proven (1 check)
+✗ wrong_sum                Ensures violation (found by the solver)
+    input:   1, 255
+    postcondition of `wrong_sum` violated: ensures it == a.to_int() + b.to_int() (it = 0) (stack: wrong_sum)
+✓ signed_wrap              proven (2 checks)
+✓ compare                  proven (1 check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file verify_traits.strata edit < \"$ROOT/tests/data/smt/verify_traits.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "verify_traits.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ Money.empty              proven (nothing to check)
+✓ Money.combine            proven (nothing to check)
+✓ Money.twice              proven (nothing to check)
+✓ law left_identity for Money proven (1 check)
+✓ Max.empty                proven (nothing to check)
+✓ Max.combine              proven (nothing to check)
+✓ Max.twice                proven (nothing to check)
+✗ law left_identity for Max Law violation (found by the solver)
+    input:   Max { v: 0 }
+    law `left_identity` does not hold for `Max` with a = Max { v: 0 }
+✗ Money.size               Ensures violation (found by the solver)
+    input:   Money { cents: -1 }
+    postcondition of `Money.size` violated: ensures it >= 0 (it = -1) (stack: Money.size)
+✓ Max.size                 proven (1 check)
+✓ Item.new                 proven (2 checks)
+✓ Item.total               proven (1 check)
+✗ Item.restock             Refinement violation (found by the solver)
+    input:   Item { name: "", qty: 0 }, -1
+    constructing `Item`: Item.qty: -1 does not satisfy `Natural` (where it >= 0) (stack: Item.restock)
+✓ Color.to_json            proven (nothing to check)
+    may not terminate: it calls `to_json_at`, which may not terminate
+✓ Color.to_json_at         proven (nothing to check)
+✓ Color.from_json_at       proven (nothing to check)
+    may not terminate: it calls `std.json.stringify`, which may not terminate
+✓ Color.from_json          proven (nothing to check)
+    may not terminate: it calls `from_json_at`, which may not terminate
+✓ Color.from_json_with     proven (nothing to check)
+    may not terminate: it calls `from_json_at`, which may not terminate
+✓ sum_all                  proven (nothing to check)
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file verify_uncompiled.strata edit < \"$ROOT/tests/data/smt/verify_uncompiled.st\" > /dev/null; true"]
+
+[[step]]
+strata = ["--file", "verify_uncompiled.strata", "verify", "--no-cache", "--cases", "50"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+stdout = '''
+✓ a                        proven (1 check)
+✓ units                    proven (3 checks)
+    may not terminate: it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end (only `for` loops over lists, sets, dicts and finite iterators, and `while` loops whose bound goes down, are shown to end)
+✓ longer                   proven (2 checks)
+    may not terminate: it calls `units`, which may not terminate
+✓ longest                  proven (1 check)
+    may not terminate: it calls `longer`, which may not terminate
+✓ b                        proven (1 check)
+✓ c                        proven (nothing to check)
+~ sq                       fuzzed: 50 cases, 0 discarded by `requires`; 0 of 2 checks proven
+    not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+    not proven: ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+'''
