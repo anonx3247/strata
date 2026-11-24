@@ -695,3 +695,44 @@ run = ["sh", "-c", "\"$STRATA\" --file sn check 2>&1 | grep -E \"^(error in |  )
 stdout = '''
 error in util.other: call to `util.report`: expects 1 arguments, got 2
 '''
+
+# resolve.rs use_errors_as_in_rust: a `use` of a module there isn't, of what a module lacks, of a private
+# definition; a mock, a foreign function, a module not used
+[[step]]
+write = "ue/strata.toml"
+text = '''
+name = "p"
+'''
+
+[[step]]
+strata = ["--file", "ue/", "edit", "util"]
+text = '''
+pub fn shown(x: Int) -> Int { x }
+fn secret() -> Int { 1 }
+pub mock Fake = {}
+pub extern c fn strlen(s: String) -> U64
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "ue/", "edit", "main"]
+text = '''
+from nothere use x
+from util use shown, missing, secret, Fake
+fn main() { print(shown(1) + util.secret()) f := Fake {} n := util.strlen("a") }
+fn g() -> Int { j := std.json.parse("1") 0 }
+test "fake" { f := Fake {} }
+'''
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file ue/ check 2>&1 | grep -E \"error in use |is private to|internal to the standard library|is a mock|foreign function|which this module doesn.t use\""]
+stdout = '''
+error in use nothere: there is no module `nothere`
+error in use util: module `util` has no `missing`
+error in use util: `secret` is private to module `util` (only `pub` definitions are part of its contract)
+error in main: `util.secret` is private to module `util` (only `pub` definitions are part of its contract)
+error in main: `Fake` is a mock: it is for tests only (a `test`, another mock, or an `impl` for one), so a fake never reaches a real run
+error in main: `util.strlen` is a foreign function: only module `util` can call it (give the rest of the program a capability from `util` instead)
+error in g: `std.json.parse` is in module `std.json`, which this module doesn't use: add `use std.json` (then write `json.parse`) or `from std.json use parse`
+'''
