@@ -12,7 +12,7 @@ docs	check
 examples	run math.strata
 examples/hello	run -- x y
 examples	run hello -- a
-examples	--file wc run -- README.md
+.	--file examples/wc run -- README.md
 examples	run counter
 examples	run traits.strata
 examples	run bank.strata
