@@ -7,7 +7,7 @@
 #   strata/lib/strata/              what it finds relative to itself (its home)
 #     VERSION
 #     core/ std/                    core's and std's modules (sources)
-#     src/llvm/prelude.strata       the prelude codegen compiles programs with
+#     runtime/prelude.strata        the prelude codegen compiles programs with
 #     runtime.o runtime-core.o      the C runtime, without and with core.rt
 #                                   (-DSTRATA_CORE_RT), precompiled
 #     core_rt.o                     core.rt (the runtime written in Strata)
@@ -32,7 +32,9 @@
 #
 #   tools/release.sh                build everything (Homebrew's llvm, zstd, z3
 #                                   and clang needed: on the machine making the
-#                                   release, never on the user's)
+#                                   release, never on the user's): the compiler
+#                                   is target/strata (tools/bootstrap.sh makes
+#                                   it when it isn't there)
 #   COMPILER=EXE tools/release.sh   with a compiler executable already built
 #   CACHE_FROM=DIR                  a populated cache to ship in lib/strata/cache
 #                                   too (made by the same bin/strata)
@@ -46,15 +48,18 @@ DIST=$REPO/target/release-dist
 ROOT=$DIST/strata
 HOME_DIR=$ROOT/lib/strata
 rm -rf "$ROOT"
-mkdir -p "$ROOT/bin" "$HOME_DIR/std" "$HOME_DIR/core" "$HOME_DIR/src/llvm" "$HOME_DIR/cache"
+mkdir -p "$ROOT/bin" "$HOME_DIR/std" "$HOME_DIR/core" "$HOME_DIR/runtime" "$HOME_DIR/cache"
 step() { echo "release: $*" >&2; }
 
 # the compiler, LLVM and lld statically linked in
+# (the compiler built by itself: target/strata, made by tools/bootstrap.sh)
 if [ -z "$COMPILER" ]; then
-  [ -f target/lld/liblld.a ] || tools/build-lld.sh
-  step "building the compiler (strata build compiler)"
-  STRATA_BACKEND=rust target/release/strata build --rust --no-verify --release compiler -o "$DIST/compiler.tmp" >"$DIST/compiler-build.log" 2>&1 \
-    || { tail -20 "$DIST/compiler-build.log" >&2; exit 1; }
+  if [ ! -x target/strata ]; then
+    step "building the compiler (tools/bootstrap.sh)"
+    tools/bootstrap.sh >"$DIST/compiler-build.log" 2>&1 \
+      || { tail -20 "$DIST/compiler-build.log" >&2; exit 1; }
+  fi
+  cp target/strata "$DIST/compiler.tmp"
   COMPILER=$DIST/compiler.tmp
 fi
 cp "$COMPILER" "$ROOT/bin/strata"
@@ -74,14 +79,14 @@ fi
 step "core, std, prelude"
 cp core/*.strata core/strata.toml "$HOME_DIR/core/"
 cp std/*.strata std/strata.toml "$HOME_DIR/std/"
-cp src/llvm/prelude.strata "$HOME_DIR/src/llvm/"
+cp runtime/prelude.strata "$HOME_DIR/runtime/"
 echo "$VERSION" > "$HOME_DIR/VERSION"
 
 # the C runtime, precompiled for macOS 13 on (as the compiler's objects are)
 step "runtime.c"
 CC=${CC:-clang}
-$CC -O2 -mmacosx-version-min=13.0 -Wno-deprecated-declarations -c src/llvm/runtime.c -o "$HOME_DIR/runtime.o"
-$CC -O2 -mmacosx-version-min=13.0 -Wno-deprecated-declarations -DSTRATA_CORE_RT -c src/llvm/runtime.c -o "$HOME_DIR/runtime-core.o"
+$CC -O2 -mmacosx-version-min=13.0 -Wno-deprecated-declarations -c runtime/runtime.c -o "$HOME_DIR/runtime.o"
+$CC -O2 -mmacosx-version-min=13.0 -Wno-deprecated-declarations -DSTRATA_CORE_RT -c runtime/runtime.c -o "$HOME_DIR/runtime-core.o"
 
 # core.rt and std, compiled by the compiler itself (its codegen, its LLVM)
 step "core.rt"

@@ -109,11 +109,12 @@ A compiled program behaves as `strata run`: the same output, and contracts are c
 
 `strata run` compiles the program in memory and runs it (a JIT), so it runs at native speed without a build step. `strata test` compiles the tests the same way: a fault ends the test, not the run, and what a test prints is shown only if it fails. How the compiler and the JIT work is in [internals](internals.md#compiling).
 
-LLVM 23's libraries are linked into strata, so building it needs them (nothing is needed to run it):
+A release needs nothing installed (`curl -fsSL https://strata-lang.dev/install.sh | sh`). Building strata from source needs LLVM 23's libraries, zstd and clang (linked into strata, not needed to run it) and lld's libraries, built once into `target/lld`; strata is written in Strata, so a `strata` builds the next (`STRATA_SEED`, else one on the PATH, else the latest release, downloaded):
 
 ```sh
-brew install llvm                      # or apt.llvm.org's llvm-23-dev
-LLVM_SYS_231_PREFIX=$(brew --prefix llvm) cargo build --release
+brew install llvm zstd                 # LLVM 23, and clang
+tools/build-lld.sh                     # lld's libraries, into target/lld
+tools/bootstrap.sh                     # target/strata, built by itself (a fixed point)
 ```
 
 ## Structural diffs

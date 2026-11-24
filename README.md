@@ -37,17 +37,23 @@ $ strata --file examples/math.strata verify
 - **Values read as code.** Every value is shown as it would be written (`Circle { radius: 2 }`), in messages, traces and counterexamples, and `strata run f ARGS` takes its arguments that way. JSON is a library (`derive Json`), read against the types, refinements included.
 - **Concurrency without colouring.** `scope`, `spawn` and `await` run tasks on threads, with channels, `select` and `race` (the losers cancelled); any function can block, and there is no `async`.
 
-> Status: **an experimental draft**. The compiler is written twice, in Rust (`src/`) and in Strata (`compiler/`), and the two are kept at parity. The Strata one already does most of the work by default: lexing, parsing, rendering, running a program, and generating the code of `strata build` and `strata test` (falling back to Rust's where it can't yet; `--rust` asks for Rust's). Its verifier is being ported. Code is compiled through LLVM, to an executable (`strata build`) or in memory (the JIT, for `verify`'s fuzzing, `serve` and compile-time code), and the runtime's memory allocator is written in Strata too (`core.rt`).
+> Status: **an experimental draft**. The compiler is written in Strata (`compiler/`) and builds itself: lexing, parsing, checking, verifying (with z3), and generating code through LLVM, to an executable (`strata build`) or in memory (the JIT, for `strata run`, `verify`'s fuzzing and compile-time code). The runtime is C (`runtime/runtime.c`) with its memory allocator written in Strata (`core.rt`).
 
 ## Try it
 
-Strata links LLVM 23's libraries in (it compiles and runs code in memory), so building it needs them:
+Install a release (macOS on Apple silicon; nothing else to install):
 
 ```sh
-brew install llvm                      # or apt.llvm.org's llvm-23-dev
-export LLVM_SYS_231_PREFIX=$(brew --prefix llvm)
-cargo build --release
-alias strata=$PWD/target/release/strata
+curl -fsSL https://strata-lang.dev/install.sh | sh
+```
+
+Or build it from source: Strata is written in Strata, so a `strata` builds the next one (`tools/bootstrap.sh` takes `STRATA_SEED`, else a `strata` on the PATH, else downloads the latest release). It links LLVM 23 and lld in, so building it needs them (only to build: the result needs nothing installed):
+
+```sh
+brew install llvm zstd                 # LLVM 23, and clang
+tools/build-lld.sh                     # lld's libraries, into target/lld
+tools/bootstrap.sh                     # target/strata, built by itself (a fixed point)
+alias strata=$PWD/target/strata
 
 # Code is stored as its syntax tree (binary .strata files): read it as text…
 strata --file examples/orders.strata render
