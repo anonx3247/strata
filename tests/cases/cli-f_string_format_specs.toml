@@ -22,7 +22,7 @@ has = ["1 passed"]
 
 # specs survive rendering
 [[step]]
-strata = ["--file", "f.strata", "render"]
+strata = ["--file", "f.strata", "view", "main"]
 has = ["{price:>8.2}", "{name:*^10}", "{qty:03}"]
 
 [[step]]

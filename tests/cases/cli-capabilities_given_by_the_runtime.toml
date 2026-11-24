@@ -62,7 +62,7 @@ test "a fixed clock" {
 
 # the text round-trips
 [[step]]
-strata = ["--file", "p", "render", "clock"]
+strata = ["--file", "p", "view", "clock"]
 stdout = '''
 /// Reading the time.
 pub capability trait Clock {
@@ -97,7 +97,7 @@ pub fn late(c: Clock) -> Bool {
 '''
 
 [[step]]
-strata = ["--file", "p", "render", "main"]
+strata = ["--file", "p", "view", "main"]
 stdout = '''
 from clock use SystemClock, Fixed, late
 

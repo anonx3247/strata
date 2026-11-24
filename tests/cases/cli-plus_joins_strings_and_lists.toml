@@ -18,7 +18,7 @@ strata = ["--file", "plus.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "plus.strata", "render"]
+strata = ["--file", "plus.strata", "view", "main"]
 capture = "plus.st"
 
 [[step]]
@@ -26,7 +26,7 @@ save = "plus-r.strata"
 from_tmp = "plus.st"
 
 [[step]]
-strata = ["--file", "plus-r.strata", "render"]
+strata = ["--file", "plus-r.strata", "view", "main"]
 out_file = "plus.st"
 
 [[step]]

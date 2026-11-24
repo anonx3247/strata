@@ -25,7 +25,7 @@ fn f(n: Int) -> Int
 '''
 
 [[step]]
-strata = ["--file", "a.strata", "render"]
+strata = ["--file", "a.strata", "view", "main"]
 capture = "a.st"
 has = ["requires (W { ok: true }.ok)", "while (W { ok: false }.ok) {", "for x in (Dict { 1: 2 }) {", "if (W { ok: n > 0 } == W { ok: true }) {", "match (W { ok: true }) {"]
 
@@ -34,5 +34,5 @@ save = "b.strata"
 from_tmp = "a.st"
 
 [[step]]
-strata = ["--file", "b.strata", "render"]
+strata = ["--file", "b.strata", "view", "main"]
 out_file = "a.st"

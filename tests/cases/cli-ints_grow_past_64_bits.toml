@@ -42,5 +42,5 @@ has = ["input:   255\n", "input:   -128\n", "input:   18446744073709551615\n"]
 
 # render keeps big literals
 [[step]]
-strata = ["--file", "b.strata", "render"]
+strata = ["--file", "b.strata", "view", "main"]
 has = ["15511210043330985984000000"]

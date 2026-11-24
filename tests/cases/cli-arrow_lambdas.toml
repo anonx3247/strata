@@ -25,7 +25,7 @@ strata = ["--file", "lambdas.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "lambdas.strata", "render"]
+strata = ["--file", "lambdas.strata", "view", "main"]
 capture = "lambdas.st"
 
 [[step]]
@@ -33,7 +33,7 @@ save = "lambdas-r.strata"
 from_tmp = "lambdas.st"
 
 [[step]]
-strata = ["--file", "lambdas-r.strata", "render"]
+strata = ["--file", "lambdas-r.strata", "view", "main"]
 out_file = "lambdas.st"
 
 [[step]]

@@ -42,7 +42,7 @@ pub fn rect_area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {
 '''
 
 [[step]]
-strata = ["render", "b"]
+strata = ["view", "b"]
 has = ["rect_area(s, s)"]
 
 [[step]]
@@ -73,7 +73,7 @@ has = ["rename a.area → a.rect_area", "areas are never negative", "rect areas:
 counts = { "step " = 3 }
 
 [[step]]
-strata = ["--file", ".", "diff", "HEAD~1", "--step", "3"]
+strata = ["--file", ".", "diff", "HEAD~1", "--step", "4"]
 has = ["b.cube"]
 lacks = ["rect_area  (renamed"]
 

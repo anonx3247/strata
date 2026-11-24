@@ -49,17 +49,17 @@ strata = ["move", "charge", "billing"]
 has = ["moved orders.charge from orders to billing (billing.strata)", "updated 3 definitions that refer to it: billing.invoice, test \"charges\", orders.ship", "orders: from billing use charge", "main: from billing use charge"]
 
 [[step]]
-strata = ["render", "orders"]
+strata = ["view", "orders"]
 has = ["from billing use charge\n"]
 lacks = ["fn charge"]
 
 [[step]]
-strata = ["render", "billing"]
+strata = ["view", "billing"]
 has = ["from orders use Order\n", "pub fn charge(o: Order) -> Int"]
 
 # `orders.charge(o)` was stored as a reference to the definition: now `billing.charge`, shown short since imported
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["from billing use charge", "assert charge(o) == 2"]
 lacks = ["orders.charge"]
 
@@ -80,7 +80,7 @@ has = ["`orders.doubled` is private and `orders.ship` uses it"]
 
 # a move is one change in the diff
 [[step]]
-strata = ["diff", "--step", "0"]
+strata = ["diff", "--step", "1"]
 has = ["billing.charge  (moved from `orders`)", "only its module changed"]
 
 [[step]]

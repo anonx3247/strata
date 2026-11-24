@@ -71,7 +71,7 @@ strata = ["--file", "errors.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "errors.strata", "render"]
+strata = ["--file", "errors.strata", "view", "main"]
 capture = "errors.st"
 
 [[step]]
@@ -79,7 +79,7 @@ save = "errors-r.strata"
 from_tmp = "errors.st"
 
 [[step]]
-strata = ["--file", "errors-r.strata", "render"]
+strata = ["--file", "errors-r.strata", "view", "main"]
 out_file = "errors.st"
 
 [[step]]

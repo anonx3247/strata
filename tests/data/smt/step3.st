@@ -55,7 +55,8 @@ fn literal() -> List[Pos] {
 }
 
 fn bad_literal() -> List[Pos] {
-  [1, 0, 3]
+  xs := [1, 0, 3]
+  xs
 }
 
 fn pushed(xs: List[Pos]) -> List[Pos]

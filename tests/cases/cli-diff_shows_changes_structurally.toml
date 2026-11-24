@@ -30,7 +30,7 @@ has = ["line_cents", "stronger guarantee", "ensures it >= 0", "never below zero"
 
 # one step on its own, and the text form
 [[step]]
-strata = ["diff", "--step", "1"]
+strata = ["diff", "--step", "2"]
 has = ["↪ line_cents"]
 lacks = ["ShipError"]
 

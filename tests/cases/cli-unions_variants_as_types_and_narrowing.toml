@@ -135,7 +135,7 @@ strata = ["--file", "u.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "u.strata", "render"]
+strata = ["--file", "u.strata", "view", "main"]
 capture = "u.st"
 
 [[step]]
@@ -143,7 +143,7 @@ save = "u-r.strata"
 from_tmp = "u.st"
 
 [[step]]
-strata = ["--file", "u-r.strata", "render"]
+strata = ["--file", "u-r.strata", "view", "main"]
 out_file = "u.st"
 
 [[step]]
@@ -151,7 +151,7 @@ strata = ["--file", "t.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "t.strata", "render"]
+strata = ["--file", "t.strata", "view", "main"]
 capture = "t.st"
 
 [[step]]
@@ -159,7 +159,7 @@ save = "t-r.strata"
 from_tmp = "t.st"
 
 [[step]]
-strata = ["--file", "t-r.strata", "render"]
+strata = ["--file", "t-r.strata", "view", "main"]
 out_file = "t.st"
 
 # an argument of a union type is a value of one of its members

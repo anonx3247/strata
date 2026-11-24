@@ -1,0 +1,45 @@
+# A record field's type changed: the reads of it that no longer check
+# become holes of a pending change, as a changed call does (the whole edit
+# was rejected)
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit"]
+text = '''
+type P = { name: String, age: Int }
+
+fn older(p: P) -> Int {
+  p.age + 1
+}
+
+fn hello(p: P) -> String {
+  "hi " + p.name
+}
+'''
+
+[[step]]
+strata = ["edit"]
+text = "type P = { name: Int, age: Int }\n"
+has = ["the edit breaks 1 use elsewhere", "?pending_1  in hello", "was: p.name", "why: `+` operands: expected `String`, found `Int`"]
+
+[[step]]
+strata = ["view", "main"]
+has = ["\"hi \" + ?pending_1", "p.age + 1"]
+
+[[step]]
+strata = ["edit"]
+text = '''
+fn hello(p: P) -> String {
+  f"hi {p.name}"
+}
+'''
+
+[[step]]
+strata = ["done"]
+has = ["recorded \"edit\" as one change"]
+
+[[step]]
+strata = ["check"]
+has = ["ok:"]
