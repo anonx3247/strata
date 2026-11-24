@@ -67,6 +67,8 @@ Only a variable declared `mut`, a `mut` parameter, or a field of one can be chan
 
 A declared type holds for the variable's whole life: every assignment is checked against it (`line.qty = 120` fails if `qty` is a `Quantity`; `x = -1` fails if `x` was declared `mut x: Positive`), at compile time for literals and at runtime otherwise, and so is the value a `mut` argument writes back. Passing a `Positive` variable to a `mut k: Int` parameter is a compile error, since the function could store any `Int` in it. Closures cannot change outer variables.
 
+A place passed `mut` is taken once the call's other arguments have run: in `both(mut g, bump(mut g))`, `bump` changes `g` first, and `both` is given `g` as `bump` left it (likewise for a receiver, `mut g.add(bump(mut g))`, and for an argument that assigns `g` in a block). The same variable given `mut` twice in one call (`swap(mut g, mut g)`) is an error: each would write its own value back, one undoing the other.
+
 **Ranges and slices.** A slice is clamped to its length as in Python (so is a finite iterator, such as a string's units: `s.graphemes()[..3]`). There are no negative indices: the end of `xs` is `len(xs)`, as in `xs[..len(xs) - 1]`. One element is `xs[i]`: `i` must be in range, which is checked when the code runs and proven by `verify` (`xs[0]` on a `NonEmpty[Int]` is proven; `xs[len(xs) - 1]` on any list is not). `get(xs, i)` gives an `Option` instead.
 
 They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the compiler and the prover treat them exactly as those calls.
