@@ -1,0 +1,122 @@
+# resolve.rs: git_dependencies: a git dependency is fetched (a bare clone and the commit's files,
+# in the cache) and pinned in strata.lock, kept until `update`; tags and branches; what can't be
+
+[[step]]
+write = "json/strata.toml"
+text = '''
+name = "json"
+[deps]
+'''
+
+[[step]]
+strata = ["--file", "json/", "edit", "main"]
+text = '''
+pub fn parse(s: String) -> Int { 1 }
+'''
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "cd json && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main init -q && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main add . && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main commit -q -m one && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main tag v1 && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main rev-parse HEAD > ../first && cd .. && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main clone -q --bare json json.git"]
+
+[[step]]
+run = ["sh", "-c", "printf 'name = \"app\"\\n[deps]\\njson = \"file://%s/json.git\"\\n' \"$PWD\" > app/strata.toml || (mkdir -p app && printf 'name = \"app\"\\n[deps]\\njson = \"file://%s/json.git\"\\n' \"$PWD\" > app/strata.toml)"]
+
+[[step]]
+strata = ["--file", "app/", "edit", "main"]
+text = '''
+from json use parse
+fn main() { print(parse("x")) }
+'''
+any_code = true
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+has = ["json.parse(\"x\")"]
+lacks = ["error"]
+
+# pinned: the lock names the commit
+[[step]]
+run = ["sh", "-c", "grep -q \"commit = \\\"$(cat first)\\\"\" app/strata.lock && grep -q \"name = \\\"json\\\"\" app/strata.lock"]
+
+# the cache: a bare clone, and the commit's files
+[[step]]
+run = ["sh", "-c", "ls cache/deps/repos | grep -q \"json.git\" && ls cache/deps/*/\"$(cat first)\"/main.strata"]
+
+# a new commit upstream: the lock is kept (not even rewritten) until `update`
+[[step]]
+run = ["sh", "-c", "cp app/strata.lock lock.before && cd json && echo two > notes.txt && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main add . && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main commit -q -m two && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main rev-parse HEAD > ../second && git -c user.name=t -c user.email=t@t -c init.defaultBranch=main push -q ../json.git main"]
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+lacks = ["error"]
+
+[[step]]
+run = ["cmp", "lock.before", "app/strata.lock"]
+
+[[step]]
+strata = ["update", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+
+[[step]]
+run = ["sh", "-c", "grep -q \"commit = \\\"$(cat second)\\\"\" app/strata.lock && ls cache/deps/*/\"$(cat second)\"/notes.txt"]
+
+# a tag: pinned to its commit
+[[step]]
+run = ["sh", "-c", "printf 'name = \"app\"\\n[deps]\\njson = { git = \"file://%s/json.git\", tag = \"v1\" }\\n' \"$PWD\" > app/strata.toml"]
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+lacks = ["error"]
+
+[[step]]
+run = ["sh", "-c", "grep -q \"tag = \\\"v1\\\"\" app/strata.lock && grep -q \"commit = \\\"$(cat first)\\\"\" app/strata.lock && ! grep -q \"$(cat second)\" app/strata.lock"]
+
+# what can't be: a missing tag, two of rev/tag/branch, path and git, unknown keys
+[[step]]
+run = ["sh", "-c", "printf 'name = \"app\"\\n[deps]\\njson = { git = \"file://%s/json.git\", tag = \"v9\" }\\n' \"$PWD\" > app/strata.toml"]
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+has = ["has no tag v9"]
+
+[[step]]
+run = ["sh", "-c", "printf 'name = \"app\"\\n[deps]\\njson = { git = \"file://%s/json.git\", tag = \"v1\", branch = \"main\" }\\n' \"$PWD\" > app/strata.toml"]
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+has = ["at most one of rev, tag and branch"]
+
+[[step]]
+write = "app/strata.toml"
+text = '''
+name = "app"
+[deps]
+json = { git = "x", path = "../json" }
+'''
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+has = ["`path` or `git`, not both"]
+
+[[step]]
+write = "app/strata.toml"
+text = '''
+name = "app"
+[deps]
+json = { got = "x" }
+'''
+
+[[step]]
+strata = ["package", "--std", "$ROOT/std", "app"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+any_code = true
+has = ["unknown key `got`"]

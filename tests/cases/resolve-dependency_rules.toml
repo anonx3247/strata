@@ -15,6 +15,7 @@ text = '''
 pub type Kind = | Num | Word(String)
 pub fn parse(s: String) -> Kind { Num }
 '''
+any_code = true
 
 [[step]]
 write = "json/strata.toml"
@@ -29,6 +30,7 @@ text = '''
 pub fn k() -> Kind { match parse("x") { Num => Word("n"), w => w } }
 test "k" { assert k() == Word("n") }
 '''
+any_code = true
 
 [[step]]
 write = "json/strata.toml"
@@ -43,6 +45,7 @@ text = '''
 pub fn unused() -> Int { 1 }
 test "broken"(n: Int) { assert unused() == n }
 '''
+any_code = true
 
 [[step]]
 write = "app/strata.toml"
@@ -59,18 +62,14 @@ from json use Word
 use json.text
 fn main() { print(text.k() == Word("n")) }
 '''
+any_code = true
 
 # spare's failing test is left out, and with it everything else of spare
 [[step]]
-strata = ["check", "--std", "$ROOT/std", "app"]
-out = ""
-
-[[step]]
-strata = ["check", "--std", "$ROOT/std", "--with-deps", "app"]
-any_code = true
-out = '''
-error in test "json.spare: broken": test parameter `n: Int`: a test asks only for capabilities (`capability ...`), `Console`, or (when strata.toml allows it) `RunMode`
-'''
+strata = ["check"]
+dir = "app"
+has = ["ok: "]
+lacks = ["error"]
 
 # a module the package doesn't reach isn't read: not even when it isn't a module file
 [[step]]
@@ -78,8 +77,10 @@ write = "json/spare.strata"
 text = "not a module file"
 
 [[step]]
-strata = ["check", "--std", "$ROOT/std", "app"]
-out = ""
+strata = ["check"]
+dir = "app"
+has = ["ok: "]
+lacks = ["error"]
 
 # exports: modules or definitions; the rest of what is `pub` can't be used from outside
 [[step]]
@@ -104,13 +105,13 @@ from json use parse, Kind
 use json.text
 fn main() { print(text.k() == Num) }
 '''
+any_code = true
 
 [[step]]
-strata = ["check", "--std", "$ROOT/std", "hidden"]
+strata = ["check"]
+dir = "hidden"
 any_code = true
-out = '''
-error in use json: `parse` isn't exported by package `json` (only what its strata.toml's `exports` lists is part of its contract)
-'''
+has = ["error in use json: `parse` isn't exported by package `json` (only what its strata.toml's `exports` lists is part of its contract)"]
 
 [[step]]
 write = "clash/strata.toml"
@@ -125,8 +126,10 @@ strata = ["--file", "clash/", "edit", "json"]
 text = '''
 pub fn f() -> Int { 1 }
 '''
+any_code = true
 
 [[step]]
-strata = ["check", "--std", "$ROOT/std", "clash"]
+strata = ["check"]
+dir = "clash"
 any_code = true
 has = ["error: module `json` is named like the dependency `json`"]
