@@ -82,4 +82,18 @@ fn main() {
   }
   print(total)
   print(arena(() -> [pick(1), pick(4), pick(9)]))
+  // arenas inside tasks (each thread's own), a task started inside a
+  // task's arena (which is then kept), and tasks pushing onto one list
+  shared_list := [1, 2, 3]
+  sizes := scope {
+    a := spawn arena(() -> len(work(30).items) + len(push(shared_list, 4)))
+    b := spawn arena(() -> scope {
+      inner := spawn work(7)
+      len((await inner).items) + len(push(shared_list, 5))
+    })
+    c := spawn len(push(shared_list, 6)) + len(arena(() -> table(20)))
+    (await a, await b, await c)
+  }
+  print(sizes)
+  print(shared_list)
 }
