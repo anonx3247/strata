@@ -37,7 +37,7 @@ has = ["✓ clamp"]
 [[step]]
 run = ["grep", "-v", "^--lang smt2 --produce-models --dt-nested-rec --rlimit-per=", "cvc5.log"]
 code = 1
-out = ""
+stdout = ""
 
 [[step]]
 run = ["test", "-s", "cvc5.log"]
@@ -50,7 +50,7 @@ has = ["✓ clamp"]
 [[step]]
 run = ["grep", "-v", "-e", "^-in -T:20 rlimit=", "-e", "^-in -t:20000 rlimit=", "z3.log"]
 code = 1
-out = ""
+stdout = ""
 
 [[step]]
 run = ["test", "-s", "z3.log"]

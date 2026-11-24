@@ -71,7 +71,7 @@ has = ["merged main", "merge: theirs code follows the rename a.area → a.rect_a
 
 [[step]]
 strata = ["render", "c"]
-out = '''
+stdout = '''
 from a use rect_area
 
 fn cube(s: Int) -> Int {
@@ -85,7 +85,7 @@ run = ["grep", "-q", "\"follows\"", "strata.log"]
 
 [[step]]
 run = ["git", "status", "--porcelain"]
-out = ""
+stdout = ""
 
 [[step]]
 run = ["sh", "-c", "test $(git log -1 --format=%p | wc -w) -eq 2"]

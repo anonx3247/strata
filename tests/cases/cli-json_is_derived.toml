@@ -102,7 +102,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "j.strata"]
-out = '''
+stdout = '''
 {"type":"Signup","email":"a@b","age":20,"nickname":"al","tags":[],"home":{"type":"Address","city":"P","zip":"75001"},"shapes":[{"type":"Dot"},{"type":"Pixels","value":3},{"type":"Circle","r":1.5,"label":"c"}],"level":"Loud","scores":{"a":1}}
 true
 Ok(Signup { email: "x@y", age: 15, nickname: None, tags: [], home: Address { city: "L", zip: "12345" }, shapes: [Dot, Pixels(2)], level: Quiet, scores: Dict {} })
@@ -290,7 +290,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "big.strata"]
-out = '''
+stdout = '''
 Err("x: 9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly")
 true
 '''
@@ -351,7 +351,7 @@ fn main() {
 [[step]]
 strata = ["run", "."]
 dir = "strict"
-out = "Err(\"unknown field \\\"y\\\"\")\nOk(A { x: 1 })\n"
+stdout = "Err(\"unknown field \\\"y\\\"\")\nOk(A { x: 1 })\n"
 
 [[step]]
 write = "strict/strata.toml"

@@ -79,7 +79,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "lazy.strata"]
-out = "9\n303\n64\n<0>\n<2>\n<4>\n<6>\n12\n[2, 4, 6]\n3\n"
+stdout = "9\n303\n64\n<0>\n<2>\n<4>\n<6>\n12\n[2, 4, 6]\n3\n"
 
 [[step]]
 strata = ["--file", "lazy.strata", "verify"]

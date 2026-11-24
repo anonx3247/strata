@@ -36,7 +36,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "g.strata"]
-out = "3 items\nproblem: none\n"
+stdout = "3 items\nproblem: none\n"
 
 [[step]]
 strata = ["--file", "r.strata", "edit"]
@@ -63,4 +63,4 @@ has = ["fn f(x: Many[Int]) -> Int"]
 
 [[step]]
 strata = ["run", "r.strata"]
-out = "2\n"
+stdout = "2\n"

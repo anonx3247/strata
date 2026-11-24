@@ -65,7 +65,7 @@ env = { "EDITOR" = "sh '$TMP/module/editor.sh'" }
 
 [[step]]
 run = ["cat", "module/seen1.st"]
-out = "pub fn price() -> Int {\n  12\n}\n"
+stdout = "pub fn price() -> Int {\n  12\n}\n"
 
 [[step]]
 strata = ["render", "shop.orders"]
@@ -115,7 +115,7 @@ has = ["no changes"]
 
 [[step]]
 run = ["cat", "root-def/seen1.st"]
-out = "fn total() -> Int {\n  price() + 1\n}\n"
+stdout = "fn total() -> Int {\n  price() + 1\n}\n"
 
 [[step]]
 write = "root-module/editor.sh"
@@ -133,7 +133,7 @@ env = { "EDITOR" = "sh '$TMP/root-module/editor.sh'" }
 
 [[step]]
 run = ["head", "-c", "26", "root-module/seen1.st"]
-out = "from shop.orders use price"
+stdout = "from shop.orders use price"
 
 # neither a module nor a definition
 [[step]]

@@ -66,7 +66,7 @@ run = ["sh", "-c", "test $(git rev-list --count HEAD) -eq 2"]
 
 [[step]]
 run = ["git", "log", "-1", "--format=%s"]
-out = "cheaper tax\n"
+stdout = "cheaper tax\n"
 
 [[step]]
 run = ["git", "status", "--porcelain"]
@@ -105,7 +105,7 @@ run = ["sh", "-c", "test $(git rev-list --count HEAD) -eq 3"]
 
 [[step]]
 run = ["git", "log", "-1", "--format=%s"]
-out = "tax takes a rate\n"
+stdout = "tax takes a rate\n"
 
 # off for one command, or for the package
 [[step]]

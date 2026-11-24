@@ -55,7 +55,7 @@ strata = ["run", "prog.strata"]
 env = { "STRATA_TEST_VAR" = "set!" }
 code = 7
 stdout = "set!"
-out = "set!ab\n"
+stdout = "set!ab\n"
 
 # the host is the standard library's alone
 [[step]]

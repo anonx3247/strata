@@ -74,7 +74,7 @@ has = ["merged main"]
 
 [[step]]
 strata = ["render", "--file", "app.strata"]
-out = "fn g(y: Int) -> Int {\n  y * 20\n}\n"
+stdout = "fn g(y: Int) -> Int {\n  y * 20\n}\n"
 
 [[step]]
 run = ["sh", "-c", "test $(git log -1 --format=%p | wc -w) -eq 2"]

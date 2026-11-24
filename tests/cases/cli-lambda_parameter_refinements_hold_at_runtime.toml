@@ -18,7 +18,7 @@ fn good() -> Int {
 
 [[step]]
 strata = ["--file", "l.strata", "run", "good"]
-out = "6\n"
+stdout = "6\n"
 
 [[step]]
 strata = ["--file", "l.strata", "run", "bad"]

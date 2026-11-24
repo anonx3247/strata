@@ -33,7 +33,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "s.strata"]
-out = "dot\nmoved 2\nsquare 3\n5\n"
+stdout = "dot\nmoved 2\nsquare 3\n5\n"
 
 [[step]]
 strata = ["--file", "s.strata", "render", "--members", "inline"]
@@ -46,7 +46,7 @@ from_tmp = "inline.st"
 
 [[step]]
 strata = ["run", "i.strata"]
-out = "dot\nmoved 2\nsquare 3\n5\n"
+stdout = "dot\nmoved 2\nsquare 3\n5\n"
 
 [[step]]
 strata = ["--file", "i.strata", "render", "--members", "separate"]

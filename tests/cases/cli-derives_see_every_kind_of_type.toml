@@ -92,7 +92,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "k.strata"]
-out = '''
+stdout = '''
 {"type":"All","tree":{"type":"Node","left":{"type":"Leaf"},"value":1,"right":{"type":"Node","left":{"type":"Leaf"},"value":2,"right":{"type":"Leaf"}}},"pair":{"type":"Pair","a":1,"b":2},"events":[{"type":"Moved","value":3},{"type":"Drawn","shape":{"type":"Square","side":2.0},"at":80},{"type":"Drawn","shape":{"type":"Circle","r":1.0},"at":null}],"who":"u1"}
 true
 Err("events[0].at: 70000 does not satisfy `Port` (where 0 < it && it < 65536)")

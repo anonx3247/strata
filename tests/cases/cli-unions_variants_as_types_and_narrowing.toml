@@ -165,7 +165,7 @@ out_file = "t.st"
 # an argument of a union type is a value of one of its members
 [[step]]
 strata = ["--file", "u.strata", "run", "area", "Circle { radius: 2 }"]
-out = "12\n"
+stdout = "12\n"
 
 [[step]]
 strata = ["--file", "u.strata", "run", "max_of", "NonEmptyErr"]

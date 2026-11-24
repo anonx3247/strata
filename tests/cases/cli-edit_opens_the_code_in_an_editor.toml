@@ -49,7 +49,7 @@ has = ["changed"]
 
 [[step]]
 run = ["cat", "one/seen1.st"]
-out = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n"
+stdout = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n"
 
 [[step]]
 strata = ["render", "main"]

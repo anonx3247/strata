@@ -39,7 +39,7 @@ has = ["amount + ?pending_1", "?pending_2 * 2"]
 # nothing logged yet
 [[step]]
 run = ["cat", "strata.log"]
-out = ""
+stdout = ""
 
 [[step]]
 strata = ["holes"]

@@ -47,7 +47,7 @@ text = "name = \"p\"\n\n[run]\nmode = true\n"
 
 [[step]]
 strata = ["--file", "p", "run"]
-out = "running\n"
+stdout = "running\n"
 
 # under --trace: `Tracing`, and the console's calls are in the trace
 [[step]]

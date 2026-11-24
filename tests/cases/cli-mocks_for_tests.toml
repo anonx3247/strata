@@ -35,7 +35,7 @@ test "saving then loading" {
 
 [[step]]
 strata = ["--file", "m.strata", "render"]
-out = '''
+stdout = '''
 from std.fs use Files, FsError
 
 /// An in-memory disk, for tests.

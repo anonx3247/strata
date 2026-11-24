@@ -45,7 +45,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "statics.strata"]
-out = '''
+stdout = '''
 [0, 0]
 [["z", "z"], ["z", "z"]]
 Dict { "z": [0, 0] }
@@ -90,7 +90,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "builtins.strata"]
-out = '''
+stdout = '''
 [1,2,3]
 {"a":[{"type":"P","name":"x","tags":[]}]}
 2.5
@@ -148,7 +148,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "text.strata"]
-out = '''
+stdout = '''
 plain text
 [Dot, Rect(1, 2), Circle { r: 1.5, label: "c \"q\"\n" }]
 Some("hi")
@@ -228,7 +228,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "self_methods.strata"]
-out = "[\"z\", \"z\"]\n[1, 0, 0]\n1\nz\n[[1, 0, 0], [0, 0, 0]]\n"
+stdout = "[\"z\", \"z\"]\n[1, 0, 0]\n1\nz\n[[1, 0, 0], [0, 0, 0]]\n"
 
 [[step]]
 strata = ["--file", "generic_derive.strata", "edit"]
@@ -251,7 +251,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "generic_derive.strata"]
-out = '''
+stdout = '''
 {"type":"Box","p":{"type":"Pair","a":1,"b":2}}
 Ok(Box { p: Pair { a: 3, b: 4 } })
 '''
@@ -280,7 +280,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "option_option.strata"]
-out = '''
+stdout = '''
 error: `Some` of a value written as null can't be JSON: it would read back as `None`
 2
 null
@@ -303,7 +303,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "root_builtin_name.strata"]
-out = "40\n[\"hi\"]\n"
+stdout = "40\n[\"hi\"]\n"
 
 [[step]]
 strata = ["--file", "refined.strata", "edit"]
@@ -351,7 +351,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "refined.strata"]
-out = '''
+stdout = '''
 Ok([80, 443])
 Err("[1]: 70000 does not satisfy `Port` (where 1 <= it && it <= 65535)")
 Ok(None)
@@ -399,7 +399,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "refined_more.strata"]
-out = '''
+stdout = '''
 Ok([1, 2, 3])
 Err("[1] does not satisfy `Many` (where len(it) >= 2)")
 Ok([2, 4])

@@ -53,7 +53,7 @@ code = 1
 
 [[step]]
 run = ["cat", "strata.log"]
-out = ""
+stdout = ""
 
 # keep: recorded as is, the holes become ordinary ones
 [[step]]

@@ -79,4 +79,4 @@ dir = "billing"
 
 [[step]]
 run = ["cat", "billing/strata.toml"]
-out = "name = \"billing\"\n"
+stdout = "name = \"billing\"\n"

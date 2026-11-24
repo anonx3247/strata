@@ -1,0 +1,6 @@
+# ast.rs: bad_input_is_an_error_not_a_crash: compiler/binary refuses every
+# prefix of a module file, and no flipped byte reads as another tree (the
+# header's hash catches a change inside a definition)
+[[step]]
+strata = ["--file", "$ROOT/compiler", "run", "--", "bad", "$ROOT/examples/orders.strata"]
+stdout = "cut 0\nchanged 0\n"

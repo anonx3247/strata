@@ -39,7 +39,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "j.strata"]
-out = '''
+stdout = '''
 {"type":"Doc","shapes":[{"type":"Circle","r":1.0},{"type":"Square","side":2.0},{"type":"Moved","value":3},{"type":"Dot"}],"ids":[1,"a"]}
 true
 Err("shapes[1]: `Nope` is not one of Circle, Square, Moved, Dot")

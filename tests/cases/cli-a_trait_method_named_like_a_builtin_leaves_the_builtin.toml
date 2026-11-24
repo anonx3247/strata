@@ -28,4 +28,4 @@ fn main() {
 
 [[step]]
 strata = ["--file", "t.strata", "run"]
-out = "Some((2, \"b\"))\nSome(\"a\")\n"
+stdout = "Some((2, \"b\"))\nSome(\"a\")\n"

@@ -33,7 +33,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "i.strata"]
-out = '''
+stdout = '''
 16
 9
 8

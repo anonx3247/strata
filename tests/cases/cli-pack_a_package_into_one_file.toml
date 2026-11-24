@@ -6,7 +6,7 @@ has = ["67 definitions"]
 
 [[step]]
 run = ["head", "-c", "6", "tasks.strata"]
-out = "STRATA"
+stdout = "STRATA"
 
 [[step]]
 strata = ["--file", "tasks.strata", "check"]

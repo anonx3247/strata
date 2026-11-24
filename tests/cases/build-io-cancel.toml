@@ -12,10 +12,10 @@ strata = ["build", "lines.strata", "-o", "lines"]
 run = ["./lines"]
 text = "first\nsecond\n"
 memory = true
-out = "first | second | the end of the input\n"
+stdout = "first | second | the end of the input\n"
 
 [[step]]
 strata = ["run", "lines.strata"]
 text = "first\nsecond\n"
 memory = true
-out = "first | second | the end of the input\n"
+stdout = "first | second | the end of the input\n"

@@ -75,7 +75,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "c.strata"]
-out = '''
+stdout = '''
 10
 4
 1

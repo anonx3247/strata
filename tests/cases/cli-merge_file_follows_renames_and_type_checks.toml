@@ -215,4 +215,4 @@ has = ["can't merge"]
 [[step]]
 run = ["cat", "a.strata"]
 dir = "text"
-out = "fn (\nours\n"
+stdout = "fn (\nours\n"

@@ -26,7 +26,7 @@ fn f(r: R) -> Int { r.n }
 
 [[step]]
 strata = ["--file", "r.strata", "run", "f", "R { s: \"x\" }"]
-out = "1\n"
+stdout = "1\n"
 
 # checked where the type is defined
 [[step]]

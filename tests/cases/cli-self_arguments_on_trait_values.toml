@@ -43,7 +43,7 @@ fn main() {
 
 [[step]]
 strata = ["--file", "ok.strata", "run"]
-out = "false\nfalse\nfalse\nfalse\nfalse\ntrue\n"
+stdout = "false\nfalse\nfalse\nfalse\nfalse\ntrue\n"
 
 [[step]]
 strata = ["--file", "bad.strata", "edit"]

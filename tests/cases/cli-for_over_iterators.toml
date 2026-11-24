@@ -97,7 +97,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "it.strata"]
-out = "[1, 2, 3]\n[4, 5, 0, 0]\n[\"a\", \"z\"]\n19\n1x\n2y\n"
+stdout = "[1, 2, 3]\n[4, 5, 0, 0]\n[\"a\", \"z\"]\n19\n1x\n2y\n"
 
 [[step]]
 strata = ["--file", "it.strata", "verify", "--no-race"]

@@ -55,7 +55,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "u.strata"]
-out = '''
+stdout = '''
 circle 1
 3
 circle 1

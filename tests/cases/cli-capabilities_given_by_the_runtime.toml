@@ -63,7 +63,7 @@ test "a fixed clock" {
 # the text round-trips
 [[step]]
 strata = ["--file", "p", "render", "clock"]
-out = '''
+stdout = '''
 /// Reading the time.
 pub capability trait Clock {
   fn now(self) -> Int
@@ -98,7 +98,7 @@ pub fn late(c: Clock) -> Bool {
 
 [[step]]
 strata = ["--file", "p", "render", "main"]
-out = '''
+stdout = '''
 from clock use SystemClock, Fixed, late
 
 fn main(sys: SystemClock) {
@@ -120,7 +120,7 @@ strata = ["--file", "p", "check"]
 # the runtime makes it: compiled, built
 [[step]]
 strata = ["run", "p"]
-out = "42 true false\n"
+stdout = "42 true false\n"
 
 [[step]]
 strata = ["--file", "p", "test"]
@@ -194,7 +194,7 @@ fn main(mut disk: Disk, process: Process) {
 
 [[step]]
 strata = ["run", "std_caps.strata", "--", "a", "b"]
-out = "hi\nfalse\n2\n"
+stdout = "hi\nfalse\n2\n"
 
 [[step]]
 save = "asks_files.strata"

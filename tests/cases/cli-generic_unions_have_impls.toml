@@ -40,4 +40,4 @@ fn main() {
 
 [[step]]
 strata = ["run", "g.strata"]
-out = "a value\nproblem: not positive\n5\n"
+stdout = "a value\nproblem: not positive\n5\n"

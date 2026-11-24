@@ -8,7 +8,7 @@ has = ["`builtin` definitions are only in `core`: `mine`"]
 
 [[step]]
 strata = ["--file", "x.strata", "render"]
-out = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n"
+stdout = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n"
 
 [[step]]
 strata = ["--file", "y.strata", "edit"]

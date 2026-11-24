@@ -8,7 +8,7 @@ lacks = ["declare i1 @strata_unique"]
 
 [[step]]
 run = ["head", "-c", "10", "rt.ll"]
-out = "; core.rt "
+stdout = "; core.rt "
 
 [[step]]
 strata = ["build-core"]

@@ -104,4 +104,4 @@ strata = ["build", "chain.strata", "-o", "chain"]
 [[step]]
 run = ["./chain"]
 memory = true
-out = "999999\n"
+stdout = "999999\n"

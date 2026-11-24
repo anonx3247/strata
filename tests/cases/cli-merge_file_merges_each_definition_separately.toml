@@ -52,7 +52,7 @@ dir = "sep"
 [[step]]
 run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
 dir = "sep"
-out = '''
+stdout = '''
 fn f(x: Int) -> Int {
   x + 10
 }
@@ -107,7 +107,7 @@ dir = "adjacent"
 [[step]]
 run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
 dir = "adjacent"
-out = "fn g(y: Int) -> Int {\n  y * 2\n}\n"
+stdout = "fn g(y: Int) -> Int {\n  y * 2\n}\n"
 
 # one definition changed on both sides, in different places: merged line by line
 [[step]]

@@ -6,8 +6,8 @@ text = "fn total(xs: List[Int]) -> Int {\n  sum(xs)\n}\n"
 
 [[step]]
 strata = ["--file", "t.strata", "run", "total", "[1, 2]"]
-out = "3\n"
+stdout = "3\n"
 
 [[step]]
 run = ["sh", "-c", "\"$STRATA\" --file t.strata run total \"[$(yes 1 | head -n 60000 | paste -sd, -)]\""]
-out = "60000\n"
+stdout = "60000\n"

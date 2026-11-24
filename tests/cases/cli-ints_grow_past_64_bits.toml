@@ -27,12 +27,12 @@ has = ["1 passed"]
 # larger than 64 bits, written as any integer is
 [[step]]
 strata = ["--file", "b.strata", "run", "wraps", "18446744073709551614"]
-out = "18446744073709551615\n"
+stdout = "18446744073709551615\n"
 
 # a sized integer wraps around
 [[step]]
 strata = ["--file", "b.strata", "run", "wraps", "18446744073709551615"]
-out = "0\n"
+stdout = "0\n"
 
 # verify models sized types' wrapping
 [[step]]

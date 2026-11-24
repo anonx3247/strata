@@ -40,7 +40,7 @@ any_code = true
 
 [[step]]
 strata = ["--file", "c.strata", "run"]
-out = "[\"x!\", \"label!\"]\n199999999999999999999998\n"
+stdout = "[\"x!\", \"label!\"]\n199999999999999999999998\n"
 
 [[step]]
 strata = ["--file", "c.strata", "edit"]

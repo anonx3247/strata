@@ -35,7 +35,7 @@ has = ["`builtin` definitions are only in `core`: `first`", "`builtin` definitio
 
 [[step]]
 strata = ["--file", "x.strata", "render"]
-out = '''
+stdout = '''
 builtin type Pair[A, B]
 
 builtin fn first[A, B](p: Pair[A, B]) -> A

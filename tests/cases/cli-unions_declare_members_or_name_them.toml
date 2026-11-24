@@ -43,7 +43,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "u.strata"]
-out = "3\n4\n0\ndown 3\nshape\n[Quiet, Loud]\n"
+stdout = "3\n4\n0\ndown 3\nshape\n[Quiet, Loud]\n"
 
 [[step]]
 strata = ["--file", "u.strata", "render"]
