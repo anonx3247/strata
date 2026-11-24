@@ -601,6 +601,8 @@ error in c: match arm: expected `Bool`, found `Int`
 save = "unions.strata"
 from = "unions.st"
 
+# (`h`, -1 returned as a `Natural`: not Rust's; a literal returned is checked since
+# the literals of arguments are)
 [[step]]
 run = ["sh", "-c", "\"$STRATA\" --file unions.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
 stdout = '''
@@ -613,6 +615,7 @@ error in d2: function body: expected `Float`, found `Int | String`
 error in d: function body: expected `Int | String`, found `Float`
 error in e2: function body: expected `Float`, found `Int | String`
 error in f: function body: expected `String`, found `Int`
+error in h: refinement violated at compile time in the value `h` returns: -1 does not satisfy `Natural` (where it >= 0)
 error in k: function body: expected `Int`, found `Int | String`
 '''
 
