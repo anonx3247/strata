@@ -155,7 +155,7 @@ print([Money { cents: 5 }])        // [Money { cents: 5 }]: parts by their `debu
 print(Some(Secret { key: "k" }))   // Some(Secret { key: *** })
 ```
 
-All values are immutable (`insert` returns a new dict). Dicts and sets are kept in canonical order, so equal collections are equal values and serialise identically: numbers and strings in their natural order, a `distinct` value as what it is made of, variants in the order they are declared (then field by field), tuples, records and lists element by element. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
+All values are immutable (`insert` returns a new dict). Dicts and sets are hash tables with no order: iterating one (`for`, `keys`, `values`, `items`, `to_list`) or printing it gives its entries in the table's order, which may change whenever the table's implementation does, so nothing should depend on it (sort the keys when an order matters). Hashing is deterministic, so a program does the same on every run. Equality is by content (`Dict { "a": 1, "b": 2 } == Dict { "b": 2, "a": 1 }`); where dicts or sets are ordered themselves (`<`, `sort`, a set of sets), they compare as their entries sorted. The order on values (`<`, `sort`, a key's place): numbers and strings in their natural order, a `distinct` value as what it is made of, variants in the order they are declared (then field by field), tuples, records and lists element by element. `len`, `contains`, `get`, `insert`, `remove`, `sum`, `min`, `max` and `abs` work across the types they make sense for. `strata builtins` lists every builtin with its signature. See `examples/builtins.strata`.
 
 **Iterators.**
 Such a loop works on its own copy of the iterator (`c` is unchanged afterwards), and takes `break`, `continue` and patterns as any `for`. Generic code asks for the trait: `fn collect[T, I: Iterator[T]](it: I) -> List[T]`. `verify` doesn't show that such a loop ends, as it does for a list's: the iterator may never return `None`.
@@ -195,14 +195,14 @@ odd_squares := [n * n for n in Naturals { at: 0 } where n % 2 == 1]   // 1, 9, 2
 Set { x % 2 for x in Count { at: 0, end: 4 } }                        // Set { 0, 1 }
 ```
 
-A list, a set or a dict isn't an iterator itself (its `map` and `filter` are the builtins, which give lists), but `iter()` gives one, finite: the prelude's `ListIter`, over a list's elements, a set's in order, or a dict's entries by key. A range is a list, so `(0..n).iter()` works too.
+A list, a set or a dict isn't an iterator itself (its `map` and `filter` are the builtins, which give lists), but `iter()` gives one, finite: the prelude's `ListIter`, over a list's elements, a set's, or a dict's entries (in the table's order). A range is a list, so `(0..n).iter()` works too.
 
 ```rust
 fn total[I: FiniteIterator[Int]](it: I) -> Int { it.fold(0, (a, b) -> a + b) }
 
 total([3, 1, 2].iter())                  // 6
 total((0..5).iter())                     // 10
-for (k, v) in d.iter() { … }             // a dict's entries, by key
+for (k, v) in d.iter() { … }             // a dict's entries, in no set order
 ```
 
 A string isn't an iterator either: its unit is always named, and each is a finite iterator.
