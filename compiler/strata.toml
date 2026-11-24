@@ -9,7 +9,7 @@ name = "compiler"
 
 # LLVM's C API, for the JIT (`compiler jit`): where Homebrew puts LLVM
 [native]
-sources = ["c/jit.c"]
+sources = ["c/jit.c", "c/driver.c"]
 libs = ["LLVM-C"]
 include_dirs = ["/opt/homebrew/opt/llvm/include"]
 lib_dirs = ["/opt/homebrew/opt/llvm/lib"]
