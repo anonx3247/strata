@@ -246,6 +246,14 @@ const char *cache_self_hash(void) {
 // This process's id (the run's scratch folders are named by it).
 int64_t cache_pid(void) { return (int64_t)getpid(); }
 
+// The hash of the sources this executable was built from: `strata build`
+// defines `strata_build_sources` in the program's IR (compiler/main's
+// `sources_global`), which takes the place of this weak, empty one; a
+// compiler built by one that doesn't keeps "" (then the caches key what it
+// makes by its identity).
+__attribute__((weak)) const char strata_build_sources[] = "";
+const char *cache_build_sources(void) { return strata_build_sources; }
+
 // ---- SHA-256 for compiler/cache and compiler/binary ----
 //
 // Keys and definitions' hashes, as 64 hex digits: macOS's CommonCrypto
