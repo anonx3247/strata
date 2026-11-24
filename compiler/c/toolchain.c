@@ -85,12 +85,14 @@ static int32_t fail(const char *m) {
 void toolchain_frame_pointers(LLVMModuleRef mod);
 int32_t toolchain_profiling(void);
 
-// -O0's machine code by fast instruction selection (c/jit.c).
-void toolchain_fast_isel(void);
+// SelectionDAG's instruction selection, FastISel at -O0, on a target
+// machine (c/jit.c).
+void toolchain_selection(LLVMTargetMachineRef tm);
 
 // The IR text as a module, in a context of its own (c/ir.c): 0, else 1
 // and why.
 int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
+int32_t ir_module(const char *ir, size_t len, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
 
 // `--timings` (c/driver.c): where a phase begins and ends.
 int32_t timings_begin(const char *name);
@@ -120,7 +122,7 @@ const char *toolchain_settings(void) {
   static char s[160];
   unsigned major, minor, patch;
   LLVMGetVersion(&major, &minor, &patch);
-  snprintf(s, sizeof s, "LLVM %u.%u.%u %s %s PIC", major, minor, patch, TRIPLE, CPU);
+  snprintf(s, sizeof s, "LLVM %u.%u.%u %s %s PIC SelectionDAG", major, minor, patch, TRIPLE, CPU);
   return s;
 }
 
@@ -153,7 +155,6 @@ static void say(Buf *b, const char *a, const char *x, const char *c) {
 int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
   buf_clear(&last_error);
   init_target();
-  toolchain_fast_isel();
   LLVMContextRef ctx;
   LLVMModuleRef mod;
   char *msg = NULL;
@@ -177,6 +178,7 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
   // position-independent, as every macOS executable
   LLVMTargetMachineRef tm =
       LLVMCreateTargetMachine(target, triple, CPU, "", level_of(opt), LLVMRelocPIC, LLVMCodeModelDefault);
+  toolchain_selection(tm);
   char *layout = LLVMCopyStringRepOfTargetData(LLVMCreateTargetDataLayout(tm));
   LLVMSetDataLayout(mod, layout);
   LLVMDisposeMessage(layout);
@@ -635,14 +637,13 @@ static void hex_sha256(char hex[65], const char *prefix, size_t pn, const char *
 // (malloc'd).
 static char *compile_part(const char *ir, size_t size, const char *out, int32_t opt) {
   Buf r = {0};
-  LLVMContextRef ctx = LLVMContextCreate();
-  LLVMMemoryBufferRef mb = LLVMCreateMemoryBufferWithMemoryRange(ir, size, "strata", 1);
+  LLVMContextRef ctx;
   LLVMModuleRef mod;
   char *msg = NULL;
-  if (LLVMParseIRInContext(ctx, mb, &mod, &msg)) {
+  // (c/ir.c's reader, or LLParser where it can't: the same module)
+  if (ir_module(ir, size, &ctx, &mod, &msg)) {
     say(&r, "LLVM rejected the generated IR: ", msg ? msg : "", NULL);
     LLVMDisposeMessage(msg);
-    LLVMContextDispose(ctx);
     return r.p;
   }
   LLVMTargetRef target;
@@ -658,6 +659,7 @@ static char *compile_part(const char *ir, size_t size, const char *out, int32_t 
   toolchain_frame_pointers(mod);
   LLVMTargetMachineRef tm =
       LLVMCreateTargetMachine(target, TRIPLE, CPU, "", level_of(opt), LLVMRelocPIC, LLVMCodeModelDefault);
+  toolchain_selection(tm);
   LLVMTargetDataRef td = LLVMCreateTargetDataLayout(tm);
   char *layout = LLVMCopyStringRepOfTargetData(td);
   LLVMSetDataLayout(mod, layout);
@@ -884,7 +886,7 @@ int32_t toolchain_objects(const char *ir, const char *scratch, const char *cache
   LLVMGetVersion(&major, &minor, &patch);
   char what[160];
   // (`--profile` keeps frame pointers: other objects)
-  int what_n = snprintf(what, sizeof what, "strata object 1\n%s %s O%d LLVM %u.%u.%u%s\n", TRIPLE, CPU, (int)opt,
+  int what_n = snprintf(what, sizeof what, "strata object 2\n%s %s O%d LLVM %u.%u.%u%s\n", TRIPLE, CPU, (int)opt,
                         major, minor, patch, toolchain_profiling() ? " profiling" : "");
   const char *dir = cache;
   int cached = dir[0] != 0;

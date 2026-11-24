@@ -96,25 +96,22 @@ void toolchain_frame_pointers(LLVMModuleRef mod) {
   }
 }
 
-// Unoptimized machine code by fast instruction selection (FastISel), not
-// the GlobalISel LLVM picks for AArch64 at -O0: half the time for
-// compiler/'s code (4.5 s -> 2.5 s), code as good for -O0. (The register
-// allocator at -O0 is the fast one already.) An option of the process, as
-// the JIT makes its target machines itself, set once: nothing changes above
-// -O0, where AArch64 selects with SelectionDAG.
-void toolchain_fast_isel(void) {
-  static int done;
-  if (done) return;
-  done = 1;
-  const char *args[] = {"strata", "-global-isel=0"};
-  LLVMParseCommandLineOptions(2, args, NULL);
-}
+// Instruction selection by SelectionDAG, and FastISel at -O0, not the
+// GlobalISel LLVM 23 turns on for every AArch64 target machine: at -O0 half
+// the time for compiler/'s code (4.5 s -> 2.5 s), code as good. Set on each
+// target machine (c/toolchain.c's objects too), never as a process-wide
+// option: `-global-isel=0` held only for the first module a process
+// compiled, and GlobalISel leaves state behind, so an object compiled
+// after the JIT (compile-time values, for the host's CPU) differed from the
+// same IR compiled alone (an `optnone` function aligned to 64 bytes instead
+// of 4): a build's bytes depended on whether its compile-time values were
+// cached (IDEAS.md, reproducible builds).
+void toolchain_selection(LLVMTargetMachineRef tm) { LLVMSetTargetMachineGlobalISel(tm, 0); }
 
-// A JIT's builder for `jit_opt`: the host's CPU and features, at its level.
+// A JIT's builder for `jit_opt`: the host's CPU and features, at its level
+// (-O2's machine code when no level is set, as LLJIT's own default).
 static LLVMOrcLLJITBuilderRef jit_builder(void) {
-  toolchain_fast_isel();
   LLVMOrcLLJITBuilderRef b = LLVMOrcCreateLLJITBuilder();
-  if (jit_opt < 0) return b;
   char *triple = LLVMGetDefaultTargetTriple();
   LLVMTargetRef target;
   char *msg = NULL;
@@ -127,6 +124,7 @@ static LLVMOrcLLJITBuilderRef jit_builder(void) {
   char *features = LLVMGetHostCPUFeatures();
   LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, cpu, features,
       jit_opt == 0 ? LLVMCodeGenLevelNone : LLVMCodeGenLevelDefault, LLVMRelocDefault, LLVMCodeModelJITDefault);
+  toolchain_selection(tm);
   LLVMDisposeMessage(cpu);
   LLVMDisposeMessage(features);
   LLVMDisposeMessage(triple);

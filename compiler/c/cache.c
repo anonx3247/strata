@@ -13,7 +13,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <fts.h>
+#include <signal.h>
 #ifdef __APPLE__
+#include <CommonCrypto/CommonDigest.h>
 #include <mach-o/dyld.h>
 #endif
 
@@ -126,20 +130,73 @@ static char self_hash[65];
 #endif
 
 // The SHA-256 of the file at `path`, as 64 hex digits into `out`; 0 when
-// it can't be read.
+// it can't be read. (CommonCrypto on macOS: the CPU's SHA instructions,
+// several times this file's code on a 100 MB executable.)
 static int hash_file(const char *path, char out[65]) {
   FILE *f = fopen(path, "rb");
   if (!f) return 0;
+  enum { CHUNK = 1 << 20 };
+  unsigned char *buf = malloc(CHUNK);
+  if (!buf) {
+    fclose(f);
+    return 0;
+  }
+  size_t n;
+#ifdef __APPLE__
+  CC_SHA256_CTX c;
+  CC_SHA256_Init(&c);
+  while ((n = fread(buf, 1, CHUNK, f)) > 0) CC_SHA256_Update(&c, buf, (CC_LONG)n);
+#else
   sha256_state s;
   sha256_init(&s);
-  static unsigned char buf[1 << 20];
-  size_t n;
-  while ((n = fread(buf, 1, sizeof buf, f)) > 0) sha256_update(&s, buf, n);
+  while ((n = fread(buf, 1, CHUNK, f)) > 0) sha256_update(&s, buf, n);
+#endif
   int bad = ferror(f);
   fclose(f);
+  free(buf);
   if (bad) return 0;
+#ifdef __APPLE__
+  unsigned char d[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256_Final(d, &c);
+  static const char digits[] = "0123456789abcdef";
+  for (int i = 0; i < 32; i++) {
+    out[2 * i] = digits[d[i] >> 4];
+    out[2 * i + 1] = digits[d[i] & 15];
+  }
+  out[64] = 0;
+#else
   sha256_hex(&s, out);
+#endif
   return 1;
+}
+
+// `HASH SIZE MTIME` of the file at `path` (its SHA-256, size and
+// modification time now) written to `file`, whole or not at all: 0 when
+// written.
+static int write_identity(const char *file, const char *hash, const struct stat *st) {
+  char tmp[PATH_MAX + 64];
+  snprintf(tmp, sizeof tmp, "%s.tmp-%d", file, (int)getpid());
+  FILE *f = fopen(tmp, "w");
+  if (!f) return 1;
+  int bad = fprintf(f, "%s %lld %lld\n", hash, (long long)st->st_size, (long long)st->st_mtime) < 0;
+  bad |= fclose(f) != 0;
+  if (bad || rename(tmp, file) != 0) {
+    unlink(tmp);
+    return 1;
+  }
+  return 0;
+}
+
+// `<path>.identity` written for the executable at `path`, as
+// tools/bootstrap.sh writes it: `strata build` writes one beside a
+// compiler it builds (compiler/main's `linked`), so that the compiler's
+// first runs read its identity instead of hashing it. 0 when written.
+int32_t cache_write_identity(const char *path) {
+  struct stat st;
+  char hash[65], file[PATH_MAX + 16];
+  if (stat(path, &st) != 0 || !hash_file(path, hash)) return 1;
+  snprintf(file, sizeof file, "%s.identity", path);
+  return write_identity(file, hash, &st);
 }
 
 static int is_hex64(const char *h) {
@@ -229,22 +286,45 @@ const char *cache_self_hash(void) {
     return "";
   }
   if (have_own) {
-    char dir[PATH_MAX + 16], tmp[PATH_MAX + 160];
+    char dir[PATH_MAX + 16];
     snprintf(dir, sizeof dir, "%s/identity", own);
     make_dirs(dir);
-    snprintf(tmp, sizeof tmp, "%s.tmp-%d", rec, (int)getpid());
-    FILE *f = fopen(tmp, "w");
-    if (f) {
-      int bad = fprintf(f, "%s %lld %lld\n", self_hash, (long long)st.st_size, (long long)st.st_mtime) < 0;
-      bad |= fclose(f) != 0;
-      if (bad || rename(tmp, rec) != 0) unlink(tmp);
-    }
+    write_identity(rec, self_hash, &st);
   }
   return self_hash;
 }
 
 // This process's id (the run's scratch folders are named by it).
 int64_t cache_pid(void) { return (int64_t)getpid(); }
+
+// Whether the process `pid` is running (another user's too), for `strata
+// cache clean`: a scratch folder named by a running process's id is in use.
+int32_t cache_pid_running(int64_t pid) {
+  if (pid <= 0) return 0;
+  return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+// The bytes the files and folders under `path` take on disk, as du counts
+// them (their blocks; links not followed, other file systems not entered);
+// 0 when nothing is there. For `strata cache`.
+int64_t cache_tree_bytes(const char *path) {
+  char *paths[] = {(char *)path, NULL};
+  FTS *f = fts_open(paths, FTS_PHYSICAL | FTS_NOCHDIR | FTS_XDEV, NULL);
+  if (!f) return 0;
+  int64_t total = 0;
+  FTSENT *e;
+  while ((e = fts_read(f))) {
+    switch (e->fts_info) {
+    case FTS_F: case FTS_D: case FTS_SL: case FTS_SLNONE: case FTS_DEFAULT:
+      total += (int64_t)e->fts_statp->st_blocks * 512;
+      break;
+    default:
+      break;
+    }
+  }
+  fts_close(f);
+  return total;
+}
 
 // The hash of the sources this executable was built from: `strata build`
 // defines `strata_build_sources` in the program's IR (compiler/main's

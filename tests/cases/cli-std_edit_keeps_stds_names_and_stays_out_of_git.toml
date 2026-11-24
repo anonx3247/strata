@@ -1,0 +1,70 @@
+# `strata --file std edit MODULE` stores the definitions it is given as std
+# stores them, under std's names (`std.json.UnknownKeys`, not
+# `json.UnknownKeys`: they were stored under the files' local names), writes
+# only the module edited, and commits nothing (`--file` is outside any log)
+
+[[step]]
+run = ["rsync", "-a", "--exclude", ".strata", "$ROOT/std/", "std/"]
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+run = ["git", "add", "-A"]
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "std"]
+
+[[step]]
+strata = ["--file", "std", "edit", "json"]
+text = '''
+/// What `from_json` does with keys a record doesn't have: what the package's
+/// `[json]` says (`unknown_keys = "error"`), else ignore them.
+fn default_keys() -> UnknownKeys {
+  if setting("json.unknown_keys") == Some("err" + "or") {
+    Reject
+  } else {
+    Ignore
+  }
+}
+'''
+has = ["std.json.default_keys", "implementation only"]
+lacks = ["committed to git"]
+
+[[step]]
+strata = ["header", "std/json.strata", "--text"]
+has = [
+  "fn default_keys() -> std.json.UnknownKeys {\n  if std.typing.setting(\"json.unknown_keys\") == Some(\"err\" + \"or\") {\n    std.json.Reject\n  } else {\n    std.json.Ignore\n  }\n}",
+]
+lacks = [" json.UnknownKeys", " json.Reject"]
+
+# only json.strata changed, nothing committed
+[[step]]
+run = ["sh", "-c", "git status --porcelain; git rev-list --count HEAD"]
+out = " M std/json.strata\n1\n"
+
+# given back as it was: every file as it was, byte for byte
+[[step]]
+strata = ["--file", "std", "edit", "std.json"]
+text = '''
+/// What `from_json` does with keys a record doesn't have: what the package's
+/// `[json]` says (`unknown_keys = "error"`), else ignore them.
+fn default_keys() -> UnknownKeys {
+  if setting("json.unknown_keys") == Some("error") {
+    Reject
+  } else {
+    Ignore
+  }
+}
+'''
+has = ["std.json.default_keys"]
+
+[[step]]
+run = ["sh", "-c", "git status --porcelain; git rev-list --count HEAD"]
+out = "1\n"
