@@ -12,7 +12,7 @@ save = "q.strata"
 from = "q.st"
 
 [[step]]
-strata = ["--file", "q.strata", "verify", "--no-race"]
+strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache"]
 has = [
   "✓ quoted_end ",
   '''edited quoted_end: added `invariant lx.at <= n` to `while lx.at < n && char_at(lx, lx.at) != "\""` (found by search in ''',
@@ -28,7 +28,7 @@ has = ['''  while lx.at < n && char_at(lx, lx.at) != "\""
 # the definition changed: verified again, its written invariant proven, not
 # searched for (nothing more is written)
 [[step]]
-strata = ["--file", "q.strata", "verify", "--no-race", "--checks", "--show-searches"]
+strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache", "--checks", "--show-searches"]
 has = [
   "✓ quoted_end ",
   '''proven:  invariant `lx.at <= n` after a pass of `while lx.at < n && char_at(lx, lx.at) != "\""`''',

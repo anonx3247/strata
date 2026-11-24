@@ -10,7 +10,7 @@ save = "main.strata"
 from = "q.st"
 
 [[step]]
-strata = ["verify", "--no-race"]
+strata = ["verify", "--no-race", "--no-cache"]
 has = ["edited quoted_end: added `invariant lx.at <= n`"]
 
 [[step]]
