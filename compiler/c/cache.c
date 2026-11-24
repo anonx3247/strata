@@ -2,7 +2,9 @@
 // identity, the SHA-256 of its bytes. Every cache key starts with that
 // identity, so a cache is valid for the same executable wherever it sits
 // (a release ships one beside it, populated on another machine), and a new
-// compiler (other bytes) never reads an old one's entries.
+// compiler (other bytes) never reads an old one's entries. Hashing the
+// executable takes about 0.2 s, so the hash is read from an identity file
+// beside it when one still describes it (`cache_self_hash`).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -10,6 +12,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -116,13 +119,17 @@ static void sha256_hex(sha256_state *s, char out[65]) {
 
 static char self_hash[65];
 
-// The SHA-256 of this executable's bytes, as 64 hex digits, computed once
-// per process; "" when the executable can't be read.
-const char *cache_self_hash(void) {
-  if (self_hash[0]) return self_hash;
-  const char *path = cache_self_path();
-  FILE *f = path[0] ? fopen(path, "rb") : NULL;
-  if (!f) return "";
+#ifdef __APPLE__
+#define MTIME(st) ((st).st_mtimespec)
+#else
+#define MTIME(st) ((st).st_mtim)
+#endif
+
+// The SHA-256 of the file at `path`, as 64 hex digits into `out`; 0 when
+// it can't be read.
+static int hash_file(const char *path, char out[65]) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return 0;
   sha256_state s;
   sha256_init(&s);
   static unsigned char buf[1 << 20];
@@ -130,7 +137,111 @@ const char *cache_self_hash(void) {
   while ((n = fread(buf, 1, sizeof buf, f)) > 0) sha256_update(&s, buf, n);
   int bad = ferror(f);
   fclose(f);
-  if (bad) return "";
-  sha256_hex(&s, self_hash);
+  if (bad) return 0;
+  sha256_hex(&s, out);
+  return 1;
+}
+
+static int is_hex64(const char *h) {
+  for (int i = 0; i < 64; i++)
+    if (!((h[i] >= '0' && h[i] <= '9') || (h[i] >= 'a' && h[i] <= 'f'))) return 0;
+  return 1;
+}
+
+// An identity file: `HASH SIZE MTIME` (the executable's SHA-256, its size
+// in bytes and its modification time in seconds when HASH was computed).
+// Its HASH into `out` when SIZE and MTIME are the executable's now (`st`);
+// else 0.
+static int read_identity(const char *file, const struct stat *st, char out[65]) {
+  FILE *f = fopen(file, "r");
+  if (!f) return 0;
+  char hash[65];
+  long long size, mtime;
+  int got = fscanf(f, "%64s %lld %lld", hash, &size, &mtime);
+  fclose(f);
+  if (got != 3 || strlen(hash) != 64 || !is_hex64(hash)) return 0;
+  if (size != (long long)st->st_size || mtime != (long long)st->st_mtime) return 0;
+  memcpy(out, hash, 65);
+  return 1;
+}
+
+// The own cache's folder: $STRATA_CACHE, else ~/.cache/strata (as
+// compiler/cache's `caches_of`); 0 when neither is set.
+static int own_cache(char *out, size_t n) {
+  const char *dir = getenv("STRATA_CACHE");
+  if (dir && dir[0]) return snprintf(out, n, "%s", dir) < (int)n;
+  const char *home = getenv("HOME");
+  if (!home) home = ".";
+  return snprintf(out, n, "%s/.cache/strata", home) < (int)n;
+}
+
+static void make_dirs(char *path) {
+  for (char *p = path + 1; *p; p++) {
+    if (*p != '/') continue;
+    *p = 0;
+    mkdir(path, 0755);
+    *p = '/';
+  }
+  mkdir(path, 0755);
+}
+
+// The SHA-256 of this executable's bytes, as 64 hex digits, found once per
+// process; "" when the executable can't be read. Hashing all of it (about
+// 0.2 s) is the last resort: first an identity file that tools/release.sh
+// and tools/bootstrap.sh write beside it (`lib/strata/IDENTITY` in a
+// release, `<executable>.identity` for a build), trusted while the
+// executable's size and modification time are those it records; then the
+// own cache's record for this path, size, modification time and inode
+// (`identity/<key>`, written after hashing).
+const char *cache_self_hash(void) {
+  if (self_hash[0]) return self_hash;
+  const char *path = cache_self_path();
+  if (!path[0]) return "";
+  struct stat st;
+  if (stat(path, &st) != 0) return "";
+  char file[PATH_MAX + 64];
+  // a release: bin/strata and lib/strata/IDENTITY
+  const char *slash = strrchr(path, '/');
+  if (slash) {
+    int dir = (int)(slash - path);
+    snprintf(file, sizeof file, "%.*s/../lib/strata/IDENTITY", dir, path);
+    if (read_identity(file, &st, self_hash)) return self_hash;
+  }
+  snprintf(file, sizeof file, "%s.identity", path);
+  if (read_identity(file, &st, self_hash)) return self_hash;
+  // the own cache's record, keyed by where the executable is and its stat
+  char own[PATH_MAX], rec[PATH_MAX + 128], key[65];
+  int have_own = own_cache(own, sizeof own);
+  if (have_own) {
+    char what[PATH_MAX + 128];
+    int n = snprintf(what, sizeof what, "%s\n%lld\n%lld.%09ld\n%llu", path, (long long)st.st_size,
+                     (long long)MTIME(st).tv_sec, (long)MTIME(st).tv_nsec,
+                     (unsigned long long)st.st_ino);
+    sha256_state s;
+    sha256_init(&s);
+    sha256_update(&s, (const unsigned char *)what, (size_t)n);
+    sha256_hex(&s, key);
+    snprintf(rec, sizeof rec, "%s/identity/%s", own, key);
+    if (read_identity(rec, &st, self_hash)) return self_hash;
+  }
+  if (!hash_file(path, self_hash)) {
+    self_hash[0] = 0;
+    return "";
+  }
+  if (have_own) {
+    char dir[PATH_MAX + 16], tmp[PATH_MAX + 160];
+    snprintf(dir, sizeof dir, "%s/identity", own);
+    make_dirs(dir);
+    snprintf(tmp, sizeof tmp, "%s.tmp-%d", rec, (int)getpid());
+    FILE *f = fopen(tmp, "w");
+    if (f) {
+      int bad = fprintf(f, "%s %lld %lld\n", self_hash, (long long)st.st_size, (long long)st.st_mtime) < 0;
+      bad |= fclose(f) != 0;
+      if (bad || rename(tmp, rec) != 0) unlink(tmp);
+    }
+  }
   return self_hash;
 }
+
+// This process's id (the run's scratch folders are named by it).
+int64_t cache_pid(void) { return (int64_t)getpid(); }

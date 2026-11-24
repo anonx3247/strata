@@ -13,7 +13,9 @@
 #    stage A's build of it. A and B must be the same bytes (a fixed point);
 #    when the seed is an older strata (A and B differ), stage C = B's build
 #    of it must be B's bytes instead;
-#    B is target/strata.
+#    B is target/strata, and target/strata.identity its SHA-256, size and
+#    modification time (its identity for the caches' keys, read instead of
+#    hashing it each run: compiler/c/cache.c).
 set -e
 cd "$(dirname "$0")/.."
 root=$(pwd)
@@ -50,5 +52,6 @@ if ! cmp -s target/stage-a/strata target/stage-b/strata; then
   cmp -s target/stage-b/strata target/stage-c/strata || { echo "not a fixed point: target/stage-b/strata and target/stage-c/strata (built by it) differ" >&2; exit 1; }
 fi
 mv target/stage-b/strata target/strata
+echo "$(shasum -a 256 target/strata | cut -d' ' -f1) $(stat -f '%z %m' target/strata)" > target/strata.identity
 rm -rf target/stage-a target/stage-b target/stage-c
 echo "strata built by itself (target/strata, a fixed point)"

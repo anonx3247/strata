@@ -17,6 +17,11 @@
 #     libSystem.tbd                 the stub executables are linked against
 #                                   (no SDK on the user's machine)
 #     z3                            the SMT solver `verify` runs
+#     IDENTITY                      bin/strata's SHA-256, size and
+#                                   modification time: its identity for the
+#                                   caches' keys, read instead of hashing
+#                                   86 MB each run (trusted while the size
+#                                   and time are bin/strata's)
 #     cache/                        the shipped, read-only cache: what any
 #                                   program's first run would compute from
 #                                   std, core and the compiler alone (std's
@@ -55,6 +60,10 @@ fi
 cp "$COMPILER" "$ROOT/bin/strata"
 strip -x "$ROOT/bin/strata" 2>/dev/null && codesign -f -s - "$ROOT/bin/strata" 2>/dev/null || true
 S=$ROOT/bin/strata
+# its identity (compiler/c/cache.c): written now, after strip and codesign,
+# the last change to it (checked at the end)
+identity() { echo "$(shasum -a 256 "$1" | cut -d' ' -f1) $(stat -f '%z %m' "$1")"; }
+identity "$S" > "$HOME_DIR/IDENTITY"
 # what it may link: macOS's own libraries only
 if otool -L "$S" | tail -n +2 | grep -v -E '^\s*/usr/lib/|^\s*/System/' >&2; then
   echo "release: bin/strata links libraries a Mac doesn't have (above)" >&2
@@ -114,9 +123,9 @@ chmod 755 "$HOME_DIR/z3"
 # through check, test, run, verify and build with an own cache of their own;
 # an entry both wrote, the same path (its key) and the same bytes, was
 # computed from std, core and the compiler alone: shipped. (Not the scratch
-# folders: smt/ (solver inputs), run/ and build/ (one per process).)
+# folders: smt/ (solver inputs), run/ and build/ (one per process); nor
+# identity/, an executable's identity by its path.)
 step "the shipped cache (warm-up programs)"
-IDENTITY=$(shasum -a 256 "$S" | cut -d' ' -f1)
 W=$DIST/warm
 rm -rf "$W"
 mkdir -p "$W"
@@ -158,7 +167,7 @@ for p in a b; do
     warm $p "$S" --file "warm_$p.strata" $cmd $out >> "$W/$p.log" 2>&1 \
       || { cat "$W/$p.log" >&2; echo "release: warm-up $p: $cmd failed" >&2; exit 1; }
   done
-  (cd "$W/own-$p" && find . -type f | sed 's|^\./||' | grep -v -E '^(smt|run|build)/' | sort) > "$W/$p.entries"
+  (cd "$W/own-$p" && find . -type f | sed 's|^\./||' | grep -v -E '^(smt|run|build|identity)/' | sort) > "$W/$p.entries"
 done
 comm -12 "$W/a.entries" "$W/b.entries" | while read -r rel; do
   if cmp -s "$W/own-a/$rel" "$W/own-b/$rel"; then
@@ -171,7 +180,7 @@ if [ -n "$CACHE_FROM" ]; then
   step "cache from $CACHE_FROM"
   cp -R "$CACHE_FROM"/. "$HOME_DIR/cache/"
 fi
-[ "$(shasum -a 256 "$S" | cut -d' ' -f1)" = "$IDENTITY" ] || { echo "release: bin/strata changed after its cache was made" >&2; exit 1; }
+[ "$(identity "$S")" = "$(cat "$HOME_DIR/IDENTITY")" ] || { echo "release: bin/strata changed after its cache was made (or its IDENTITY written)" >&2; exit 1; }
 step "lib/strata/cache: $(find "$HOME_DIR/cache" -type f | wc -l | tr -d ' ') entries, $(du -sh "$HOME_DIR/cache" | cut -f1)"
 
 rm -rf "$DIST"/*.ll "$DIST/have" "$DIST/libSystem.tbd" "$DIST/compiler.tmp" "$W"
