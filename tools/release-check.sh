@@ -7,6 +7,11 @@
 # `verify` on a script (the shipped z3); then the commands a user types, in
 # a folder of their own (not the home): `run`, `build` (and the executable
 # run), `check`, `verify` and `test`, none saying `unreadable` or `error`.
+# Then the shipped cache (lib/strata/cache): a program reaching what it
+# holds (std's comptime values) reads them from it, writing none of them
+# into its own cache; and the first-run timings of run hello, build wc,
+# verify math.strata and test letters.strata (it reaches the shipped
+# entries), each with a fresh own cache, with and without the shipped one.
 #
 #   tools/release-check.sh [ARCHIVE]
 set -e
@@ -31,8 +36,27 @@ clean() { env -i PATH="$T/bin" HOME="$H" TMPDIR="$H" STRATA_CC=/nonexistent "$@"
 clean sh -c 'command -v clang || command -v ld || command -v z3' && { echo "release-check: the PATH still has developer tools" >&2; exit 1; }
 cp -R examples/hello examples/wc "$H/"
 cp examples/math.strata "$H/"
+# (a program of the user's reaching std.unicode's graphemes, whose tables
+# are comptime values the release ships)
+cat > "$H/letters.st" <<'EOF'
+/// The letters (graphemes) of each word of `text`, counted.
+fn letter_counts(text: String) -> List[Int] {
+  split(text, " ").map(w -> len(w.graphemes()))
+}
+
+fn main() {
+  print(f"{letter_counts("Zoë and Chloë")}")
+}
+
+test "letter counts" {
+  assert letter_counts("Zoë and Chloë") == [3, 3, 5]
+}
+EOF
 fail() { echo "release-check: $*" >&2; exit 1; }
 clean "$R/bin/strata" --version | grep -q '^strata ' || fail "--version"
+# (its identity, read from lib/strata/IDENTITY instead of hashing it: still
+# bin/strata's after unpacking)
+[ "$(cat "$L/IDENTITY")" = "$(shasum -a 256 "$R/bin/strata" | cut -d' ' -f1) $(stat -f '%z %m' "$R/bin/strata")" ] || fail "lib/strata/IDENTITY isn't bin/strata's"
 # (the compiler reads core/ and the prelude from the current folder: its home)
 cd "$L"
 [ "$(clean "$R/bin/strata" jit --load "$L/std/libstd.dylib" "$H/hello/main.strata")" = "hello, world!" ] || fail "hello on the JIT"
@@ -64,4 +88,47 @@ said verify math.strata
 grep -q 'proven' "$H/u.out" || { cat "$H/u.out" >&2; fail "verify math.strata"; }
 user --file math.strata test
 grep -q ' passed, 0 failed$' "$H/u.out" || fail "--file math.strata test"
+# the shipped cache: what it holds is read from it, never computed again
+# into the own cache (HOME's)
+[ -n "$(find "$L/cache" -type f)" ] || fail "lib/strata/cache is empty"
+clean "$R/bin/strata" --file letters.strata edit < "$H/letters.st" > "$H/u.out" 2>&1 || { cat "$H/u.out" >&2; fail "edit letters.strata"; }
+user --file letters.strata test
+grep -q '^1 passed, 0 failed$' "$H/u.out" || fail "--file letters.strata test"
+own=$H/.cache/strata
+[ -d "$own" ] || fail "no own cache at $own"
+again=$(cd "$L/cache" && find . -type f | sed 's|^\./||' | while read -r rel; do if [ -e "$own/$rel" ]; then echo "$rel"; fi; done)
+[ -z "$again" ] || fail "computed again despite the shipped cache: $again"
+# (nor was bin/strata hashed: its identity came from lib/strata/IDENTITY)
+[ ! -d "$own/identity" ] || fail "bin/strata was hashed (own cache's identity/): lib/strata/IDENTITY not read"
+# first-run timings, a fresh own cache each (the best of two): with the
+# shipped cache, and without it (STRATA_SHIPPED_CACHE naming no folder)
+ms() { perl -MTime::HiRes=time -e 'printf "%d", time * 1000'; }
+n=0
+# (`timed N CMD...`: the milliseconds CMD takes, with own cache first-N)
+timed() {
+  own=$H/first-$1
+  shift
+  t0=$(ms)
+  clean STRATA_CACHE="$own" $SHIPPED "$R/bin/strata" "$@" > "$H/t.out" 2>&1 || true
+  t1=$(ms)
+  echo $((t1 - t0))
+}
+best() { [ "$1" -lt "$2" ] && echo "$1" || echo "$2"; }
+echo "release-check: first runs (ms), fresh own cache:   shipped cache / none"
+for c in "run hello" "build wc -o wct" "verify math.strata" "--file letters.strata test"; do
+  SHIPPED=STRATA_SHIPPED_CACHE=/nonexistent
+  w1=$(timed $((n + 1)) $c)
+  SHIPPED=
+  s1=$(timed $((n + 2)) $c)
+  SHIPPED=STRATA_SHIPPED_CACHE=/nonexistent
+  w2=$(timed $((n + 3)) $c)
+  SHIPPED=
+  s2=$(timed $((n + 4)) $c)
+  n=$((n + 4))
+  printf 'release-check:   %-28s %8s / %s\n' "$c" "$(best $s1 $s2)" "$(best $w1 $w2)"
+done
+# (and without it, letters.strata computes what it ships (its first run
+# without, first-(n-3)): the check above was not vacuous)
+missing=$(cd "$L/cache" && find comptime -type f | while read -r rel; do if [ ! -e "$H/first-$((n - 3))/$rel" ]; then echo "$rel"; fi; done)
+[ -z "$missing" ] || fail "letters.strata, without the shipped cache, didn't compute: $missing"
 echo "release-check: $ARCHIVE works without developer tools ($T)"

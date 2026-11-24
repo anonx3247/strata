@@ -3004,10 +3004,13 @@ void strata_options_error(_Bool help, Str *text) {
   }
 }
 
-// A C copy of `s`, for the OS: valid until the next call (one buffer, reused).
+// A C copy of `s`, for the OS: valid until this thread's next call (one
+// buffer per thread, reused: tasks run on threads of their own, and a buffer
+// shared by them let one task's path replace another's between `cstr` and the
+// call, so that a `remove` removed another task's file).
 static char *cstr(Str *s) {
-  static char *c;
-  static size_t cap;
+  static _Thread_local char *c;
+  static _Thread_local size_t cap;
   if ((size_t)s->len + 1 > cap) c = realloc(c, cap = (size_t)s->len + 1);
   memcpy(c, s->bytes, (size_t)s->len);
   c[s->len] = 0;
@@ -3023,8 +3026,9 @@ static void os_error(Str **kind, Str **msg) {
   else if (e == EEXIST) k = "already_exists";
   else if (e == ENOTDIR) k = "not_a_directory";
   else if (e == EISDIR) k = "is_a_directory";
-  char buf[300];
-  snprintf(buf, sizeof buf, "%s (os error %d)", strerror(e), e);
+  char buf[300], text[200];
+  if (strerror_r(e, text, sizeof text) != 0) snprintf(text, sizeof text, "error %d", e);
+  snprintf(buf, sizeof buf, "%s (os error %d)", text, e);
   *kind = str_c(k);
   *msg = str_c(buf);
 }
@@ -3381,6 +3385,16 @@ static char **child_environ(List *env) {
   return out;
 }
 
+// A pipe whose ends are closed in programs this process starts (FD_CLOEXEC);
+// the runs below also start them with POSIX_SPAWN_CLOEXEC_DEFAULT, which
+// covers the moment between `pipe` and `fcntl`.
+static int cloexec_pipe(int p[2]) {
+  if (pipe(p) != 0) return -1;
+  fcntl(p[0], F_SETFD, FD_CLOEXEC);
+  fcntl(p[1], F_SETFD, FD_CLOEXEC);
+  return 0;
+}
+
 // `input` is written to its standard input (then closed); `env` holds
 // `NAME=VALUE`s set for it; `inherit`: it uses this process's standard input,
 // output and error (a terminal, for an editor), and `[code, "", ""]` comes back.
@@ -3395,13 +3409,22 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
   int out[2] = {-1, -1}, err[2] = {-1, -1}, in[2] = {-1, -1};
   _Bool feed = !inherit && input->len > 0;
   if (!inherit) {
-    if (pipe(out) != 0) { os_error(kind, msg); return NULL; }
-    if (pipe(err) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); return NULL; }
-    if (feed && pipe(in) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); close(err[0]); close(err[1]); return NULL; }
+    if (cloexec_pipe(out) != 0) { os_error(kind, msg); return NULL; }
+    if (cloexec_pipe(err) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); return NULL; }
+    if (feed && cloexec_pipe(in) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); close(err[0]); close(err[1]); return NULL; }
   }
+  // The child gets only the descriptors set up here (0, 1 and 2), none of
+  // this process's others: tasks run programs at the same time, and a pipe of
+  // one task's run left open in another's child kept its program's standard
+  // input from ending (and its output, so the run never finished).
+  posix_spawnattr_t at;
+  posix_spawnattr_init(&at);
+  posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT);
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
-  if (!inherit) {
+  if (inherit) {
+    for (int k = 0; k <= 2; k++) posix_spawn_file_actions_addinherit_np(&fa, k);
+  } else {
     if (feed) {
       posix_spawn_file_actions_adddup2(&fa, in[0], 0);
       posix_spawn_file_actions_addclose(&fa, in[0]);
@@ -3415,7 +3438,8 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
     posix_spawn_file_actions_addclose(&fa, err[0]);
     posix_spawn_file_actions_addclose(&fa, out[1]);
     posix_spawn_file_actions_addclose(&fa, err[1]);
-  } else {
+  }
+  if (inherit) {
     fflush(stdout);
     fflush(stderr);
   }
@@ -3423,8 +3447,9 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
   if (d) posix_spawn_file_actions_addchdir_np(&fa, d);
   char **envp = child_environ(env);
   pid_t pid;
-  int e = posix_spawnp(&pid, argv[0], &fa, NULL, argv, envp);
+  int e = posix_spawnp(&pid, argv[0], &fa, &at, argv, envp);
   posix_spawn_file_actions_destroy(&fa);
+  posix_spawnattr_destroy(&at);
   for (char **v = envp; *v; v++) free(*v);
   free(envp);
   if (!inherit) {
@@ -3458,11 +3483,15 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
     // the input is written as the child reads it, while its output is taken
     // (a child that writes before it reads all its input must not block us)
     size_t sent = 0;
-    if (feed) fcntl(in[1], F_SETFL, fcntl(in[1], F_GETFL) | O_NONBLOCK);
+    // (a child that exits without reading breaks its pipe: the write fails
+    // with EPIPE, no SIGPIPE; set on the pipe, not by `signal`, which is the
+    // whole process's and raced between tasks)
+    if (feed) {
+      fcntl(in[1], F_SETFL, fcntl(in[1], F_GETFL) | O_NONBLOCK);
+      fcntl(in[1], F_SETNOSIGPIPE, 1);
+    }
     struct pollfd fds[3] = {{out[0], POLLIN, 0}, {err[0], POLLIN, 0}, {feed ? in[1] : -1, POLLOUT, 0}};
     int open_fds = 2;
-    // (a child that exits without reading: its pipe breaks, not us)
-    void (*was)(int) = feed ? signal(SIGPIPE, SIG_IGN) : NULL;
     while (open_fds > 0 || fds[2].fd >= 0) {
       if (poll(fds, 3, -1) < 0) {
         if (errno == EINTR) continue;
@@ -3486,7 +3515,6 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
         }
       }
     }
-    if (feed) signal(SIGPIPE, was);
   }
   int status = 0;
   while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
