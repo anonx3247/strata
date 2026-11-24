@@ -173,7 +173,8 @@ fn smt_outcomes_on_std_as_in_rust() {
 /// `compiler termination` (the termination analysis written in Strata,
 /// `compiler/termination`): each function's and implementation method's
 /// verdict, and whether a contract may see through it, as `strata verify
-/// --termination` gives them, on the step programs, the repository's
+/// --termination` gives them, on the step programs (and verify.st:
+/// `to_string(x)` is `Display`'s method, not a builtin), the repository's
 /// scripts and a few std modules.
 #[test]
 fn termination_as_in_rust() {
@@ -184,7 +185,7 @@ fn termination_as_in_rust() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = scratch("termination");
     let mut files: Vec<(PathBuf, Option<String>)> = vec![];
-    for (name, text) in [("step4", include_str!("data/smt/step4.st")), ("step5", include_str!("data/smt/step5.st")), ("termination", include_str!("data/smt/termination.st"))] {
+    for (name, text) in [("step4", include_str!("data/smt/step4.st")), ("step5", include_str!("data/smt/step5.st")), ("termination", include_str!("data/smt/termination.st")), ("verify", include_str!("data/smt/verify.st"))] {
         let file = dir.join(format!("{name}.strata"));
         save(&file, text);
         files.push((file, None));
