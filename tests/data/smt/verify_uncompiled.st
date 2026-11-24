@@ -4,7 +4,11 @@ fn a(x: Int) -> Int
 }
 
 fn units(s: String) -> Natural {
-  len(s.graphemes())
+  mut n := 0
+  comptime for k in [1, 2] {
+    n += k
+  }
+  n + byte_len(s)
 }
 
 fn longer(s: String) -> Natural
