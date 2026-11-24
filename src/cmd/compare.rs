@@ -138,7 +138,8 @@ fn strata_check(file: &str) -> Result<Vec<String>, String> {
     // an error's message may go on over indented lines (`available:` overloads)
     let mut errs: Vec<String> = vec![];
     for l in run_compiler(&exe, &args)?.lines() {
-        if l.starts_with("error in ") {
+        // (`error: …` without a definition: the package can't be loaded)
+        if l.starts_with("error in ") || l.starts_with("error: ") {
             errs.push(l.to_string());
         } else if let (Some(e), true) = (errs.last_mut(), l.starts_with("  ")) {
             e.push('\n');
