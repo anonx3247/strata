@@ -1,0 +1,33 @@
+# `strata skill` prints the skill for coding agents; `skill install` writes it
+# where the installed agents look (~/.agents/skills always, ~/.claude and
+# ~/.codex only when that agent's folder exists), or in `--dir DIR`
+
+[[step]]
+strata = ["skill"]
+has = ["name: strata\n", "Never read or\nwrite them directly", "strata help"]
+
+[[step]]
+run = ["mkdir", "-p", "$TMP/home/.claude"]
+
+[[step]]
+strata = ["skill", "install"]
+env = { "HOME" = "$TMP/home" }
+has = ["/home/.agents/skills/strata/SKILL.md\n", "/home/.claude/skills/strata/SKILL.md\n"]
+lacks = [".codex"]
+
+[[step]]
+run = ["cat", "$TMP/home/.claude/skills/strata/SKILL.md"]
+has = ["---\nname: strata\ndescription: "]
+
+[[step]]
+strata = ["skill", "install", "--dir", "$TMP/project/.claude/skills"]
+has = ["project/.claude/skills/strata/SKILL.md\n"]
+
+[[step]]
+run = ["cat", "$TMP/project/.claude/skills/strata/SKILL.md"]
+has = ["# Strata"]
+
+[[step]]
+strata = ["skill", "uninstall"]
+code = 2
+has = ["`strata skill install [--dir DIR]` installs it"]
