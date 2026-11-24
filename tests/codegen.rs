@@ -2559,6 +2559,46 @@ fn jit_runs_programs_as_built_ones_run() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Compile-time values are kept between runs (`$STRATA_CACHE/comptime`,
+/// compiler/main's `comptime_value`), keyed by the code they reach: a run
+/// reads a value kept before instead of computing it (the two programs'
+/// values swapped in the cache, each prints the other's), and a change to
+/// what the code reaches computes it again.
+#[test]
+fn jit_keeps_compile_time_values_between_runs() {
+    let dir = scratch("comptime-cache");
+    let cache = dir.join("cache");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let run = |file: &Path| {
+        let o = Command::new(compiler::exe()).current_dir(root).arg("jit").arg(file).env("STRATA_CACHE", &cache).output().unwrap();
+        assert!(o.status.success(), "{}: {}", file.display(), String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let kept = || -> std::collections::BTreeSet<PathBuf> {
+        std::fs::read_dir(cache.join("comptime")).map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "strata")).collect()).unwrap_or_default()
+    };
+    let program = |base: i64, n: i64| format!("fn base() -> Int {{\n  {base}\n}}\n\nfn plus(n: Int) -> Int {{\n  base() + n\n}}\n\nfn main() {{\n  print(to_string(comptime plus({n})))\n}}\n");
+    let one = dir.join("one.strata");
+    let two = dir.join("two.strata");
+    save(&one, &program(40, 1));
+    save(&two, &program(40, 2));
+    assert_eq!(run(&one), "41\n");
+    let a = kept();
+    assert_eq!(a.len(), 1, "{a:?}");
+    assert_eq!(run(&two), "42\n");
+    let b: Vec<PathBuf> = kept().difference(&a).cloned().collect();
+    assert_eq!(b.len(), 1, "{b:?}");
+    let (fa, fb) = (a.iter().next().unwrap(), &b[0]);
+    let (va, vb) = (std::fs::read(fa).unwrap(), std::fs::read(fb).unwrap());
+    std::fs::write(fa, &vb).unwrap();
+    std::fs::write(fb, &va).unwrap();
+    assert_eq!(run(&one), "42\n");
+    assert_eq!(run(&two), "41\n");
+    save(&one, &program(50, 1));
+    assert_eq!(run(&one), "51\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `run --strata --jit` with std's precompiled library loaded into the
 /// compiler's process: a program's calls of std (`examples/hello`'s
 /// `std.cli`) reach the library's code, not the compiler executable's own
