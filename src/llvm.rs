@@ -6262,6 +6262,11 @@ impl<'m, 'a> Func<'m, 'a> {
                 bool_v(&r)
             }
             ("str_block", [_]) => (Ty::Con("Ptr".into(), vec![]), vs[0].1.clone()),
+            ("widen_i32", [_]) => {
+                let r = self.fresh("w");
+                self.emit(format!("{r} = sext i32 {} to i64", vs[0].1));
+                (Ty::Con("I64".into(), vec![]), r)
+            }
             ("widen_u8", [_]) => {
                 let r = self.fresh("w");
                 self.emit(format!("{r} = zext i8 {} to i64", vs[0].1));

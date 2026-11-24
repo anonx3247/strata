@@ -2702,6 +2702,112 @@ fn main() {
 }
 "#;
 
+/// core.list, core.fmt and core.float (runtime.c's lists, format specs
+/// and floats, moved to Strata): programs built by each code generator
+/// (compiler/codegen, and llvm.rs, whose in-place changes of lists use
+/// `strata_list_owned` / `_put` / `_insert` / `_remove_at`), with the
+/// runtime in Strata (its own compile of core.rt) and with the C runtime's
+/// versions, give the same output, faults and check mode's report.
+#[test]
+fn core_rt_lists_formats_and_floats_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-lists");
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    let rt_codegen = dir.join("core_rt_codegen.ll");
+    std::fs::write(&rt_codegen, &ir).unwrap();
+    let rt_rust = dir.join("core_rt_rust.ll");
+    let o = Command::new(STRATA).current_dir(root).arg("build-core").arg("-o").arg(&rt_rust).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // a program's output, error output and exit code, by each code
+    // generator, with core.rt and with C: the same
+    let both = |name: &str, text: &str| -> String {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let mut outs = vec![];
+        for rust in [false, true] {
+            let ll = dir.join(format!("{name}-{}.ll", if rust { "rust" } else { "codegen" }));
+            if rust {
+                let o = Command::new(STRATA).current_dir(root).args(["build", "--rust", "--no-verify", "--emit-llvm"]).arg(&file).arg("-o").arg(&ll).output().unwrap();
+                assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            } else {
+                let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
+                std::fs::write(&ll, &prog.stdout).unwrap();
+            }
+            let mut pair = vec![];
+            for with_rt in [true, false] {
+                let exe = dir.join(format!("{name}-{rust}-{with_rt}"));
+                let mut c = Command::new("clang");
+                c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(&ll).arg(root.join("src/llvm/runtime.c"));
+                if with_rt {
+                    c.arg("-DSTRATA_CORE_RT").arg(if rust { &rt_rust } else { &rt_codegen });
+                }
+                let o = c.arg("-lm").output().unwrap();
+                assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+                let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+                pair.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+            }
+            assert_eq!(pair[0], pair[1], "{name} ({}): core.rt (left) and C (right) differ", if rust { "llvm.rs" } else { "compiler/codegen" });
+            outs.push(pair.remove(0));
+        }
+        outs.remove(0)
+    };
+    let out = both("lists", CORE_RT_LISTS);
+    assert!(out.starts_with("100 101 1 2 9801\nx y w49 101 true true\n"), "{out}");
+    assert!(out.contains("\n32 Some(184) 51 true false\n[1, 3, 5, 9] [\"w0\", \"w1\", \"w10\"]\n"), "{out}");
+    let out = both("formats", CORE_RT_FORMATS);
+    assert!(out.starts_with("[   42] [42   ] [  42  ] [00042] [-0007] [+42] [-7] [+00042]\n[héllo     ] [     héllo] [  héllo  ] [**héllo**] [hélloééé] [héllo] [🙂🙂🙂héllo]\n"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const CORE_RT_LISTS: &str = r#"fn main() {
+  mut xs := []
+  for i in 0..100 {
+    xs = push(xs, i * i)
+  }
+  a := push(xs, 1)
+  b := push(xs, 2)
+  print(f"{len(xs)} {len(a)} {a[100]} {b[100]} {xs[99]}")
+  mut words := []
+  for i in 0..50 {
+    words = push(words, f"w{i}")
+  }
+  shared := push(words, "x")
+  other := push(words, "y")
+  print(f"{shared[50]} {other[50]} {words[49]} {len(words + shared)} {[] + words == words} {words + [] == words}")
+  big := [123456789012345678901234567890, 2, -98765432109876543210987654321]
+  bigs := big + big
+  print(f"{bigs} {push(big, 7)} {big[1..3]} {bigs[2..5]} {range(3, 8)} {range(5, 2)}")
+  sl := words[10..20]
+  print(f"{sl} {push(sl, "z")} {sl + sl}")
+  mut d := Dict[String, Int] {}
+  for i in 0..200 {
+    d = insert(d, f"k{i % 37}", i)
+  }
+  mut s := Set[Int] {}
+  for i in 0..300 {
+    s = insert(s, (i * 7) % 101)
+  }
+  for i in 0..50 {
+    s = remove(s, i)
+    d = remove(d, f"k{i % 5}")
+  }
+  print(f"{len(d)} {get(d, "k36")} {len(s)} {contains(s, 77)} {contains(s, 3)}")
+  print(f"{sort([5, 3, 9, 1])} {sort(words)[0..3]}")
+}
+"#;
+
+const CORE_RT_FORMATS: &str = r#"fn main() {
+  n := 42
+  m := -7
+  s := "héllo"
+  print(f"[{n:5}] [{n:<5}] [{n:^6}] [{n:05}] [{m:05}] [{n:+}] [{m:+}] [{n:+06}]")
+  print(f"[{s:10}] [{s:>10}] [{s:^9}] [{s:*^9}] [{s:é<8}] [{s:2}] [{s:🙂>8}]")
+  print(f"[{123456789012345678901234567890:40}] [{true:>7}]")
+}
+"#;
+
 /// `strata build --compare`: compiler/codegen's executable does what Rust's
 /// does on the build tests' programs and the example packages with a `main`
 /// (the measure for switching `build` over).

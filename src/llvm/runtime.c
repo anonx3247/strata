@@ -2540,6 +2540,10 @@ double strata_sqrt(double x) {
 
 // ---- lists ----
 //
+// Written in Strata in core.list (core/list.strata), which replaces these
+// when core.rt is linked in (`STRATA_CORE_RT`); `buf_new` and `append` stay
+// for the host functions' lists.
+//
 // A list is a header (its length, a buffer, and where in the buffer it starts),
 // the buffer the elements as 64-bit slots. Lists never change: `push` writes
 // in place only past the end of what every list sharing the buffer has used,
@@ -2571,6 +2575,7 @@ static Buf *buf_new(int64_t cap) {
   return b;
 }
 
+#ifndef STRATA_CORE_RT
 List *strata_list_new(int64_t cap) {
   List *l = strata_alloc(sizeof(List));
   l->len = 0;
@@ -2652,6 +2657,11 @@ int64_t strata_list_remove_at(List *xs, int64_t i) {
   xs->len--;
   return old;
 }
+#else
+// (core.rt's: the list functions, below too; `append` is the host
+// functions')
+List *strata_list_new(int64_t cap);
+#endif
 
 // Add `x` to a list nothing else holds yet (one the runtime is making).
 static List *append(List *l, int64_t x) {
@@ -2668,6 +2678,7 @@ static List *append(List *l, int64_t x) {
   return l;
 }
 
+#ifndef STRATA_CORE_RT
 // The elements from `from` to `to` (already within 0..len): shares the buffer.
 List *strata_list_slice(List *xs, int64_t from, int64_t to) {
   List *l = strata_alloc(sizeof(List));
@@ -2697,6 +2708,7 @@ List *strata_range(int64_t lo, int64_t hi) {
   l->len = n;
   return l;
 }
+#endif
 
 // Whether to color what goes to stream `fd`: a terminal, unless `NO_COLOR`
 // is set or `TERM` is `dumb`; `FORCE_COLOR` forces it (as std.term decides).
@@ -3368,8 +3380,9 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
 //
 // Written in Strata in core.rt (core/rt.strata), which replaces these when it
 // is linked in (`STRATA_CORE_RT`); they stay for the first stage of strata's
-// build. `utf8_put` is the f-string format specs' (below).
+// build.
 
+#ifndef STRATA_CORE_RT
 // A character in UTF-8 at `o`: how many bytes it took.
 static int utf8_put(int32_t c, char *o) {
   if (c < 0x80) return o[0] = (char)c, 1;
@@ -3378,6 +3391,7 @@ static int utf8_put(int32_t c, char *o) {
   o[0] = (char)(0xF0 | (c >> 18)), o[1] = (char)(0x80 | ((c >> 12) & 0x3F)), o[2] = (char)(0x80 | ((c >> 6) & 0x3F)), o[3] = (char)(0x80 | (c & 0x3F));
   return 4;
 }
+#endif
 
 #ifndef STRATA_CORE_RT
 // The character at byte `i` (valid UTF-8), and its length in bytes.
@@ -3681,6 +3695,8 @@ static _Bool parse_float_trimmed(Str *t, double *out) {
 }
 
 // ---- f-string format specs (`interp::format_spec`) ----
+//
+// `strata_format` is core.fmt's when core.rt is linked in (`STRATA_CORE_RT`).
 
 // A float with `p` decimals, as Rust's `{:.p}`.
 Str *strata_show_float_fixed(double x, int64_t p) {
@@ -3693,6 +3709,7 @@ Str *strata_show_float_fixed(double x, int64_t p) {
   return s;
 }
 
+#ifndef STRATA_CORE_RT
 // `body` padded to `width` characters: `fill` and `align` (`<`, `>`, `^`, or
 // 0 for the default: numbers right, the rest left), `+` for a number's sign,
 // `0` to pad a number with zeros after its sign.
@@ -3723,3 +3740,4 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
   str_drop(body);
   return o;
 }
+#endif
