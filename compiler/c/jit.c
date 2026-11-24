@@ -302,6 +302,36 @@ const char *jit_fault_stack(void) { return runtime_text("strata_test_stack"); }
 
 const char *jit_fuzz_args(void) { return runtime_text("strata_fuzz_args"); }
 
+// ---- tests (`strata test`) ----
+//
+// The tests compiler/codegen makes (`codegen --tests`, one `strata.test.N`
+// per test block), loaded by `jit_fuzz_load`, each run as `strata test`
+// runs it (`strata_test`): a fault ends the test, not the process; what it
+// printed is kept (`jit_test_printed`), and the fault read with
+// `jit_fault_kind`, `jit_fault_message` and `jit_fault_stack`.
+
+// Run test `i` of module `m`: 0 when it passed, 1 when a fault ended it,
+// -1 when there is no such test.
+int32_t jit_test_case(int32_t m, int64_t i) {
+  if (m < 0 || m >= fuzz_count) return -1;
+  char name[64];
+  snprintf(name, sizeof name, "strata.test.%lld", (long long)i);
+  LLVMOrcExecutorAddress addr;
+  LLVMErrorRef e = LLVMOrcLLJITLookup(fuzz_jits[m], &addr, name);
+  if (e) {
+    LLVMConsumeError(e);
+    return -1;
+  }
+  int32_t (*test)(void (*)(void)) = runtime_fn("strata_test");
+  if (!test) return -1;
+  int32_t r = test((void (*)(void))(uintptr_t)addr) != 0;
+  fflush(stdout);
+  return r;
+}
+
+// What the last test printed.
+const char *jit_test_printed(void) { return runtime_text("strata_test_printed"); }
+
 // ---- compile-time values (`comptime e`, compiler/derive) ----
 //
 // A module of calls (`codegen` with calls: `strata.call.N`, each handing its
