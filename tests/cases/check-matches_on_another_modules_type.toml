@@ -1,0 +1,84 @@
+# A match on a type of another module of the package is checked as one on a
+# type of its own module: a variant added in `ops` and missing in `main`'s
+# matches is an error of `strata check` (it was accepted, and the program
+# faulted at run time: "no match arm for Modulo")
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "ops"]
+text = "pub type Op = | Add | Sub\n"
+
+[[step]]
+strata = ["edit"]
+text = '''
+from ops use Op
+
+fn name(o: Op) -> String {
+  match o {
+    Add => "add"
+    Sub => "sub"
+  }
+}
+
+fn main() {
+  print(name(Op.Sub))
+}
+'''
+
+# the variant added through strata: `main`'s match is a hole to fill
+[[step]]
+strata = ["edit", "ops"]
+text = "pub type Op = | Add | Sub | Modulo\n"
+has = ["?pending_1  in name", "`Modulo` is a new variant of `Op`"]
+
+[[step]]
+strata = ["abort"]
+
+# as written to the files without strata: check says so
+[[step]]
+save = "ops.strata"
+text = "pub type Op = | Add | Sub | Modulo\n"
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["error in name: non-exhaustive match on `ops.Op`: `Modulo` is not covered"]
+
+[[step]]
+strata = ["edit"]
+text = '''
+fn name(o: Op) -> String {
+  match o {
+    Add => "add"
+    Sub => "sub"
+    Modulo => "mod"
+  }
+}
+'''
+
+[[step]]
+strata = ["check"]
+has = ["ok:"]
+
+# a match the check doesn't see the type of (a field's): verify finds the
+# missing arm, and says it is the code's, not the prover's
+[[step]]
+save = "m.strata"
+text = '''
+type Op = | Add | Sub | Modulo
+type P = { op: Op }
+fn name(p: P) -> String {
+  match p.op {
+    Add => "add"
+    Sub => "sub"
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "verify", "--no-race"]
+fails = true
+has = ["no match arm for Modulo", "add the missing arm"]
+lacks = ["a bug in the prover"]

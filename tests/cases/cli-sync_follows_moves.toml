@@ -83,5 +83,5 @@ has = ["merged main", "follows the rename orders.charge → billing.charge"]
 
 # both calls name the same definition: stored alike, shown short where it is imported
 [[step]]
-strata = ["render", "report"]
+strata = ["view", "report"]
 has = ["from orders use Order", "from billing use charge", "charge(o) + charge(o)"]

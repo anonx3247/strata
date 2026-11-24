@@ -107,7 +107,9 @@ $ strata run total '[]'                      # the arguments, as code, checked a
 error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
-On a terminal, what the tools say is coloured as above: proven green, failures red, fuzzed or incomplete orange, a counterexample's input amber, hashes dim, holes yellow, and in a diff what was removed red and what was added green. As for programs (`std.term`), colour is on when the output is a terminal, `NO_COLOR` is unset and `TERM` isn't `dumb`; `FORCE_COLOR` forces it.
+On a terminal, what the tools say is coloured as above: proven green, failures red, fuzzed or incomplete orange, a counterexample's input amber, hashes dim, holes yellow, function names bold, and in a diff what was removed red and what was added green. Code is highlighted wherever it is shown (`view`, a counterexample's input, a hole's goal and context, a failed assertion), with the site's colours: keywords, types, function names, strings, numbers, comments and docs, holes, and capabilities (and the traits they implement) in a colour of their own. As for programs (`std.term`), colour is on when the output is a terminal, `NO_COLOR` is unset and `TERM` isn't `dumb`; `FORCE_COLOR` forces it.
+
+What is printed to be read rather than followed (`view`, `find`, `refs`, `diff`, `log`, `holes`, `status`, `interface`, `builtins`, the help) goes through a pager on a terminal, as git does it: `$STRATA_PAGER`, else `$PAGER`, else `less -FRX` (with `LESS=FRX` unless `LESS` is set: it quits when the text fits on one screen and keeps the colours). `--no-pager`, or `STRATA_PAGER=cat` (or empty), turns it off. `check`, `verify` and `test` stream their results as they come, and `run` and `edit` never page.
 
 ## Compiling to native code
 
@@ -198,22 +200,52 @@ Each changed definition says what happened in words, and shows only what it need
 - **A contract change** is marked on its line (`◀ contract changed`): `discount` promises more, and its body is folded.
 - **A body change** is shown with what didn't change folded away, or as a line diff when most of it changed (`total`); "implementation only" says nothing else needs checking again.
 
-Changes are ordered types → interfaces → implementations → tests. `strata diff --step 2` shows one change, `--from` / `--to` a range of the log, `--json` the same for other tools. In a git repository, `strata --file F diff [BASE]` compares a file with a commit (default `HEAD`), and `git diff` shows `.strata` files the same way after `strata setup-git`.
+Changes are ordered types → interfaces → implementations → tests. `strata diff --step 2` shows one change (the steps are numbered from 1, as `diff` lists them: `--from 1 --to 2` is patch 2), `--from` / `--to` a range of the log (the states between patches, 0 being before the first), `--json` the same for other tools. In a git repository, `strata --file F diff [BASE]` compares a file with a commit (default `HEAD`), and `git diff` shows `.strata` files the same way after `strata setup-git`.
 
 ## Views (levels of detail)
+
+`strata view` is the one command that shows code. `strata view MODULE` (`shop`, `main` for the root module, or a file: `shop/orders.strata`) prints a module as its file is stored, imports first: the text `edit` reads back. `strata view SELECTOR --level N` shows the definitions a selector picks at a level of detail (1 by default), and `strata view` alone is the package's map (level 0). `view --split DIR` writes every module as a text file (`shop/orders.st`), to read, never to read back.
 
 | Level | Shows |
 |---|---|
 | `--level 0` | a map: one line per definition, with its dependencies, holes and verification status |
 | `--level 1` | interfaces only: types, traits, signatures and contracts |
-| `--level 2` | full source; `render` output parses back to the same tree |
+| `--level 2` | full source; `view MODULE` output parses back to the same tree |
 
-Comments are part of the tree, so they survive every edit and render. A `//` comment belongs to what follows it: a definition (comments separated from it by a blank line, such as a file header or a section banner, keep that blank line), a field, a variant, a trait or impl method, a law, a statement or a match arm. Blank lines between statements are kept too (several in a row become one). A comment at the end of a line moves above the thing it follows. A comment anywhere else (inside an argument list, after the last statement of a block) is an error, never silently dropped. `///` doc comments work the same way, and are what `--help` and the views show as a definition's description. Comments are printed as written; changing one changes the definition's hash but not its interface hash, and does not invalidate verification results.
+Comments are part of the tree, so they survive every edit and view. A `//` comment belongs to what follows it: a definition (comments separated from it by a blank line, such as a file header or a section banner, keep that blank line), a field, a variant, a trait or impl method, a law, a statement or a match arm. Blank lines between statements are kept too (several in a row become one). A comment at the end of a line moves above the thing it follows. A comment anywhere else (inside an argument list, after the last statement of a block) is an error, never silently dropped. `///` doc comments work the same way, and are what `--help` and the views show as a definition's description. Comments are printed as written; changing one changes the definition's hash but not its interface hash, and does not invalidate verification results.
 
 All rendered code is formatted to about 80 columns: long argument lists, record literals, method chains, `&&` / `||` / `+` chains, parameter lists and doc comments are broken across lines.
 
 Selectors: `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination. A part that names nothing is an error.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
+
+## Finding code: `find`, `refs`, locations
+
+Three commands find code by what it is rather than by its text, so an agent doesn't need grep:
+
+```text
+$ strata find next
+method    jobs.Worker.next(self) -> Option[Task]
+$ strata find Task.attempts
+field     jobs.Task.attempts: Int
+$ strata refs Task.attempts --kind write
+used by — 1 use in 1 definition
+
+jobs.retried@5ce7a5fb/body/1/place  write
+pub fn retried(t: Task) -> Task {
+  mut u := t
+  u.attempts = u.attempts + 1
+  ^^^^^^^^^^
+  u
+}
+$ strata view 'jobs.retried@5ce7a5fb/body/1/place'
+```
+
+- **Names**: short (`run_worker`, in any module), qualified (`jobs.run_worker`), a glob (`'*verdict*'`), fuzzy (`~rnwrkr`), or a member (`Task.attempts`, `Worker.next`, `Shape.Circle`). A short name that names several definitions shows them all: first the candidates with their number of uses, then each one's results.
+- **`strata find NAME`** lists where NAME is defined, one line each: kind, qualified name and signature (`--doc`: the doc's first line instead). `--kind fn|type|trait|variant|field|method|impl|test|capability|extern`, `--in SELECTOR`, `--public`, `--limit N`. It reads the module files' headers and interfaces only, no body.
+- **`strata refs NAME`** shows where NAME is used ("used by"), each use labelled with its kind (`call`, `construct`, `pattern`, `read`, `write`, `type`, `impl`, `import`, `method`) and shown as code in its definition: the head, the lines around each use (`--context N`, default 1; `--context all`), the blocks around them, `⋮` for what is left out, `^^^` under the use. Then what NAME uses ("uses"). `--used-by` and `--uses` pick one direction, `--kind` some kinds, `--in SELECTOR` where to look, `--depth N` follows the graph and prints a tree. A field's reads and a method's calls are told apart by the type the checker infers for the receiver, so another record's field of the same name isn't counted.
+- **Locations**: every result carries one, `DEF@HASH/PATH`: the definition, the first 4 bytes of its hash, and a path made of the tree's field names and list positions (`jobs.retried@5ce7a5fb/body/1/place`: statement 1 of the body, the place assigned). **`strata view LOCATION`** shows it as code (`--context N`, `--def` the whole definition); when the definition has changed since, it says so and shows the same path in it now. `strata check` prints each error with its location and the code it is about.
+- `--list` prints the locations only, `--json` everything for scripts; the exit code is grep's: 0 found, 1 nothing, 2 a mistake.
 
 ## How it is stored
 
@@ -230,7 +262,7 @@ strata.log            one JSON entry per change made through strata: its id, mes
 
 The files and `strata.log` are committed. The log is append-only and merges by union (`.gitattributes`), and each entry carries the definitions' text, so it replays without anything else: `strata diff` splits a git commit into the changes made through strata (with their renames), plus a step for edits made by hand. Because verification results are keyed by content, `verify` reruns only what is affected by a change, in a package, a script or `std/`, and in any worktree (`--no-cache` reruns everything).
 
-The code is stored as its syntax tree, in binary: each `.strata` file is a module file (the format is Strata's own, specified in [binary-format.md](binary-format.md)). Text goes in only through an edit (`strata edit`, `strata add`) and comes out through the views (`render`, `view`).
+The code is stored as its syntax tree, in binary: each `.strata` file is a module file (the format is Strata's own, specified in [binary-format.md](binary-format.md)). Text goes in only through an edit (`strata edit`, `strata add`) and comes out through `view`.
 
 ## Packages
 
@@ -261,7 +293,7 @@ unknown_keys = "error"                 # `from_toml` refuses keys a record doesn
 The `.strata` files are what you commit. They are binary, so `.gitattributes` marks them `binary diff=strata merge=strata`: with `strata setup-git`, `git diff` and `git log -p` show their text, and git merges them with the driver. GitHub shows no diff for them.
 
 - **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's. A definition that only one side changed comes from that side, so edits to two functions never conflict, even when they sit on neighbouring lines. When both sides changed the same definition, its text is merged line by line; a conflict is marked around that definition alone. Renames on one side follow to the other, and the result is type-checked: an error that neither side had on its own fails the merge.
-- **`strata setup-git`** points this clone's git config at the driver and at `strata render --file` to show `.strata` files as text, and `.gitattributes` has `*.strata binary merge=strata diff=strata`, so `git merge`, `git pull`, `git diff` and `git log -p` use them.
+- **`strata setup-git`** points this clone's git config at the driver and at `strata view main --file` to show `.strata` files as text, and `.gitattributes` has `*.strata binary merge=strata diff=strata`, so `git merge`, `git pull`, `git diff` and `git log -p` use them.
 - **Every change is a commit.** In a git repository, each change made through strata (an `edit`, `rename`, `move` or `add` that goes through, or a pending change at `strata done`) is committed with its message: `git log` is the history of changes, you can go back to any of them, and branches work as usual. Only the package's files are committed; whatever else is staged is left alone. Edits during a pending change aren't committed until it's done. Turn it off with `auto_commit = false` in `strata.toml`, or `--no-commit` on one command.
 - **`strata sync [main]`** merges `origin/main` (or the local branch, without a remote) into the current branch with the driver, whether or not `setup-git` was run. Renames that either side made with `strata rename` (read from both sides' `strata.log`) are then applied to the other side's code, in every file: a call that main added to `area` becomes a call to `rect_area` if your branch renamed it, unless a local named `rect_area` would capture it. Then it checks every package and script and commits the merge only if they check; otherwise the merge is left staged, so you can fix it or `git merge --abort`.
 - **`strata upgrade`** rewrites every package and script in the repository (or the current folder outside git) in canonical form, exactly the bytes strata writes for it now, printing each file it rewrites: run it after a change to the tree or the format (see [the binary format](binary-format.md#changing-the-format)). GitHub doesn't run merge drivers, so merge `main` into a branch with `strata sync` before it lands.

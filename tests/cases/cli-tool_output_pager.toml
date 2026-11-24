@@ -1,0 +1,56 @@
+# On a terminal, what is printed to read goes through the pager
+# (STRATA_PAGER, else PAGER, else less -FRX), with its colors; piped, or
+# with --no-pager or STRATA_PAGER=cat, it doesn't. `script` gives the
+# command a terminal; the stand-in pager marks what it was given.
+
+[[step]]
+write = "pager.sh"
+text = '''
+#!/bin/sh
+echo "PAGED LESS=$LESS"
+cat
+'''
+
+[[step]]
+run = ["chmod", "+x", "pager.sh"]
+
+[[step]]
+save = "a.strata"
+text = '''
+/// The size.
+pub fn size(xs: List[Int]) -> Int { len(xs) }
+'''
+
+[[step]]
+run = ["sh", "-c", "unset LESS; STRATA_PAGER=./pager.sh script -q /dev/null \"$STRATA\" --file a.strata view main < /dev/null"]
+has = ["PAGED LESS=FRX", "[38;2;218;119;242mfn", "size"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_PAGER=./pager.sh LESS=X script -q /dev/null \"$STRATA\" --file a.strata view --level 0 < /dev/null"]
+has = ["PAGED LESS=X", "size"]
+
+[[step]]
+run = ["sh", "-c", "unset LESS; STRATA_PAGER=./pager.sh script -q /dev/null \"$STRATA\" --no-pager --file a.strata view main < /dev/null"]
+has = ["pub", "size"]
+lacks = ["PAGED"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_PAGER=cat PAGER=./pager.sh script -q /dev/null \"$STRATA\" --file a.strata view main < /dev/null"]
+has = ["size"]
+lacks = ["PAGED"]
+
+# piped: neither paged nor colored
+[[step]]
+run = ["sh", "-c", "STRATA_PAGER=./pager.sh \"$STRATA\" --file a.strata view main"]
+out = '''
+/// The size.
+pub fn size(xs: List[Int]) -> Int {
+  len(xs)
+}
+'''
+
+# what streams isn't paged
+[[step]]
+run = ["sh", "-c", "unset LESS; STRATA_PAGER=./pager.sh script -q /dev/null \"$STRATA\" --file a.strata check < /dev/null"]
+has = ["ok:"]
+lacks = ["PAGED"]

@@ -52,7 +52,7 @@ run = ["cat", "one/seen1.st"]
 stdout = "fn tax(amount: Int) -> Int {\n  amount / 10\n}\n"
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 dir = "pkg"
 has = ["amount / 5"]
 
@@ -91,13 +91,13 @@ run = ["head", "-n", "1", "retry/seen2.st"]
 has = ["// ✗ error in total"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 dir = "pkg"
 has = ["amount + tax(amount) + 1"]
 
 # the whole module; a definition deleted from the buffer is removed
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 dir = "pkg"
 capture = "../module-v1.st"
 
@@ -123,7 +123,7 @@ env = { "EDITOR" = "sh '$TMP/module/editor.sh'" }
 has = ["removed"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 dir = "pkg"
 lacks = ["double_tax"]
 

@@ -68,7 +68,7 @@ has = ["law left_identity for Money", "law left_identity for String"]
 lacks = ["✗"]
 
 [[step]]
-strata = ["--file", "m.strata", "render"]
+strata = ["--file", "m.strata", "view", "main"]
 has = ["fn empty() -> Self", "T.empty()", "Self.empty().combine(a) == a"]
 
 [[step]]

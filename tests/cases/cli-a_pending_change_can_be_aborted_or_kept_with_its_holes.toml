@@ -24,7 +24,7 @@ test "totals" {
 '''
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 capture = "taxes.st"
 
 [[step]]
@@ -44,7 +44,7 @@ strata = ["abort"]
 has = ["undid the pending change"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 out_file = "taxes.st"
 
 [[step]]
@@ -65,5 +65,5 @@ strata = ["done", "--keep-holes", "-m", "rates, callers to do"]
 has = ["2 holes kept as ?todo_"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["amount + ?todo_1", "?todo_2 * 2"]

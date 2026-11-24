@@ -3245,6 +3245,7 @@ List *strata_range(int64_t lo, int64_t hi) {
 
 // Whether to color what goes to stream `fd`: a terminal, unless `NO_COLOR`
 // is set or `TERM` is `dumb`; `FORCE_COLOR` forces it (as std.term decides).
+_Bool strata_host_terminal(int64_t fd);
 static _Bool colors(int fd) {
   const char *f = getenv("FORCE_COLOR");
   if (f && *f) return 1;
@@ -3252,7 +3253,7 @@ static _Bool colors(int fd) {
   if (n && *n) return 0;
   const char *t = getenv("TERM");
   if (t && !strcmp(t, "dumb")) return 0;
-  return isatty(fd);
+  return strata_host_terminal(fd);
 }
 
 // `main` returned `Err(e)` (`error:` in red on a terminal).
@@ -3729,9 +3730,14 @@ Str *strata_host_read_stdin(void) {
   return s;
 }
 
+// Whether standard output goes to a pager that shows it on a terminal
+// (`strata`'s, compiler/c/driver.c): it counts as one.
+static _Bool stdout_paged = 0;
+void strata_host_paged(void) { stdout_paged = 1; }
+
 // Whether a stream (0: standard input, 1: output, 2: error) is a terminal
-// (not a pipe or a file).
-_Bool strata_host_terminal(int64_t fd) { return fd >= 0 && fd <= 2 && isatty((int)fd); }
+// (not a pipe or a file), or a pager on one.
+_Bool strata_host_terminal(int64_t fd) { return (fd == 1 && stdout_paged) || (fd >= 0 && fd <= 2 && isatty((int)fd)); }
 
 List *strata_host_args(void) {
   List *l = strata_list_new(prog_argc);
