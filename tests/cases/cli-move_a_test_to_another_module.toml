@@ -1,0 +1,52 @@
+# Tests move between modules as functions do (they were refused: "only
+# functions, types and traits can be moved")
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "ops"]
+text = '''
+pub fn double(x: Int) -> Int {
+  x * 2
+}
+'''
+
+[[step]]
+strata = ["edit"]
+text = '''
+from ops use double
+
+test "doubles. twice" {
+  assert double(2) == 4
+}
+'''
+
+[[step]]
+strata = ["move", "test \"doubles. twice\"", "ops"]
+has = ["moved test \"doubles. twice\" from main to ops (ops.strata)"]
+
+[[step]]
+strata = ["view", "ops"]
+has = ["test \"doubles. twice\" {\n  assert double(2) == 4\n}"]
+
+[[step]]
+strata = ["view", "main"]
+lacks = ["test"]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
+
+# and back, its import added
+[[step]]
+strata = ["move", "ops.test \"doubles. twice\"", "main"]
+has = ["moved ops.test \"doubles. twice\" from ops to main"]
+
+[[step]]
+strata = ["view", "main"]
+has = ["from ops use double", "test \"doubles. twice\""]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]

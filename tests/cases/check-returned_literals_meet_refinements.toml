@@ -1,0 +1,65 @@
+# A literal returned from a function of a refined type is checked as an
+# argument is: `0` from `-> Positive` was accepted by edit and check (only
+# verify caught it)
+
+[[step]]
+save = "p.strata"
+text = '''
+fn count() -> Positive {
+  0
+}
+
+fn other(b: Bool) -> Positive {
+  if b {
+    return 0
+  }
+  3
+}
+
+fn fine(b: Bool) -> Positive {
+  xs := [0].map(x -> {
+    return x
+  })
+  if b {
+    1
+  } else {
+    2
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = ["error in count: refinement violated at compile time in the value `count` returns: 0 does not satisfy `Positive`", "error in other: refinement violated at compile time in the value `other` returns: 0"]
+lacks = ["error in fine"]
+
+# in a package: the edit is rejected
+[[step]]
+run = ["mkdir", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+strata = ["edit", "ops"]
+dir = "pkg"
+text = '''
+pub type Pos = Int where it > 0
+
+pub fn one() -> Pos {
+  1
+}
+'''
+
+[[step]]
+strata = ["edit", "ops"]
+dir = "pkg"
+text = '''
+pub fn one() -> Pos {
+  0
+}
+'''
+fails = true
+has = ["error in ops.one: refinement violated at compile time in the value `one` returns: 0 does not satisfy `ops.Pos`", "rejected"]
