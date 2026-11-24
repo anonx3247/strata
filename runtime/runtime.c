@@ -277,10 +277,6 @@ int64_t strata_memory_freed(void);
 int64_t *strata_memory_made(int64_t i);
 void strata_memory_start(_Bool check);
 void strata_memory_threaded(_Bool on);
-// core.rt's arenas, which a task allocates in as its spawner does
-void *strata_arena_now(void);
-void strata_arena_adopt(void *a);
-void strata_arena_keep(void *a, void *until);
 #endif
 
 // A string has nothing in it to drop.
@@ -1050,14 +1046,12 @@ typedef struct Task {
   char *origin;               // the call stack where it was spawned
   Run *run_of;                // the run it belongs to
   Waiter w;                   // its place in that run's list
-  void *arena;                // the arena it allocates in: its spawner's
   struct Task *next;
 } Task;
 
 typedef struct TaskScope {
   Task *first, *last;
   struct TaskScope *up;
-  void *arena;                // the arena open when it was (core.rt's)
 } TaskScope;
 
 static _Thread_local TaskScope *open_scopes;
@@ -1246,9 +1240,6 @@ _Bool strata_was_unwound(void) { return unwound; }
 static void *task_main(void *arg) {
   Task *t = arg;
   catch_overflow();
-#ifdef STRATA_CORE_RT
-  strata_arena_adopt(t->arena);
-#endif
   RS->rng = t->seed;
   RS->capturing = t->capturing;
   RS->counting = t->counting;
@@ -1329,9 +1320,6 @@ void *strata_scope_begin(void) {
   TaskScope *s = calloc(1, sizeof *s);
   if (!s) strata_fault(6, str_c("out of memory"));
   s->up = open_scopes;
-#ifdef STRATA_CORE_RT
-  s->arena = strata_arena_now();
-#endif
   open_scopes = s;
   return s;
 }
@@ -1355,12 +1343,6 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
   t->steps = RS->steps;
   t->given = RS->given;
   t->parent = self_task;
-#ifdef STRATA_CORE_RT
-  // the task allocates in its spawner's arena; one opened inside the scope
-  // it outlasts is kept, never freed
-  t->arena = strata_arena_now();
-  if (t->arena != s->arena) strata_arena_keep(t->arena, s->arena);
-#endif
   t->contained = contained;
   if (fail) {
     t->fail = fail;
