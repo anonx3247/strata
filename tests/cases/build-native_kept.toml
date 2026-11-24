@@ -1,0 +1,39 @@
+# A package with C of its own (`[native]`): its C object and the executable
+# are kept in the cache; building again what didn't change gives the same
+# program, and a changed C file is compiled and linked again
+[[step]]
+write = "strata.toml"
+text = "name = \"kept\"\n\n[native]\nsources = [\"k.c\"]\n"
+
+[[step]]
+write = "k.c"
+text = "#include <stdint.h>\nint64_t which(void) { return 1; }\n"
+
+[[step]]
+save = "main.strata"
+text = "extern c fn which() -> I64\n\nfn main() {\n  print(which())\n}\n"
+
+[[step]]
+strata = ["build", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+stdout = "1\n"
+
+[[step]]
+strata = ["build", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+stdout = "1\n"
+
+[[step]]
+write = "k.c"
+text = "#include <stdint.h>\nint64_t which(void) { return 2; }\n"
+
+[[step]]
+strata = ["build", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+stdout = "2\n"
