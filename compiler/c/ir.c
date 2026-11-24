@@ -1218,10 +1218,19 @@ static int checking(void) {
 // LLVM message, LLVMDisposeMessage it). Read by this file's reader, or by
 // LLVM's when it can't (STRATA_DEBUG says why); with STRATA_IR_CHECK, by
 // both, compared.
+int32_t ir_module(const char *ir, size_t len, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
 int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg) {
-  size_t len = strlen(ir);
-  *msg = NULL;
   timings_begin("LLVM: parse IR");
+  int32_t r = ir_module(ir, strlen(ir), ctx, mod, msg);
+  timings_end("LLVM: parse IR");
+  return r;
+}
+
+// `toolchain_module` of the `len` bytes at `ir` (a NUL after them),
+// untimed: callable from many threads at once (c/toolchain.c's parts),
+// each making a context of its own.
+int32_t ir_module(const char *ir, size_t len, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg) {
+  *msg = NULL;
   char why[512];
   why[0] = 0;
   int check = checking();
@@ -1260,12 +1269,10 @@ int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod
     c = LLVMContextCreate();
     m = parsed_module(c, ir, len, msg);
     if (!m) {
-      timings_end("LLVM: parse IR");
       LLVMContextDispose(c);
       return 1;
     }
   }
-  timings_end("LLVM: parse IR");
   *ctx = c;
   *mod = m;
   return 0;
