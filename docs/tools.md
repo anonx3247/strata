@@ -109,7 +109,7 @@ error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 
 On a terminal, what the tools say is coloured as above: proven green, failures red, fuzzed or incomplete orange, a counterexample's input amber, hashes dim, holes yellow, function names bold, and in a diff what was removed red and what was added green. Code is highlighted wherever it is shown (`view`, a counterexample's input, a hole's goal and context, a failed assertion), with the site's colours: keywords, types, function names, strings, numbers, comments and docs, holes, and capabilities (and the traits they implement) in a colour of their own. As for programs (`std.term`), colour is on when the output is a terminal, `NO_COLOR` is unset and `TERM` isn't `dumb`; `FORCE_COLOR` forces it.
 
-What is printed to be read rather than followed (`view`, `diff`, `log`, `holes`, `status`, `interface`, `builtins`, the help) goes through a pager on a terminal, as git does it: `$STRATA_PAGER`, else `$PAGER`, else `less -FRX` (with `LESS=FRX` unless `LESS` is set: it quits when the text fits on one screen and keeps the colours). `--no-pager`, or `STRATA_PAGER=cat` (or empty), turns it off. `check`, `verify` and `test` stream their results as they come, and `run` and `edit` never page.
+What is printed to be read rather than followed (`view`, `find`, `refs`, `diff`, `log`, `holes`, `status`, `interface`, `builtins`, the help) goes through a pager on a terminal, as git does it: `$STRATA_PAGER`, else `$PAGER`, else `less -FRX` (with `LESS=FRX` unless `LESS` is set: it quits when the text fits on one screen and keeps the colours). `--no-pager`, or `STRATA_PAGER=cat` (or empty), turns it off. `check`, `verify` and `test` stream their results as they come, and `run` and `edit` never page.
 
 ## Compiling to native code
 
@@ -218,6 +218,34 @@ All rendered code is formatted to about 80 columns: long argument lists, record 
 
 Selectors: `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination. A part that names nothing is an error.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
+
+## Finding code: `find`, `refs`, locations
+
+Three commands find code by what it is rather than by its text, so an agent doesn't need grep:
+
+```text
+$ strata find next
+method    jobs.Worker.next(self) -> Option[Task]
+$ strata find Task.attempts
+field     jobs.Task.attempts: Int
+$ strata refs Task.attempts --kind write
+used by — 1 use in 1 definition
+
+jobs.retried@5ce7a5fb/body/1/place  write
+pub fn retried(t: Task) -> Task {
+  mut u := t
+  u.attempts = u.attempts + 1
+  ^^^^^^^^^^
+  u
+}
+$ strata view 'jobs.retried@5ce7a5fb/body/1/place'
+```
+
+- **Names**: short (`run_worker`, in any module), qualified (`jobs.run_worker`), a glob (`'*verdict*'`), fuzzy (`~rnwrkr`), or a member (`Task.attempts`, `Worker.next`, `Shape.Circle`). A short name that names several definitions shows them all: first the candidates with their number of uses, then each one's results.
+- **`strata find NAME`** lists where NAME is defined, one line each: kind, qualified name and signature (`--doc`: the doc's first line instead). `--kind fn|type|trait|variant|field|method|impl|test|capability|extern`, `--in SELECTOR`, `--public`, `--limit N`. It reads the module files' headers and interfaces only, no body.
+- **`strata refs NAME`** shows where NAME is used ("used by"), each use labelled with its kind (`call`, `construct`, `pattern`, `read`, `write`, `type`, `impl`, `import`, `method`) and shown as code in its definition: the head, the lines around each use (`--context N`, default 1; `--context all`), the blocks around them, `⋮` for what is left out, `^^^` under the use. Then what NAME uses ("uses"). `--used-by` and `--uses` pick one direction, `--kind` some kinds, `--in SELECTOR` where to look, `--depth N` follows the graph and prints a tree. A field's reads and a method's calls are told apart by the type the checker infers for the receiver, so another record's field of the same name isn't counted.
+- **Locations**: every result carries one, `DEF@HASH/PATH`: the definition, the first 4 bytes of its hash, and a path made of the tree's field names and list positions (`jobs.retried@5ce7a5fb/body/1/place`: statement 1 of the body, the place assigned). **`strata view LOCATION`** shows it as code (`--context N`, `--def` the whole definition); when the definition has changed since, it says so and shows the same path in it now. `strata check` prints each error with its location and the code it is about.
+- `--list` prints the locations only, `--json` everything for scripts; the exit code is grep's: 0 found, 1 nothing, 2 a mistake.
 
 ## How it is stored
 
