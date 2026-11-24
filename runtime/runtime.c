@@ -278,6 +278,7 @@ int64_t strata_memory_freed(void);
 int64_t *strata_memory_made(int64_t i);
 void strata_memory_start(_Bool check);
 void strata_memory_threaded(_Bool on);
+void strata_memory_thread_end(void);
 #endif
 
 // A string has nothing in it to drop.
@@ -1314,6 +1315,10 @@ static void *task_main(void *arg) {
   task_origin = NULL;
   forget_reader();
   free_alt_stack();
+#ifdef STRATA_CORE_RT
+  // this thread's free lists and tallies back to the shared ones
+  strata_memory_thread_end();
+#endif
   return NULL;
 }
 
