@@ -381,6 +381,18 @@ impl Parser {
                 ExternItem::Type(name, vec![])
             };
             DeclKind::Extern(ExternDecl { lang, item })
+        } else if self.is_kw("builtin") && matches!(self.peek_at(1), Tok::Ident(k) if k == "thread") && matches!(self.peek_at(2), Tok::Ident(k) if k == "static") {
+            // `builtin thread static calls: 65552`: a block per thread
+            self.next();
+            self.next();
+            self.next();
+            let name = self.ident()?;
+            self.expect_sym(":")?;
+            let size = match self.next() {
+                Tok::Int(n) if n > 0 => n,
+                _ => return Err(self.err(&format!("`builtin thread static {name}` needs its size in bytes: `builtin thread static {name}: 64`"))),
+            };
+            DeclKind::Extern(ExternDecl { lang: Lang::Builtin, item: ExternItem::ThreadStatic(name, size) })
         } else if self.is_kw("builtin") && matches!(self.peek_at(1), Tok::Ident(k) if k == "static") {
             // `builtin static allocator: 512`: a block of bytes, its name its address
             self.next();
