@@ -8,10 +8,10 @@
 #
 # The seed is a `strata` built before: STRATA_SEED, else one installed on the
 # PATH, else the latest release, downloaded (and its SHA-256 checked) into
-# target/seed. Stage A = the seed's build of compiler/ (by compiler/codegen);
-# stage B = stage A's build of it. A and B must be the same bytes (a fixed
-# point); when the seed is an older strata (A and B differ), stage C = B's
-# build of it must be B's bytes instead. B is target/strata, and
+# target/seed. Stage 1 = the seed's build of compiler/ (by compiler/codegen);
+# each next stage is the previous one's build of it, until two in a row are
+# the same bytes (a fixed point: 2 builds with a seed of these sources, up
+# to 4 with an older one). That stage is target/strata, and
 # target/strata.identity its SHA-256, size and modification time (its
 # identity for the caches' keys, read instead of hashing it each run:
 # compiler/c/cache.c).
@@ -58,21 +58,36 @@ mkdir -p "$seed_home/src/llvm"
 ln -s "$root/core" "$seed_home/core"
 ln -s "$root/std" "$seed_home/std"
 ln -s "$root/runtime" "$seed_home/runtime"
+# (the libSystem stub programs are linked against: compiler/c/libSystem.tbd)
+ln -s "$root/compiler" "$seed_home/compiler"
 ln -s "$root/runtime/prelude.strata" "$seed_home/src/llvm/prelude.strata"
 ln -s "$root/runtime/runtime.c" "$seed_home/src/llvm/runtime.c"
-mkdir -p target/stage-a target/stage-b target/stage-c
-STRATA_HOME=$seed_home "$seed" build "$root/compiler" --no-verify --release -o target/stage-a/strata
+# Stage A is the seed's build of these sources; each next stage is the
+# previous one's build of them, until two in a row are the same bytes (a
+# fixed point). A seed built from these sources gives A = B. An older seed
+# (the last release) can take two more: A runs these sources' code but on
+# the seed's runtime and code generation, so B can differ from what B itself
+# builds (C), and C = D. More than four builds is a failure.
+rm -rf target/stages
+mkdir -p target/stages/1
+STRATA_HOME=$seed_home "$seed" build "$root/compiler" --no-verify --release -o target/stages/1/strata
 export STRATA_HOME=$root
-target/stage-a/strata build compiler --no-verify --release -o target/stage-b/strata
-if ! cmp -s target/stage-a/strata target/stage-b/strata; then
-  # the seed compiles differently from these sources (an older strata, such
-  # as the last release): B is these sources' own build, so B's build of
-  # itself, C, must be B again
-  echo "stage A (built by $seed) differs from stage B: building stage C" >&2
-  target/stage-b/strata build compiler --no-verify --release -o target/stage-c/strata
-  cmp -s target/stage-b/strata target/stage-c/strata || { echo "not a fixed point: target/stage-b/strata and target/stage-c/strata (built by it) differ" >&2; exit 1; }
-fi
-mv target/stage-b/strata target/strata
+n=1
+while :; do
+  next=$((n + 1))
+  mkdir -p "target/stages/$next"
+  "target/stages/$n/strata" build compiler --no-verify --release -o "target/stages/$next/strata"
+  if cmp -s "target/stages/$n/strata" "target/stages/$next/strata"; then
+    break
+  fi
+  if [ "$next" -ge 4 ]; then
+    echo "not a fixed point: stages $n and $next (target/stages/) still differ after $next builds" >&2
+    exit 1
+  fi
+  echo "stage $next differs from stage $n (built by it): building stage $((next + 1))" >&2
+  n=$next
+done
+mv "target/stages/$next/strata" target/strata
 echo "$(shasum -a 256 target/strata | cut -d' ' -f1) $(stat -f '%z %m' target/strata)" > target/strata.identity
-rm -rf target/stage-a target/stage-b target/stage-c "$seed_home"
+rm -rf target/stages "$seed_home"
 echo "strata built by itself (target/strata, a fixed point)"
