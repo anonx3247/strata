@@ -31,7 +31,7 @@ fn main() { }
 '''
 
 [[step]]
-strata = ["--file", "r.strata", "render"]
+strata = ["--file", "r.strata", "view", "main"]
 capture = "r.st"
 has = ["type S2 = A | D\n", "fn f(x: A) -> Int", "fn g(x: S2) -> Int", "fn h(e: Problem) -> Int", "fn k(w: B | D) -> Int"]
 
@@ -41,5 +41,5 @@ strata = ["--file", "r2.strata", "edit"]
 from_tmp = "r.st"
 
 [[step]]
-strata = ["--file", "r2.strata", "render"]
+strata = ["--file", "r2.strata", "view", "main"]
 out_file = "r.st"

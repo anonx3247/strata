@@ -5,7 +5,7 @@
     printed:
       before
 ✗ asserts
-    Assert: assertion failed: len(x) == 3 (left of == = 2, right = 3)
+    Assert: assertion failed: len(x) == 3 (left: 2, right: 3)
 
 1 passed, 2 failed
 

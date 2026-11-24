@@ -314,7 +314,7 @@ stdout = '''
 ✓ with_invariant           proven (5 checks)
 ✗ wrong_invariant          Assert violation (found by the solver)
     input:   0
-    invariant failed: i < n (left of < = 0, right = 0) (stack: wrong_invariant)
+    invariant failed: i < n (left: 0, right: 0) (stack: wrong_invariant)
 ✓ find_first               proven (4 checks)
 ~ total                    fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
     not proven: result of `total`: Natural: the solver found a possible counterexample: xs = [], but running it did not fail

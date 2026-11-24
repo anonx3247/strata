@@ -22,7 +22,7 @@ test "f" { assert f() == 10 }
 '''
 
 [[step]]
-strata = ["render", "--file", "b.strata"]
+strata = ["view", "main", "--file", "b.strata"]
 has = ["fn log(s: String) {", "n := 1", "let k: Int = 2", "(a, b) := (3, 4)", "m := a\n  (q, r) := (a, b)", "mut x := 0", "mut y: Int = 10", "x += n + k", "x *= 2", "y -= a - b", "y %= 7"]
 
 [[step]]

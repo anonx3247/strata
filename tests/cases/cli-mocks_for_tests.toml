@@ -34,7 +34,7 @@ test "saving then loading" {
 '''
 
 [[step]]
-strata = ["--file", "m.strata", "render"]
+strata = ["--file", "m.strata", "view", "main"]
 stdout = '''
 from std.fs use Files, FsError
 

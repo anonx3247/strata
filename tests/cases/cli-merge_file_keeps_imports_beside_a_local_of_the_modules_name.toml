@@ -44,7 +44,7 @@ has = ["1 definition from theirs"]
 lacks = ["doesn't check"]
 
 [[step]]
-strata = ["--file", ".", "render", "main"]
+strata = ["--file", ".", "view", "main"]
 dir = "p"
 has = ["  helper() + util.n + 1\n", "  3\n"]
 lacks = ["util.helper"]

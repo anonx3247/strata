@@ -53,7 +53,7 @@ type Status =
 has = ["in label: dropped the arm for `Cancelled` (removed)", "in done: dropped `Cancelled` (removed) from an arm", "in label\n      why: `Lost` is a new variant of `Status`"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ['''
     Shipped { tracking, .. } => "shipped " + tracking,
     Lost(_) => ?pending_''', '''

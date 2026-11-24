@@ -76,7 +76,7 @@ fn derive(derive: Int) -> Int {
 '''
 
 [[step]]
-strata = ["--file", "d.strata", "render"]
+strata = ["--file", "d.strata", "view", "main"]
 out_file = "d.st"
 
 # `derive` stays an ordinary name: the function `derive` checks

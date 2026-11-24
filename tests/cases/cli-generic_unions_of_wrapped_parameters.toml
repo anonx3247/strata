@@ -58,7 +58,7 @@ fn main() {
 '''
 
 [[step]]
-strata = ["--file", "r.strata", "render"]
+strata = ["--file", "r.strata", "view", "main"]
 has = ["fn f(x: Many[Int]) -> Int"]
 
 [[step]]

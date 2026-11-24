@@ -1,37 +1,36 @@
 # cli.rs: modules_contracts_and_files: a folder of files is a set of modules, one per file
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "--split", "split"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "--split", "split"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "model"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "model"]
 out_file = "split/model.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "memory"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "memory"]
 out_file = "split/memory.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "print"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "print"]
 out_file = "split/print.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "sim"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "sim"]
 out_file = "split/sim.st"
 
-# `render` prints one module; with several it asks which
+# `view MODULE` prints one module; `view` alone is the package's map
 [[step]]
-strata = ["render", "--file", "$ROOT/examples/tasks/model.strata"]
+strata = ["view", "main", "--file", "$ROOT/examples/tasks/model.strata"]
 capture = "model-alone.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render", "model"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "model"]
 out_file = "model-alone.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "render"]
-fails = true
-has = ["4 modules, one file each"]
+strata = ["--file", "$ROOT/examples/tasks", "view"]
+has = ["model.", "sim."]
 
 # `module` blocks are gone: a file is a module
 [[step]]
@@ -96,7 +95,7 @@ text = "fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool { len
 has = ["model.same_ids", "implementation only"]
 
 [[step]]
-strata = ["render", "--file", "pkg/model.strata"]
+strata = ["view", "main", "--file", "pkg/model.strata"]
 has = ["all(reported, r -> contains(claimed, r))"]
 
 [[step]]

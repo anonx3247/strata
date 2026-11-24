@@ -64,11 +64,11 @@ strata = ["rename", "Line.qty", "quantity"]
 has = ["renamed shapes.Line.qty → shapes.Line.quantity"]
 
 [[step]]
-strata = ["render", "shapes"]
+strata = ["view", "shapes"]
 has = ["| Round { radius: Int }", "fn measure(self) -> Int {\n    self.quantity", "quantity: Int }"]
 
 [[step]]
-strata = ["render", "main"]
+strata = ["view", "main"]
 has = ["Round { radius } =>", "Line { ..l, quantity: l.quantity + 1 }", "area(Round { radius: 1 })", "bigger(l).measure() == 3", "Line { sku: \"a\", quantity: 2 }"]
 
 [[step]]
@@ -77,17 +77,17 @@ has = ["1 passed"]
 
 # the diff says what was renamed, and folds the code that only follows it
 [[step]]
-strata = ["diff", "--step", "0"]
+strata = ["diff", "--step", "1"]
 has = ["~ shapes.Shape  (variant `Circle` renamed to `Round`)", "only a name changed · 3 references updated"]
 lacks = ["~ area"]
 
 [[step]]
-strata = ["diff", "--step", "1"]
+strata = ["diff", "--step", "2"]
 any_code = true
 has = ["~ shapes.Sized  (method `size` renamed to `measure`)"]
 
 [[step]]
-strata = ["diff", "--step", "2"]
+strata = ["diff", "--step", "3"]
 any_code = true
 has = ["~ shapes.Line  (field `qty` renamed to `quantity`)"]
 
@@ -110,7 +110,7 @@ distinct type Id = String
 strata = ["rename", "Line.sku", "code"]
 
 [[step]]
-strata = ["render", "more"]
+strata = ["view", "more"]
 has = ["pub type Order = { sku: String"]
 
 # `value`, which distinct types also have
@@ -130,7 +130,7 @@ fn both(o: Order, i: Id) -> String {
 strata = ["rename", "Order.value", "amount"]
 
 [[step]]
-strata = ["render", "more"]
+strata = ["view", "more"]
 has = ["f\"{o.amount} {i.value}\""]
 
 [[step]]

@@ -1,6 +1,6 @@
 # cli.rs: static_errors_are_reported
 [[step]]
-strata = ["render", "--file", "$ROOT/examples/orders.strata"]
+strata = ["view", "main", "--file", "$ROOT/examples/orders.strata"]
 capture = "bad.st"
 
 [[step]]
