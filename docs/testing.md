@@ -56,7 +56,7 @@ corpus run as a case.
 | cli.rs | `serve_calls_handle_for_each_request`, `serve_app_capabilities_timers_and_keys`, `serve_runs_an_app`, `serve_apps_take_values_and_forms`, `ui_in_strata_shows_the_code`, `ui_workspace_activity_agents_and_prs`, `ui_page_defines_each_name_once` | b | dropped with `ui`/`serve` (out of v0.1) |
 | build.rs (41) | every test | b | `tests/cases/build-*.toml` (golden: `tests/data/build/expected`, 6 new `iterators-*.out`), `build-options`, `build-jit*`, `build-emit`, `build-unsupported`, `build-no_limits`, `build-extern_c`, `build-io-cancel` |
 | build.rs | `reads_are_cancelled`, its `blocked` program | b | not ported: needs standard input held open (a pipe); the harness's `run_with` closes it |
-| codegen.rs | `compiled_programs_do_what_rust_compiled_ones_do`, `compiler_constructs_do_what_rust_compiled_ones_do` | a→b | `codegen-programs`, `codegen-constructs`: built by the default `strata build`, golden outputs recorded from the llvm.rs builds (`tests/data/build/expected/codegen-*.out`) |
+| codegen.rs | `compiled_programs_do_what_rust_compiled_ones_do`, `compiler_constructs_do_what_rust_compiled_ones_do` | a→b | `codegen-programs-1` … `-5`, `codegen-constructs`: built by the default `strata build`, golden outputs recorded from the llvm.rs builds (`tests/data/build/expected/codegen-*.out`) |
 | codegen.rs | `build_compare_agrees_on_the_programs_and_examples`, `jit_runs_programs_as_built_ones_run`, `jit_traces_as_rust_traces`, `tests_run_as_strata_test_runs_them`, `mocks_as_strata_test_runs_them`, `fuzzing_as_verify_fuzzes`, `compiler_fuzzes_as_verify_fuzzes`, `foreign_calls_do_what_rust_compiled_ones_do`, `core_rt_*_as_in_c` (5), `core_rt_compiled_by_codegen` | a | leave with Rust (`--compare`, llvm.rs, runtime.c side by side); the build, run and test cases cover the Strata side |
 | codegen.rs | `build_and_test_use_compiler_codegen_by_default`, `refuses_what_it_does_not_compile_yet`, `leaves_out_what_verify_proved`, `package_build_leaves_out_what_verify_proved`, `a_let_of_a_union_with_refined_members_is_checked`, `distinct_members_of_unions_are_checked_on_their_field`, `jit_keeps_compile_time_values_between_runs`, `jit_uses_the_std_library_not_the_compilers_copies`, `std_precompiled_once_links_with_programs`, `core_rt_that_doesnt_check_isnt_compiled`, `compiler_package_compiles_with_codegen` | b | to port (they name `compiler` subcommands directly: `codegen --proofs`, `jit`, `--library`; port once agent A's CLI settles their names); `cli-proven_checks_are_left_out_of_builds` covers proofs in builds |
 | eval.rs | `programs_run_as_compiled` | b | `compiler/eval` on the build programs: the `build-*` goldens hold the outputs; a case once the compiled `strata` has an eval command |
@@ -85,3 +85,18 @@ Against `target/release/strata` built from main (aa07a2c), with
   `k.bump()` on a `mut self` method now needs `mut k.bump()`.
 - `loops_chains_and_80_columns` counted long lines in the output of `render`
   on a package, which is an error message: it checked nothing (left out).
+
+Against the same executable with its defaults (compiler/codegen builds, the
+Strata verifier and JIT), 196 cases: 143 pass, 51 fail, and 2 run past the
+300 s limit (`cli-comptime_in_ordinary_code_runs_while_compiling`,
+`cli-long_list_literals_compile_in_linear_time`). Among the failures:
+programs that `run` prints nothing for (`cli-comparing_with_a_bare_constructor_is_a_tag_test`,
+`cli-command_line_options_are_read_into_a_record`, `cli-commands_run_programs`,
+`cli-run_a_binary_file`), built programs that leak or crash
+(`build-clock`: 1 object left; `build-capabilities`: signal 11), field
+refinements not checked on assignment (`build-data`, `build-dyn`), fault
+messages that name `Graphemes.at` without its module, `core`'s tests not
+found by `--file core test`, the Strata verifier's solver flags and missing
+summary line (`cli-solver_flags_follow_the_solver`,
+`cli-example_checks_tests_and_verifies`), and checker gaps (`cli-self_arguments_on_trait_values`,
+`cli-shared_method_names_across_modules`, `cli-procedural_mutation_is_explicit`).
