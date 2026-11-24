@@ -12,13 +12,13 @@ strata = ["build", "arena.strata", "-o", "prog"]
 
 [[step]]
 run = ["./prog"]
-stdout = "box 50\n50\nitem 49\n617283945061728394506150\nr50\n[7, 14]\na50\n[1, 2, 3]\nSome(\"item 2\")\n(\"box 2\", [\"item 0\", \"item 1\"], \"xbox 2\")\nbox 3\nbox 5!\n10\nbox 4 box 6\n594\n[100000000000000000000, \"big 4\", Rect { w: 9, h: 9, name: \"u9\" }]\n"
+stdout = "box 50\n50\nitem 49\n617283945061728394506150\nr50\n[7, 14]\na50\n[1, 2, 3]\nSome(\"item 2\")\n(\"box 2\", [\"item 0\", \"item 1\"], \"xbox 2\")\nbox 3\nbox 5!\n10\nbox 4 box 6\n594\n[100000000000000000000, \"big 4\", Rect { w: 9, h: 9, name: \"u9\" }]\n(34, 11, 24)\n[1, 2, 3]\n"
 
 [[step]]
 run = ["./prog"]
 memory = true
-stdout = "box 50\n50\nitem 49\n617283945061728394506150\nr50\n[7, 14]\na50\n[1, 2, 3]\nSome(\"item 2\")\n(\"box 2\", [\"item 0\", \"item 1\"], \"xbox 2\")\nbox 3\nbox 5!\n10\nbox 4 box 6\n594\n[100000000000000000000, \"big 4\", Rect { w: 9, h: 9, name: \"u9\" }]\n"
+stdout = "box 50\n50\nitem 49\n617283945061728394506150\nr50\n[7, 14]\na50\n[1, 2, 3]\nSome(\"item 2\")\n(\"box 2\", [\"item 0\", \"item 1\"], \"xbox 2\")\nbox 3\nbox 5!\n10\nbox 4 box 6\n594\n[100000000000000000000, \"big 4\", Rect { w: 9, h: 9, name: \"u9\" }]\n(34, 11, 24)\n[1, 2, 3]\n"
 
 [[step]]
 strata = ["run", "arena.strata"]
-stdout = "box 50\n50\nitem 49\n617283945061728394506150\nr50\n[7, 14]\na50\n[1, 2, 3]\nSome(\"item 2\")\n(\"box 2\", [\"item 0\", \"item 1\"], \"xbox 2\")\nbox 3\nbox 5!\n10\nbox 4 box 6\n594\n[100000000000000000000, \"big 4\", Rect { w: 9, h: 9, name: \"u9\" }]\n"
+stdout = "box 50\n50\nitem 49\n617283945061728394506150\nr50\n[7, 14]\na50\n[1, 2, 3]\nSome(\"item 2\")\n(\"box 2\", [\"item 0\", \"item 1\"], \"xbox 2\")\nbox 3\nbox 5!\n10\nbox 4 box 6\n594\n[100000000000000000000, \"big 4\", Rect { w: 9, h: 9, name: \"u9\" }]\n(34, 11, 24)\n[1, 2, 3]\n"
