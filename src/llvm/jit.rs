@@ -128,6 +128,7 @@ unsafe extern "C" {
     fn strata_raw_reserve();
     fn strata_raw_size();
     fn strata_raw_fail();
+    fn strata_soft_fault();
     fn strata_int_to_float();
     fn strata_int_lit();
     fn strata_int_eq();
@@ -148,19 +149,10 @@ unsafe extern "C" {
     fn strata_show_bool();
     fn strata_debug_str();
     fn strata_print();
-    fn strata_str_split();
     fn strata_str_trim();
-    fn strata_str_contains();
-    fn strata_str_starts_with();
-    fn strata_str_ends_with();
-    fn strata_str_index_of();
-    fn strata_str_reverse();
-    fn strata_str_chars();
     fn strata_str_at();
     fn strata_str_at_or_fault();
     fn strata_str_slice();
-    fn strata_str_replace();
-    fn strata_str_repeat();
     fn strata_str_case();
     fn strata_str_is();
     fn strata_str_ord();
@@ -290,6 +282,7 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_raw_reserve", strata_raw_reserve as *const () as usize),
         ("strata_raw_size", strata_raw_size as *const () as usize),
         ("strata_raw_fail", strata_raw_fail as *const () as usize),
+        ("strata_soft_fault", strata_soft_fault as *const () as usize),
         ("strata_int_to_float", strata_int_to_float as *const () as usize),
         ("strata_int_lit", strata_int_lit as *const () as usize),
         ("strata_int_eq", strata_int_eq as *const () as usize),
@@ -310,19 +303,10 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_show_bool", strata_show_bool as *const () as usize),
         ("strata_debug_str", strata_debug_str as *const () as usize),
         ("strata_print", strata_print as *const () as usize),
-        ("strata_str_split", strata_str_split as *const () as usize),
         ("strata_str_trim", strata_str_trim as *const () as usize),
-        ("strata_str_contains", strata_str_contains as *const () as usize),
-        ("strata_str_starts_with", strata_str_starts_with as *const () as usize),
-        ("strata_str_ends_with", strata_str_ends_with as *const () as usize),
-        ("strata_str_index_of", strata_str_index_of as *const () as usize),
-        ("strata_str_reverse", strata_str_reverse as *const () as usize),
-        ("strata_str_chars", strata_str_chars as *const () as usize),
         ("strata_str_at", strata_str_at as *const () as usize),
         ("strata_str_at_or_fault", strata_str_at_or_fault as *const () as usize),
         ("strata_str_slice", strata_str_slice as *const () as usize),
-        ("strata_str_replace", strata_str_replace as *const () as usize),
-        ("strata_str_repeat", strata_str_repeat as *const () as usize),
         ("strata_str_case", strata_str_case as *const () as usize),
         ("strata_str_is", strata_str_is as *const () as usize),
         ("strata_str_ord", strata_str_ord as *const () as usize),
