@@ -9,6 +9,7 @@
 #include <llvm-c/IRReader.h>
 #include <llvm-c/LLJIT.h>
 #include <llvm-c/Orc.h>
+#include <llvm-c/Support.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
@@ -95,8 +96,23 @@ void toolchain_frame_pointers(LLVMModuleRef mod) {
   }
 }
 
+// Unoptimized machine code by fast instruction selection (FastISel), not
+// the GlobalISel LLVM picks for AArch64 at -O0: half the time for
+// compiler/'s code (4.5 s -> 2.5 s), code as good for -O0. (The register
+// allocator at -O0 is the fast one already.) An option of the process, as
+// the JIT makes its target machines itself, set once: nothing changes above
+// -O0, where AArch64 selects with SelectionDAG.
+void toolchain_fast_isel(void) {
+  static int done;
+  if (done) return;
+  done = 1;
+  const char *args[] = {"strata", "-global-isel=0"};
+  LLVMParseCommandLineOptions(2, args, NULL);
+}
+
 // A JIT's builder for `jit_opt`: the host's CPU and features, at its level.
 static LLVMOrcLLJITBuilderRef jit_builder(void) {
+  toolchain_fast_isel();
   LLVMOrcLLJITBuilderRef b = LLVMOrcCreateLLJITBuilder();
   if (jit_opt < 0) return b;
   char *triple = LLVMGetDefaultTargetTriple();
@@ -143,6 +159,10 @@ static void optimized(LLVMModuleRef mod) {
   LLVMDisposeMessage(triple);
 }
 
+// The IR text as a module, in a context of its own (c/ir.c): 0, else 1
+// and why.
+int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
+
 static int failed(LLVMErrorRef e, const char *what) {
   char *m = LLVMGetErrorMessage(e);
   fprintf(stderr, "error: the JIT %s: %s\n", what, m);
@@ -158,14 +178,10 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
     fprintf(stderr, "error: the JIT has no target for this machine\n");
     return NULL;
   }
-  LLVMContextRef ctx = LLVMContextCreate();
-  LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata");
+  LLVMContextRef ctx;
   LLVMModuleRef mod;
   char *msg = NULL;
-  timings_begin("LLVM: parse IR");
-  LLVMBool rejected = LLVMParseIRInContext(ctx, buf, &mod, &msg);
-  timings_end("LLVM: parse IR");
-  if (rejected) {
+  if (toolchain_module(ir, &ctx, &mod, &msg)) {
     fprintf(stderr, "error: LLVM rejected the generated IR: %s\n", msg ? msg : "");
     LLVMDisposeMessage(msg);
     return NULL;
@@ -346,11 +362,10 @@ int32_t jit_fuzz_load(const char *ir) {
     fuzz_error = strdup("the JIT has no target for this machine");
     return -1;
   }
-  LLVMContextRef ctx = LLVMContextCreate();
-  LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "strata-fuzz");
+  LLVMContextRef ctx;
   LLVMModuleRef mod;
   char *msg = NULL;
-  if (LLVMParseIRInContext(ctx, buf, &mod, &msg)) {
+  if (toolchain_module(ir, &ctx, &mod, &msg)) {
     fuzz_error = strdup(msg ? msg : "LLVM rejected the generated IR");
     LLVMDisposeMessage(msg);
     return -1;

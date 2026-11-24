@@ -30,3 +30,15 @@ golden = "tests/data/build/expected/tasks-tasks.out"
 strata = ["run", "tasks.strata"]
 memory = true
 golden = "tests/data/build/expected/tasks-tasks.out"
+
+[[step]]
+save = "push.strata"
+from = "shared-push.st"
+
+[[step]]
+strata = ["build", "push.strata", "-o", "push"]
+
+[[step]]
+run = ["./push"]
+memory = true
+stdout = "0\n[0, 1, 2, 3, 4]\n"
