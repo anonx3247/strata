@@ -42,7 +42,7 @@ step() { echo "release: $*" >&2; }
 if [ -z "$COMPILER" ]; then
   [ -f target/lld/liblld.a ] || tools/build-lld.sh
   step "building the compiler (strata build compiler)"
-  STRATA_BACKEND=rust target/release/strata build --rust --no-verify compiler -o "$DIST/compiler.tmp" >"$DIST/compiler-build.log" 2>&1 \
+  STRATA_BACKEND=rust target/release/strata build --rust --no-verify --release compiler -o "$DIST/compiler.tmp" >"$DIST/compiler-build.log" 2>&1 \
     || { tail -20 "$DIST/compiler-build.log" >&2; exit 1; }
   COMPILER=$DIST/compiler.tmp
 fi

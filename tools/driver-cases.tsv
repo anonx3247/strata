@@ -45,3 +45,28 @@ examples	run math.strata factorial "x"
 examples	run tasks model.done 1
 examples	--file wc check
 examples	--file wc verify
+# --json
+examples	builtins --json
+examples	--file math.strata check --json
+examples	--file orders.strata check --json
+examples	--file orders.strata holes --json
+examples	--file tasks check --json
+examples/wc	log --json
+# views
+examples	--file tasks render
+examples	--file tasks render model
+examples	--file tasks render nope
+examples	--file tasks view
+examples	--file tasks view --level 2
+examples/wc	log
+# test, run and build options
+examples	--file wc test --with-deps
+examples	--file math.strata test --release
+examples	run hello --release
+examples	build hello -o $OUT/hello-release --release
+# lex and parse of a package, core
+examples	--file tasks lex
+examples	--file tasks parse
+examples	--file tasks parse --stored
+examples	lex hello
+.	--file core check

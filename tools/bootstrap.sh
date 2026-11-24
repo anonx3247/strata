@@ -33,11 +33,12 @@ fi
 # (built where they are found: core/, std/ and the prelude are this
 # repository's; the compiler package isn't verified here: `strata
 # verify`. Each stage is named `strata`, in a folder of its own: the
-# linker signs an executable under its file's name.)
+# linker signs an executable under its file's name. `--release`: optimized,
+# as builds are unoptimized by default.)
 export STRATA_HOME=$root
 mkdir -p target/stage-a target/stage-b
-"$seed" build compiler --no-verify -o target/stage-a/strata
-target/stage-a/strata build compiler --no-verify -o target/stage-b/strata
+"$seed" build compiler --no-verify --release -o target/stage-a/strata
+target/stage-a/strata build compiler --no-verify --release -o target/stage-b/strata
 cmp -s target/stage-a/strata target/stage-b/strata || { echo "not a fixed point: target/stage-a/strata (built by $seed) and target/stage-b/strata (built by it) differ" >&2; exit 1; }
 mv target/stage-b/strata target/strata
 rm -rf target/stage-a target/stage-b
