@@ -1,0 +1,160 @@
+# codegen.rs: compiled_programs_do_what_rust_compiled_ones_do (part 2):
+# built, run, and compared with what the build of llvm.rs printed
+# (recorded in tests/data/build/expected/codegen-programs-NAME.out)
+
+[[step]]
+save = "refined_options.strata"
+from = "refined_options.st"
+
+[[step]]
+strata = ["build", "refined_options.strata", "-o", "refined_options"]
+
+[[step]]
+run = ["./refined_options"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-refined_options.out"
+
+[[step]]
+save = "regex_matches.strata"
+from = "regex_matches.st"
+
+[[step]]
+strata = ["build", "regex_matches.strata", "-o", "regex_matches"]
+
+[[step]]
+run = ["./regex_matches"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-regex_matches.out"
+
+[[step]]
+save = "container_refinements.strata"
+from = "container_refinements.st"
+
+[[step]]
+strata = ["build", "container_refinements.strata", "-o", "container_refinements"]
+
+[[step]]
+run = ["./container_refinements"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-container_refinements.out"
+
+[[step]]
+save = "container_refinement_fault.strata"
+from = "container_refinement_fault.st"
+
+[[step]]
+strata = ["build", "container_refinement_fault.strata", "-o", "container_refinement_fault"]
+
+[[step]]
+run = ["./container_refinement_fault"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-container_refinement_fault.out"
+
+[[step]]
+save = "refined_record_assigned.strata"
+from = "refined_record_assigned.st"
+
+[[step]]
+strata = ["build", "refined_record_assigned.strata", "-o", "refined_record_assigned"]
+
+[[step]]
+run = ["./refined_record_assigned"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-refined_record_assigned.out"
+
+[[step]]
+save = "refined_record_broken.strata"
+from = "refined_record_broken.st"
+
+[[step]]
+strata = ["build", "refined_record_broken.strata", "-o", "refined_record_broken"]
+
+[[step]]
+run = ["./refined_record_broken"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-refined_record_broken.out"
+
+[[step]]
+save = "refined_union.strata"
+from = "refined_union.st"
+
+[[step]]
+strata = ["build", "refined_union.strata", "-o", "refined_union"]
+
+[[step]]
+run = ["./refined_union"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-refined_union.out"
+
+[[step]]
+save = "refined_union_broken.strata"
+from = "refined_union_broken.st"
+
+[[step]]
+strata = ["build", "refined_union_broken.strata", "-o", "refined_union_broken"]
+
+[[step]]
+run = ["./refined_union_broken"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-refined_union_broken.out"
+
+[[step]]
+save = "iterator_parameter.strata"
+from = "iterator_parameter.st"
+
+[[step]]
+strata = ["build", "iterator_parameter.strata", "-o", "iterator_parameter"]
+
+[[step]]
+run = ["./iterator_parameter"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-iterator_parameter.out"
+
+[[step]]
+save = "supervised_string_panic.strata"
+from = "supervised_string_panic.st"
+
+[[step]]
+strata = ["build", "supervised_string_panic.strata", "-o", "supervised_string_panic"]
+
+[[step]]
+run = ["./supervised_string_panic"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-supervised_string_panic.out"
+
+[[step]]
+save = "iterator_let.strata"
+from = "iterator_let.st"
+
+[[step]]
+strata = ["build", "iterator_let.strata", "-o", "iterator_let"]
+
+[[step]]
+run = ["./iterator_let"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-iterator_let.out"
+
+[[step]]
+save = "iterators.strata"
+from = "iterators.st"
+
+[[step]]
+strata = ["build", "iterators.strata", "-o", "iterators"]
+
+[[step]]
+run = ["./iterators"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-iterators.out"
+
+[[step]]
+save = "iterator_loops.strata"
+from = "iterator_loops.st"
+
+[[step]]
+strata = ["build", "iterator_loops.strata", "-o", "iterator_loops"]
+
+[[step]]
+run = ["./iterator_loops"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-iterator_loops.out"
+

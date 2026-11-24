@@ -1,0 +1,160 @@
+# codegen.rs: compiled_programs_do_what_rust_compiled_ones_do (part 1):
+# built, run, and compared with what the build of llvm.rs printed
+# (recorded in tests/data/build/expected/codegen-programs-NAME.out)
+
+[[step]]
+save = "console.strata"
+from = "console.st"
+
+[[step]]
+strata = ["build", "console.strata", "-o", "console"]
+
+[[step]]
+run = ["./console"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-console.out"
+
+[[step]]
+save = "recorder.strata"
+from = "recorder.st"
+
+[[step]]
+strata = ["build", "recorder.strata", "-o", "recorder"]
+
+[[step]]
+run = ["./recorder"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-recorder.out"
+
+[[step]]
+save = "own_capability.strata"
+from = "own_capability.st"
+
+[[step]]
+strata = ["build", "own_capability.strata", "-o", "own_capability"]
+
+[[step]]
+run = ["./own_capability"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-own_capability.out"
+
+[[step]]
+save = "disk_and_process.strata"
+from = "disk_and_process.st"
+
+[[step]]
+strata = ["build", "disk_and_process.strata", "-o", "disk_and_process"]
+
+[[step]]
+run = ["./disk_and_process"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-disk_and_process.out"
+
+[[step]]
+save = "console_input.strata"
+from = "console_input.st"
+
+[[step]]
+strata = ["build", "console_input.strata", "-o", "console_input"]
+
+[[step]]
+run = ["./console_input"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-console_input.out"
+
+[[step]]
+save = "json_and_regex.strata"
+from = "json_and_regex.st"
+
+[[step]]
+strata = ["build", "json_and_regex.strata", "-o", "json_and_regex"]
+
+[[step]]
+run = ["./json_and_regex"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-json_and_regex.out"
+
+[[step]]
+save = "launcher_and_json.strata"
+from = "launcher_and_json.st"
+
+[[step]]
+strata = ["build", "launcher_and_json.strata", "-o", "launcher_and_json"]
+
+[[step]]
+run = ["./launcher_and_json"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-launcher_and_json.out"
+
+[[step]]
+save = "tasks_and_channels.strata"
+from = "tasks_and_channels.st"
+
+[[step]]
+strata = ["build", "tasks_and_channels.strata", "-o", "tasks_and_channels"]
+
+[[step]]
+run = ["./tasks_and_channels"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-tasks_and_channels.out"
+
+[[step]]
+save = "channel_in_scope.strata"
+from = "channel_in_scope.st"
+
+[[step]]
+strata = ["build", "channel_in_scope.strata", "-o", "channel_in_scope"]
+
+[[step]]
+run = ["./channel_in_scope"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-channel_in_scope.out"
+
+[[step]]
+save = "select_race_supervised.strata"
+from = "select_race_supervised.st"
+
+[[step]]
+strata = ["build", "select_race_supervised.strata", "-o", "select_race_supervised"]
+
+[[step]]
+run = ["./select_race_supervised"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-select_race_supervised.out"
+
+[[step]]
+save = "cancelling_and_timers.strata"
+from = "cancelling_and_timers.st"
+
+[[step]]
+strata = ["build", "cancelling_and_timers.strata", "-o", "cancelling_and_timers"]
+
+[[step]]
+run = ["./cancelling_and_timers"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-cancelling_and_timers.out"
+
+[[step]]
+save = "panic_in_a_task.strata"
+from = "panic_in_a_task.st"
+
+[[step]]
+strata = ["build", "panic_in_a_task.strata", "-o", "panic_in_a_task"]
+
+[[step]]
+run = ["./panic_in_a_task"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-panic_in_a_task.out"
+
+[[step]]
+save = "options_without_numbers.strata"
+from = "options_without_numbers.st"
+
+[[step]]
+strata = ["build", "options_without_numbers.strata", "-o", "options_without_numbers"]
+
+[[step]]
+run = ["./options_without_numbers"]
+keep_stack = true
+golden = "tests/data/build/expected/codegen-programs-options_without_numbers.out"
+
