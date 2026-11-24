@@ -7,12 +7,97 @@
 # the Rust front end; later `strata` will run it as its front end.
 name = "compiler"
 
-# LLVM's C API, for the JIT (`compiler jit`): where Homebrew puts LLVM
+# LLVM, linked in statically: the JIT (`compiler jit`, c/jit.c), and the
+# toolchain (c/toolchain.cpp): IR to object files, and lld's Mach-O linker
+# (target/lld/liblld.a, built by tools/build-lld.sh), so that `strata build`
+# needs no C compiler or linker. Homebrew's LLVM and zstd (`brew install
+# llvm zstd`); lld from source (tools/build-lld.sh). The libraries are
+# `llvm-config --link-static --libs aarch64 orcjit irreader passes lto
+# objcarcopts option textapi debuginfodwarf cgdata bitwriter`.
 [native]
-sources = ["c/jit.c", "c/driver.c"]
-libs = ["LLVM-C"]
+# (zstd, which LLVM's compression calls, statically too: Homebrew's
+# libzstd.dylib isn't on a user's machine; zlib is macOS's)
+sources = ["c/jit.c", "c/driver.c", "c/toolchain.cpp", "/opt/homebrew/opt/zstd/lib/libzstd.a"]
+libs = [
+  "LLVMLTO",
+  "LLVMExtensions",
+  "Polly",
+  "PollyISL",
+  "LLVMPlugins",
+  "LLVMOrcJIT",
+  "LLVMWindowsDriver",
+  "LLVMJITLink",
+  "LLVMOption",
+  "LLVMExecutionEngine",
+  "LLVMRuntimeDyld",
+  "LLVMOrcTargetProcess",
+  "LLVMOrcShared",
+  "LLVMAArch64Disassembler",
+  "LLVMMCDisassembler",
+  "LLVMAArch64AsmParser",
+  "LLVMAArch64CodeGen",
+  "LLVMPasses",
+  "LLVMIRPrinter",
+  "LLVMHipStdPar",
+  "LLVMCoroutines",
+  "LLVMipo",
+  "LLVMInstrumentation",
+  "LLVMVectorize",
+  "LLVMSandboxIR",
+  "LLVMLinker",
+  "LLVMFrontendOpenMP",
+  "LLVMFrontendDirective",
+  "LLVMFrontendAtomic",
+  "LLVMFrontendOffloading",
+  "LLVMObjectYAML",
+  "LLVMGlobalISel",
+  "LLVMSelectionDAG",
+  "LLVMCFGuard",
+  "LLVMAsmPrinter",
+  "LLVMCodeGen",
+  "LLVMTarget",
+  "LLVMScalarOpts",
+  "LLVMInstCombine",
+  "LLVMAggressiveInstCombine",
+  "LLVMObjCARCOpts",
+  "LLVMTransformUtils",
+  "LLVMCGData",
+  "LLVMBitWriter",
+  "LLVMAnalysis",
+  "LLVMProfileData",
+  "LLVMSymbolize",
+  "LLVMDebugInfoBTF",
+  "LLVMDebugInfoPDB",
+  "LLVMDebugInfoMSF",
+  "LLVMDebugInfoCodeView",
+  "LLVMDebugInfoGSYM",
+  "LLVMDebugInfoDWARF",
+  "LLVMObject",
+  "LLVMTextAPI",
+  "LLVMMCParser",
+  "LLVMIRReader",
+  "LLVMAsmParser",
+  "LLVMBitReader",
+  "LLVMFrontendHLSL",
+  "LLVMCore",
+  "LLVMRemarks",
+  "LLVMBitstreamReader",
+  "LLVMAArch64Desc",
+  "LLVMCodeGenTypes",
+  "LLVMAArch64Utils",
+  "LLVMAArch64Info",
+  "LLVMMC",
+  "LLVMDebugInfoDWARFLowLevel",
+  "LLVMBinaryFormat",
+  "LLVMTargetParser",
+  "LLVMSupport",
+  "LLVMDemangle",
+  "lld",
+  "c++",
+  "z",
+]
 include_dirs = ["/opt/homebrew/opt/llvm/include"]
-lib_dirs = ["/opt/homebrew/opt/llvm/lib"]
+lib_dirs = ["/opt/homebrew/opt/llvm/lib", "../target/lld"]
 
 # Compile-time code is compiled and run by the JIT, and its value read back
 # from memory by its type (codegen's `read_back`, core.values' `Raw`)
