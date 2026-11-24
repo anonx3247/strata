@@ -72,6 +72,19 @@ static const char *CPU = "apple-m1";
 
 const char *toolchain_triple(void) { return TRIPLE; }
 
+// What an object `toolchain_object` makes depends on besides its IR and
+// optimization level: LLVM's version and what it compiles for. Part of the
+// keys of the objects the caches keep by their IR (std's library, core.rt),
+// so a compiler with another LLVM or target makes its own. Change it with
+// anything here that changes the code made from the same IR.
+const char *toolchain_settings(void) {
+  static char s[160];
+  unsigned major, minor, patch;
+  LLVMGetVersion(&major, &minor, &patch);
+  snprintf(s, sizeof s, "LLVM %u.%u.%u %s %s PIC", major, minor, patch, TRIPLE, CPU);
+  return s;
+}
+
 // Compile IR text to an object file at `out`, optimized at `opt` (0-3: the
 // passes of -O<opt>, then code generated at that level). 0 when it is
 // written, else 1 (`toolchain_error` says why).

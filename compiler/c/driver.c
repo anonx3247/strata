@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -28,6 +29,13 @@ int32_t driver_setenv(const char *name, const char *value) { return setenv(name,
 
 // This process's id.
 int64_t driver_pid(void) { return (int64_t)getpid(); }
+
+// Whether compiler/codegen's output `ir` has a line starting with `error`
+// (`codegen_errors`): 1, else 0. In C: the program's IR is tens of
+// megabytes, searched once a build.
+int32_t driver_has_error_line(const char *ir) {
+  return strncmp(ir, "error", 5) == 0 || strstr(ir, "\nerror") != NULL;
+}
 
 static pid_t pager_pid = -1;
 
