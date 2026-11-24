@@ -1,0 +1,143 @@
+# An edit that changes nothing does nothing (nothing written, checked or
+# logged); one that changes something writes only the module files it
+# changes, and checks only what it can affect: the definitions it changed,
+# and the uses of what changed in its interface (found by the dependencies
+# module headers list, and by the names a definition is written with: a
+# field read on a value whose type it never names)
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "orders.strata"
+text = '''
+pub type Order = { id: String, total: Int }
+
+pub fn make(id: String) -> Order {
+  Order { id, total: 0 }
+}
+
+pub fn charge(o: Order) -> Int {
+  o.total + 1
+}
+'''
+
+[[step]]
+save = "billing.strata"
+text = '''
+from orders use Order, charge
+
+pub fn invoice(o: Order) -> Int {
+  charge(o) * 2
+}
+
+pub fn total_of(id: String) -> Int {
+  orders.make(id).total
+}
+
+// broken, and nothing an edit of `charge`'s body can affect
+fn stale() -> Int {
+  "not a number"
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+from orders use make, charge
+
+fn twice(id: String) -> Int {
+  charge(make(id)) * 2
+}
+'''
+
+# the files as they are, dated in the past
+[[step]]
+run = ["sh", "-c", "touch -t 200001010000 *.strata && touch -t 200101010000 marker && cksum *.strata > before.txt && (cat strata.log 2>/dev/null; true) > log-before.txt"]
+
+# no change: nothing written, checked or logged
+[[step]]
+strata = ["edit", "orders"]
+text = '''
+pub fn charge(o: Order) -> Int {
+  o.total + 1
+}
+'''
+has = ["no changes: every definition given is as stored (nothing written, checked or logged)"]
+lacks = ["stale", "rejected"]
+
+[[step]]
+run = ["sh", "-c", "test -z \"$(find . -type f -name '*.strata' -newer marker)\" && cksum *.strata | diff - before.txt && (cat strata.log 2>/dev/null; true) | diff - log-before.txt"]
+
+# a body changed: only its module's file is written, only it is checked (the
+# broken `stale` elsewhere isn't)
+[[step]]
+strata = ["edit", "orders"]
+text = '''
+pub fn charge(o: Order) -> Int {
+  o.total + 2
+}
+'''
+has = ["implementation only", "checked 1 definition of"]
+lacks = ["stale", "rejected"]
+
+[[step]]
+run = ["bash", "-c", "find . -type f -name '*.strata' -newer marker | sort > written.txt && echo ./orders.strata | diff - written.txt && cksum billing.strata main.strata | diff - <(grep -v orders.strata before.txt)"]
+
+# an interface changed: its uses are checked, in every module, and those it
+# breaks become holes of a pending change
+[[step]]
+strata = ["edit", "orders"]
+text = '''
+pub fn charge(o: Order, extra: Int) -> Int {
+  o.total + extra
+}
+'''
+has = ["the edit breaks 2 uses elsewhere", "in billing.invoice", "in twice"]
+lacks = ["stale"]
+
+[[step]]
+strata = ["abort"]
+
+# a field gone: its reads are found even where the type isn't named
+[[step]]
+strata = ["edit", "orders"]
+text = '''
+pub type Order = { id: String, amount: Int }
+'''
+has = ["the edit breaks", "in billing.total_of", "in orders.charge", "in orders.make"]
+lacks = ["stale"]
+
+[[step]]
+strata = ["abort"]
+
+[[step]]
+run = ["bash", "-c", "cksum billing.strata main.strata | diff - <(grep -v orders.strata before.txt)"]
+
+# `--file F edit`, outside any log: the same
+[[step]]
+run = ["sh", "-c", "touch -t 200001010000 *.strata"]
+
+[[step]]
+strata = ["--file", "orders.strata", "edit"]
+text = '''
+pub fn charge(o: Order) -> Int {
+  o.total + 2
+}
+'''
+has = ["no changes: every definition given is as stored"]
+
+[[step]]
+run = ["sh", "-c", "test -z \"$(find . -type f -name '*.strata' -newer marker)\""]
+
+[[step]]
+strata = ["--file", "orders.strata", "edit"]
+text = '''
+pub fn charge(o: Order) -> Int {
+  o.total + 3
+}
+'''
+has = ["1 definition changed"]
+
+[[step]]
+run = ["bash", "-c", "find . -type f -name '*.strata' -newer marker | diff - <(echo ./orders.strata)"]
