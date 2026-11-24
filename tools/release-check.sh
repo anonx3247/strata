@@ -54,6 +54,8 @@ test "letter counts" {
 EOF
 fail() { echo "release-check: $*" >&2; exit 1; }
 clean "$R/bin/strata" --version | grep -q '^strata ' || fail "--version"
+# (lib/strata/VERSION is the compiler's own version: release.sh asks it)
+[ "strata $(cat "$L/VERSION")" = "$(clean "$R/bin/strata" --version)" ] || fail "lib/strata/VERSION isn't bin/strata's --version"
 # (its identity, read from lib/strata/IDENTITY instead of hashing it: still
 # bin/strata's after unpacking)
 [ "$(cat "$L/IDENTITY")" = "$(shasum -a 256 "$R/bin/strata" | cut -d' ' -f1) $(stat -f '%z %m' "$R/bin/strata")" ] || fail "lib/strata/IDENTITY isn't bin/strata's"

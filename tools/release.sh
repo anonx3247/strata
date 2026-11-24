@@ -44,7 +44,6 @@
 set -e
 cd "$(dirname "$0")/.."
 REPO=$(pwd)
-VERSION=0.2.0
 PLATFORM=macos-arm64
 DIST=$REPO/target/release-dist
 ROOT=$DIST/strata
@@ -64,6 +63,10 @@ if [ -z "$COMPILER" ]; then
   cp target/strata "$DIST/compiler.tmp"
   COMPILER=$DIST/compiler.tmp
 fi
+# the release's version: the compiler's own (`strata --version`, compiler/
+# main's `version`), the one place it is written
+VERSION=$("$COMPILER" --version | sed -n 's/^strata //p')
+[ -n "$VERSION" ] || { echo "release: $COMPILER --version says no version" >&2; exit 1; }
 cp "$COMPILER" "$ROOT/bin/strata"
 strip -x "$ROOT/bin/strata" 2>/dev/null && codesign -f -s - "$ROOT/bin/strata" 2>/dev/null || true
 S=$ROOT/bin/strata
