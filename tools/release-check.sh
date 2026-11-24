@@ -64,7 +64,7 @@ clean "$R/bin/strata" codegen --precompiled "$L/std/names" "$H/wc" > "$H/wc.ll"
 ! grep -q '^error' "$H/wc.ll" || fail "codegen wc"
 clean "$R/bin/strata" object "$H/wc.ll" "$H/wc.o" || fail "object"
 clean "$R/bin/strata" link -arch arm64 -platform_version macos 13.0 13.0 -Z -L "$L" -lSystem -o "$H/wc.exe" \
-  "$H/wc.o" "$L/core_rt.o" "$L/runtime-core.o" "$L/std/std.o" || fail "link"
+  "$H/wc.o" "$L/runtime-lto.o" "$L/std/std.o" || fail "link"
 printf 'a b c\nd e\n' > "$H/in.txt"
 clean "$H/wc.exe" "$H/in.txt" | grep -q '^2	5	10	' || fail "wc built"
 clean "$R/bin/strata" verify "$H/math.strata" > "$H/verify.out" 2>&1 || true
@@ -78,6 +78,14 @@ user run hello
 grep -q '^hello, world!$' "$H/u.out" || fail "run hello"
 user build wc -o wcx
 clean "$H/wcx" "$H/in.txt" | grep -q '^2	5	10	' || fail "wcx (built by \`strata build wc\`)"
+# a first build (a fresh own cache) compiles the program alone: the runtime
+# (lib/strata/runtime-lto.o) and std (std/std.o) are the release's, never
+# compiled on the user's machine (no C compiler, no core.rt, no std library)
+clean STRATA_CACHE="$H/first-build" "$R/bin/strata" build wc -o wcf --no-verify --timings > "$H/u.out" 2>&1 \
+  || { cat "$H/u.out" >&2; fail "first build wc"; }
+! grep -q -e 'C compiler' -e 'std library' "$H/u.out" || { cat "$H/u.out" >&2; fail "a first build compiled C or std's library"; }
+made=$(cd "$H/first-build" && ls -d core-rt std-library objects/runtime-* 2>/dev/null || true)
+[ -z "$made" ] || fail "a first build made what the release ships: $made"
 user --file wc run -- "$H/in.txt"
 grep -q '^2	5	10	' "$H/u.out" || fail "--file wc run"
 user check math.strata

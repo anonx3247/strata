@@ -8,9 +8,11 @@
 #     VERSION
 #     core/ std/                    core's and std's modules (sources)
 #     runtime/prelude.strata        the prelude codegen compiles programs with
-#     runtime.o runtime-core.o      the C runtime, without and with core.rt
-#                                   (-DSTRATA_CORE_RT), precompiled
-#     core_rt.o                     core.rt (the runtime written in Strata)
+#     runtime-lto.o                 the runtime every executable links: the C
+#                                   runtime (-DSTRATA_CORE_RT) and core.rt
+#                                   (the runtime written in Strata) in one
+#                                   module, optimized together at -O3 (LTO):
+#                                   a user's build never compiles it
 #     std/std.o std/libstd.dylib std/names
 #                                   std's precompiled code: linked into
 #                                   executables, loaded by the JIT
@@ -82,17 +84,25 @@ cp std/*.strata std/strata.toml "$HOME_DIR/std/"
 cp runtime/prelude.strata "$HOME_DIR/runtime/"
 echo "$VERSION" > "$HOME_DIR/VERSION"
 
-# the C runtime, precompiled for macOS 13 on (as the compiler's objects are)
-step "runtime.c"
-CC=${CC:-clang}
-$CC -O2 -mmacosx-version-min=13.0 -Wno-deprecated-declarations -c runtime/runtime.c -o "$HOME_DIR/runtime.o"
-$CC -O2 -mmacosx-version-min=13.0 -Wno-deprecated-declarations -DSTRATA_CORE_RT -c runtime/runtime.c -o "$HOME_DIR/runtime-core.o"
-
-# core.rt and std, compiled by the compiler itself (its codegen, its LLVM)
-step "core.rt"
+# the runtime, precompiled for macOS 13 on (as the compiler's objects are):
+# runtime.c (clang's LTO bitcode) and core.rt (the compiler's codegen) linked
+# into one module (llvm-link), optimized at -O3 and compiled by the
+# compiler itself (its LLVM): calls between the two are inlined. Homebrew's
+# clang and llvm-link, whose LLVM is the compiler's (the bitcode is read by
+# the same version).
+step "runtime (runtime.c and core.rt, -O3, LTO)"
+LLVM_BIN=${LLVM_BIN:-$(brew --prefix llvm)/bin}
+"$LLVM_BIN/clang" -O3 -flto -mmacosx-version-min=13.0 -Wno-deprecated-declarations -DSTRATA_CORE_RT \
+  -c runtime/runtime.c -o "$DIST/runtime.bc"
 "$S" codegen --core-rt > "$DIST/core_rt.ll"
 ! grep -q '^error' "$DIST/core_rt.ll" || { grep '^error' "$DIST/core_rt.ll" >&2; exit 1; }
-"$S" object "$DIST/core_rt.ll" "$HOME_DIR/core_rt.o" -O 2
+# (it warns that core.rt's IR names no data layout: the object gets the
+# target's)
+"$LLVM_BIN/llvm-link" -S "$DIST/runtime.bc" "$DIST/core_rt.ll" -o "$DIST/runtime-lto.ll" 2>"$DIST/llvm-link.log" \
+  || { cat "$DIST/llvm-link.log" >&2; exit 1; }
+"$S" object "$DIST/runtime-lto.ll" "$HOME_DIR/runtime-lto.o" -O 3
+
+# std, compiled by the compiler itself (its codegen, its LLVM)
 step "std (about 20 s)"
 "$S" codegen --library > "$DIST/std.ll"
 ! grep -q '^error' "$DIST/std.ll" || { grep '^error' "$DIST/std.ll" >&2; exit 1; }
@@ -101,7 +111,7 @@ sed -n 's/^; precompiled //p' "$DIST/std.ll" > "$HOME_DIR/std/names"
 
 # libSystem's stub: everything the shipped objects call must be in it
 cp compiler/c/libSystem.tbd "$HOME_DIR/libSystem.tbd"
-tools/libsystem-tbd.sh "$HOME_DIR/runtime.o" "$HOME_DIR/runtime-core.o" "$HOME_DIR/core_rt.o" "$HOME_DIR/std/std.o" > "$DIST/libSystem.tbd"
+tools/libsystem-tbd.sh "$HOME_DIR/runtime-lto.o" "$HOME_DIR/std/std.o" > "$DIST/libSystem.tbd"
 missing=$(tr ',' '\n' < "$DIST/libSystem.tbd" | sed -n "s/.*'\(.*\)'.*/\1/p" | sort -u | comm -23 - "$(tr ',' '\n' < compiler/c/libSystem.tbd | sed -n "s/.*'\(.*\)'.*/\1/p" | sort -u > "$DIST/have"; echo "$DIST/have")")
 if [ -n "$missing" ]; then
   echo "release: compiler/c/libSystem.tbd lacks $(echo $missing): run tools/libsystem-tbd.sh (see it)" >&2
@@ -188,7 +198,7 @@ fi
 [ "$(identity "$S")" = "$(cat "$HOME_DIR/IDENTITY")" ] || { echo "release: bin/strata changed after its cache was made (or its IDENTITY written)" >&2; exit 1; }
 step "lib/strata/cache: $(find "$HOME_DIR/cache" -type f | wc -l | tr -d ' ') entries, $(du -sh "$HOME_DIR/cache" | cut -f1)"
 
-rm -rf "$DIST"/*.ll "$DIST/have" "$DIST/libSystem.tbd" "$DIST/compiler.tmp" "$W"
+rm -rf "$DIST"/*.ll "$DIST"/*.bc "$DIST/llvm-link.log" "$DIST/have" "$DIST/libSystem.tbd" "$DIST/compiler.tmp" "$W"
 ARCHIVE=strata-$PLATFORM.tar.gz
 (cd "$DIST" && COPYFILE_DISABLE=1 tar czf "$ARCHIVE" strata && shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256")
 step "$DIST/$ARCHIVE ($(du -h "$DIST/$ARCHIVE" | cut -f1); bin/strata $(du -h "$S" | cut -f1))"

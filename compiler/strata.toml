@@ -8,7 +8,7 @@
 name = "compiler"
 
 # LLVM, linked in statically: the JIT (`compiler jit`, c/jit.c), and the
-# toolchain (c/toolchain.cpp): IR to object files, and lld's Mach-O linker
+# toolchain (c/toolchain.c; c/lld.cpp for lld): IR to object files, and lld's Mach-O linker
 # (target/lld/liblld.a, built by tools/build-lld.sh), so that `strata build`
 # needs no C compiler or linker. Homebrew's LLVM and zstd (`brew install
 # llvm zstd`); lld from source (tools/build-lld.sh). The libraries are
@@ -17,7 +17,7 @@ name = "compiler"
 [native]
 # (zstd, which LLVM's compression calls, statically too: Homebrew's
 # libzstd.dylib isn't on a user's machine; zlib is macOS's)
-sources = ["c/jit.c", "c/ir.c", "c/driver.c", "c/cache.c", "c/solver.c", "c/toolchain.cpp", "/opt/homebrew/opt/zstd/lib/libzstd.a"]
+sources = ["c/jit.c", "c/ir.c", "c/driver.c", "c/cache.c", "c/solver.c", "c/toolchain.c", "c/lld.cpp", "/opt/homebrew/opt/zstd/lib/libzstd.a"]
 libs = [
   "LLVMLTO",
   "LLVMExtensions",
