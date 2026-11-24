@@ -1,6 +1,5 @@
-# build.rs: reads_are_cancelled (the case whose input ends; the one whose
-# standard input stays open needs a pipe held open, which the harness
-# doesn't make)
+# build.rs: reads_are_cancelled: a task waiting for input is cancelled like any waiting task
+# (`blocked`: standard input held open, nothing written, through a fifo; `lines`: the input ends)
 [[step]]
 save = "lines.strata"
 from = "lines.st"
@@ -19,3 +18,20 @@ strata = ["run", "lines.strata"]
 text = "first\nsecond\n"
 memory = true
 stdout = "first | second | the end of the input\n"
+
+[[step]]
+save = "blocked.strata"
+from = "blocked.st"
+
+[[step]]
+strata = ["build", "blocked.strata", "-o", "blocked"]
+
+# the reader loses every race and its sibling's panic is contained, at once:
+# nothing is ever written, the input is never closed
+[[step]]
+run = ["sh", "-c", "rm -f held; mkfifo held; sleep 30 > held & sp=$!; STRATA_MEMORY=check perl -e 'alarm 20; exec @ARGV' ./blocked < held 2>&1 | grep -v '^    stack:'; kill $sp 2>/dev/null; true"]
+has = ["the reader lost 20 of 20 races\ncontained: index 3 out of range (length 1)\n", " 0 live"]
+
+[[step]]
+run = ["sh", "-c", "rm -f held; mkfifo held; sleep 60 > held & sp=$!; STRATA_MEMORY=check perl -e 'alarm 50; exec @ARGV' \"$STRATA\" run blocked.strata < held 2>&1 | grep -v '^    stack:'; kill $sp 2>/dev/null; true"]
+has = ["the reader lost 20 of 20 races\ncontained: index 3 out of range (length 1)\n"]
