@@ -44,7 +44,7 @@
 set -e
 cd "$(dirname "$0")/.."
 REPO=$(pwd)
-VERSION=0.1.0
+VERSION=0.2.0
 PLATFORM=macos-arm64
 DIST=$REPO/target/release-dist
 ROOT=$DIST/strata
