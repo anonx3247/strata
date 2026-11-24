@@ -15,16 +15,22 @@ lacks = ["(cached)"]
 strata = ["--file", "k.strata", "verify", "--cases", "20"]
 counts = { "(cached)" = 3 }
 
-# other settings are other checks
+# other settings are other checks, but a proof doesn't depend on how many
+# cases are fuzzed: it is kept (`proof_file`)
+[[step]]
+strata = ["--file", "k.strata", "verify", "--cases", "21", "--seed", "2"]
+lacks = ["(cached)"]
+
 [[step]]
 strata = ["--file", "k.strata", "verify", "--cases", "21"]
-lacks = ["(cached)"]
+counts = { "(cached)" = 3 }
 
 [[step]]
 strata = ["--file", "k.strata", "verify", "--cases", "20", "--no-cache"]
 lacks = ["(cached)"]
 
-# `f` changes: it and `g`, which calls it, are checked again (`h` is kept)
+# `f` changes: it and `g`, which calls it and sees through it (`f` is
+# transparent: it finishes and can't fail), are checked again (`h` is kept)
 [[step]]
 save = "k.strata"
 text = "type Small = Int where 0 <= it && it <= 10\nfn f(x: Small) -> Int\n  ensures it >= 0\n{\n  x * 3\n}\nfn g(x: Small) -> Int\n  ensures it >= 0\n{\n  f(x) + 1\n}\nfn h(x: Small) -> Int\n  ensures it <= 10\n{\n  x\n}\n"
