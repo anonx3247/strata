@@ -2792,6 +2792,7 @@ int64_t strata_list_remove_at(List *xs, int64_t i) {
 // (core.rt's: the list functions, below too; `append` is the host
 // functions')
 List *strata_list_new(int64_t cap);
+List *strata_list_push(List *xs, int64_t x, int64_t counted);
 #endif
 
 // Add `x` to a list nothing else holds yet (one the runtime is making).
@@ -2807,6 +2808,407 @@ static List *append(List *l, int64_t x) {
   b->data[b->used++] = x;
   l->len++;
   return l;
+}
+
+// ---- dictionaries and sets ----
+//
+// A `Dict[K, V]` or a `Set[A]` is a hash table: a block { tag 0, entries,
+// index } laid out as the tuple `(List[E], List[Int])` the generated code
+// takes it for (so it is held, dropped and copied as one), E a dict's
+// `(K, V)` pairs or a set's elements. The entries are kept in the order
+// they came in, a removal closing the gap, so `for`, `len`, `items` and
+// showing one are the entries list's; that order is the table's, not the
+// language's (nothing should assume one). The index is open addressing
+// with linear probing over a power of two of slots, at most half of them
+// used: a used slot holds `tag << 32 | (entry + 1)`, the tag 30 bits of the
+// key's hash (most other keys of the slot are told apart without comparing
+// them), 0 an empty one. A table of up to TBL_SMALL entries has no index
+// (the shared empty list) and is searched in order. Keys are hashed and
+// compared by functions the generated code passes, on 64-bit slots: the
+// key type's structural hash and its order (`cmp`, 0 for equal keys).
+// Hashing is deterministic (no seed), so a program does the same on every
+// run. These functions borrow the tables and values they are given; a new
+// table holds its entries (`kind`, as the list functions': 0 nothing to
+// hold, 1 objects, 2 integers).
+
+typedef int64_t (*TblHash)(int64_t);
+typedef int64_t (*TblCmp)(int64_t, int64_t);
+
+typedef struct {
+  int64_t tag;
+  List *es, *idx;
+} Tbl;
+
+#define TBL_SMALL 8
+
+// The shared empty list and table: a count of 0, never counted nor freed.
+static struct {
+  int64_t count, cap, used;
+} tbl_no_buf = {0, 0, 0};
+static struct {
+  int64_t count, len;
+  void *buf;
+  int64_t off;
+} tbl_no_list = {0, 0, &tbl_no_buf.cap, 0};
+static struct {
+  int64_t count, tag;
+  void *es, *idx;
+} tbl_none = {0, 0, &tbl_no_list.len, &tbl_no_list.len};
+#define NO_LIST ((List *)&tbl_no_list.len)
+
+static int64_t *tbl_data(List *l) { return l->buf->data + l->off; }
+
+static int64_t tbl_key(int64_t e, int64_t dict) { return dict ? ((int64_t *)(intptr_t)e)[1] : e; }
+
+// A hash spread over all 64 bits (the low ones pick the slot, the high ones
+// are the tag).
+static uint64_t tbl_mix(int64_t h) {
+  uint64_t m = (uint64_t)h;
+  m ^= m >> 33;
+  m *= 0xff51afd7ed558ccdull;
+  m ^= m >> 33;
+  m *= 0xc4ceb9fe1a85ec53ull;
+  m ^= m >> 33;
+  return m;
+}
+
+static int64_t tbl_tag(uint64_t m) { return (int64_t)((m >> 32) & 0x3FFFFFFF); }
+
+// The number of slots for `n` entries.
+static int64_t tbl_cap(int64_t n) {
+  int64_t c = 16;
+  while (c < 2 * n) c *= 2;
+  return c;
+}
+
+static void tbl_hold(int64_t *xs, int64_t n, int64_t kind) {
+  if (kind == 1)
+    for (int64_t i = 0; i < n; i++) strata_dup((void *)(intptr_t)xs[i]);
+  else if (kind == 2)
+    for (int64_t i = 0; i < n; i++) strata_int_dup(xs[i]);
+}
+
+// Entry `e`, of mixed hash `m`, in the first free slot from its own.
+static void tbl_place(int64_t *s, int64_t cap, uint64_t m, int64_t e) {
+  uint64_t i = m & (uint64_t)(cap - 1);
+  while (s[i]) i = (i + 1) & (uint64_t)(cap - 1);
+  s[i] = tbl_tag(m) << 32 | (e + 1);
+}
+
+static List *tbl_slots(int64_t cap) {
+  List *l = strata_list_new(cap);
+  memset(l->buf->data, 0, (size_t)cap * 8);
+  l->buf->used = l->len = cap;
+  return l;
+}
+
+// A new index of the `n` entries `d` (distinct keys), or none for a small
+// table.
+static List *tbl_index(int64_t *d, int64_t n, TblHash h, int64_t dict) {
+  if (n <= TBL_SMALL) return NO_LIST;
+  int64_t cap = tbl_cap(n);
+  List *l = tbl_slots(cap);
+  for (int64_t e = 0; e < n; e++) tbl_place(l->buf->data, cap, tbl_mix(h(tbl_key(d[e], dict))), e);
+  return l;
+}
+
+// Where key `k` is among the `n` entries `d` indexed by `idx`, or -1.
+static int64_t tbl_search(int64_t *d, int64_t n, List *idx, int64_t k, TblHash h, TblCmp c, int64_t dict) {
+  if (idx->len == 0) {
+    for (int64_t e = 0; e < n; e++)
+      if (c(tbl_key(d[e], dict), k) == 0) return e;
+    return -1;
+  }
+  int64_t cap = idx->len, *s = tbl_data(idx);
+  uint64_t m = tbl_mix(h(k));
+  int64_t tag = tbl_tag(m);
+  for (uint64_t i = m & (uint64_t)(cap - 1);; i = (i + 1) & (uint64_t)(cap - 1)) {
+    int64_t v = s[i];
+    if (!v) return -1;
+    if (v >> 32 == tag) {
+      int64_t e = (v & 0xFFFFFFFF) - 1;
+      if (c(tbl_key(d[e], dict), k) == 0) return e;
+    }
+  }
+}
+
+static Tbl *tbl_new(List *es, List *idx) {
+  Tbl *t = strata_alloc(sizeof(Tbl));
+  *t = (Tbl){0, es, idx};
+  return t;
+}
+
+// The empty table (shared).
+Tbl *strata_tbl_empty(void) { return (Tbl *)&tbl_none.tag; }
+
+// Where key `k` is in `t` (its entry's index), or -1.
+int64_t strata_tbl_find(Tbl *t, int64_t k, TblHash h, TblCmp c, int64_t dict) {
+  return tbl_search(tbl_data(t->es), t->es->len, t->idx, k, h, c, dict);
+}
+
+// A table of the `n` entries `d`, in order, a key once: a set keeps the
+// first of equal elements, a dict the last pair of a key, where the key
+// first came.
+static Tbl *tbl_of(int64_t *d, int64_t n, TblHash h, TblCmp c, int64_t dict, int64_t kind) {
+  if (n == 0) return strata_tbl_empty();
+  int64_t *pos = malloc((size_t)n * 8), m = 0, cap = 0, *s = NULL;
+  if (n <= TBL_SMALL) {
+    for (int64_t i = 0; i < n; i++) {
+      int64_t k = tbl_key(d[i], dict), j = -1;
+      for (int64_t e = 0; e < m && j < 0; e++)
+        if (c(tbl_key(d[pos[e]], dict), k) == 0) j = e;
+      if (j < 0) pos[m++] = i;
+      else if (dict) pos[j] = i;
+    }
+  } else {
+    cap = tbl_cap(n);
+    s = calloc((size_t)cap, 8);
+    for (int64_t i = 0; i < n; i++) {
+      int64_t k = tbl_key(d[i], dict);
+      uint64_t mm = tbl_mix(h(k));
+      int64_t tag = tbl_tag(mm);
+      for (uint64_t at = mm & (uint64_t)(cap - 1);; at = (at + 1) & (uint64_t)(cap - 1)) {
+        int64_t v = s[at];
+        if (!v) {
+          s[at] = tag << 32 | (m + 1);
+          pos[m++] = i;
+          break;
+        }
+        if (v >> 32 == tag) {
+          int64_t e = (v & 0xFFFFFFFF) - 1;
+          if (c(tbl_key(d[pos[e]], dict), k) == 0) {
+            if (dict) pos[e] = i;
+            break;
+          }
+        }
+      }
+    }
+  }
+  List *es = strata_list_new(m);
+  int64_t *o = es->buf->data;
+  for (int64_t e = 0; e < m; e++) o[e] = d[pos[e]];
+  es->buf->used = es->len = m;
+  tbl_hold(o, m, kind);
+  free(pos);
+  List *idx;
+  if (m <= TBL_SMALL) idx = NO_LIST;
+  else if (tbl_cap(m) == cap) {
+    idx = tbl_slots(cap);
+    memcpy(idx->buf->data, s, (size_t)cap * 8);
+  } else idx = tbl_index(o, m, h, dict);
+  free(s);
+  return tbl_new(es, idx);
+}
+
+// `set(xs)`, `dict(pairs)`.
+Tbl *strata_tbl_from(List *xs, TblHash h, TblCmp c, int64_t dict, int64_t kind) {
+  return tbl_of(tbl_data(xs), xs->len, h, c, dict, kind);
+}
+
+// `insert`: `x` (an element, a dict's pair) in place of the entry of its key,
+// else after the others; a set keeps an element it has.
+Tbl *strata_tbl_insert(Tbl *t, int64_t x, TblHash h, TblCmp c, int64_t dict, int64_t kind) {
+  int64_t n = t->es->len, *d = tbl_data(t->es), k = tbl_key(x, dict);
+  int64_t e = tbl_search(d, n, t->idx, k, h, c, dict);
+  if (e >= 0 && !dict) {
+    strata_dup(t);
+    return t;
+  }
+  if (e >= 0) {
+    List *es = strata_list_new(n);
+    memcpy(es->buf->data, d, (size_t)n * 8);
+    es->buf->data[e] = x;
+    es->buf->used = es->len = n;
+    tbl_hold(es->buf->data, n, kind);
+    strata_dup(t->idx);
+    return tbl_new(es, t->idx);
+  }
+  tbl_hold(&x, 1, kind);
+  List *es = strata_list_push(t->es, x, kind), *idx;
+  if (n + 1 <= TBL_SMALL) idx = NO_LIST;
+  else if (t->idx->len == 0 || 2 * (n + 1) > t->idx->len) idx = tbl_index(tbl_data(es), n + 1, h, dict);
+  else {
+    int64_t cap = t->idx->len;
+    idx = tbl_slots(cap);
+    memcpy(idx->buf->data, tbl_data(t->idx), (size_t)cap * 8);
+    tbl_place(idx->buf->data, cap, tbl_mix(h(k)), n);
+  }
+  return tbl_new(es, idx);
+}
+
+// `remove`: the entry of key `k` taken out (the others in order).
+Tbl *strata_tbl_remove(Tbl *t, int64_t k, TblHash h, TblCmp c, int64_t dict, int64_t kind) {
+  int64_t n = t->es->len, *d = tbl_data(t->es);
+  int64_t e = tbl_search(d, n, t->idx, k, h, c, dict);
+  if (e < 0) {
+    strata_dup(t);
+    return t;
+  }
+  if (n == 1) return strata_tbl_empty();
+  List *es = strata_list_new(n - 1);
+  memcpy(es->buf->data, d, (size_t)e * 8);
+  memcpy(es->buf->data + e, d + e + 1, (size_t)(n - e - 1) * 8);
+  es->buf->used = es->len = n - 1;
+  tbl_hold(es->buf->data, n - 1, kind);
+  return tbl_new(es, tbl_index(es->buf->data, n - 1, h, dict));
+}
+
+// A set's `union` (0: `a`'s elements, then those of `b` not in `a`),
+// `intersection` (1) or `difference` (2: `a`'s not in `b`).
+Tbl *strata_tbl_combine(Tbl *a, Tbl *b, int64_t op, TblHash h, TblCmp c, int64_t kind) {
+  int64_t na = a->es->len, nb = b->es->len, *da = tbl_data(a->es), *db = tbl_data(b->es);
+  int64_t *d = malloc((size_t)(na + nb + 1) * 8), n = 0;
+  if (op == 0) {
+    memcpy(d, da, (size_t)na * 8);
+    n = na;
+    for (int64_t i = 0; i < nb; i++)
+      if (tbl_search(da, na, a->idx, db[i], h, c, 0) < 0) d[n++] = db[i];
+  } else
+    for (int64_t i = 0; i < na; i++)
+      if ((tbl_search(db, nb, b->idx, da[i], h, c, 0) >= 0) == (op == 1)) d[n++] = da[i];
+  Tbl *t = tbl_of(d, n, h, c, 0, kind);
+  free(d);
+  return t;
+}
+
+// A table of entries `es` (a dict's pairs, `t`'s keys in `t`'s order: its
+// `map_values`), sharing `t`'s index.
+Tbl *strata_tbl_with_entries(List *es, Tbl *t) {
+  strata_dup(es);
+  strata_dup(t->idx);
+  return tbl_new(es, t->idx);
+}
+
+// Whether a table can be changed in place: it, its entries and its index
+// (if any) held once, their buffers all their own.
+_Bool strata_tbl_owned(Tbl *t) {
+  List *es = t->es, *idx = t->idx;
+  return strata_unique(t) && strata_unique(es) && strata_unique(es->buf) && es->off == 0 && es->len == es->buf->used &&
+         (idx->len == 0 || (strata_unique(idx) && strata_unique(idx->buf) && idx->off == 0));
+}
+
+static void tbl_free_index(List *idx) {
+  if (idx->len == 0) return;
+  strata_free(idx->buf);
+  strata_free(idx);
+}
+
+// In an owned table: `x` (held already), whose key it hasn't, after the
+// entries.
+void strata_tbl_add(Tbl *t, int64_t x, TblHash h, int64_t dict) {
+  int64_t n = t->es->len;
+  append(t->es, x);
+  if (n + 1 <= TBL_SMALL) return;
+  List *idx = t->idx;
+  if (idx->len == 0 || 2 * (n + 1) > idx->len) {
+    t->idx = tbl_index(tbl_data(t->es), n + 1, h, dict);
+    tbl_free_index(idx);
+  } else tbl_place(tbl_data(idx), idx->len, tbl_mix(h(tbl_key(x, dict))), n);
+}
+
+// In an owned table: entry `e` taken out (those after it moved down), and
+// returned for the caller to drop.
+int64_t strata_tbl_remove_at(Tbl *t, int64_t e, TblHash h, int64_t dict) {
+  List *es = t->es;
+  Buf *b = es->buf;
+  int64_t old = b->data[e];
+  memmove(b->data + e, b->data + e + 1, (size_t)(b->used - e - 1) * 8);
+  b->used--;
+  es->len--;
+  List *idx = t->idx;
+  if (idx->len == 0) return old;
+  if (es->len <= TBL_SMALL) {
+    t->idx = NO_LIST;
+    tbl_free_index(idx);
+  } else {
+    memset(idx->buf->data, 0, (size_t)idx->len * 8);
+    for (int64_t i = 0; i < es->len; i++)
+      tbl_place(idx->buf->data, idx->len, tbl_mix(h(tbl_key(b->data[i], dict))), i);
+  }
+  return old;
+}
+
+// `a == b`: the same keys, and equal entries (`eq`, of entries) for each.
+_Bool strata_tbl_eq(Tbl *a, Tbl *b, TblHash h, TblCmp c, TblCmp eq, int64_t dict) {
+  if (a == b) return 1;
+  int64_t n = a->es->len, *da = tbl_data(a->es), *db = tbl_data(b->es);
+  if (n != b->es->len) return 0;
+  for (int64_t i = 0; i < n; i++) {
+    int64_t e = tbl_search(db, n, b->idx, tbl_key(da[i], dict), h, c, dict);
+    if (e < 0 || !eq(da[i], db[e])) return 0;
+  }
+  return 1;
+}
+
+// `xs` (n of them) sorted by `c`, using `tmp` (merge sort).
+static void tbl_sort(int64_t *xs, int64_t *tmp, int64_t n, TblCmp c) {
+  if (n < 2) return;
+  int64_t h = n / 2;
+  tbl_sort(xs, tmp, h, c);
+  tbl_sort(xs + h, tmp, n - h, c);
+  int64_t i = 0, j = h, k = 0;
+  while (i < h && j < n) tmp[k++] = c(xs[j], xs[i]) < 0 ? xs[j++] : xs[i++];
+  while (i < h) tmp[k++] = xs[i++];
+  while (j < n) tmp[k++] = xs[j++];
+  memcpy(xs, tmp, (size_t)n * 8);
+}
+
+// The order of two tables: their entries sorted (`c`, of entries), then
+// compared as lists are.
+int64_t strata_tbl_cmp(Tbl *a, Tbl *b, TblCmp c) {
+  int64_t na = a->es->len, nb = b->es->len;
+  int64_t *x = malloc((size_t)(na + nb + 1) * 8), *tmp = malloc((size_t)(na > nb ? na : nb) * 8 + 8);
+  int64_t *y = x + na;
+  memcpy(x, tbl_data(a->es), (size_t)na * 8);
+  memcpy(y, tbl_data(b->es), (size_t)nb * 8);
+  tbl_sort(x, tmp, na, c);
+  tbl_sort(y, tmp, nb, c);
+  int64_t r = 0;
+  for (int64_t i = 0; i < na && i < nb && r == 0; i++) r = c(x[i], y[i]);
+  if (r == 0) r = na < nb ? -1 : na > nb;
+  free(x);
+  free(tmp);
+  return r;
+}
+
+// A table's hash: its entries' (`eh`), in any order.
+int64_t strata_tbl_hash(Tbl *t, TblHash eh) {
+  uint64_t s = 0;
+  int64_t *d = tbl_data(t->es);
+  for (int64_t i = 0; i < t->es->len; i++) s += tbl_mix(eh(d[i]));
+  return (int64_t)s;
+}
+
+// A list's hash: its elements' (`eh`), in order.
+int64_t strata_list_hash(List *l, TblHash eh) {
+  uint64_t s = (uint64_t)l->len;
+  int64_t *d = tbl_data(l);
+  for (int64_t i = 0; i < l->len; i++) s = (s * 1099511628211ull) ^ (uint64_t)eh(d[i]);
+  return (int64_t)s;
+}
+
+// An `Int`'s hash: a small one is itself; big ones (outside [-2^62, 2^62))
+// all hash the same.
+int64_t strata_int_hash(int64_t v) {
+  return v < -(INT64_C(1) << 62) || v > (INT64_C(1) << 62) - 1 ? 0x5bd1e995 : v;
+}
+
+// A string's hash, from its bytes, 8 at a time.
+int64_t strata_str_hash(Str *s) {
+  uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)s->len;
+  const char *p = s->bytes;
+  int64_t n = s->len;
+  for (; n >= 8; p += 8, n -= 8) {
+    uint64_t w;
+    memcpy(&w, p, 8);
+    h = (h ^ w) * 0xbf58476d1ce4e5b9ull;
+    h ^= h >> 31;
+  }
+  uint64_t w = 0;
+  memcpy(&w, p, (size_t)n);
+  h = (h ^ w) * 0x94d049bb133111ebull;
+  h ^= h >> 29;
+  return (int64_t)h;
 }
 
 #ifndef STRATA_CORE_RT
