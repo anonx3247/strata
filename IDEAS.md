@@ -128,6 +128,39 @@ Open questions:
 
 The standard library gets a reference page per module on the docs site (`docs-site/`, Starlight), generated from its `///` doc comments instead of written by hand: the language guide only names the modules, and the hand-written table of what each has (docs/language-reference.md, "The standard library") goes once the pages exist. A `strata doc` command (or a step of `docs-site/sync.mjs`) would write Markdown per module: each public definition's interface (`render --level 1`) with its doc comment, grouped by kind, linked to the types it names. To settle: whether it is a `strata` command (usable on any package, as `cargo doc` is) or the site's script only, and how examples in doc comments are checked.
 
+### Finding code without grep: `find`, `refs`, `search`, locations (designed with the user 2026-11-24; not built)
+
+Agents grep for: where a name is defined, every use of it before a change, where an error message comes from, half-remembered names, code shapes (every `match` on a type, every construction of a record, writes to a field, `.unwrap()` calls), functions by type, who implements a trait, comments and TODOs. Grep is blind to shapes and types and noisy on names (comments, other modules' namesakes). Today `view 'core.*' --level 0` lists definitions, `view slice:core.f` mixes uses and used-by in one list, `interface` gives a module's API; short names (`slice:run_worker`) match nothing, and nothing says where in a body a use is. Three commands and a location form fix that; they are written in Strata (`compiler/`), on `compiler/binary`, `resolve`, `check`.
+
+**Shared conventions.**
+- Names: short (`run_worker`, any module), qualified (`core.run_worker`), glob (`*verdict*`), fuzzy (`~rnwrkr`), member (`Task.id`, `Worker.next`, `Shape.Circle`).
+- **A short name that names several definitions shows them all** (user): first the candidates, with their signatures and number of matches each, then every result, grouped by definition. The agent narrows with a qualified name if it wants to; nothing stops to ask.
+- Locations: `DEF@HASH/PATH`, the path made of the tree's field names and list positions (`core.get@3f2a91c0/body/0/index`). Every command prints and accepts them; the hash says when the definition has changed since (shown, with the same path in the current version).
+- **Every result is shown as code in its definition** (user): the definition rendered by the printer, its signature line always, `⋮` for the lines left out, the enclosing blocks kept (`match step {`, closing braces), the match marked with `^^^`, the location as the block's header line. Several matches in one definition share one rendering. `--context N` (default 1), `--context all` the whole definition. `--list` (locations only) and `--json` for scripts.
+- Exit codes as grep: 0 matched, 1 nothing, 2 error.
+
+**`strata find NAME [--kind fn|type|trait|variant|field|method|impl|test|capability|extern] [--in SELECTOR] [--public] [--doc] [--limit N]`**: one line per definition, kind, qualified name, signature (a type's fields or variants; `--doc` the doc's first line instead). Reads headers and interface parts only.
+
+**`strata refs NAME [--uses | --used-by] [--kind call|construct|pattern|read|write|type|impl|import|method] [--depth N] [--in SELECTOR] [--context N]`**: the two directions in separate sections ("used by — 3 uses in 2 definitions", "uses — 7 definitions"), each use labelled with its kind (a construction, a match pattern, a field read and a field write differ), shown as code as above. `refs Task.attempts --kind write`, `refs core.Worker --kind impl`. `--depth N` follows the graph and prints a tree (`core.same_ids └─ core.run_worker call body/4/cond ├─ core.drain …`). `slice:` stays as a `view` selector.
+
+**`strata view LOCATION [--context N | --def]`**: a location as code (no new `show` command); `view --last-fault` the last run's fault.
+
+**Errors carry locations.** A runtime fault prints each frame as a location shown as code (today: `stack: main -> get`); compiled code keeps a side table from each check and call to its location, like debug info, free until a fault. `--trace` says where each call came from (`→ core.get(xs: [1, 2], i: 5)  from main/body/0`). Checker errors and verifier refutations (with their counterexample) use the same form.
+
+**`strata search PATTERN [--where C].. [--inside P] [--not-inside P] [--has P] [--not-has P] [--in SELECTOR] [--as expr|stmt|decl|type|pattern] [--rewrite T [--apply] [-m MSG]] [--count]`**, after ast-grep (https://ast-grep.github.io/) and comby (https://comby.dev/): a pattern is Strata code with holes, so an agent writes it without learning a syntax.
+- `?x` one node (expression, pattern, type, name), bound; `?_` unbound; `...` zero or more items of a list (arguments, statements, fields, arms, parameters), `...?rest` bound; `(?x: T)` an expression whose inferred type matches `T` (holes allowed). ast-grep's `$X`, `$_`, `$$$`, `$$$REST` are accepted as the same (rewritten before parsing): `?x` is Strata's own hole syntax, the lexer already reads it.
+- The same hole twice matches equal subtrees. A pattern is tried as an expression, a statement, a definition, a type, a match pattern (`--as` forces one).
+- Names in a pattern mean what they resolve to (calls through an alias match, namesakes elsewhere don't); a name that resolves to several definitions matches them all, listed at the top with their counts.
+- `--where`: `'?x: Dict[?k, ?v]'` (inferred type, cached by `code_hash`), `'?msg matches "time(out)?"'` (std.regex), `'?f in core.*'`, `'?n != 0'`.
+- A definition pattern is type search: `search 'fn ?f(...) -> Result[?_, ParseError]'`.
+- `--text TEXT [--strings | --comments | --docs]`: text in literals, comments, docs ("where does this message come from").
+- `--rewrite '?r.expect("…")'` previews each change (`core.drain body/2/value  task_of(r).unwrap() → task_of(r).expect("…")`); `--apply` makes it an `edit` (checked, atomic, broken uses become `?pending_N`, one log entry).
+- Speed: each definition starts with its own string table (docs/binary-format.md), so the names and literals a pattern mentions rule out most definitions before any decoding; only the rest are decoded and matched.
+
+Later: saved rules in strata.toml (`[search.rules]`, in Strata) run by `check`, lint-style; search and refs panels in the viewer.
+
+Order: (1) `find`, `refs`; (2) locations in errors, `view LOCATION`; (3) `search` with `--text` and plain patterns; (4) typed holes and `--where`; (5) `--rewrite`.
+
 ### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below)
 
 The second place Strata should be useful, after the command line: UIs in the
