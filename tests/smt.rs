@@ -336,6 +336,45 @@ fn verify_fuzzes_around_what_cant_be_compiled() {
     assert!(out.contains("✓ a ") && out.contains("✓ b ") && out.contains("✓ c "), "{out}");
 }
 
+/// One compile names every fuzz driver that can't be compiled, those whose
+/// function only calls what can't (`longer` and `longest` through `units`),
+/// each with why: `verify` leaves them all out at once, not by halving the
+/// drivers again and again.
+#[test]
+fn codegen_names_every_driver_that_cant_be_compiled() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("fuzz-uncompiled");
+    let file = dir.join("u.strata");
+    save(&file, include_str!("data/smt/verify_uncompiled.st"));
+    let o = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--fuzz-text", "a,units,longer,b,longest,sq"]).arg(&file).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    let cant: Vec<&str> = out.lines().filter(|l| l.starts_with("error: can't fuzz `")).collect();
+    let why = "`: in `units`: not compiled yet: the built-in `graphemes` on a `String`";
+    assert_eq!(cant, ["units", "longer", "longest"].map(|k| format!("error: can't fuzz `{k}{why}")), "{out}");
+}
+
+/// A function taking a capability, top-level or inside another type
+/// (`Option[Disk]`, a record or a sum holding one, a capability trait), is
+/// not fuzzed: nothing but `strata run` makes a capability.
+#[test]
+fn verify_doesnt_fuzz_what_holds_a_capability() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-capability");
+    let file = dir.join("c.strata");
+    save(&file, include_str!("data/smt/verify_capability.st"));
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["verify", "--no-cache"]).arg(&file).env("STRATA_CACHE", &dir).output().unwrap();
+    let out = String::from_utf8_lossy(&ours.stdout);
+    for (f, c) in [("top", "Disk"), ("opt", "Disk"), ("held", "Disk"), ("nested", "Disk"), ("files", "Files")] {
+        let line = format!("- {f:<24} skipped: it takes the capability `{c}`, which only `strata run` gives, so it isn't fuzzed");
+        assert!(out.lines().any(|l| l.starts_with(&line)), "{f}: {out}");
+    }
+    assert!(out.contains("~ plain                    fuzzed: 200 cases"), "{out}");
+}
+
 /// `compiler verify` on examples/traits.strata reports what Rust's verify
 /// does: its laws proven or refuted, and `Sku`'s values (a `distinct`
 /// string matching a regex) generated from its regex's samples, not as
