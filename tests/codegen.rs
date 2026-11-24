@@ -2132,6 +2132,37 @@ fn leaves_out_what_verify_proved() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A package's default build (compiler/codegen) leaves out what `compiler
+/// verify` proved of it, as a script's does (`compiler proofs DIR`); with
+/// `--all-checks` they all stay.
+#[test]
+fn package_build_leaves_out_what_verify_proved() {
+    if !have_clang() {
+        return;
+    }
+    let dir = scratch("package-proofs");
+    let pkg = dir.join("pk");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("strata.toml"), "name = \"pk\"\n").unwrap();
+    save(&pkg.join("util.strata"), "pub fn second(xs: List[Int]) -> Int\n    requires len(xs) >= 2\n{\n    xs[1]\n}\n");
+    save(&pkg.join("main.strata"), "use util\n\nfn pick(xs: List[Int], i: Int) -> Int\n    requires 0 <= i && i < len(xs)\n{\n    xs[i]\n}\n\nfn main() {\n    print(pick([1, 2, 3], 1) + util.second([4, 5]))\n}\n");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let build = |args: &[&str]| {
+        let o = Command::new(STRATA).current_dir(&pkg).args(args).env_remove("STRATA_BACKEND").env("STRATA_COMPILER", root.join("compiler")).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr), o.status.success())
+    };
+    let has = |exe: &str, text: &str| std::fs::read(pkg.join(exe)).unwrap().windows(text.len()).any(|w| w == text.as_bytes());
+    let (out, ok) = build(&["build", ".", "-o", "fast"]);
+    assert!(ok && out.contains("(compiler/codegen)"), "{out}");
+    let (out, ok) = build(&["build", ".", "-o", "slow", "--all-checks"]);
+    assert!(ok && out.contains("(compiler/codegen)"), "{out}");
+    assert_eq!(outcome(&pkg.join("fast")).0, "7\n");
+    for msg in ["precondition of `pick`", "precondition of `util.second`"] {
+        assert!(!has("fast", msg) && has("slow", msg), "{msg}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A package calling C through `extern c` (its `[native]` C file and libm):
 /// sized integers, floats, booleans and strings across, handles (an
 /// `Option` of one for NULL), `mut` out-pointers, contracts.
