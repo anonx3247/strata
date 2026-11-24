@@ -1,11 +1,11 @@
-# Testing without Rust
+# Testing
 
-The cargo tests (`tests/*.rs`, the `#[test]`s in `src/`) leave with the Rust
-implementation. What they guard moves to three places:
+Strata is tested in three places:
 
 - **Proofs**: contracts, refinements and laws on the Strata code, proven by
   `strata verify` (std must stay proven: `strata --file std verify
-  'std.MODULE.*' --require proven` for a changed module).
+  'std.MODULE.*' --require proven` for a changed module; whole std takes
+  20+ minutes, so verify what changed by name).
 - **`test` blocks** in the Strata packages (`strata --file std test`,
   `strata --file compiler test`, `strata --file core test`), for pure code
   that isn't proven yet.
@@ -13,10 +13,13 @@ implementation. What they guard moves to three places:
   `strata` executable: what depends on the outside world (files, processes,
   git, editors, the command line's output, built executables).
 
+(Until v0.1 the compiler was also written in Rust, and cargo tests compared
+the two; they left with it, at the tag `last-rust`.)
+
 ## Running the cases
 
 ```
-strata run tools/check -- --strata target/release/strata            # every case
+strata run tools/check -- --strata target/strata                    # every case
 strata run tools/check -- --strata ./strata build- cli-verify        # cases whose names hold these
 strata run tools/check -- --strata ./strata --bless codegen-programs # rewrite their golden files
 ```
@@ -42,7 +45,7 @@ the runtime's `std.process` runs leaked their pipes into each other's
 programs, and its `std.fs` calls shared one buffer for the path (fixed in
 runtime.c; `build-parallel_io` checks both).
 
-## Where each cargo test goes
+## Where the cargo tests went
 
 Category (a): compares the Rust implementation with the Strata one; leaves
 with Rust. (b): behaviour of `strata` and of built programs; a golden-output
@@ -98,32 +101,3 @@ corpus run as a case.
 | smt.rs | `smt_shares_lists_both_branches_drop_from`, `smt_valid_lists_shared_by_both_branches` | b | ported → cases `smt-shares_lists_both_branches_drop_from`, `smt-valid_lists_shared_by_both_branches` (10 s each, under `perl alarm`) |
 | smt.rs | `verify_doesnt_run_raw_and_finds_absolute_native_paths` | b | ported → case `smt-verify_doesnt_run_raw_and_finds_native_paths` |
 | src/ (21 unit tests: binary, smt, resolve, printer, diff, symbol, core, color, ast_value, sized, llvm/native) | | a | dropped: they test Rust internals |
-
-## Found while porting
-
-Against `target/release/strata` built from main (aa07a2c), with
-`STRATA_BACKEND=rust` (what the cargo tests run):
-
-- `cli-dict_and_set_literals`, `cli-ranges_slices_and_comprehensions` fail,
-  as their cargo tests do on main: `strata --file BUNDLE render` says "a
-  bundle, not a module file".
-- `cli-own_methods_locals_and_function_values` fails, as its cargo test does:
-  `k.bump()` on a `mut self` method now needs `mut k.bump()`.
-- `loops_chains_and_80_columns` counted long lines in the output of `render`
-  on a package, which is an error message: it checked nothing (left out).
-
-Against the same executable with its defaults (compiler/codegen builds, the
-Strata verifier and JIT), 196 cases: 143 pass, 51 fail, and 2 run past the
-300 s limit (`cli-comptime_in_ordinary_code_runs_while_compiling`,
-`cli-long_list_literals_compile_in_linear_time`). Among the failures:
-programs that `run` prints nothing for (`cli-comparing_with_a_bare_constructor_is_a_tag_test`,
-`cli-command_line_options_are_read_into_a_record`, `cli-commands_run_programs`,
-`cli-run_a_binary_file`), built programs that leak or crash
-(`build-clock`: 1 object left; `build-capabilities`: signal 11), field
-refinements not checked on assignment (`build-data`, `build-dyn`,
-`cli-procedural_mutation_is_explicit`), a run that crashes
-(`cli-self_arguments_on_trait_values`: signal 10), fault messages that name
-`Graphemes.at` without its module, test names without their module
-(`✓ a block holds…` for `✓ core.mem: a block holds…`), the Strata verifier's solver flags and missing
-summary line (`cli-solver_flags_follow_the_solver`,
-`cli-example_checks_tests_and_verifies`).

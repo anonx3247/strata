@@ -8,6 +8,12 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 
 Strata is an experimental language for working with agents. Constraints live in the types, contracts are proven by an SMT solver (or fuzzed when they can't be), unfinished code is a typed hole, and side effects are capabilities passed as parameters.
 
+Install it (macOS on Apple silicon; [other ways](/docs/tools/#installing)):
+
+```sh
+curl -fsSL https://strata-lang.dev/install.sh | sh
+```
+
 <CardGrid>
   <LinkCard title="The language" href="/docs/language/" description="Types and refinements, unions and patterns, traits, modules, mutation, errors, tasks, and programs." />
   <LinkCard title="Verification" href="/docs/verification/" description="What strata verify proves, with examples and the verifier's output." />

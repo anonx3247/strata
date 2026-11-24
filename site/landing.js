@@ -3,7 +3,7 @@
 // (recorded by build.mjs into data/math.js).
 'use strict';
 
-// The command that installs Strata. There is no installer yet: change this line when there is.
+// The command that installs Strata (site/install.sh).
 const INSTALL = 'curl -fsSL https://strata-lang.dev/install.sh | sh';
 
 $('#install-cmd').innerHTML = `<span class="prompt">$</span> ${esc(INSTALL)}`;

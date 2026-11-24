@@ -1,0 +1,74 @@
+# a variable passed `mut` is taken once the call's other arguments have run:
+# what they do to it (`bump(mut g)`, an assignment in a block) is what the
+# call is given, for a call and for a call changing its receiver; the same
+# variable given `mut` twice is an error
+
+[[step]]
+save = "m.strata"
+text = '''
+type G = { n: Int }
+
+fn bump(mut g: G) -> Int {
+  g.n += 1
+  g.n
+}
+
+fn both(mut g: G, k: Int) -> Int {
+  g.n += k * 10
+  g.n
+}
+
+impl G {
+  fn add(mut self, k: Int) {
+    self.n += k * 100
+  }
+}
+
+fn main() {
+  mut g := G { n: 0 }
+  print(both(mut g, bump(mut g)))
+  print(g.n)
+  mut h := G { n: 0 }
+  mut h.add(bump(mut h))
+  print(h.n)
+  mut a := G { n: 0 }
+  print(both(mut a, {
+    a = G { n: 5 }
+    1
+  }))
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "run"]
+stdout = "11\n11\n101\n15\n"
+
+[[step]]
+strata = ["--file", "m.strata", "build", "-o", "m"]
+
+[[step]]
+run = ["./m"]
+memory = true
+stdout = "11\n11\n101\n15\n"
+
+[[step]]
+save = "twice.strata"
+text = '''
+type G = { n: Int }
+
+fn swap(mut a: G, mut b: G) {
+  t := a.n
+  a.n = b.n
+  b.n = t
+}
+
+fn f() {
+  mut g := G { n: 0 }
+  swap(mut g, mut g)
+}
+'''
+
+[[step]]
+strata = ["--file", "twice.strata", "check"]
+fails = true
+has = ["error in f: `swap` is given `mut g` twice: one change would undo the other; pass it once"]
