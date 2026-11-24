@@ -30,7 +30,7 @@ fn main() {
 
 [[step]]
 strata = ["run", "c.strata"]
-stdout = "3\n3\n1\n2\n6\n10\n[30, 20]\n[1, 3, 5]\na=1\nb=2\n[4, 2, 3]\n3\n[1, 2]\n"
+stdout = "3\n3\n1\n2\n6\n10\n[30, 20]\n[5, 1, 3]\nb=2\na=1\n[4, 2, 3]\n3\n[2, 1]\n"
 
 [[step]]
 strata = ["--file", "c.strata", "verify"]
