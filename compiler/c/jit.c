@@ -55,6 +55,40 @@ int32_t jit_set_opt(int32_t level) {
   return 0;
 }
 
+// Whether code is compiled for profiling (`--profile`, or STRATA_PROFILE
+// set and not `0`): every function keeps its frame pointer
+// ("frame-pointer"="all"), so that a sampling profiler (macOS's `sample`)
+// walks through Strata's frames. Off by default: the code is as without it.
+static int profiling = -1;
+
+int32_t toolchain_profiling(void) {
+  if (profiling < 0) {
+    const char *p = getenv("STRATA_PROFILE");
+    profiling = p && *p && strcmp(p, "0") != 0;
+  }
+  return profiling;
+}
+
+// `--profile`: profiling on, for this process and the ones it starts.
+int32_t toolchain_set_profile(int32_t on) {
+  profiling = on != 0;
+  if (on) setenv("STRATA_PROFILE", "1", 1);
+  return 0;
+}
+
+// When profiling, every function the module defines keeps its frame
+// pointer.
+void toolchain_frame_pointers(LLVMModuleRef mod) {
+  if (!toolchain_profiling()) return;
+  LLVMContextRef ctx = LLVMGetModuleContext(mod);
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) {
+    if (LLVMIsDeclaration(f)) continue;
+    LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "frame-pointer", 13);
+    LLVMAddAttributeAtIndex(f, LLVMAttributeFunctionIndex,
+                               LLVMCreateStringAttribute(ctx, "frame-pointer", 13, "all", 3));
+  }
+}
+
 // A JIT's builder for `jit_opt`: the host's CPU and features, at its level.
 static LLVMOrcLLJITBuilderRef jit_builder(void) {
   LLVMOrcLLJITBuilderRef b = LLVMOrcCreateLLJITBuilder();
@@ -128,6 +162,7 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
     return NULL;
   }
   LLVMOrcLLJITRef jit;
+  toolchain_frame_pointers(mod);
   optimized(mod);
   LLVMErrorRef e = LLVMOrcCreateLLJIT(&jit, jit_builder());
   if (e) return failed(e, "can't start"), NULL;

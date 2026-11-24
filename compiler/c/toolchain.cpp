@@ -53,6 +53,9 @@ static int32_t fail(const std::string &m) {
 
 extern "C" {
 
+// Profiling (c/jit.c): every function defined keeps its frame pointer.
+void toolchain_frame_pointers(LLVMModuleRef mod);
+
 // Why the last `toolchain_object` or `toolchain_link` failed ("" when it didn't).
 const char *toolchain_error(void) { return last_error.c_str(); }
 
@@ -95,6 +98,7 @@ int32_t toolchain_object(const char *ir, const char *out, int32_t opt) {
     return fail(m);
   }
   LLVMSetTarget(mod, triple);
+  toolchain_frame_pointers(mod);
   LLVMCodeGenOptLevel level = opt <= 0 ? LLVMCodeGenLevelNone
                               : opt == 1 ? LLVMCodeGenLevelLess
                               : opt == 2 ? LLVMCodeGenLevelDefault
