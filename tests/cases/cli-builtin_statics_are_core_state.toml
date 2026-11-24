@@ -16,6 +16,10 @@ text = "builtin static s: big\n"
 fails = true
 has = ["`builtin static s` needs its size in bytes"]
 
+# (core.rt's test of its statics, "a static block is one per program,
+# zeroed at the start", isn't run by `strata test`: core.rt compiles only
+# into the runtime. It passed before without running: the test compiled no
+# code of its own)
 [[step]]
 strata = ["--file", "$ROOT/core", "test"]
-has = ["✓ core.rt: a static block is one per program, zeroed at the start"]
+has = ["tests of core's runtime modules not run"]
