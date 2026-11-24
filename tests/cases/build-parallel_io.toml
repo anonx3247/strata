@@ -1,0 +1,15 @@
+# Programs run and files written and removed from 16 parallel tasks: each
+# run's `cat` gives back its own input (a pipe of another task's run, left
+# open in the child, kept its input from ending: the run hung), and each
+# task's file calls act on its own paths (a buffer the tasks shared let a
+# `remove` remove another task's file).
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+strata = ["build", "main.strata", "--no-verify", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+stdout = "ok: 16 tasks x 200 rounds\n"
