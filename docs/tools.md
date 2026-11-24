@@ -2,6 +2,24 @@
 
 The command line, and how a codebase is stored and merged.
 
+## Installing
+
+On macOS (Apple silicon), the release installs with nothing else needed (LLVM, the runtime, std and Z3 come with it):
+
+```sh
+curl -fsSL https://strata-lang.dev/install.sh | sh
+```
+
+It goes in `~/.strata` (`bin/strata` and `lib/`) and prints how to add `~/.strata/bin` to your PATH. `STRATA_VERSION=v0.1` pins a release, `STRATA_INSTALL=DIR` installs elsewhere, `STRATA_MODIFY_PATH=1` adds the line to your shell's rc file. Running it again upgrades in place.
+
+Building strata from source needs LLVM 23's libraries, zstd and clang (linked into strata, not needed to run it) and lld's libraries, built once into `target/lld`; strata is written in Strata, so a `strata` builds the next (`STRATA_SEED`, else one on the PATH, else the latest release, downloaded):
+
+```sh
+brew install llvm zstd                 # LLVM 23, and clang
+tools/build-lld.sh                     # lld's libraries, into target/lld
+tools/bootstrap.sh                     # target/strata, built by itself (a fixed point)
+```
+
 ## What the tools tell you
 
 ```text
@@ -108,14 +126,6 @@ fault (Refinement): result of `next_digit`: 10 does not satisfy `Digit` (where 0
 A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages, exiting with 101. A fault prints the call stack (`    stack: main -> inner -> half`). Memory is reference-counted: a value is freed as soon as nothing holds it.
 
 `strata run` compiles the program in memory and runs it (a JIT), so it runs at native speed without a build step. `strata test` compiles the tests the same way: a fault ends the test, not the run, and what a test prints is shown only if it fails. How the compiler and the JIT work is in [internals](internals.md#compiling).
-
-A release needs nothing installed (`curl -fsSL https://strata-lang.dev/install.sh | sh`). Building strata from source needs LLVM 23's libraries, zstd and clang (linked into strata, not needed to run it) and lld's libraries, built once into `target/lld`; strata is written in Strata, so a `strata` builds the next (`STRATA_SEED`, else one on the PATH, else the latest release, downloaded):
-
-```sh
-brew install llvm zstd                 # LLVM 23, and clang
-tools/build-lld.sh                     # lld's libraries, into target/lld
-tools/bootstrap.sh                     # target/strata, built by itself (a fixed point)
-```
 
 ## Structural diffs
 

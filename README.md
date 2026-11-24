@@ -41,11 +41,13 @@ $ strata --file examples/math.strata verify
 
 ## Try it
 
-Install a release (macOS on Apple silicon; nothing else to install):
+On macOS (Apple silicon), install the latest release in `~/.strata` (nothing else is needed: LLVM, the runtime, std and Z3 come with it):
 
 ```sh
 curl -fsSL https://strata-lang.dev/install.sh | sh
 ```
+
+`STRATA_VERSION=v0.1` pins a release, `STRATA_INSTALL=DIR` installs elsewhere, and `STRATA_MODIFY_PATH=1` adds its `bin` to your shell's PATH. Running it again upgrades.
 
 Or build it from source: Strata is written in Strata, so a `strata` builds the next one (`tools/bootstrap.sh` takes `STRATA_SEED`, else a `strata` on the PATH, else downloads the latest release). It links LLVM 23 and lld in, so building it needs them (only to build: the result needs nothing installed):
 
