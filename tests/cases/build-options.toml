@@ -108,12 +108,12 @@ dir = "$ROOT"
 golden = "tests/data/build/expected/options-9-wc.out"
 
 [[step]]
-run = ["$TMP/wc", "--only", "lines", "examples/wc/strata.toml", "README.md"]
+run = ["$TMP/wc", "--only", "lines", "examples/wc/strata.toml", "tests/data/grapheme_break_test.st"]
 dir = "$ROOT"
 golden = "tests/data/build/expected/options-10-wc.out"
 
 [[step]]
-strata = ["run", "$ROOT/examples/wc", "--", "--only", "lines", "examples/wc/strata.toml", "README.md"]
+strata = ["run", "$ROOT/examples/wc", "--", "--only", "lines", "examples/wc/strata.toml", "tests/data/grapheme_break_test.st"]
 dir = "$ROOT"
 golden = "tests/data/build/expected/options-10-wc.out"
 
