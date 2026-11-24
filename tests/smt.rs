@@ -591,3 +591,72 @@ fn plus(n: Int) -> Int
     assert!(out.contains("first_word               assumed: it reads compiled values (`Raw`)"), "{out}{err}");
     assert!(!err.contains("failed on the package's C"), "{err}");
 }
+
+/// A generic function is fuzzed at the types Rust's verify picks
+/// (`test_instance`: an unbounded type parameter is `Int`, a bounded one an
+/// implementation of its bounds), with the same cases, so the same
+/// counterexample; a function taking a function is given ones returning a
+/// value generated once, whatever they are given (Rust's verify doesn't
+/// fuzz it: the one difference).
+#[test]
+fn verify_fuzzes_generic_functions_as_in_rust() {
+    if !have_z3() {
+        eprintln!("skipped: no z3");
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("verify-generic");
+    let file = dir.join("g.strata");
+    save(&file, "trait Sized2 {
+  fn size(self) -> Int
+}
+
+impl Sized2 for String {
+  fn size(self) -> Int {
+    byte_len(self)
+  }
+}
+
+fn gen_sq[T](xs: List[T], x: Float) -> Float
+  ensures it >= 0.0
+{
+  x * x
+}
+
+fn biggest[T: Sized2](xs: List[T], f: Float) -> Float
+  ensures it >= 0.0
+{
+  mut m := 0
+  for x in xs {
+    if x.size() > m {
+      m = x.size()
+    }
+  }
+  f * f + float(m)
+}
+
+fn wrong[T](xs: List[T], x: Float) -> Float
+  ensures it > x
+{
+  x * 2.0 + float(len(xs))
+}
+
+fn apply(f: (Int) -> Int, x: Int) -> Int
+  ensures it == f(x)
+{
+  f(x)
+}
+");
+    let o = Command::new(STRATA).current_dir(root).arg("--file").arg(&file).args(["verify", "--compare", "--no-cache"]).output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("only in strata: ~ apply                    fuzzed: 200 cases"), "{out}");
+    // (the rest of `apply`'s verdict, its solver's line, under it)
+    assert!(out.contains("only in rust: - apply                    skipped: not compiled"), "{out}");
+    assert!(out.contains("compare: 1 only in rust, 2 only in strata"), "{out}");
+    let ours = Command::new(STRATA).current_dir(root).arg("--file").arg(&file).args(["verify", "--strata", "--no-cache"]).output().unwrap();
+    let ours = String::from_utf8_lossy(&ours.stdout);
+    for f in ["gen_sq", "biggest"] {
+        assert!(ours.contains(&format!("~ {f:<24} fuzzed: 200 cases")), "{ours}");
+    }
+    assert!(ours.contains("✗ wrong                    Ensures violation (found by the fuzzer)"), "{ours}");
+}
