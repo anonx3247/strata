@@ -6,9 +6,9 @@ from = "many.st"
 [[step]]
 strata = ["build", "many.strata", "--emit-llvm"]
 fails = true
-has = ["can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet"]
+has = ["in `main`: not compiled yet: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many`"]
 
 [[step]]
 strata = ["run", "many.strata"]
 fails = true
-has = ["the program can't be compiled yet: can't compile `main`: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many` is not compiled yet"]
+has = ["compiler/codegen doesn't cover this program yet:", "in `main`: not compiled yet: calling `copies` (it mentions `Self` inside another type) on a value of the trait type `Many`"]
