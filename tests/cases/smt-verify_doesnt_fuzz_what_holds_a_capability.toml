@@ -1,0 +1,47 @@
+# smt.rs: verify_doesnt_fuzz_what_holds_a_capability: a function taking a capability (or a value
+# holding one) isn't fuzzed: only `strata run` makes one
+
+[[step]]
+save = "c.strata"
+text = '''
+from std.fs use Disk, Files
+
+type Holder = { disk: Disk, n: Float }
+
+type Outer = | Vacant | Full(Holder)
+
+fn top(d: Disk, x: Float) -> Float
+  ensures it >= 0.0 {
+  x * x
+}
+
+fn opt(d: Option[Disk], x: Float) -> Float
+  ensures it >= 0.0 {
+  x * x
+}
+
+fn held(h: Holder) -> Float
+  ensures it >= 0.0 {
+  h.n * h.n
+}
+
+fn nested(o: List[Outer], x: Float) -> Float
+  ensures it >= 0.0 {
+  x * x
+}
+
+fn files(f: Files, x: Float) -> Float
+  ensures it >= 0.0 {
+  x * x
+}
+
+fn plain(x: Float) -> Float
+  ensures it >= 0.0 {
+  x * x
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verify --no-cache \"$TMP/c.strata\""]
+any_code = true
+has = ["- top                      skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed", "- opt                      skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed", "- held                     skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed", "- nested                   skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed", "- files                    skipped: it takes the capability `Files`, which only `strata run` gives, so it isn't fuzzed", "~ plain                    fuzzed: 200 cases"]
