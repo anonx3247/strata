@@ -1,0 +1,23 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "strata",
+      "camelcase": "Strata",
+      "title": "Strata",
+      "scope": "source.strata",
+      "file-types": ["st"],
+      "injection-regex": "^strata$",
+      "class-name": "TreeSitterStrata",
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Strata grammar for tree-sitter",
+    "links": { "repository": "https://github.com/anonx3247/strata" }
+  },
+  "bindings": { "c": false, "go": false, "node": false, "python": false, "rust": false, "swift": false }
+}

@@ -1,0 +1,417 @@
+============================================================
+Imports
+============================================================
+
+use std.time
+use std.json as j
+pub from shop.orders use Order, Line as L
+
+------------------------------------------------------------
+
+(source_file
+  (use_declaration
+    (module_path
+      (identifier)
+      (identifier)))
+  (use_declaration
+    (module_path
+      (identifier)
+      (identifier))
+    (identifier))
+  (import_declaration
+    (visibility_modifier)
+    (module_path
+      (identifier)
+      (identifier))
+    (import_item
+      (type_identifier))
+    (import_item
+      (type_identifier)
+      (type_identifier))))
+
+============================================================
+Types
+============================================================
+
+/// A point.
+pub type Point = { x: Int, y: Int = 0 }
+type Shape =
+  /// round
+  | Circle(Float)
+  | Square { side: Float }
+  | Dot
+distinct type Port = Int where it > 0 && it < 65536
+type Moved(Int)
+type Many[T] = List[T] | Problem
+mock MemFiles = { files: Dict[String, String] }
+
+------------------------------------------------------------
+
+(source_file
+  (doc_comment)
+  (type_declaration
+    (visibility_modifier)
+    (type_identifier)
+    (record_body
+      (field_declaration
+        (field_identifier)
+        (type_identifier))
+      (field_declaration
+        (field_identifier)
+        (type_identifier)
+        (integer))))
+  (type_declaration
+    (type_identifier)
+    (doc_comment)
+    (union_body
+      (variant
+        (type_identifier)
+        (tuple_payload
+          (type_identifier)))
+      (variant
+        (type_identifier)
+        (record_body
+          (field_declaration
+            (field_identifier)
+            (type_identifier))))
+      (variant
+        (type_identifier))))
+  (type_declaration
+    (type_identifier)
+    (union_body
+      (variant
+        (type_identifier)))
+    (refinement
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (integer))
+        (binary_expression
+          (identifier)
+          (integer)))))
+  (type_declaration
+    (type_identifier)
+    (tuple_payload
+      (type_identifier)))
+  (type_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)))
+    (union_body
+      (variant
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier))))
+      (variant
+        (type_identifier))))
+  (mock_declaration
+    (type_identifier)
+    (record_body
+      (field_declaration
+        (field_identifier)
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier)
+            (type_identifier)))))))
+
+============================================================
+Functions
+============================================================
+
+fn area(s: Shape) -> Float requires true ensures it >= 0.0 {
+  match s {
+    Circle(r) => 3.14 * r * r,
+    Square { side } => side * side,
+    Dot => 0.0,
+  }
+}
+comptime fn twice[T: Show + Eq](mut x: T, comptime n: Int) -> (T, T) terminates = (x, x)
+fn todo() -> Int = ?todo
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (type_identifier)
+    (contract
+      (boolean))
+    (contract
+      (binary_expression
+        (identifier)
+        (float)))
+    (block
+      (match_expression
+        (identifier)
+        (match_arm
+          (constructor_pattern
+            (type_identifier)
+            (identifier))
+          (binary_expression
+            (binary_expression
+              (float)
+              (identifier))
+            (identifier)))
+        (match_arm
+          (constructor_pattern
+            (type_identifier)
+            (record_pattern
+              (field_pattern
+                (field_identifier))))
+          (binary_expression
+            (identifier)
+            (identifier)))
+        (match_arm
+          (constructor_pattern
+            (type_identifier))
+          (float)))))
+  (function_declaration
+    (identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)
+        (trait_bounds
+          (type_identifier)
+          (type_identifier))))
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier))
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (tuple_type
+      (type_identifier)
+      (type_identifier))
+    (contract)
+    (tuple_expression
+      (identifier)
+      (identifier)))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (type_identifier)
+    (hole)))
+
+============================================================
+Traits and impls
+============================================================
+
+trait Show[T]: Eq {
+  fn show(self) -> String
+  derived fn shown(self) -> String { self.show() }
+  law same(a: Self): a.show() == a.show()
+}
+capability trait Db { fn get(self, k: String) -> Option[String] }
+derivable(Record) trait Json requires true { fn to_json(self) -> String }
+impl[T: Show] Show for List[T] {
+  fn show(self) -> String = "list"
+}
+impl Point { fn norm(self) -> Int = self.x }
+derive Json for Point
+capability Sqlite { fn open(path: String) -> Int { 0 } }
+
+------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)))
+    (trait_bounds
+      (type_identifier))
+    (trait_body
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (type_identifier))
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (type_identifier)
+        (block
+          (call_expression
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (arguments))))
+      (law_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (identifier)
+            (type_identifier)))
+        (binary_expression
+          (call_expression
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (arguments))
+          (call_expression
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (arguments))))))
+  (trait_declaration
+    (type_identifier)
+    (trait_body
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self))
+          (parameter
+            (identifier)
+            (type_identifier)))
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier))))))
+  (trait_declaration
+    (type_identifier)
+    (type_identifier)
+    (boolean)
+    (trait_body
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (type_identifier))))
+  (impl_declaration
+    (type_parameters
+      (type_parameter
+        (type_identifier)
+        (trait_bounds
+          (type_identifier))))
+    (type_identifier)
+    (generic_type
+      (type_identifier)
+      (type_arguments
+        (type_identifier)))
+    (impl_body
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (type_identifier)
+        (string
+          (string_content)))))
+  (impl_declaration
+    (type_identifier)
+    (impl_body
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (type_identifier)
+        (field_expression
+          (identifier)
+          (field_identifier)))))
+  (derive_declaration
+    (type_identifier)
+    (type_identifier))
+  (capability_declaration
+    (type_identifier)
+    (impl_body
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (identifier)
+            (type_identifier)))
+        (type_identifier)
+        (block
+          (integer))))))
+
+============================================================
+Extern and builtin
+============================================================
+
+extern c fn strlen(s: Ptr) -> Int
+extern c type File
+builtin fn len[A](xs: List[A]) -> Int
+builtin type List[T]
+builtin static allocator: 512
+builtin thread static calls: 64
+test "adds" { assert 1 + 1 == 2 }
+test "reads" (mut files: Files) { files.read("a")! }
+
+------------------------------------------------------------
+
+(source_file
+  (extern_declaration
+    (identifier)
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (type_identifier))
+  (extern_declaration
+    (identifier)
+    (type_identifier))
+  (builtin_declaration
+    (identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)))
+    (parameters
+      (parameter
+        (identifier)
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier)))))
+    (type_identifier))
+  (builtin_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier))))
+  (builtin_declaration
+    (identifier)
+    (integer))
+  (builtin_declaration
+    (identifier)
+    (integer))
+  (test_declaration
+    (string
+      (string_content))
+    (block
+      (assert_statement
+        (binary_expression
+          (binary_expression
+            (integer)
+            (integer))
+          (integer)))))
+  (test_declaration
+    (string
+      (string_content))
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (block
+      (try_expression
+        (call_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (arguments
+            (string
+              (string_content))))))))
