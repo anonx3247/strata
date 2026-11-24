@@ -33,6 +33,9 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("rt.strata", include_bytes!("../core/rt.strata")),
     ("str.strata", include_bytes!("../core/str.strata")),
     ("int.strata", include_bytes!("../core/int.strata")),
+    ("list.strata", include_bytes!("../core/list.strata")),
+    ("fmt.strata", include_bytes!("../core/fmt.strata")),
+    ("float.strata", include_bytes!("../core/float.strata")),
     ("values.strata", include_bytes!("../core/values.strata")),
 ];
 
@@ -48,10 +51,11 @@ pub const VALUES: &str = "core.values";
 
 /// The runtime written in Strata: core.rt (the allocator, the runtime's
 /// state, and each `strata_...` function compiled code and the C runtime
-/// call) and the topic modules it is built from (strings, integers), which
+/// call) and the topic modules it is built from (strings, integers, lists,
+/// format specs, floats), which
 /// only it calls. Compiled together (`llvm::compile_core_rt`), never part of
 /// a program; nothing in them allocates through the language.
-pub const RUNTIME: &[&str] = &["core.rt", "core.str", "core.int"];
+pub const RUNTIME: &[&str] = &["core.rt", "core.str", "core.int", "core.list", "core.fmt", "core.float"];
 
 /// Whether `name` (resolved: `core.str.str_size`) is a function of the
 /// runtime's modules (`RUNTIME`), as core's files have it.
