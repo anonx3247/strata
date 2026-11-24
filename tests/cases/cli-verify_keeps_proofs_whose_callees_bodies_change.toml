@@ -1,0 +1,33 @@
+# a proof relies on its callees' contracts, not their bodies: a callee's
+# body changed, its contract not, its callers' proofs are kept (and only
+# cross-checked again); a helper the prover sees through (`transparent`) is
+# part of the proof, so its callers are proven again
+[[step]]
+save = "p.strata"
+text = "fn double(x: Int) -> Int\n  requires x >= 0\n  ensures it >= x\n{\n  x + x\n}\nfn caller(n: Int) -> Int\n  requires n >= 0\n  ensures it >= 0\n{\n  double(n)\n}\nfn twice(x: Int) -> Int {\n  x + x\n}\nfn user(n: Int) -> Int\n  requires n >= 0\n  ensures it == twice(n)\n{\n  n * 2\n}\n"
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ double ", "✓ caller ", "✓ twice ", "✓ user "]
+lacks = ["(cached)"]
+
+# the bodies of `double` (seen by its contract) and `twice` (seen through)
+# change: only `caller`'s proof is kept
+[[step]]
+save = "p.strata"
+text = "fn double(x: Int) -> Int\n  requires x >= 0\n  ensures it >= x\n{\n  x * 2\n}\nfn caller(n: Int) -> Int\n  requires n >= 0\n  ensures it >= 0\n{\n  double(n)\n}\nfn twice(x: Int) -> Int {\n  x * 2\n}\nfn user(n: Int) -> Int\n  requires n >= 0\n  ensures it == twice(n)\n{\n  n * 2\n}\n"
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ caller                   proven (2 checks) (cached)"]
+counts = { "(cached)" = 1 }
+
+# `double`'s contract changes: it and `caller` are proven again
+[[step]]
+save = "p.strata"
+text = "fn double(x: Int) -> Int\n  requires x >= 0\n  ensures it >= x && it >= 0\n{\n  x * 2\n}\nfn caller(n: Int) -> Int\n  requires n >= 0\n  ensures it >= 0\n{\n  double(n)\n}\nfn twice(x: Int) -> Int {\n  x * 2\n}\nfn user(n: Int) -> Int\n  requires n >= 0\n  ensures it == twice(n)\n{\n  n * 2\n}\n"
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ twice                    proven (nothing to check) (cached)", "✓ user                     proven (1 check) (cached)"]
+counts = { "(cached)" = 2 }
