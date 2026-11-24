@@ -200,3 +200,19 @@ int64_t driver_jobs(void) {
   long n = sysconf(_SC_NPROCESSORS_ONLN);
   return n < 1 ? 1 : n;
 }
+
+// A 60-bit FNV-1a hash of a string (codegen names string constants by it).
+int64_t text_hash(const char *s) {
+  uint64_t h = 14695981039346656037ull;
+  for (; *s; s++) h = (h ^ (unsigned char)*s) * 1099511628211ull;
+  return (int64_t)(h >> 4);
+}
+
+// While `on`, objects shared while tasks run are kept for good (core.rt's
+// strata_memory_keep_shared): the compiler's workers all read the same
+// tables, whose counts would otherwise change atomically from every core.
+void strata_memory_keep_shared(_Bool on);
+int32_t driver_keep_shared(int32_t on) {
+  strata_memory_keep_shared(on != 0);
+  return 0;
+}
