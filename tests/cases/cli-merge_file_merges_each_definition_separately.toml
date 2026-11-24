@@ -50,7 +50,7 @@ strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
 dir = "sep"
 
 [[step]]
-run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" view main --file a.strata; else cat a.strata; fi"]
 dir = "sep"
 stdout = '''
 fn f(x: Int) -> Int {
@@ -105,7 +105,7 @@ strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
 dir = "adjacent"
 
 [[step]]
-run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" view main --file a.strata; else cat a.strata; fi"]
 dir = "adjacent"
 stdout = "fn g(y: Int) -> Int {\n  y * 2\n}\n"
 
@@ -148,7 +148,7 @@ strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
 dir = "lines"
 
 [[step]]
-run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" view main --file a.strata; else cat a.strata; fi"]
 dir = "lines"
 has = ["x + 100", "b - 300"]
 
@@ -196,7 +196,7 @@ fails = true
 has = ["conflict in f"]
 
 [[step]]
-run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" render --file a.strata; else cat a.strata; fi"]
+run = ["sh", "-c", "if head -c 6 a.strata | grep -q STRATA; then \"$STRATA\" view main --file a.strata; else cat a.strata; fi"]
 dir = "conflict"
 has = ["<<<<<<< ours\n", "||||||| base\n", ">>>>>>> theirs", "fn g(x: Int) -> Int {\n  x * 3\n}\n"]
 

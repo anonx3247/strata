@@ -1,0 +1,67 @@
+# The tools' output colored at the source (FORCE_COLOR: as on a terminal):
+# verify's verdicts, a counterexample's input as highlighted code, test
+# results, check's errors; code highlighted by `view`, capabilities in their
+# own color. Without it (a pipe), plain.
+
+[[step]]
+save = "a.strata"
+text = '''
+from std.io use Console
+
+fn half(n: Int) -> Int
+  ensures it * 2 == n {
+  n / 2
+}
+
+fn twice(n: Int) -> Int
+  ensures it == n + n {
+  n * 2
+}
+
+fn main(mut console: Console) {
+  mut console.print("hi")
+}
+
+test "fails" {
+  assert twice(2) == 5
+}
+
+test "passes" {
+  assert twice(2) == 4
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "verify"]
+env = { FORCE_COLOR = "1" }
+fails = true
+has = ["\u001b[38;2;95;208;122m✓ \u001b[0m\u001b[1mtwice", "\u001b[38;2;255;107;107m✗ \u001b[0m\u001b[1mhalf", "\u001b[38;2;240;180;92minput:\u001b[0m", "\u001b[38;2;255;168;168m"]
+
+[[step]]
+strata = ["--file", "a.strata", "test"]
+env = { FORCE_COLOR = "1" }
+fails = true
+has = ["\u001b[38;2;95;208;122m✓ passes\u001b[0m", "\u001b[38;2;255;107;107m✗ fails\u001b[0m", "(left: 4, right: 5)"]
+
+[[step]]
+strata = ["--file", "a.strata", "test"]
+fails = true
+has = ["✗ fails", "assertion failed: twice(2) == 5 (left: 4, right: 5)"]
+lacks = ["\u001b"]
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+env = { FORCE_COLOR = "1" }
+has = ["\u001b[38;2;218;119;242mfn\u001b[0m", "\u001b[38;2;99;230;190mConsole\u001b[0m", "\u001b[38;2;116;192;252mtwice\u001b[0m"]
+
+[[step]]
+save = "b.strata"
+text = '''
+fn f() -> Int { "x" }
+'''
+
+[[step]]
+strata = ["--file", "b.strata", "check"]
+env = { FORCE_COLOR = "1" }
+fails = true
+has = ["\u001b[1m\u001b[31merror\u001b[0m\u001b[0m in \u001b[1mf\u001b[0m"]

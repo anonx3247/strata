@@ -6,7 +6,7 @@ strata = ["--file", "$ROOT/tests/data/sugar.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "$ROOT/tests/data/sugar.strata", "render"]
+strata = ["--file", "$ROOT/tests/data/sugar.strata", "view", "main"]
 capture = "sugar.st"
 
 [[step]]
@@ -14,14 +14,14 @@ save = "again.strata"
 from_tmp = "sugar.st"
 
 [[step]]
-strata = ["render", "--file", "again.strata"]
+strata = ["view", "main", "--file", "again.strata"]
 out_file = "sugar.st"
 
 [[step]]
 strata = ["--file", "$ROOT/tests/data/sugar.strata", "pack", "sugar.strata"]
 
 [[step]]
-strata = ["--file", "sugar.strata", "render"]
+strata = ["--file", "sugar.strata", "view", "main"]
 out_file = "sugar.st"
 
 [[step]]

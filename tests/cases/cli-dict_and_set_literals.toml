@@ -5,7 +5,7 @@ strata = ["--file", "$ROOT/tests/data/collections.strata", "test"]
 has = ["1 passed"]
 
 [[step]]
-strata = ["--file", "$ROOT/tests/data/collections.strata", "render"]
+strata = ["--file", "$ROOT/tests/data/collections.strata", "view", "main"]
 capture = "collections.st"
 
 [[step]]
@@ -13,12 +13,12 @@ save = "again.strata"
 from_tmp = "collections.st"
 
 [[step]]
-strata = ["render", "--file", "again.strata"]
+strata = ["view", "main", "--file", "again.strata"]
 out_file = "collections.st"
 
 [[step]]
 strata = ["--file", "$ROOT/tests/data/collections.strata", "pack", "c.strata"]
 
 [[step]]
-strata = ["--file", "c.strata", "render"]
+strata = ["--file", "c.strata", "view", "main"]
 out_file = "collections.st"

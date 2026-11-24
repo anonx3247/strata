@@ -36,7 +36,7 @@ strata = ["run", "s.strata"]
 stdout = "dot\nmoved 2\nsquare 3\n5\n"
 
 [[step]]
-strata = ["--file", "s.strata", "render", "--members", "inline"]
+strata = ["--file", "s.strata", "view", "main", "--members", "inline"]
 capture = "inline.st"
 has = ["type Shape =\n  | Square { side: Int }\n  | Mark\n", "type Mark =\n  | Dot\n  | Moved(Int)\n"]
 
@@ -49,5 +49,5 @@ strata = ["run", "i.strata"]
 stdout = "dot\nmoved 2\nsquare 3\n5\n"
 
 [[step]]
-strata = ["--file", "i.strata", "render", "--members", "separate"]
+strata = ["--file", "i.strata", "view", "main", "--members", "separate"]
 has = ["type Square = { side: Int }\n", "type Dot\n", "type Moved(Int)\n", "type Shape = Square | Mark\n"]
