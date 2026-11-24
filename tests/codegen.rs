@@ -2900,6 +2900,189 @@ const CORE_RT_FORMATS: &str = r#"fn main() {
 }
 "#;
 
+/// `compiler codegen --core-rt` checks the runtime before compiling it: a
+/// function of one of its modules that allocates (`Int` arithmetic: two
+/// literals added, then compared with a word) is an error, not compiled (Rust's `strata
+/// build-core` doesn't check yet).
+#[test]
+fn core_rt_that_doesnt_check_isnt_compiled() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-check");
+    // a copy of core/ (and the prelude codegen reads) with one bad function
+    let core = dir.join("core");
+    std::fs::create_dir_all(&core).unwrap();
+    for e in std::fs::read_dir(root.join("core")).unwrap() {
+        let e = e.unwrap();
+        std::fs::copy(e.path(), core.join(e.file_name())).unwrap();
+    }
+    std::fs::create_dir_all(dir.join("src/llvm")).unwrap();
+    std::fs::copy(root.join("src/llvm/prelude.strata"), dir.join("src/llvm/prelude.strata")).unwrap();
+    let text = Command::new(STRATA).current_dir(root).args(["--file", "core", "render", "--rust", "core.gen"]).output().unwrap();
+    let text = String::from_utf8_lossy(&text.stdout).into_owned() + "\nfn too_big(x: I64) -> Bool {\n  x < 1023 + 62\n}\n";
+    let mut edit = Command::new(STRATA).current_dir(&dir).args(["--file", "core/", "edit", "gen"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    std::io::Write::write_all(edit.stdin.as_mut().unwrap(), text.as_bytes()).unwrap();
+    assert!(edit.wait_with_output().unwrap().status.success());
+    let out = Command::new(compiler::exe()).current_dir(&dir).args(["codegen", "--core-rt"]).output().unwrap();
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.lines().any(|l| l.starts_with("error: in core.gen.too_big: core.rt can't allocate")), "{out}");
+    assert!(!out.contains("define "), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// core.gen and core.fault (runtime.c's generators of values and the text
+/// of a fault's call stack, moved to Strata): a test's mocked values (built
+/// by compiler/codegen, run through `strata_test` as the JIT runs a test)
+/// and programs faulting deep in recursions (built by both code
+/// generators) do the same with the runtime in Strata and with C: the same
+/// values, messages, call stacks (`down (101 times)`, ` -> ...` past the
+/// runs kept) and check mode's report.
+#[test]
+fn core_rt_generators_and_stacks_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-gen");
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    let rt_codegen = dir.join("core_rt_codegen.ll");
+    std::fs::write(&rt_codegen, &ir).unwrap();
+    let rt_rust = dir.join("core_rt_rust.ll");
+    let o = Command::new(STRATA).current_dir(root).arg("build-core").arg("-o").arg(&rt_rust).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // a test run as the JIT runs one (`strata_test`), from a C `main`
+    let harness = dir.join("harness.c");
+    std::fs::write(&harness, HARNESS).unwrap();
+    // IR (`ll`) with C's runtime, plus `extra` files, with core.rt (`rt`) and
+    // without: their output, error output and exit code, the same
+    let run_both = |name: &str, ll: &Path, rt: &Path, extra: &[&Path]| -> String {
+        let mut pair = vec![];
+        for with_rt in [true, false] {
+            let exe = dir.join(format!("{name}-{with_rt}"));
+            let mut c = Command::new("clang");
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(ll).args(extra).arg(root.join("src/llvm/runtime.c"));
+            if with_rt {
+                c.arg("-DSTRATA_CORE_RT").arg(rt);
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+            pair.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+        }
+        assert_eq!(pair[0], pair[1], "{name}: core.rt (left) and C (right) differ");
+        pair.remove(0)
+    };
+    // mocked values, in a test
+    let file = dir.join("mocks.strata");
+    save(&file, CORE_RT_MOCKS);
+    let tests = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg("--tests").arg(&file).output().unwrap();
+    let ll = dir.join("mocks.ll");
+    std::fs::write(&ll, &tests.stdout).unwrap();
+    let out = run_both("mocks", &ll, &rt_codegen, &[&harness]);
+    assert!(out.contains("-- 0\n") && out.lines().filter(|l| l.contains("Item {")).count() >= 30, "{out}");
+    // faults deep in recursions, by both code generators
+    for (name, text, stack) in [("stack", CORE_RT_STACK, "    stack: main -> two -> two -> two -> down (101 times)\n"), ("stack_cut", CORE_RT_STACK_CUT, " -> ping -> pong -> ping -> ...\n")] {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        for rust in [false, true] {
+            let ll = dir.join(format!("{name}-{rust}.ll"));
+            if rust {
+                let o = Command::new(STRATA).current_dir(root).args(["build", "--rust", "--no-verify", "--emit-llvm"]).arg(&file).arg("-o").arg(&ll).output().unwrap();
+                assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            } else {
+                let prog = Command::new(compiler::exe()).current_dir(root).arg("codegen").arg(&file).output().unwrap();
+                std::fs::write(&ll, &prog.stdout).unwrap();
+            }
+            let out = run_both(&format!("{name}-{rust}"), &ll, if rust { &rt_rust } else { &rt_codegen }, &[]);
+            assert!(out.contains("fault (Runtime): byte 5 out of range (2 bytes)\n") && out.contains(stack) && out.ends_with("Some(101)"), "{out}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const HARNESS: &str = r##"#include <stdio.h>
+#include <stdint.h>
+typedef struct { int64_t len; char bytes[]; } Str;
+extern void strata_init(int32_t, char **);
+extern int32_t strata_test(void (*)(void));
+extern const char *strata_test_printed(void), *strata_test_kind(void), *strata_test_stack(void);
+extern Str *strata_test_message(void);
+#ifdef __APPLE__
+extern void test0(void) __asm__("_strata.test.0");
+#else
+extern void test0(void) __asm__("strata.test.0");
+#endif
+int main(int argc, char **argv) {
+  strata_init(argc, argv);
+  int32_t r = strata_test(test0);
+  printf("%s-- %d\n", strata_test_printed(), r);
+  if (r) { Str *m = strata_test_message(); printf("%s: %.*s [%s]\n", strata_test_kind(), (int)m->len, m->bytes, strata_test_stack()); }
+  return 0;
+}
+"##;
+
+const CORE_RT_MOCKS: &str = r#"type Score = Int where 0 <= it && it <= 100
+
+type Item = { name: String, qty: Int where it > 0 }
+
+type Mood = Happy | Sad | Calm
+
+trait Store {
+  fn price(self, sku: String) -> Int
+    ensures it >= 0
+  fn score(self) -> Score
+  fn items(self, n: Int) -> List[Item]
+    requires n >= 0
+  fn pick(self) -> Option[Bool]
+  fn ratio(self) -> Float
+  fn mood(self) -> Mood
+  fn tag(self) -> String
+}
+
+test "mocked values" {
+  s := mock Store
+  for i in 0..40 {
+    print(f"{s.price("a")} {s.score()} {s.items(3)} {s.pick()} {s.ratio()} {s.mood()} {s.tag()}")
+  }
+  assert s.score() <= 100
+}
+"#;
+
+const CORE_RT_STACK: &str = r#"fn down(n: Int) -> Int {
+  if n == 0 {
+    return byte_at("ab", 5)
+  }
+  down(n - 1) + 1
+}
+
+fn two(n: Int) -> Int {
+  if n == 0 {
+    down(100)
+  } else {
+    two(n - 1)
+  }
+}
+
+fn main() {
+  print("start")
+  print(two(2))
+}
+"#;
+
+const CORE_RT_STACK_CUT: &str = r#"fn ping(n: Int) -> Int {
+  if n == 0 {
+    return byte_at("ab", 5)
+  }
+  pong(n - 1) + 1
+}
+
+fn pong(n: Int) -> Int {
+  ping(n) + 1
+}
+
+fn main() {
+  print(ping(2100))
+}
+"#;
+
 /// `strata build --compare`: compiler/codegen's executable does what Rust's
 /// does on the build tests' programs and the example packages with a `main`
 /// (the measure for switching `build` over).
