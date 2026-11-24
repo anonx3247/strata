@@ -271,6 +271,8 @@ The files and `strata.log` are committed. The log is append-only and merges by u
 
 The code is stored as its syntax tree, in binary: each `.strata` file is a module file (the format is Strata's own, specified in [binary-format.md](binary-format.md)). Text goes in only through an edit (`strata edit`, `strata add`) and comes out through `view`.
 
+What `strata` compiles, proves and fetches is kept in a cache outside the package: `$STRATA_CACHE`, else `~/.cache/strata`. Nothing in it is ever evicted on its own; `strata cache` shows where it is and the size of each of its folders, and `strata cache clean` deletes it, saying how much that freed (everything in it is made again when needed).
+
 ## Packages
 
 A folder with a `strata.toml` is a **package**. Its `.strata` files are its modules, named after their path inside it (`shop/orders.strata` is `shop.orders`). `main.strata` is the root module and the default entry point; a library has none. A folder inside a package that has its own `strata.toml` is a separate package. A `.strata` file outside every package is a standalone script (like `examples/bank.strata`).

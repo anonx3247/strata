@@ -1,0 +1,51 @@
+# `strata cache` shows the own cache (STRATA_CACHE, here a scratch folder) folder by folder, an
+# older compiler's folder marked; `strata cache clean` refuses while another strata's scratch is
+# in use, `--obsolete` removes only what nothing reads (and the scratch of runs that ended), and
+# a plain clean removes the whole own cache, never a release's shipped one
+
+[[step]]
+run = ["sh", "-c", "mkdir -p cache/objects cache/termination cache/run/999999 shipped/x && head -c 300000 /dev/zero > cache/objects/a && head -c 5000 /dev/zero > cache/termination/b && head -c 5000 /dev/zero > shipped/x/c"]
+
+[[step]]
+strata = ["cache"]
+env = { "STRATA_CACHE" = "$TMP/cache", "STRATA_SHIPPED_CACHE" = "$TMP/shipped" }
+has = ["cache  ", "  objects ", "built programs' objects", "  termination ", "not read any more: an older compiler's", "(the release's, read-only: never cleaned)"]
+
+# another strata running (a scratch folder named by a running process): refused
+[[step]]
+run = ["sh", "-c", "sleep 30 & p=$!; mkdir -p cache/build/$p; STRATA_CACHE=\"$TMP/cache\" STRATA_SHIPPED_CACHE=\"$TMP/shipped\" \"$STRATA\" cache clean; echo code=$?; rm -r cache/build/$p; kill $p"]
+has = ["another strata is running (its scratch: build/", "--force", "code=2"]
+
+[[step]]
+strata = ["cache", "clean", "--obsolete"]
+env = { "STRATA_CACHE" = "$TMP/cache", "STRATA_SHIPPED_CACHE" = "$TMP/shipped" }
+has = ["removed termination (", "removed run/999999 (", "freed "]
+lacks = ["objects"]
+
+[[step]]
+run = ["sh", "-c", "ls cache; test ! -e cache/termination"]
+has = ["objects"]
+
+[[step]]
+strata = ["cache", "clean"]
+env = { "STRATA_CACHE" = "$TMP/cache", "STRATA_SHIPPED_CACHE" = "$TMP/shipped" }
+has = ["/cache: freed "]
+
+[[step]]
+run = ["sh", "-c", "test ! -e cache && test -e shipped/x/c && echo gone"]
+has = ["gone"]
+
+[[step]]
+strata = ["cache", "clean"]
+env = { "STRATA_CACHE" = "$TMP/cache" }
+has = ["nothing to clean"]
+
+# a folder that isn't a cache of its own is never removed
+[[step]]
+run = ["sh", "-c", "mkdir -p pkg && touch pkg/strata.toml"]
+
+[[step]]
+strata = ["cache", "clean"]
+env = { "STRATA_CACHE" = "$TMP/pkg" }
+code = 2
+has = ["won't clean", "is a package or a git repository"]
