@@ -22,7 +22,7 @@ strata run tools/check -- --strata ./strata --bless codegen-programs # rewrite t
 ```
 
 A case is `tests/cases/NAME.toml`, a list of `[[step]]`s run in order in a
-fresh folder (`$TMPDIR/strata-check-NAME`, removed when the case passes;
+fresh folder (`$TMPDIR/strata-check.XXXXXX/NAME`: the run's own folder, made by `mktemp -d`, so runs side by side never share one; removed when the case passes;
 `--keep` keeps it). A step stores a module (`save = "x.strata"` with `text`,
 or `from = "x.st"` under `tests/cases/NAME/`; `module`/`into` for a module of
 a folder or package), writes a file (`write`), runs `strata` (`strata =
