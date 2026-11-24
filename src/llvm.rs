@@ -1448,7 +1448,8 @@ fn static_sym(name: &str) -> String {
 /// named `strata_...` exported under that name, with C's calling convention
 /// (`Ptr` a pointer, `Bool` a `_Bool`, `()` nothing); the rest internal.
 pub fn compile_core_rt() -> Res<String> {
-    let prog = Program { decls: crate::core::module_decls("rt.strata").into_iter().filter(|d| !matches!(d.kind, DeclKind::Test(_))).collect() };
+    // (core.rt and the topic modules it calls, `core::RUNTIME`)
+    let prog = Program { decls: crate::core::runtime_files().iter().flat_map(|f| crate::core::module_decls(f)).filter(|d| !matches!(d.kind, DeclKind::Test(_))).collect() };
     let resolved = crate::resolve::resolve(&prog);
     if let Some(e) = resolved.errors.first() {
         return Err(format!("core.rt: {e:?}"));
@@ -2027,7 +2028,7 @@ impl<'a> Module<'a> {
         c.block("entry.body");
         // on the call stack a fault shows (the program's functions, as the interpreter's)
         // (nor core.rt's: the runtime, called from C)
-        let framed = !name.starts_with(PRELUDE_MODULE) && !name.starts_with("core.rt.") && !name.starts_with("test \"") && name != COMPTIME;
+        let framed = !name.starts_with(PRELUDE_MODULE) && !crate::core::runtime_fn(name) && !name.starts_with("test \"") && name != COMPTIME;
         if framed {
             // a prelude trait's method by its short name (`ListIter.next`)
             let n = c.m.string(&crate::types::shown_name(name));
