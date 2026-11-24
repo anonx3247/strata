@@ -31,7 +31,7 @@ fn main() {
 
 /// core.mem's and the runtime's module files (`core::RUNTIME`), in the order
 /// of `core::FILES`: what core_rt.ll is made from.
-const RUNTIME_FILES: [&str; 9] = ["core/mem.strata", "core/rt.strata", "core/str.strata", "core/int.strata", "core/list.strata", "core/fmt.strata", "core/float.strata", "core/gen.strata", "core/fault.strata"];
+const RUNTIME_FILES: [&str; 10] = ["core/mem.strata", "core/rt.strata", "core/str.strata", "core/int.strata", "core/list.strata", "core/fmt.strata", "core/float.strata", "core/gen.strata", "core/fault.strata", "core/run.strata"];
 
 /// FNV-1a over `RUNTIME_FILES`, as `strata build-core`
 /// stamps its output (src/cmd/build.rs, `core_stamp`).

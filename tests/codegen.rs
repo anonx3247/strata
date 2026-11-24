@@ -3114,6 +3114,168 @@ fn main() {
 }
 "#;
 
+/// core.fault and core.run (runtime.c's call stack, faults, tests' and fuzz
+/// cases' runs and `--trace`, moved to Strata over `builtin thread static`
+/// state and core.mem's `trap_run` / `trap_leave`): a test that faults
+/// (what it printed kept, the fault's message and stack) and a fuzz case
+/// (run through `strata_test` / `strata_fuzz` from a C `main`), a traced
+/// program, and tasks that fault (supervised: caught; not: ending the
+/// program), built by compiler/codegen (and llvm.rs for the tasks), do the
+/// same with the runtime in Strata and with C.
+#[test]
+fn core_rt_runs_faults_and_traces_as_in_c() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = scratch("core-rt-runs");
+    let ours = Command::new(compiler::exe()).current_dir(root).args(["codegen", "--core-rt"]).output().unwrap();
+    let ir = String::from_utf8_lossy(&ours.stdout).into_owned();
+    assert!(!ir.lines().any(|l| l.starts_with("error")), "{ir}");
+    assert!(ir.contains("thread_local global"), "the runtime's per-thread state isn't thread-local");
+    let rt_codegen = dir.join("core_rt_codegen.ll");
+    std::fs::write(&rt_codegen, &ir).unwrap();
+    let rt_rust = dir.join("core_rt_rust.ll");
+    let o = Command::new(STRATA).current_dir(root).arg("build-core").arg("-o").arg(&rt_rust).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let harness = dir.join("harness.c");
+    std::fs::write(&harness, RUN_HARNESS).unwrap();
+    let fuzz_harness = dir.join("harness_fuzz.c");
+    std::fs::write(&fuzz_harness, RUN_HARNESS.replace("strata_test(test0)", "strata_fuzz(test0, 5, 1000)")).unwrap();
+    let run_both = |name: &str, ll: &Path, rt: &Path, extra: &[&Path]| -> String {
+        let mut pair = vec![];
+        for with_rt in [true, false] {
+            let exe = dir.join(format!("{name}-{with_rt}"));
+            let mut c = Command::new("clang");
+            c.args(["-O2", "-Wno-override-module", "-o"]).arg(&exe).arg(ll).args(extra).arg(root.join("src/llvm/runtime.c"));
+            if with_rt {
+                c.arg("-DSTRATA_CORE_RT").arg(rt);
+            }
+            let o = c.arg("-lm").output().unwrap();
+            assert!(o.status.success(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            let r = Command::new(&exe).env("STRATA_MEMORY", "check").output().unwrap();
+            pair.push(format!("{}\n-- stderr\n{}\n-- {:?}", String::from_utf8_lossy(&r.stdout), String::from_utf8_lossy(&r.stderr), r.status.code()));
+        }
+        assert_eq!(pair[0], pair[1], "{name}: core.rt (left) and C (right) differ");
+        pair.remove(0)
+    };
+    let codegen = |name: &str, text: &str, flag: Option<&str>| -> PathBuf {
+        let file = dir.join(format!("{name}.strata"));
+        save(&file, text);
+        let mut c = Command::new(compiler::exe());
+        c.current_dir(root).arg("codegen");
+        if let Some(f) = flag {
+            c.arg(f);
+        }
+        let o = c.arg(&file).output().unwrap();
+        let ll = dir.join(format!("{name}.ll"));
+        std::fs::write(&ll, &o.stdout).unwrap();
+        ll
+    };
+    // a test that faults: what it printed before, the fault and its stack
+    let ll = codegen("tfault", RUNS_TEST_FAULT, Some("--tests"));
+    for (name, h) in [("tfault", &harness), ("tfault-fuzz", &fuzz_harness)] {
+        let out = run_both(name, &ll, &rt_codegen, &[h.as_path()]);
+        assert!(out.starts_with("before\n2\n-- 1\nRequires: precondition of `half` violated: requires n % 2 == 0 (with n = 3) [deep (8 times) -> half]\n"), "{out}");
+    }
+    // `--trace`
+    let ll = codegen("trace", RUNS_TRACE, Some("--trace"));
+    let out = run_both("trace", &ll, &rt_codegen, &[]);
+    assert!(out.contains("\u{2192} main()\n  \u{2192} total([1, 2, 3])\n") && out.contains("\u{2190} total: 6\n"), "{out}");
+    // tasks: a supervised one's fault caught, another's ending the program
+    let ll = codegen("tasks", RUNS_TASKS, None);
+    let out = run_both("tasks", &ll, &rt_codegen, &[]);
+    assert!(out.starts_with("Runtime: byte 5 out of range (1 bytes) [main -> spawn -> bad]\n0\n1\n") && out.contains("fault (Runtime): byte 7 out of range (1 bytes)\n    stack: main -> spawn -> bad\n") && out.ends_with("Some(101)"), "{out}");
+    let file = dir.join("tasks.strata");
+    let ll = dir.join("tasks-rust.ll");
+    let o = Command::new(STRATA).current_dir(root).args(["build", "--rust", "--no-verify", "--emit-llvm"]).arg(&file).arg("-o").arg(&ll).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(run_both("tasks-rust", &ll, &rt_rust, &[]), out);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+const RUN_HARNESS: &str = r##"#include <stdio.h>
+#include <stdint.h>
+typedef struct { int64_t len; char bytes[]; } Str;
+extern void strata_init(int32_t, char **);
+extern int32_t strata_test(void (*)(void));
+extern int32_t strata_fuzz(void (*)(void), int64_t, int64_t);
+extern const char *strata_test_printed(void), *strata_test_kind(void), *strata_test_stack(void);
+extern Str *strata_test_message(void);
+#ifdef __APPLE__
+extern void test0(void) __asm__("_strata.test.0");
+#else
+extern void test0(void) __asm__("strata.test.0");
+#endif
+int main(int argc, char **argv) {
+  strata_init(argc, argv);
+  int32_t r = strata_test(test0);
+  printf("%s-- %d\n", strata_test_printed(), r);
+  if (r) { Str *m = strata_test_message(); printf("%s: %.*s [%s]\n", strata_test_kind(), (int)m->len, m->bytes, strata_test_stack()); }
+  return 0;
+}
+"##;
+
+const RUNS_TEST_FAULT: &str = r#"fn half(n: Int) -> Int
+  requires n % 2 == 0 {
+  n / 2
+}
+
+fn deep(n: Int) -> Int {
+  if n == 0 {
+    half(3)
+  } else {
+    deep(n - 1) + 1
+  }
+}
+
+test "a fault ends the test, what it printed kept" {
+  print("before")
+  print(f"{half(4)}")
+  x := deep(7)
+  print("never")
+}
+"#;
+
+const RUNS_TRACE: &str = r#"fn add(a: Int, b: Int) -> Int {
+  a + b
+}
+
+fn total(xs: List[Int]) -> Int {
+  if len(xs) == 0 {
+    0
+  } else {
+    add(xs[0], total(xs[1..len(xs)]))
+  }
+}
+
+fn main() {
+  print(total([1, 2, 3]))
+}
+"#;
+
+const RUNS_TASKS: &str = r#"fn bad(n: Int) -> Int {
+  if n > 2 {
+    byte_at("x", n)
+  } else {
+    n
+  }
+}
+
+fn main() {
+  scope {
+    h := supervised spawn bad(5)
+    print(await h except p {
+      print(f"{p.kind}: {p.message} [{p.stack}]")
+      0
+    })
+    g := spawn bad(1)
+    print(await g)
+  }
+  scope {
+    k := spawn bad(7)
+    print(await k)
+  }
+}
+"#;
+
 /// `strata build --compare`: compiler/codegen's executable does what Rust's
 /// does on the build tests' programs and the example packages with a `main`
 /// (the measure for switching `build` over).

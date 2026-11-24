@@ -38,6 +38,7 @@ pub const FILES: &[(&str, &[u8])] = &[
     ("float.strata", include_bytes!("../core/float.strata")),
     ("gen.strata", include_bytes!("../core/gen.strata")),
     ("fault.strata", include_bytes!("../core/fault.strata")),
+    ("run.strata", include_bytes!("../core/run.strata")),
     ("values.strata", include_bytes!("../core/values.strata")),
 ];
 
@@ -54,10 +55,10 @@ pub const VALUES: &str = "core.values";
 /// The runtime written in Strata: core.rt (the allocator, the runtime's
 /// state, and each `strata_...` function compiled code and the C runtime
 /// call) and the topic modules it is built from (strings, integers, lists,
-/// format specs, floats, generated values, faults), which
+/// format specs, floats, generated values, faults, runs), which
 /// only it calls. Compiled together (`llvm::compile_core_rt`), never part of
 /// a program; nothing in them allocates through the language.
-pub const RUNTIME: &[&str] = &["core.rt", "core.str", "core.int", "core.list", "core.fmt", "core.float", "core.gen", "core.fault"];
+pub const RUNTIME: &[&str] = &["core.rt", "core.str", "core.int", "core.list", "core.fmt", "core.float", "core.gen", "core.fault", "core.run"];
 
 /// Whether `name` (resolved: `core.str.str_size`) is a function of the
 /// runtime's modules (`RUNTIME`), as core's files have it.
@@ -174,7 +175,7 @@ fn triggers(m: &str) -> std::collections::HashSet<String> {
                 ExternItem::Fn(f) => {
                     out.insert(f.name.to_string());
                 }
-                ExternItem::Type(t, _) | ExternItem::Static(t, _) => {
+                ExternItem::Type(t, _) | ExternItem::Static(t, _) | ExternItem::ThreadStatic(t, _) => {
                     out.insert(t.to_string());
                 }
             },
@@ -224,7 +225,7 @@ pub fn builtin_types() -> &'static [(Symbol, Vec<Symbol>)] {
             .filter_map(|d| match &d.kind {
                 DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
                     ExternItem::Type(t, ps) => Some((*t, ps.clone())),
-                    ExternItem::Fn(_) | ExternItem::Static(..) => None,
+                    ExternItem::Fn(_) | ExternItem::Static(..) | ExternItem::ThreadStatic(..) => None,
                 },
                 _ => None,
             })
@@ -239,7 +240,7 @@ pub fn builtin_fns() -> impl Iterator<Item = (Symbol, &'static crate::ast::FnDec
     FILES.iter().flat_map(|(f, _)| module(f)).filter_map(|d| match &d.kind {
         DeclKind::Extern(e) if e.lang == Lang::Builtin => match &e.item {
             ExternItem::Fn(f) => Some((d.module, f)),
-            ExternItem::Type(..) | ExternItem::Static(..) => None,
+            ExternItem::Type(..) | ExternItem::Static(..) | ExternItem::ThreadStatic(..) => None,
         },
         _ => None,
     })
@@ -321,7 +322,7 @@ pub fn check(dir: &std::path::Path) -> crate::types::CheckReport {
 pub fn tests() -> Program {
     let decls = FILES
         .iter()
-        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (runtime_files().iter().any(|r| r == f) && (!is_builtin(d) || matches!(&d.kind, DeclKind::Extern(e) if matches!(e.item, ExternItem::Static(..)))))).cloned())
+        .flat_map(|(f, _)| module(f).iter().filter(move |d| matches!(d.kind, DeclKind::Test(_)) || (runtime_files().iter().any(|r| r == f) && (!is_builtin(d) || matches!(&d.kind, DeclKind::Extern(e) if matches!(e.item, ExternItem::Static(..) | ExternItem::ThreadStatic(..)))))).cloned())
         .collect();
     Program { decls }
 }

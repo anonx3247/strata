@@ -351,6 +351,9 @@ pub enum ExternItem {
     /// one per program, at a fixed address; its name is a `Ptr` to it (core
     /// only: the state of the runtime written in Strata).
     Static(Symbol, i64),
+    /// `builtin thread static calls: 65552`: as `Static`, but one block per
+    /// thread (thread-local), zeroed when the thread starts.
+    ThreadStatic(Symbol, i64),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -417,7 +420,7 @@ impl Decl {
             DeclKind::Use(u) => format!("use {}", u.path),
             DeclKind::Extern(e) => match &e.item {
                 ExternItem::Fn(f) => f.name.to_string(),
-                ExternItem::Type(t, _) | ExternItem::Static(t, _) => t.to_string(),
+                ExternItem::Type(t, _) | ExternItem::Static(t, _) | ExternItem::ThreadStatic(t, _) => t.to_string(),
             },
             DeclKind::Capability(c) => c.name.to_string(),
         }
@@ -1077,7 +1080,7 @@ macro_rules! visitor {
                 DeclKind::Use(_) => {}
                 DeclKind::Extern(e) => match &$($m)? e.item {
                     ExternItem::Fn(f) => $func(v, f),
-                    ExternItem::Type(..) | ExternItem::Static(..) => {}
+                    ExternItem::Type(..) | ExternItem::Static(..) | ExternItem::ThreadStatic(..) => {}
                 },
                 DeclKind::Capability(c) => {
                     for m in &$($m)? c.methods {

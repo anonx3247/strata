@@ -129,7 +129,17 @@ unsafe extern "C" {
     fn strata_raw_size();
     fn strata_raw_fail();
     fn strata_soft_fault();
-    fn strata_next_random();
+    fn strata_trap_size();
+    fn strata_trap_run();
+    fn strata_trap_leave();
+    fn strata_fd_write();
+    fn strata_out_flush();
+    fn strata_process_exit();
+    fn strata_thread_park();
+    fn strata_task_origin();
+    fn strata_contain_fault();
+    fn strata_run_begin();
+    fn strata_run_end();
     fn strata_int_to_float();
     fn strata_int_lit();
     fn strata_int_eq();
@@ -284,7 +294,17 @@ fn runtime() -> Vec<(&'static str, usize)> {
         ("strata_raw_size", strata_raw_size as *const () as usize),
         ("strata_raw_fail", strata_raw_fail as *const () as usize),
         ("strata_soft_fault", strata_soft_fault as *const () as usize),
-        ("strata_next_random", strata_next_random as *const () as usize),
+        ("strata_trap_size", strata_trap_size as *const () as usize),
+        ("strata_trap_run", strata_trap_run as *const () as usize),
+        ("strata_trap_leave", strata_trap_leave as *const () as usize),
+        ("strata_fd_write", strata_fd_write as *const () as usize),
+        ("strata_out_flush", strata_out_flush as *const () as usize),
+        ("strata_process_exit", strata_process_exit as *const () as usize),
+        ("strata_thread_park", strata_thread_park as *const () as usize),
+        ("strata_task_origin", strata_task_origin as *const () as usize),
+        ("strata_contain_fault", strata_contain_fault as *const () as usize),
+        ("strata_run_begin", strata_run_begin as *const () as usize),
+        ("strata_run_end", strata_run_end as *const () as usize),
         ("strata_int_to_float", strata_int_to_float as *const () as usize),
         ("strata_int_lit", strata_int_lit as *const () as usize),
         ("strata_int_eq", strata_int_eq as *const () as usize),

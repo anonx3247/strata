@@ -812,7 +812,8 @@ fn compile_with(prog: &Program, entry: Entry, resolved: bool) -> Res<(String, Ve
     let mut statics: Vec<(&Symbol, &i64)> = env.statics.iter().collect();
     statics.sort();
     for (n, size) in statics {
-        writeln!(m.globals, "{} = internal global [{size} x i8] zeroinitializer, align 16", static_sym(n)).unwrap();
+        let tls = if env.thread_statics.contains(n) { "thread_local " } else { "" };
+        writeln!(m.globals, "{} = internal {tls}global [{size} x i8] zeroinitializer, align 16", static_sym(n)).unwrap();
     }
     if !m.proofs.is_empty() {
         m.refs = Refs::of(prog);
@@ -1164,7 +1165,17 @@ declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
 declare void @llvm.memmove.p0.p0.i64(ptr, ptr, i64, i1)
 declare i32 @memcmp(ptr, ptr, i64)
 declare zeroext i1 @strata_soft_fault(i64, ptr)
-declare i64 @strata_next_random()
+declare i64 @strata_trap_size()
+declare i64 @strata_trap_run(ptr, ptr)
+declare void @strata_trap_leave(ptr)
+declare void @strata_fd_write(i64, ptr, i64)
+declare void @strata_out_flush()
+declare void @strata_process_exit(i64)
+declare void @strata_thread_park()
+declare ptr @strata_task_origin()
+declare void @strata_contain_fault(i64, ptr)
+declare ptr @strata_run_begin()
+declare i64 @strata_run_end(ptr, i64)
 declare void @free(ptr)
 declare i64 @llvm.smin.i64(i64, i64)
 declare ptr @strata_show_int(i64)
@@ -1440,6 +1451,25 @@ pub fn compile_library(prog: &Program, names: &[String]) -> Res<String> {
 }
 
 /// The global holding a `builtin static` block.
+/// core.mem's builtins that call the C runtime (what stays C while tasks
+/// and output are its own): each one's C function, result and parameters.
+fn c_hook(name: &str) -> Option<(&'static str, &'static str, &'static [&'static str])> {
+    const HOOKS: &[(&str, (&str, &str, &[&str]))] = &[
+        ("trap_size", ("strata_trap_size", "i64", &[])),
+        ("trap_run", ("strata_trap_run", "i64", &["ptr", "ptr"])),
+        ("trap_leave", ("strata_trap_leave", "void", &["ptr"])),
+        ("fd_write", ("strata_fd_write", "void", &["i64", "ptr", "i64"])),
+        ("out_flush", ("strata_out_flush", "void", &[])),
+        ("process_exit", ("strata_process_exit", "void", &["i64"])),
+        ("thread_park", ("strata_thread_park", "void", &[])),
+        ("task_origin", ("strata_task_origin", "ptr", &[])),
+        ("contain_fault", ("strata_contain_fault", "void", &["i64", "ptr"])),
+        ("run_begin", ("strata_run_begin", "ptr", &[])),
+        ("run_end", ("strata_run_end", "i64", &["ptr", "i64"])),
+    ];
+    HOOKS.iter().find(|(n, _)| *n == name).map(|(_, h)| *h)
+}
+
 fn static_sym(name: &str) -> String {
     format!("@\"static:{name}\"")
 }
@@ -6290,10 +6320,24 @@ impl<'m, 'a> Func<'m, 'a> {
                 self.emit(format!("{r} = frem double {}, {}", vs[0].1, vs[1].1));
                 (Ty::Float, r)
             }
-            ("random_word", []) => {
+            // core.mem's calls into the C runtime (what stays C while tasks
+            // and output are its own)
+            _ if c_hook(name).is_some() => {
+                let (sym, ret, params) = c_hook(name).unwrap();
+                let args: Vec<String> = params.iter().zip(&vs).map(|(t, v)| format!("{t} {}", v.1)).collect();
+                if ret == "void" {
+                    self.emit(format!("call void @{sym}({})", args.join(", ")));
+                    (Ty::Unit, "0".into())
+                } else {
+                    let r = self.fresh("c");
+                    self.emit(format!("{r} = call {ret} @{sym}({})", args.join(", ")));
+                    (Ty::Con(if ret == "ptr" { "Ptr" } else { "I64" }.into(), vec![]), r)
+                }
+            }
+            ("narrow_i32", [_]) => {
                 let r = self.fresh("w");
-                self.emit(format!("{r} = call i64 @strata_next_random()"));
-                (Ty::Con("I64".into(), vec![]), r)
+                self.emit(format!("{r} = trunc i64 {} to i32", vs[0].1));
+                (Ty::Con("I32".into(), vec![]), r)
             }
             ("widen_i32", [_]) => {
                 let r = self.fresh("w");
