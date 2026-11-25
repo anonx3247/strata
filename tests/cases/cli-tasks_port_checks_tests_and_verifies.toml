@@ -4,7 +4,17 @@ strata = ["--file", "$ROOT/examples/tasks", "test"]
 has = ["0 failed"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "verify", "sim.simulate,model.run_worker,memory.mem_claim", "--cases", "300"]
+strata = ["--file", "$ROOT/examples/tasks", "verify", "--no-race"]
+# (`print.demo` is fuzzed, not proven, since `MemQueue`'s refinement says
+# `all(table.items(), …)`, which the prover doesn't model yet: after `drain`
+# it can't show `describe(queue)` its argument still satisfies it)
+has = [
+  "✓ law enqueue_once for memory.MemQueue[P, E] proven",
+  "✓ model.drain",
+  "~ model.run_worker         fuzzed: 200 cases",
+  "print.demo",
+]
+lacks = ["✗", "skipped"]
 
 [[step]]
 strata = ["--file", "$ROOT/examples/tasks", "run", "print.demo"]

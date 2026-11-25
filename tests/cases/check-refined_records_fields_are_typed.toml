@@ -1,0 +1,55 @@
+# A refined record's (or sum's) fields are checked as an unrefined one's
+# are: `R { d: (), xs: () }` was accepted by check when `R` had a
+# refinement (it was then any value), refused when it had none, and the
+# compiled program crashed
+
+[[step]]
+save = "p.strata"
+text = '''
+type R = { d: Dict[Int, String], xs: List[Int] } where len(xs) >= 0
+
+type U = { d: Dict[Int, String], xs: List[Int] }
+
+type Box[K] = { table: Dict[K, String], order: List[K] } where len(order) >= 0
+
+type Shape = Circle(Int) | Square { side: Int } where true
+
+fn refined() -> Int {
+  r := R { d: (), xs: () }
+  len(r.xs)
+}
+
+fn unrefined() -> Int {
+  u := U { d: (), xs: () }
+  len(u.xs)
+}
+
+fn updated(b: Box[Int], k: Int) -> Box[Int] {
+  Box { table: b.table.insert(k, "x"), order: b.order.push(k) }
+}
+
+fn sum() -> Shape {
+  Square { side: "wide" }
+}
+
+fn fine(b: Box[Int], k: Int) -> Int {
+  r := R { d: Dict[Int, String] { 1: "a" }, xs: [1, 2] }
+  c := Box { table: b.table, order: b.order + [k] }
+  s := Circle(3)
+  len(r.xs) + len(c.order)
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in refined: field `R.d`: expected `Dict[Int, String]`, found `()`",
+  "error in refined: field `R.xs`: expected `List[Int]`, found `()`",
+  "error in unrefined: field `U.d`: expected `Dict[Int, String]`, found `()`",
+  "error in unrefined: field `U.xs`: expected `List[Int]`, found `()`",
+  "error in updated: field `Box.table`",
+  "error in updated: field `Box.order`",
+  "error in sum: field `Square.side`: expected `Int`, found `String`",
+]
+lacks = ["error in fine"]

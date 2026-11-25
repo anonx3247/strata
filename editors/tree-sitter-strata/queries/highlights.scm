@@ -88,11 +88,13 @@
   "derive"
   "derivable"
   "capability"
+  "shared"
   "extern"
   "builtin"
   "static"
   "thread"
   "law"
+  "model"
   "test"
 ] @keyword.storage.type
 
@@ -115,6 +117,7 @@
 ] @keyword
 
 [
+  "assumed"
   "requires"
   "ensures"
   "terminates"

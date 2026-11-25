@@ -1,0 +1,36 @@
+# `strata --file DIR fix` writes the modules it changes under the names
+# their files hold, as `edit` does. core's are `core.iter`, ... (std's
+# `std.io`): fix wrote core's changed files as `iter`, which programs then
+# didn't find (the trait `Iterator` and every `impl` of it in other
+# modules, `core.iter.Iterator` there, lost).
+
+[[step]]
+run = ["cp", "-R", "$ROOT/core", "$TMP/core"]
+
+[[step]]
+module = "iter"
+into = "core"
+text = '''
+fn pushed_twice() -> List[Int] {
+  mut xs := [1]
+  xs = push(xs, 2)
+  xs
+}
+'''
+
+[[step]]
+strata = ["--file", "core", "fix"]
+has = ["fixed: `pushed_twice`"]
+
+[[step]]
+strata = ["header", "core/iter.strata"]
+has = ["module core.iter:", "uses core.iter.Iterator"]
+lacks = ["module iter:"]
+
+[[step]]
+strata = ["--file", "core", "view", "iter"]
+has = ["  mut xs.push(2)"]
+
+[[step]]
+strata = ["--file", "core", "check"]
+has = ["ok: core checks"]

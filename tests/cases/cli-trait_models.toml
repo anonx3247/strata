@@ -1,0 +1,297 @@
+# Trait models: `model orders: T` in a trait, `model orders = e` in each
+# impl; contracts name them (`self.orders`, `db.orders`), with `old`; a
+# trait's `invariant` (every method assumes it, every `mut self` one keeps
+# it) and `ensures` (every `mut self` method meets it). Written and read
+# back; verify proves each impl against the trait's contracts through its
+# abstraction (a faithful one proven, one keeping the last order refuted)
+# and code over the trait through the model alone; contracts naming a model
+# are assumed (checked with `--check-assumed`); `mock Db` runs the model; the
+# errors (an impl without a model, an unknown one, a model in a body)
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+text = '''
+type Order = { item: String, shipped: Bool }
+
+/// Orders kept somewhere.
+trait Db {
+  /// Every order, by id.
+  model orders: Dict[Int, Order]
+
+  fn save(mut self, id: Int, o: Order)
+    ensures self.orders == old self.orders.with(id, o)
+  fn lookup(self, id: Int) -> Option[Order]
+    ensures it == self.orders.get(id)
+}
+
+/// In memory.
+type MemDb = { all: Dict[Int, Order] }
+
+impl Db for MemDb {
+  model orders = self.all
+
+  fn save(mut self, id: Int, o: Order) {
+    mut self.all.insert(id, o)
+  }
+
+  fn lookup(self, id: Int) -> Option[Order] = self.all.get(id)
+}
+
+/// Keeps only the last order saved.
+type OneOrder = { last: Option[(Int, Order)] }
+
+impl Db for OneOrder {
+  model orders = match self.last {
+    Some((k, o)) => Dict[Int, Order] { k: o },
+    None => Dict[Int, Order] {},
+  }
+
+  fn save(mut self, id: Int, o: Order) {
+    self.last = Some((id, o))
+  }
+
+  fn lookup(self, id: Int) -> Option[Order] = match self.last {
+    Some((k, o)) => if k == id {
+      Some(o)
+    } else {
+      None
+    },
+    None => None,
+  }
+}
+
+/// Marks order `id` shipped.
+fn ship(mut db: Db, id: Int) -> Result[(), String]
+  ensures match old db.orders.get(id) {
+    Some(o) => it is Ok
+      && db.orders == (old db.orders).with(id, Order { ..o, shipped: true }),
+    None => it is Err && db.orders == old db.orders,
+  } {
+  match db.lookup(id) {
+    Some(o) => {
+      mut db.save(id, Order { ..o, shipped: true })
+      Ok(())
+    },
+    None => Err("no such order"),
+  }
+}
+
+fn main() {
+  mut db := MemDb { all: Dict[Int, Order] {} }
+  mut db.save(1, Order { item: "tea", shipped: false })
+  print(ship(mut db, 1))
+  print(ship(mut db, 2))
+  print(db.lookup(1))
+}
+
+test "the mock runs the model" {
+  mut db := mock Db
+  mut db.save(7, Order { item: "pen", shipped: false })
+  assert db.lookup(7) == Some(Order { item: "pen", shipped: false })
+  assert ship(mut db, 7) is Ok
+  assert db.lookup(7) == Some(Order { item: "pen", shipped: true })
+  assert ship(mut db, 8) is Err
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "view", "main"]
+has = [
+  "trait Db {\n  /// Every order, by id.\n  model orders: Dict[Int, Order]\n\n  fn save(mut self, id: Int, o: Order)\n    ensures self.orders == old self.orders.with(id, o)\n",
+  "impl Db for MemDb {\n  model orders = self.all\n\n",
+]
+
+[[step]]
+strata = ["--file", "m.strata", "verify", "--checks", "--no-race"]
+fails = true
+has = [
+  "✓ MemDb.save",
+  "proven:  ensures self.Db::orders() == old self.Db::orders().with(id, o)",
+  "✗ OneOrder.save            Ensures violation (found by the solver)",
+  "postcondition of `OneOrder.save` violated: ensures self.orders() == old self.orders().with(id, o)",
+  "✓ ship",
+  "None => it is Err && db.Db::orders() == old db.Db::orders(),\n} (assumed: not checked when the program runs)",
+]
+
+[[step]]
+strata = ["--file", "m.strata", "run"]
+stdout = '''
+Ok(())
+Err("no such order")
+Some(Order { item: "tea", shipped: true })
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "test", "--check-assumed"]
+has = ["✓ the mock runs the model", "1 passed, 0 failed"]
+
+# an assumed contract naming a model is checked with `--check-assumed`
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+text = '''
+fn main() {
+  mut db := OneOrder { last: None }
+  mut db.save(1, Order { item: "tea", shipped: false })
+  mut db.save(2, Order { item: "pen", shipped: false })
+  print(db.lookup(1))
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "run"]
+stdout = "None\n"
+
+[[step]]
+strata = ["--file", "m.strata", "run", "--check-assumed"]
+fails = true
+has = ["postcondition of `OneOrder.save` violated: ensures self.orders() == old self.orders().with(id, o)"]
+
+# a trait's invariant: a refinement of every implementing type's model
+# (each method of `self` knows it, a `mut self` one keeps it, a result of
+# type `Self` establishes it, a value of the trait carries it); its
+# `ensures`: every `mut self` method meets it
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+/// Items in stock.
+trait Stock {
+  model count: Int
+  assumed invariant self.count >= 0
+  ensures self.count >= old self.count - 1
+
+  fn add(mut self)
+    ensures self.count == old self.count + 1
+  fn take(mut self) -> Bool
+    ensures it == (old self.count > 0)
+  fn empty() -> Self
+}
+
+type Shelf = { n: Int }
+
+impl Stock for Shelf {
+  model count = self.n
+
+  fn empty() -> Self = Shelf { n: 0 }
+
+  fn add(mut self) {
+    self.n += 1
+  }
+
+  fn take(mut self) -> Bool {
+    if self.n > 0 {
+      self.n -= 1
+      true
+    } else {
+      false
+    }
+  }
+}
+
+/// Takes one even when there is none.
+type Leaky = { n: Int }
+
+impl Stock for Leaky {
+  model count = self.n
+
+  fn empty() -> Self = Leaky { n: -1 }
+
+  fn add(mut self) {
+    self.n += 1
+  }
+
+  fn take(mut self) -> Bool {
+    had := self.n > 0
+    self.n -= 1
+    had
+  }
+}
+
+/// Takes two, through the trait: never below zero.
+fn take_two(mut s: Stock) -> Int
+  ensures s.count >= 0 {
+  mut got := 0
+  if mut s.take() {
+    got += 1
+  }
+  if mut s.take() {
+    got += 1
+  }
+  got
+}
+
+/// What any stock's count is, without asking it.
+fn never_negative(s: Stock) -> Int
+  ensures s.count >= 0 {
+  0
+}
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "view", "main"]
+has = ["trait Stock {\n  model count: Int\n  assumed invariant self.count >= 0\n  ensures self.count >= old self.count - 1\n\n  fn add(mut self)\n"]
+
+[[step]]
+strata = ["--file", "s.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ Shelf.add                proven (3 checks)",
+  "✓ Shelf.take               proven (3 checks)",
+  "✓ Leaky.add                proven (3 checks)",
+  "✗ Leaky.take",
+  "postcondition of `Leaky.take` violated: ensures self.count() >= 0",
+  "✓ Shelf.empty              proven (1 check)",
+  "postcondition of `Leaky.empty` violated: ensures it.count() >= 0 (it = Leaky { n: -1 })",
+  "✓ take_two                 proven (1 check)",
+  "✓ never_negative           proven (1 check)",
+]
+
+[[step]]
+strata = ["--file", "x.strata", "edit"]
+text = '''
+trait Stock {
+  model count: Int
+
+  fn add(mut self)
+    ensures self.count == old self.count + 1
+}
+
+type Shelf = { n: Int }
+
+impl Stock for Shelf {
+  fn add(mut self) {
+    self.n += 1
+  }
+}
+
+type Box = { n: Int }
+
+impl Stock for Box {
+  model count = self.n
+  model size = self.n
+
+  fn add(mut self) {
+    self.n += 1
+  }
+}
+
+type Bin = { n: Int }
+
+impl Stock for Bin {
+  model count = "many"
+
+  fn add(mut self) {
+    self.n += 1
+  }
+}
+
+fn peek(s: Stock) -> Int {
+  s.count
+}
+'''
+fails = true
+has = [
+  "error in impl Stock for Shelf: `impl Stock for Shelf` gives no `model count`",
+  "error in impl Stock for Box: `model size`: `Stock` has no model `size`",
+  "error in impl Stock for Bin: function body: expected `Int`, found `String`",
+  "error in peek: `s.count` is `Stock`'s model, which only contracts name",
+]
+lacks = ["share a name"]

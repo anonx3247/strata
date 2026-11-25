@@ -1,0 +1,99 @@
+# Nested quantifiers in contracts: a conversation whose every tool result
+# answers a call of some earlier message (`all` over positions, an `any`
+# over earlier messages, an `any` over their calls). Each `all` makes only
+# the direction its polarity needs, so no quantifier is nested in another:
+# two calls in one message, and a result found through a `requires`, are
+# proven; a result answering no call, or before its call, is refuted by
+# the solver
+[[step]]
+save = "t.strata"
+text = '''
+/// A message of a conversation with a model.
+type Message =
+  | User(String)
+  | Assistant { text: String, calls: List[String] }
+  | ToolResult { id: String, output: String }
+
+/// Message `i` (an empty user message past the end: total, for contracts).
+fn msg(ms: List[Message], i: Int) -> Message {
+  get(ms, i) ?? User("")
+}
+
+/// The tool calls message `m` makes.
+fn calls_of(m: Message) -> List[String] {
+  match m {
+    Assistant { calls, .. } => calls,
+    _ => [],
+  }
+}
+
+/// Whether message `i` is a tool result answering a call made before it.
+fn answers(ms: List[Message], i: Int) -> Bool {
+  match msg(ms, i) {
+    ToolResult { id, .. } => any(0..i, j -> any(calls_of(msg(ms, j)), c -> c == id)),
+    _ => true,
+  }
+}
+
+/// Every tool result answers some earlier call.
+type Conversation = List[Message] where all(0..len(it), i -> answers(it, i))
+
+/// Two calls of tools in one message, then their results in the other order.
+fn two_calls(c: Conversation, a: String, b: String) -> Conversation {
+  c + [Assistant { text: "", calls: [a, b] }, ToolResult { id: b, output: "" }, ToolResult { id: a, output: "" }]
+}
+
+/// The result of a call an earlier message made.
+fn reply(c: Conversation, k: Int, out: String) -> Conversation
+  requires 0 <= k && k < len(c) && len(calls_of(msg(c, k))) > 0 {
+  match c[k] {
+    Assistant { calls, .. } => c + [ToolResult { id: calls[0], output: out }],
+    _ => c,
+  }
+}
+
+/// The result of the last call of an earlier message.
+fn reply_last(c: Conversation, k: Int, out: String) -> Conversation
+  requires 0 <= k && k < len(c) {
+  match c[k] {
+    Assistant { calls, .. } => if len(calls) > 0 {
+      c + [ToolResult { id: calls[len(calls) - 1], output: out }]
+    } else {
+      c
+    },
+    _ => c,
+  }
+}
+
+/// A result nothing asked for.
+fn stray(c: Conversation, id: String) -> Conversation {
+  c + [ToolResult { id, output: "" }]
+}
+
+/// A result before its call (wrong).
+fn early(c: Conversation, a: String) -> Conversation {
+  c + [ToolResult { id: a, output: "" }, Assistant { text: "", calls: [a] }]
+}
+
+/// The messages before `k` (a prefix keeps every answer).
+fn prefix(c: Conversation, k: Int) -> Conversation
+  requires 0 <= k && k <= len(c) {
+  c[..k]
+}
+
+fn main() {
+  print(len(two_calls([], "a", "b")))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ two_calls                proven (1 check)",
+  "✓ reply                    proven (3 checks)",
+  "✓ reply_last               proven (3 checks)",
+  "✓ prefix                   proven (1 check)",
+  "✗ stray                    Refinement violation (found by the solver)",
+  "✗ early                    Refinement violation (found by the solver)",
+]

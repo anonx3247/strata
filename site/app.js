@@ -570,7 +570,7 @@ feature('points', {
   const lines = D.math.verify.split('\n');
   const verdictOf = l => { const m = l.match(/^([✓✗~≈○])\s+(\S+)/); return m && { mark: m[1], name: m[2] }; };
   const cex = {};
-  for (const d of G) if (d.verdict === 'counterexample') cex[d.name] = `${esc(d.name)}(${(d.args || []).map(a => esc(JSON.stringify(a))).join(', ')}) → ${esc((d.message || '').replace(/\s*\(stack:.*$/, ''))}`;
+  for (const d of G) if (d.verdict === 'counterexample') cex[d.name] = `${esc(d.name)}(${(d.args || []).map(a => esc(typeof a === 'string' ? a : JSON.stringify(a))).join(', ')}) → ${esc((d.message || '').replace(/\s*\(stack:.*$/, ''))}`;
   B.verdicts = async (k, { fast, alive }) => {
     const el = $('#math-verify');
     if (k === 1) {
@@ -738,7 +738,7 @@ function drawTree(el, roots, fast) {
     const s = STEPS[k];
     $('#ast-h').textContent = s.h;
     $('#ast-say').innerHTML = '<p></p>'; say($('#ast-say p'), s.say, fast);
-    if (k === 4) { $('#ast-title').textContent = '$ strata run total … --trace'; $('#ast-code').innerHTML = ''; typeTerm($('#ast-code'), { cmd: 'strata run total \'[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]\' --trace', out: D.orders.trace }, alive, { fast }); }
+    if (k === 4) { $('#ast-title').textContent = '$ strata run total … --trace'; $('#ast-code').innerHTML = ''; typeTerm($('#ast-code'), { cmd: D.orders.traceCmd, out: D.orders.trace }, alive, { fast }); }
     else { $('#ast-title').textContent = 'orders.strata'; $('#ast-code').innerHTML = hl(src); }
     if (k <= 1) {
       show('tokens');
@@ -804,7 +804,7 @@ function drawTree(el, roots, fast) {
   const ch = (snap, step) => ({ linediff: snap === R ? R.diff : snap.linediff, change: snap.changes[step], title: snap.changes.all.steps.find(s => s.id === step).title });
   const cases = [
     { tab: 0, parts: [ch(R, R.step), ch(renameV, lastStep(renameV))], h: 'A rename should read as a rename.',
-      say: `Two renames. <code>strata rename Task Job</code> renamed a type, and the twelve definitions that use it were updated; <code>strata rename Shipped Sent</code> renamed a variant, and every pattern and test that uses it. As text, that is ${big + diffCount(renameV.linediff)} changed lines. As changes, it is two lines.` },
+      say: `Two renames. <code>strata rename Task Job</code> renamed a type, and the ${R.updated} definitions that use it were updated; <code>strata rename Shipped Sent</code> renamed a variant, and every pattern and test that uses it. As text, that is ${big + diffCount(renameV.linediff)} changed lines. As changes, it is two lines.` },
     { tab: 1, parts: [{ ...ch(C, stepTitled(C, 'discount: members')), linediff: C.paramDiff }], h: 'A new parameter, and the calls that follow it.',
       say: `<code>discount</code> takes a new <code>member</code> flag, not used yet. The change is the new parameter, and its two call sites are listed as following it.` },
     { tab: 1, parts: [{ ...ch(fill, stepTitled(fill, 'coupons')), linediff: D.orders.couponsDiff }], h: 'And when the body changes too.',
@@ -819,7 +819,7 @@ function drawTree(el, roots, fast) {
     $('#diffs').classList.toggle('big', k === 0);
     if (k === 0) {
       $('#diff-h').textContent = 'Here is a diff. What happened?'; flip($('#diff-h'));
-      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines of diff over four modules, ${big} of them changed. To review it, you have to read all of them.`, fast);
+      say($('#diff-say'), `A change to <code>examples/tasks</code>, as <code>git diff</code> shows it: ${bigLines} lines of diff over ${["no", "one", "two", "three", "four", "five"][R.modules] ?? R.modules} modules, ${big} of them changed. To review it, you have to read all of them.`, fast);
       const body = $('#big-body');
       body.scrollTop = 0;
       count($('#big-count'), big, 'line', alive, 1600).then(() => alive() && ($('#big-count').textContent = `${big} lines changed`));
@@ -903,7 +903,7 @@ function drawTree(el, roots, fast) {
     const s = C.steps[k - 1], before = C.steps[k - 2]?.graph;
     sayBlock($('#travel-say'), esc(s.title), md(s.say), fast, `<div class="who"><i></i>step ${k} of ${C.steps.length}</div>`);
     const cex = {};
-    for (const d of s.graph) if (d.verdict === 'counterexample') cex[d.name] = `${esc(d.name)}(${(d.args || []).map(a => esc(JSON.stringify(a))).join(', ')}): ${esc((d.message || '').replace(/\s*\(stack:.*$/, ''))}`;
+    for (const d of s.graph) if (d.verdict === 'counterexample') cex[d.name] = `${esc(d.name)}(${(d.args || []).map(a => esc(typeof a === 'string' ? a : JSON.stringify(a))).join(', ')}): ${esc((d.message || '').replace(/\s*\(stack:.*$/, ''))}`;
     const changed = before ? changedBetween(before, s.graph) : new Set(['checkout']);
     graph.set(s.graph, { layout: every, changed, lit: before ? ifaceChanged(before, s.graph) : new Set(), cex, fast });
     $('#travel-term-title').textContent = '~/shop';

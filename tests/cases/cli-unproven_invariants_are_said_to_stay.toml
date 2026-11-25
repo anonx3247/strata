@@ -1,5 +1,6 @@
 # a loop invariant verify doesn't prove stays a runtime check, run at every
-# pass of its loop: `build` and `verify` say so, once per invariant
+# pass of its loop: `build` and `verify` say so, once per invariant, with
+# its cost (one walking a list makes the loop quadratic) and `assumed invariant`
 
 [[step]]
 save = "inv.strata"
@@ -23,11 +24,11 @@ fn main() {
 
 [[step]]
 strata = ["--file", "inv.strata", "build", "-o", "inv"]
-has = ["warning: in `total`, `invariant s == sum(slice(xs, 0, i))` of `while i < len(xs)` isn't proven: it stays a runtime check, run at every pass of the loop"]
+has = ["warning: in `total`, `invariant s == sum(slice(xs, 0, i))` of `while i < len(xs)` isn't proven: it stays a runtime check that walks a list at every pass of the loop (O(n) a pass: the loop becomes quadratic); prove it, or write `assumed invariant`"]
 counts = { "isn't proven" = 1 }
 
 [[step]]
 strata = ["--file", "inv.strata", "verify"]
 any_code = true
-has = ["(so it stays a runtime check, run at every pass of the loop)"]
+has = ["(so it stays a runtime check, run at every pass of the loop; `assumed invariant` leaves it to `verify`)"]
 counts = { "stays a runtime check" = 1 }

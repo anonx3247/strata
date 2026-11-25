@@ -1,0 +1,23 @@
+# (on tests/data/graph: examples/tasks and orders as they were before their
+# models, statuses kept in lists)
+# `strata view --graph T --trace FILE`: the moves a run made (the lines
+# `strata run --trace` prints), counted per function
+
+[[step]]
+run = ["sh", "-c", "$STRATA --file $ROOT/tests/data/graph/tasks run sim.simulate '1, 1, [sim.Produce { ids: [1, 2] }, sim.Work { behaviour: sim.AllFail }, sim.Work { behaviour: sim.AllSucceed }]' --trace 2> trace.txt"]
+has = ["t1: Done after 2"]
+
+[[step]]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/tests/data/graph/tasks", "--trace", "trace.txt"]
+has = [
+  "(new)     -> Pending    by mem_enqueue ×2",
+  "Pending   -> Running    by mem_claim ×2",
+  "Running   -> Pending    by mem_record ×1",
+  "Running   -> Done       by mem_record ×1",
+  "left out: MemQueue.claim: its `mut` parameters' new values are not in the trace",
+]
+lacks = ["status_of"]
+
+[[step]]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/tests/data/graph/tasks", "--trace", "trace.txt", "--html"]
+has = ["<svg", "mem_claim ×2"]

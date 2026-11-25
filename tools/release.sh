@@ -4,6 +4,8 @@
 #
 #   strata/bin/strata               the compiler (compiler/, compiled), LLVM and
 #                                   lld linked in (no clang or linker needed)
+#   strata/share/man/               man1/strata.1, man3/std.MODULE.3: the
+#                                   man pages `strata doc --man` writes
 #   strata/lib/strata/              what it finds relative to itself (its home)
 #     VERSION
 #     core/ std/                    core's and std's modules (sources)
@@ -90,6 +92,11 @@ cp core/*.strata core/strata.toml "$HOME_DIR/core/"
 cp std/*.strata std/strata.toml "$HOME_DIR/std/"
 cp runtime/prelude.strata "$HOME_DIR/runtime/"
 echo "$VERSION" > "$HOME_DIR/VERSION"
+
+# the man pages: `man strata`, `man std.io` (man looks in the share/man
+# beside each bin/ on the PATH)
+step "man pages"
+STRATA_HOME="$REPO" "$S" --file std doc --man -o "$ROOT/share/man" >&2
 
 # the runtime, precompiled for macOS 13 on (as the compiler's objects are):
 # runtime.c (clang's LTO bitcode) and core.rt (the compiler's codegen) linked

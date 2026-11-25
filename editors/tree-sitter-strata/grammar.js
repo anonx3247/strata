@@ -210,14 +210,16 @@ module.exports = grammar({
         optional($._function_body),
       ),
 
+    // (`prec.right`: an `ensures` after a method without a body is the
+    // method's, as `strata` reads it)
     _function_signature: ($) =>
-      seq(
+      prec.right(seq(
         field('name', $.identifier),
         optional(field('type_parameters', $.type_parameters)),
         field('parameters', $.parameters),
         optional(seq('->', field('return_type', choice($._type, $.named_results)))),
         repeat($.contract),
-      ),
+      )),
 
     _function_body: ($) =>
       choice(field('body', $.block), seq('=', field('body', $._expression))),
@@ -225,8 +227,8 @@ module.exports = grammar({
     contract: ($) =>
       choice(
         'terminates',
-        seq('requires', $._expression),
-        seq('ensures', $._expression),
+        seq(optional('assumed'), 'requires', $._expression),
+        seq(optional('assumed'), 'ensures', $._expression),
         seq('decreases', $._expression),
       ),
 
@@ -268,12 +270,16 @@ module.exports = grammar({
     self: (_) => 'self',
 
     // `trait Show { fn show(self) -> String }`, `capability trait Db { … }`,
-    // `derivable(Record) trait Json requires … { … }`
+    // `shared trait Queue { … }`, `derivable(Record) trait Json requires … { … }`
     trait_declaration: ($) =>
       seq(
         optional($.visibility_modifier),
         optional(
-          choice('capability', seq('derivable', '(', field('kind', $._type), ')')),
+          choice(
+            'capability',
+            'shared',
+            seq('derivable', '(', field('kind', $._type), ')'),
+          ),
         ),
         'trait',
         field('name', $.type_identifier),
@@ -284,16 +290,41 @@ module.exports = grammar({
       ),
 
     trait_body: ($) =>
-      seq('{', repeat(choice($.function_declaration, $.law_declaration)), '}'),
+      seq(
+        '{',
+        repeat(
+          choice(
+            $.model_declaration,
+            $.trait_invariant,
+            $.trait_ensures,
+            $.function_declaration,
+            $.law_declaration,
+          ),
+        ),
+        '}',
+      ),
 
-    // `law reflexive(a: Self): a == a`
+    // `model orders: Dict[Id, Order]`: a trait's abstract state
+    model_declaration: ($) =>
+      seq('model', field('name', $.identifier), ':', field('type', $._type)),
+
+    // `invariant self.count >= 0`, `ensures self.count >= old self.count - 1`
+    // in a trait: what every method keeps, what every `mut self` one ensures
+    trait_invariant: ($) => seq(optional('assumed'), 'invariant', $._expression),
+    trait_ensures: ($) => seq(optional('assumed'), 'ensures', $._expression),
+
+    // `model orders = self.all` in an `impl`
+    model_definition: ($) =>
+      seq('model', field('name', $.identifier), '=', field('value', $._expression)),
+
+    // `law reflexive(a: Self): a == a`, or a block of calls ending in what
+    // must hold: `law once(q: Self) { mut r := q … }`
     law_declaration: ($) =>
       seq(
         'law',
         field('name', $.identifier),
         field('parameters', $.parameters),
-        ':',
-        field('body', $._expression),
+        choice(seq(':', field('body', $._expression)), field('body', $.block)),
       ),
 
     // `impl Show for Point { … }`, `impl Point { … }`, `impl[T] Show for List[T]`
@@ -319,7 +350,8 @@ module.exports = grammar({
         optional(field('body', $.impl_body)),
       ),
 
-    impl_body: ($) => seq('{', repeat($.function_declaration), '}'),
+    impl_body: ($) =>
+      seq('{', repeat(choice($.model_definition, $.function_declaration)), '}'),
 
     // `capability Sqlite { fn open(…) … }`
     capability_declaration: ($) =>
@@ -488,7 +520,8 @@ module.exports = grammar({
 
     continue_statement: (_) => 'continue',
 
-    invariant: ($) => seq('invariant', $._expression),
+    // `assumed invariant e`: trusted (proven by verify or assumed), never checked at run time
+    invariant: ($) => seq(optional('assumed'), 'invariant', $._expression),
 
     // `decreases n - i`, `decreases (a, b)`: why a loop ends
     decreases: ($) => seq('decreases', $._expression),

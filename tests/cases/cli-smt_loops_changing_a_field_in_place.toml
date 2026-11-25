@@ -1,0 +1,24 @@
+# A loop that changes a field in place (`mut q.d.insert(k, 1)`) changes
+# its variable: the prover forgets what it knew of it after the loop (it
+# used to keep `q` as it was, and proved this `ensures`). The precondition
+# keeps the fuzzer out (as a `requires`, not a refinement, which the fuzzer
+# would build lists for), so the solver answers.
+[[step]]
+strata = ["--file", "lp.strata", "edit"]
+text = '''
+type Q = { d: Dict[Int, Int] }
+
+fn bump(mut q: Q, ks: List[Int])
+  requires len(ks) >= 100
+  ensures q.d == old q.d {
+  for k in ks {
+    mut q.d.insert(k, 1)
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "lp.strata", "verify", "--no-race", "bump"]
+any_code = true
+has = ["not proven: ensures q.d == old q.d: the solver found a possible counterexample"]
+lacks = ["✓ bump"]
