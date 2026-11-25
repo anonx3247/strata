@@ -196,5 +196,24 @@ proven impossible: 72 more (in 9 functions; --all lists them)
 strata = ["view", "--graph", "Phase", "--file", "dq.strata", "--all"]
 has = [
   "Waiting  -> Finished  by posted, started, finish, run_one, Board.post, Board.start, forget, Jobs.post, Jobs.start",
-  "(new)    -> Waiting   by started, finish, run_one, Board.start, forget, Jobs.start",
+  "(new)    -> Waiting   by started, run_one, Board.start, finish, forget, Jobs.start",
+]
+
+# the tasks example over its model: a turn of `MemQueue.claim` puts only
+# `Running` entries, so its other moves are impossible
+[[step]]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks", "--all"]
+has = [
+  "Pending   -> Running    by MemQueue.claim (possible)",
+  "Running   -> Pending    by MemQueue.claim\n",
+  "after_attempt (possible)",
+]
+
+# the orders example: `ship` and `cancel` over any `Db` move as the
+# trait's contract says (a model of `save` is a move of some store)
+[[step]]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata"]
+has = [
+  "Pending   -> Shipped    by ship (possible)",
+  "Pending   -> Cancelled  by cancel (possible)",
 ]

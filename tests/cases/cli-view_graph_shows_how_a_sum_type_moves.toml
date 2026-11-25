@@ -1,10 +1,12 @@
+# (on tests/data/graph: examples/tasks and orders as they were before their
+# models, statuses kept in lists)
 # `strata view --graph T`: how the values of a sum type move between its
 # variants, read off the code and asked of the solver (compiler/graph).
 
 # a value made new is an entry; `ship`'s refinement pins what it makes;
 # `OneOrder.save` may make any move, `load` none
 [[step]]
-strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata"]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/tests/data/graph/orders.strata"]
 has = [
   "Order = Pending | Shipped | Cancelled",
   "(new)     -> Shipped    by ship (possible)",
@@ -13,7 +15,7 @@ has = [
 ]
 
 [[step]]
-strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata", "--all"]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/tests/data/graph/orders.strata", "--all"]
 has = [
   "Pending   -> Cancelled  by OneOrder.save (possible)",
   "proven impossible:",
@@ -27,16 +29,16 @@ has = [
 # move as the functions they hand their state to; `mem_claim`'s move is
 # shown possible by a run (the solver gives no model through its lists)
 [[step]]
-strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks"]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/tests/data/graph/tasks"]
 has = [
   "(new)     -> Pending    by mem_enqueue (possible), MemQueue.enqueue (possible)",
   "Pending   -> Running    by mem_claim (possible), MemQueue.claim (possible)",
   "Running   -> Pending    by mem_record (unknown), mem_release (possible), MemQueue.record (unknown), MemQueue.release (possible)",
-  "any       -> any        by run_steps (possible), queue_after (possible)",
+  "any       -> any        by run_steps (possible or unknown), queue_after (possible or unknown)",
 ]
 
 [[step]]
-strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks", "--all"]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/tests/data/graph/tasks", "--all"]
 has = [
   "Pending   -> Exhausted  by mem_claim, mem_record, mem_release, statuses, mem_enqueue, MemQueue.enqueue, MemQueue.claim, MemQueue.record, MemQueue.release",
   "Running   -> Pending    by mem_claim, statuses, mem_enqueue, MemQueue.enqueue, MemQueue.claim",
@@ -44,10 +46,10 @@ has = [
 
 # a page with the graph drawn
 [[step]]
-strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata", "--html"]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/tests/data/graph/orders.strata", "--html"]
 has = ["<!DOCTYPE html>", "<svg", ">Shipped</text>", "ship (possible)"]
 
 [[step]]
-strata = ["view", "--graph", "Shape", "--file", "$ROOT/examples/orders.strata"]
+strata = ["view", "--graph", "Shape", "--file", "$ROOT/tests/data/graph/orders.strata"]
 code = 2
 has = ["no sum type `Shape` in the program"]
