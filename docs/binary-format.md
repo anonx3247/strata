@@ -176,6 +176,8 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 36 Await(Expr)                                               await h
      | 37 Select(list(SelectArm))                                   select { rx.recv() as x => … }
      | 38 Race(list(SelectArm))                                     race { e as x => … }
+     | 39 SupervisedSpawn(Expr)                                   supervised spawn e
+     | 40 Old(Expr)                                               old e (in an `ensures`: e where the function started)
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))
