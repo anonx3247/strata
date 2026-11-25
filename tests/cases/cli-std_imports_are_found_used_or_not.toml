@@ -1,0 +1,69 @@
+# a `use` of std is found whether what it imports is used or not; a name
+# std's module doesn't have is said, with the close ones
+
+[[step]]
+save = "unused.strata"
+text = '''
+from std.io use Console
+
+fn main() {
+  print("hi")
+}
+'''
+
+[[step]]
+strata = ["--file", "unused.strata", "check"]
+has = ["ok: 2 definitions check (0 open holes)"]
+
+[[step]]
+strata = ["--file", "unused.strata", "run"]
+has = ["hi"]
+
+[[step]]
+save = "module.strata"
+text = '''
+use std.json
+
+fn main() {
+  print("hi")
+}
+'''
+
+[[step]]
+strata = ["--file", "module.strata", "check"]
+has = ["ok: 2 definitions check (0 open holes)"]
+
+[[step]]
+save = "typo.strata"
+text = '''
+from std.io use Consle
+
+fn main() {
+  print("hi")
+}
+'''
+
+[[step]]
+strata = ["--file", "typo.strata", "check"]
+fails = true
+has = ["`std.io` has no `Consle` (did you mean `Console`?)"]
+lacks = ["there is no module"]
+
+# in a package: its check
+[[step]]
+write = "pkg/strata.toml"
+text = "name = \"pkg\"\n"
+
+[[step]]
+save = "pkg/main.strata"
+text = '''
+from std.io use Console
+
+fn main() {
+  print("hi")
+}
+'''
+
+[[step]]
+strata = ["check", "pkg"]
+has = ["ok: 2 definitions check (0 open holes)"]

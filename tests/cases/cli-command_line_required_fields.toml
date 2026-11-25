@@ -1,0 +1,43 @@
+# a derived `CommandLine`'s required fields leave no hole in the code it
+# makes, and a positional argument written as an option is told how it is
+# given
+
+[[step]]
+save = "calc.strata"
+text = '''
+from std.cli use CommandLine
+
+/// Calculate.
+type Options = {
+  /// The input file.
+  input: String,
+  /// Say more.
+  loud: Bool,
+  /// How many times.
+  times: Int = 1,
+}
+
+derive CommandLine for Options
+
+fn main(o: Options) {
+  print(o.input)
+}
+'''
+
+[[step]]
+strata = ["--file", "calc.strata", "check"]
+has = ["ok: 4 definitions check (0 open holes)"]
+
+[[step]]
+strata = ["--file", "calc.strata", "run", "--", "x.txt", "--loud"]
+has = ["x.txt"]
+
+[[step]]
+strata = ["--file", "calc.strata", "run", "--", "--input", "x.txt"]
+code = 2
+has = ["`input` is positional, given without `--input`: `calc <input>`"]
+
+[[step]]
+strata = ["--file", "calc.strata", "run", "--"]
+code = 2
+has = ["missing <input>: The input file."]

@@ -1,0 +1,31 @@
+# a variant is named by its module: two unions declaring one name is an
+# error (in a single file too), and a union naming an atom another declares
+# holds that one type, which the edit says
+
+[[step]]
+save = "two.strata"
+text = '''
+type P1 = Aa(Int) | Bb
+type P2 = Aa(String) | Cc
+
+fn main() {
+  print("hi")
+}
+'''
+
+[[step]]
+strata = ["--file", "two.strata", "check"]
+fails = true
+has = ["variant `Aa` of `P1` has the same name as the variant `Aa` of `P2`", "must be unique in its module, whatever type it is in (rename one)"]
+
+[[step]]
+strata = ["--file", "shared.strata", "edit"]
+text = '''
+type P1 = Aa | Bb
+type P2 = Aa | Cc
+
+fn main() {
+  print("hi")
+}
+'''
+has = ["warning: `Aa` in `P2` is the member `Aa` that `P1` declares: both unions hold that one type"]

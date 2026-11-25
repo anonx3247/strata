@@ -97,7 +97,7 @@ from = "clashes.st"
 [[step]]
 run = ["sh", "-c", "\"$STRATA\" --file clashes.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
 stdout = '''
-error in E: variant `Line` of `E` has the same name as the type `Line`: a variant is a type of its own, so its name must be unique in its module (rename one)
+error in E: variant `Line` of `E` has the same name as the type `Line`: a variant is a type of its own, so its name must be unique in its module, whatever type it is in (rename one)
 error in Option: `Option` is already defined in the prelude (use it, or pick another name)
 '''
 

@@ -1,0 +1,33 @@
+# a loop invariant verify doesn't prove stays a runtime check, run at every
+# pass of its loop: `build` and `verify` say so, once per invariant
+
+[[step]]
+save = "inv.strata"
+text = '''
+fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  mut i := 0
+  while i < len(xs)
+    invariant i >= 0
+    invariant s == sum(xs[..i]) {
+    s += xs[i]
+    i += 1
+  }
+  s
+}
+
+fn main() {
+  print(total([1, 2, 3]))
+}
+'''
+
+[[step]]
+strata = ["--file", "inv.strata", "build", "-o", "inv"]
+has = ["warning: in `total`, `invariant s == sum(slice(xs, 0, i))` of `while i < len(xs)` isn't proven: it stays a runtime check, run at every pass of the loop"]
+counts = { "isn't proven" = 1 }
+
+[[step]]
+strata = ["--file", "inv.strata", "verify"]
+any_code = true
+has = ["(so it stays a runtime check, run at every pass of the loop)"]
+counts = { "stays a runtime check" = 1 }
