@@ -429,22 +429,28 @@ Questions to settle:
 - Send the whole page on every message, or a diff? The whole page to start.
 - Sessions: kept in memory to start; later stored through the ORM.
 
-### `strata repl` (asked by the user 2026-11-25; step 1 built, branch `repl`)
+### `strata repl` (asked by the user 2026-11-25; steps 1 and 2 built, branches `repl`, `repl-2`)
 
-An interactive session to try small things with the current project loaded (docs/tools-reference.md, "The REPL"). Step 1 (`compiler/main`: `repl_command`, `repl_eval`, `repl_line`, `repl_load`): each line an expression, a binding or a definition, checked against the package plus the session (`check_errors_of` on a probe function `strata_repl` holding the earlier values and the line), expanded (`expanded`), then run as `comptime` runs (`computed_value`: only what the line reaches is compiled, by compiler/codegen, and run by the JIT under the fault trap: a fault is an error, the session goes on); `:type`, `:view`, `:reload`, `:quit`; piped input read line by line (exit 1 when an input failed). Piped, 16 lines on a small script take about 1.3 s in all.
+An interactive session to try small things with the current project loaded (docs/tools-reference.md, "The REPL"). Step 1 (`compiler/main`: `repl_command`, `repl_eval`, `repl_line`, `repl_load`): each line an expression, a binding or a definition, checked against the package plus the session (`check_errors_of` on a probe function `strata_repl`), expanded (`expanded`), then compiled by compiler/codegen and run by the JIT under the fault trap (a fault is an error, the session goes on); `:type`, `:view`, `:reload`, `:quit`; piped input read line by line (exit 1 when an input failed).
 
-Capabilities are the REPL's own (user, 2026-11-25): a line never gets the program's real ones. `console` is a `std.io.Recorder` (the language's stand-in `Console`), made for each line and read back with its value, so what a line prints is shown with that line's result and written nowhere else. No other capability is given yet (`disk`, `process` are unknown names), so evaluating a line can't write files or run processes.
+Capabilities are the REPL's own (user, 2026-11-25): a line never gets the program's real ones unless asked for.
 
-Values are kept as the code that writes them (read back, as `run f` prints a result), not in compiled memory: each line binds them again. Simple, and correct for data; nothing is run twice.
+Step 2, built (branch `repl-2`):
+- **Values in compiled memory.** The session's values live in slots (c/jit.c's `strata_repl_words`); each line is a function `strata_repl` taking them as parameters (a `mut` one passed as a pointer to its slot, so an assignment, `mut xs.push(7)` included, is kept even when a fault ends the line), called by codegen's session entry (`session:KEY` in `calls`: `session_entry`), its result kept in a slot. Functions and closures are kept (their code stays loaded: each line's JIT module lives as long as the process). A value let go of (a result shown, a name bound again) is dropped by the next line that runs (a `strata_retired_K` parameter); a value whose type's definition changes (`repl_type_defs`: the definitions its type names, transitively, compared as text) is dropped from the session and its memory left as it is (it can't be read or dropped by the new layout).
+- **Compiled once what can be.** What every compile shares (`Shared`: core, the prelude, core's code) is read once per session, and std's precompiled library is loaded once (its names given to each line's compile), so a line compiles only its own function and what it reaches outside std. Measured, piped, the 16 lines of cli-repl's first step on a small script: about 0.93 s before (0.5 s of it reading `Shared` again each line; ~1.3 s with a cold cache), 0.5 s after; `--timings` shows the REPL's phases (`repl: check`, `expand`, `type`, `IR`, `JIT load`, `run`, `read back`).
+- **The REPL's own capabilities.** `console` is `std.io.ReplConsole`, a capability made for the REPL (prints shown with the line's result; `read_line` reads the REPL's next input); `disk` an in-memory folder (`std.fs.mem_files`, a value of the session's); no `process`/`launcher` (naming one says how to get it). `--allow files,process` gives the real `Disk`, `Process`, `Launcher`, typed as their traits (`Files`, `Environment`, `Commands`: the checker's `typed` models traits, not capabilities, so a line on a `Disk` parameter had no type), a line then running in the folder the REPL started in.
+- `mut xs.push(7)` updates `xs` (since #469 it is an assignment; now through the slot).
+- **Multi-line input** (on while a bracket or block is open, or after a `///` line), **line editing and history** at a terminal (c/lineedit.c: raw mode only while reading a line, no dependency).
+- **`:save NAME`**: the session's definition written as `strata add` writes a file (a package's checked and logged, `repl: save NAME`; a script written and checked), the program's from then on.
+- **Faults** shown with their kind and call stack below the line (`fault (Runtime): …`, `stack: outer -> pick`).
+
+Found on the way: a function named `at` (the program's or the session's) is what indexing calls: `xs[i]` inside `fn at(xs, i)` recursed until the stack overflowed (to look into: indexing should not resolve to a user's `at`).
 
 Not yet:
-- values that have no code (functions, closures, capabilities, tasks) can't be kept: keep them in compiled memory instead (a session module loaded once, as `serve` keeps a model, each line's function taking them `Given`/`Lent`), which also saves re-reading big values each line;
-- each line compiles what it reaches again: compile the package once (its objects from the cache, std's precompiled library loaded) and each line only its own function, as `--precompiled` does for std;
-- the other capabilities as the REPL's own: Files/Disk an in-memory folder by default (std's stand-ins), Process/Environment denied, the real ones by an explicit opt-in (`strata repl --allow files,process`); `console.read_line` reading from the REPL (it reads nothing now);
-- `mut xs.push(7)` at the prompt gives the new list but leaves `xs` as it was (an assignment, `xs = …`, is kept): to look into;
-- multi-line input (a definition over several lines, a block), line editing and history at a terminal;
-- `:save`: a definition typed at the prompt written to the package (through `edit`: checked and logged);
-- a fault is shown as an error without its kind and call stack (`computed_value` returns its message only).
+- the package isn't compiled once: a line compiles the package's functions it reaches (std's come from its library). A package library (as std's, loaded with `jit_load`) would need a line's redefinition of a package function to reach the library's callers too; small packages don't need it yet (a line's run, JIT compile included, is ~15 ms);
+- what a line prints is shown after it ran (the test trap keeps it), so a prompt written before `console.read_line()` shows after the input; standard error is shown with standard output, in order;
+- `process.args()` under `--allow process` is the REPL's own command line;
+- tasks kept between lines (a `scope` ends with its line, so there is nothing to keep yet).
 
 ## Design principles (decided)
 
