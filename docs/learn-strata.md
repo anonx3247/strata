@@ -94,7 +94,8 @@ fn pick(level: Int where 5 <= it && it <= 13) -> Positive {
 }
 
 // A result's refinement can mention parameters.
-fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n {
+fn halve(n: Natural) -> Int where it >= 0
+  ensures it * 2 <= n {
   n / 2
 }
 
@@ -115,10 +116,18 @@ fn user_number(id: UserId) -> String {
 }
 
 // ─── 4. Contracts: requires / ensures (`it` is the result) ─────────────────
-fn divide(a: Int, b: Int) -> Int
-  requires b != 0
+// A refinement says what one value is, a contract relates values: `check`
+// warns on a `requires` naming one parameter or an `ensures` naming only
+// `it` (and on a refinement naming another parameter), and `strata fix`
+// moves it. Named results name a tuple's elements in `ensures`.
+fn divide(a: Int, b: Int where it != 0) -> Int
   ensures b > 0 && a >= 0 ==> it >= 0 {
   a / b
+}
+
+fn div_mod(a: Natural, b: Positive) -> (q: Natural, r: Natural)
+  ensures q * b + r == a && r < b {
+  (a / b, a % b)
 }
 
 // ─── 5. Records, variants and unions ───────────────────────────────────────
@@ -471,11 +480,10 @@ fn ship(
   mut db: Db,
   id: NonEmptyString,
   tracking: NonEmptyString,
-) -> Result[Order, ShipError]
-  ensures match it {
-    Ok(o) => o is Shipped,
-    Err(_) => true,
-  } {
+) -> Result[Order, ShipError] where match it {
+  Ok(o) => o is Shipped,
+  Err(_) => true,
+} {
   order := db.load(id) or { return Err(NotFound) }
   match order {
     Pending { id, lines } => {
@@ -491,7 +499,6 @@ fn ship(
 // `?name` stands for an expression of the expected type. `strata holes` lists
 // each with its goal type, context and obligations: a task for an agent.
 fn refund(o: Order) -> Cents
-  ensures it >= 0
   = ?refund_policy
 
 // ─── 13. Termination ───────────────────────────────────────────────────────
