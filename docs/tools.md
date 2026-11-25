@@ -55,9 +55,11 @@ checked 1 definition of 14: what the edit can affect
 $ strata edit -m "steeper discount" < discount.strata    # the same again
 no changes: every definition given is as stored (nothing written, checked or logged)
 
-$ strata edit < breaking_change.strata
-error in test "totals": call to `total`, argument 1: expected `Int`, found `Line`
+$ strata edit < broken.strata                # an edit that doesn't check in itself
+error in total: `+` operands: expected `Int`, found `Bool`
+
 rejected: the codebase would not check; nothing was changed
+the text is kept in /…/shop/.strata/rejected/edit-1.st: fix it, then pipe it to `strata edit` again
 
 $ strata rename total order_total
 renamed total → order_total
