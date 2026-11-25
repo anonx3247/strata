@@ -5,7 +5,7 @@
 # back; verify proves each impl against the trait's contracts through its
 # abstraction (a faithful one proven, one keeping the last order refuted)
 # and code over the trait through the model alone; contracts naming a model
-# are ghost (checked with `--check-ghosts`); `mock Db` runs the model; the
+# are assumed (checked with `--check-assumed`); `mock Db` runs the model; the
 # errors (an impl without a model, an unknown one, a model in a body)
 [[step]]
 strata = ["--file", "m.strata", "edit"]
@@ -109,7 +109,7 @@ has = [
   "✗ OneOrder.save            Ensures violation (found by the solver)",
   "postcondition of `OneOrder.save` violated: ensures self.orders() == old self.orders().with(id, o)",
   "✓ ship",
-  "None => it is Err && db.Db::orders() == old db.Db::orders(),\n} (ghost: not checked when the program runs)",
+  "None => it is Err && db.Db::orders() == old db.Db::orders(),\n} (assumed: not checked when the program runs)",
 ]
 
 [[step]]
@@ -121,10 +121,10 @@ Some(Order { item: "tea", shipped: true })
 '''
 
 [[step]]
-strata = ["--file", "m.strata", "test", "--check-ghosts"]
+strata = ["--file", "m.strata", "test", "--check-assumed"]
 has = ["✓ the mock runs the model", "1 passed, 0 failed"]
 
-# a ghost contract naming a model is checked with `--check-ghosts`
+# an assumed contract naming a model is checked with `--check-assumed`
 [[step]]
 strata = ["--file", "m.strata", "edit"]
 text = '''
@@ -141,7 +141,7 @@ strata = ["--file", "m.strata", "run"]
 stdout = "None\n"
 
 [[step]]
-strata = ["--file", "m.strata", "run", "--check-ghosts"]
+strata = ["--file", "m.strata", "run", "--check-assumed"]
 fails = true
 has = ["postcondition of `OneOrder.save` violated: ensures self.orders() == old self.orders().with(id, o)"]
 
@@ -155,7 +155,7 @@ text = '''
 /// Items in stock.
 trait Stock {
   model count: Int
-  ghost invariant self.count >= 0
+  assumed invariant self.count >= 0
   ensures self.count >= old self.count - 1
 
   fn add(mut self)
@@ -227,7 +227,7 @@ fn never_negative(s: Stock) -> Int
 
 [[step]]
 strata = ["--file", "s.strata", "view", "main"]
-has = ["trait Stock {\n  model count: Int\n  ghost invariant self.count >= 0\n  ensures self.count >= old self.count - 1\n\n  fn add(mut self)\n"]
+has = ["trait Stock {\n  model count: Int\n  assumed invariant self.count >= 0\n  ensures self.count >= old self.count - 1\n\n  fn add(mut self)\n"]
 
 [[step]]
 strata = ["--file", "s.strata", "verify", "--no-race"]
