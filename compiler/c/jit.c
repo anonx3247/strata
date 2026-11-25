@@ -347,7 +347,7 @@ int32_t jit_load(const char *path) {
 
 // Each module compiled (a program's fuzz drivers, a batch of probes), kept
 // while the compiler runs.
-static LLVMOrcLLJITRef fuzz_jits[256];
+static LLVMOrcLLJITRef fuzz_jits[4096];
 static int fuzz_count;
 static char *fuzz_error;
 
@@ -368,7 +368,7 @@ int32_t jit_fuzz_load(const char *ir) {
     LLVMDisposeMessage(msg);
     return -1;
   }
-  if (fuzz_count == 256) {
+  if (fuzz_count == 4096) {
     fuzz_error = strdup("too many modules compiled");
     return -1;
   }
@@ -492,4 +492,26 @@ int32_t jit_call_case(int32_t m, int64_t i, int64_t budget) {
 int64_t jit_kept(void) {
   int64_t (*kept)(void) = runtime_fn("strata_ct_kept");
   return kept ? kept() : 0;
+}
+
+// ---- `strata repl`'s values ----
+//
+// The values a REPL session keeps, in compiled memory: one 64-bit slot each
+// (as a block keeps a field), the session's for its whole life. Each line's
+// call (codegen's `session_entry`) reads its arguments from here and a
+// `mut` one is assigned through its slot here, so what a line changes is
+// kept even when a fault ends it.
+
+#define REPL_WORDS 4096
+static int64_t repl_words[REPL_WORDS];
+
+// The slots, for the compiled code (looked up in this process).
+int64_t *strata_repl_words(void) { return repl_words; }
+
+int64_t jit_repl_word(int64_t i) { return i >= 0 && i < REPL_WORDS ? repl_words[i] : 0; }
+
+int32_t jit_repl_set_word(int64_t i, int64_t w) {
+  if (i < 0 || i >= REPL_WORDS) return 1;
+  repl_words[i] = w;
+  return 0;
 }
