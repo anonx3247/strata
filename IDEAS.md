@@ -409,6 +409,23 @@ Questions to settle:
 - Send the whole page on every message, or a diff? The whole page to start.
 - Sessions: kept in memory to start; later stored through the ORM.
 
+### `strata repl` (asked by the user 2026-11-25; step 1 built, branch `repl`)
+
+An interactive session to try small things with the current project loaded (docs/tools-reference.md, "The REPL"). Step 1 (`compiler/main`: `repl_command`, `repl_eval`, `repl_line`, `repl_load`): each line an expression, a binding or a definition, checked against the package plus the session (`check_errors_of` on a probe function `strata_repl` holding the earlier values and the line), expanded (`expanded`), then run as `comptime` runs (`computed_value`: only what the line reaches is compiled, by compiler/codegen, and run by the JIT under the fault trap: a fault is an error, the session goes on); `:type`, `:view`, `:reload`, `:quit`; piped input read line by line (exit 1 when an input failed). Piped, 16 lines on a small script take about 1.3 s in all.
+
+Capabilities are the REPL's own (user, 2026-11-25): a line never gets the program's real ones. `console` is a `std.io.Recorder` (the language's stand-in `Console`), made for each line and read back with its value, so what a line prints is shown with that line's result and written nowhere else. No other capability is given yet (`disk`, `process` are unknown names), so evaluating a line can't write files or run processes.
+
+Values are kept as the code that writes them (read back, as `run f` prints a result), not in compiled memory: each line binds them again. Simple, and correct for data; nothing is run twice.
+
+Not yet:
+- values that have no code (functions, closures, capabilities, tasks) can't be kept: keep them in compiled memory instead (a session module loaded once, as `serve` keeps a model, each line's function taking them `Given`/`Lent`), which also saves re-reading big values each line;
+- each line compiles what it reaches again: compile the package once (its objects from the cache, std's precompiled library loaded) and each line only its own function, as `--precompiled` does for std;
+- the other capabilities as the REPL's own: Files/Disk an in-memory folder by default (std's stand-ins), Process/Environment denied, the real ones by an explicit opt-in (`strata repl --allow files,process`); `console.read_line` reading from the REPL (it reads nothing now);
+- `mut xs.push(7)` at the prompt gives the new list but leaves `xs` as it was (an assignment, `xs = …`, is kept): to look into;
+- multi-line input (a definition over several lines, a block), line editing and history at a terminal;
+- `:save`: a definition typed at the prompt written to the package (through `edit`: checked and logged);
+- a fault is shown as an error without its kind and call stack (`computed_value` returns its message only).
+
 ## Design principles (decided)
 
 - **No effects.** Capabilities (database, queue, console, clock) are traits; code takes an implementation as a parameter or holds it in a field. `mock T` generates an implementation that respects the trait's contracts. Iterators and concurrency are their own language features, **not** effects (concurrency: see "Concurrency: structured tasks without coloring"; it needs no capability, since tasks share nothing and `scope`/`spawn`/`await` are deterministic).
