@@ -37,7 +37,7 @@ fn timer_of(clock: Clock, rx: Receiver[Int]) -> String {
 
 fn main(clock: SystemClock) {
   (tx, rx) := channel()
-  start := clock.now()
+  _ := clock.now()
   // the frozen clock's 1 ms never passes, though 50 ms of real time do
   frozen := FrozenClock { at: 5 }
   r := scope {

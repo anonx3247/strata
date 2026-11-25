@@ -298,6 +298,12 @@ Dict { w: len(w) for w in words }
 Set { x % 3 for x in xs }
 ```
 
+### Unused values and variables
+
+Values never change, so a statement whose value is dropped almost always means a mistake: `push(xs, 1)` on its own line makes a new list and throws it away. An expression statement whose value isn't `()` is an error (`the value of `push(xs, 1)` is not used: assign it (`xs = push(xs, 1)`) or discard it with `_ := …``), and a value dropped on purpose is written `_ := e`. That covers a call kept only for what it does through a capability when it also returns something, an `if` or `match` statement whose arms give values (discard the arms' values, or the whole), and `x + 1`; a `mut` method call returning `()` (`mut q.claim(2)`), a `spawn` (its task belongs to the `scope`) and a `return`/`break` are fine.
+
+A variable never read (a parameter, `x := e`, `mut x := e`, a binding of a pattern, a lambda's parameter) is a warning, not an error, since code may be partway written: one line each from `check`, `run`, `build` (when it verifies) and `edit`, naming the function. A name starting with `_` (`_x`, `_`) says the value is unused on purpose; an `impl` method's parameters, which its trait or type dictates, are not warned about. A variable whose value has no effect (a literal, a variable, a lambda, a field, a tuple or list of them) and that nothing reads isn't compiled at all.
+
 Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
 
 ## Values and copying
