@@ -27,7 +27,8 @@ An SMT string is a sequence of code points, so `len(s.code_points())` is its len
 
 - **terminates**, when shown automatically:
   - no recursion, and only `for` loops;
-  - a `while a < b` loop (also `<=`, `>`, `>=`, `!=`) whose bound `b - a` the solver proves goes down on every pass, unless the pass ends the loop;
+  - a `while a < b` loop (also `<=`, `>`, `>=`, `!=`) whose bound `b - a` the solver proves goes down on every pass, unless the pass ends the loop. The candidate bounds are those of the condition's comparisons (joined by `&&` or `||`), then those of the comparisons the body tests (`if` and inner `while` conditions over variables known before the loop), at most 4: each alone, then each pair compared in order, so a loop where on each pass one quantity goes down while those before it stay is found (`(n - i, m - j)` for `while i < n { if j < m { j += 1 } else { i += 1; j = 0 } }`, `(len(a) - i, len(b) - j)` for a merge's `while i < len(a) && j < len(b)`);
+  - a `while` or `loop` with a `decreases` clause whose measure the solver proves goes down on every pass (below);
   - recursion where some argument is a smaller piece of a parameter, taken apart by a `match` (`[_, ..rest] => 1 + length(rest)`);
   - recursion with a *measure*: an integer expression of the parameters that the solver proves is never negative at each recursive call, and smaller for the call's arguments. The candidates are tried automatically:
     - each integer parameter (`fact(n - 1)`, `gcd(b, a % b)`);
@@ -35,9 +36,13 @@ An SMT string is a sequence of code points, so `len(s.code_points())` is its len
     - for each comparison in the body, the distance between its sides (`100 - n` in `up(n + 1)` under `n <= 100`, `hi - lo` in a binary search);
     - pairs of these compared in order, like words in a dictionary (`(m, n)` for Ackermann's function).
 
+    A function with a `decreases` clause has that measure as its one candidate.
+
   It also needs everything the function calls to terminate.
-- **may not terminate**, with the reason: a `loop`, other recursion, mutual recursion, or a call to such a function.
+- **may not terminate**, with the reason: a `loop` without a `decreases` clause, other recursion, mutual recursion, a `decreases` measure not shown to go down, or a call to such a function.
 - **assumed**: the function is marked `terminates` (after its contract, `fn f(x: Int) -> Int terminates { … }`). Its callers say they terminate *if* it does.
+
+**`decreases` clauses.** Where no candidate is found, the measure can be written: `decreases e` on a `while` or `loop` (on its own line between the header and the body, as `invariant`), or on a recursive function (beside `requires` and `ensures`). `e` is an `Int` expression, or a tuple of them compared in order (`decreases (left, len(book.orders))`: each pass either lowers `left`, or keeps it and lowers the other). The part that decides must be at least 0 before the pass or call, and lower after it; the parts before it the same. At most one clause per loop or function; a `for` loop takes none (it ends on its own). It is a check like any other: `verify` proves it where each pass ends (`decreases `(a, b)` after a pass of `while …``, at each `continue` too, unless the loop is over) and at each recursive call (`decreases `(m, n)` at a call of `ack``), over the parameters as the function got them and the call's arguments; and the termination verdict uses it as the one candidate (`terminates: `while …` ends: its `decreases (a, b)` measure goes down on every pass`). Not proven, it is checked when the program runs, like `invariant`: a loop's measure kept from the start of a pass and compared at the next (`decreases failed: `k` did not go down in a pass of `while i > 0` (before: 3, after: 3)`), a recursive function's computed on entry and compared with the arguments' at each call of itself (`compiler/codegen`'s `decreases_start`, `decreases_pass`, `decreases_entry`, `decreases_call`). So a solver's counterexample is run and confirmed, and a loop whose measure is wrong stops with a fault instead of running on. The verdict then says `may not terminate: … its `decreases …` was not shown to go down on every pass (it is checked when the program runs)`. Stored: a loop's clause is a `Decreases` statement among its body's first (with its `invariant`s), a function's is its body's first statement; both are shown where they were written.
 
 `verify NAME` analyses termination only for what the selected functions reach (a function's verdict depends only on what it calls), so checking one function does not pay for the loops of the whole program and std.
 

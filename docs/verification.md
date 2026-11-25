@@ -213,6 +213,77 @@ fn collatz_steps(n: Positive) -> Natural {
 
 Its checks are proven (every assignment keeps `x` a `Positive`); only termination is unknown. A function can be marked `terminates` to assume it, which is reported as assumed.
 
+A loop whose bound is not one number is found too when its measures are bounds of its condition or of the comparisons its body tests: they are tried alone, then in pairs compared in order (the first goes down, or it stays and the second does):
+
+```rust
+fn grid(n: Int, m: Int) -> Int {
+  mut i := 0
+  mut j := 0
+  mut count := 0
+  while i < n {
+    if j < m {
+      j += 1
+      count += 1
+    } else {
+      i += 1
+      j = 0
+    }
+  }
+  count
+}
+```
+
+```text
+    terminates: `while i < n` ends: the pair (`n - i`, `m - j`), compared in order, goes down on every pass
+```
+
+Otherwise the measure can be written, as a `decreases` clause: on a `while` or `loop`, on its own line between the header and the body (as `invariant`), or on a recursive function, beside `requires`. It is an `Int` expression, or a tuple of them compared in order, never negative where it decides. `verify` proves it where every pass ends (or at every recursive call) and uses it for termination; where it isn't proven, it is checked when the program runs, so a wrong measure stops the program with a fault instead of looping, and a counterexample is confirmed by running it:
+
+```rust
+fn drain(a0: Natural, b0: Natural) -> Int {
+  mut a := a0
+  mut b := b0
+  mut steps := 0
+  while a + b > 0
+    decreases (a, b) {
+    if a > 0 {
+      a -= 1
+      b = b0
+    } else {
+      b -= 1
+    }
+    steps += 1
+  }
+  steps
+}
+
+fn walk(a: Natural, b: Natural) -> Int
+  decreases (a, b) {
+  if b > 0 {
+    1 + walk(a, b - 1)
+  } else if a > 0 {
+    1 + walk(a - 1, 3)
+  } else {
+    0
+  }
+}
+```
+
+```text
+    proven:  decreases `(a, b)` after a pass of `while a + b > 0`
+    terminates: `while a + b > 0` ends: its `decreases (a, b)` measure goes down on every pass
+    proven:  decreases `(a, b)` at a call of `walk`
+    terminates: its `decreases (a, b)` measure goes down on every recursive call and is never negative there
+```
+
+With `decreases (b, a)` instead, and `b = b0 + 1` where `a` goes down, the pass that lowers `a` raises `b`:
+
+```text
+✗ drain                    Assert violation (found by the solver)
+    input:   1, 0
+    decreases failed: `(b, a)` did not go down in a pass of `while a + b > 0` (before: 0, 1, after: 1, 0) (stack: drain)
+```
+
 ## Lists
 
 A list is known by its length and by how its elements are made, so "every element satisfies P" can be proven:
