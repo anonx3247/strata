@@ -59,7 +59,7 @@ fn main() {
   while !from.is_empty() {
     match mut from.pop() {
       Some(x) => {
-        sorted = push(sorted, x)
+        mut sorted.push(x)
       },
       None => (),
     }

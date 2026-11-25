@@ -45,7 +45,7 @@ fn main() {
     print(find(xs, x -> x > 4))
     print(count(xs, is_even))
     print(contains(xs, 4))
-    print(reverse(xs))
+    print(xs.reversed())
     print(join(["a", "b", "c"], "-"))
     print(zip(xs, ["a", "b"]))
     print(enumerate(["x", "y"]))

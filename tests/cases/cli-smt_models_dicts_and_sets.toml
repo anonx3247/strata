@@ -13,14 +13,18 @@ type Book = { index: Dict[Int, Loc], used: Set[Int] }
 /// Puts `k` in: then it's there, with that value.
 fn put(d: Dict[Int, Int], k: Int, v: Int) -> Dict[Int, Int]
   ensures contains(it, k) && get(it, k) == Some(v) {
-  insert(d, k, v)
+  mut out := d
+  mut out.insert(k, v)
+  out
 }
 
 /// A new key makes the dict one larger.
 fn grow(d: Dict[Int, Int], k: Int) -> Dict[Int, Int]
   requires !contains(d, k)
   ensures len(it) == len(d) + 1 {
-  insert(d, k, 0)
+  mut out := d
+  mut out.insert(k, 0)
+  out
 }
 
 /// Putting back what is there changes nothing (equal dicts: the same
@@ -29,7 +33,9 @@ fn put_back(d: Dict[Int, Int], k: Int) -> Dict[Int, Int]
   requires contains(d, k)
   ensures it == d {
   v := get(d, k) ?? 0
-  insert(d, k, v)
+  mut out := d
+  mut out.insert(k, v)
+  out
 }
 
 /// Literals.
@@ -56,7 +62,7 @@ fn take(mut b: Book, id: Int)
   ensures contains(old b.index, id) ==> len(b.index) == old len(b.index) - 1
   ensures !contains(old b.index, id) ==> b == old b {
   if contains(b.index, id) {
-    b.index = remove(b.index, id)
+    mut b.index.remove(id)
   }
 }
 
@@ -67,7 +73,7 @@ fn record(mut b: Book, id: Int) -> Bool
   if contains(b.used, id) {
     return false
   }
-  b.used = insert(b.used, id)
+  mut b.used.insert(id)
   true
 }
 
@@ -92,7 +98,9 @@ fn both(a: Set[String], b: Set[String], x: String) -> Set[String]
 /// Says it keeps the size, but a new key grows it.
 fn keeps_size(d: Dict[Int, Int], k: Int) -> Dict[Int, Int]
   ensures len(it) == len(d) {
-  insert(d, k, 1)
+  mut out := d
+  mut out.insert(k, 1)
+  out
 }
 
 /// Says no key maps to 0.

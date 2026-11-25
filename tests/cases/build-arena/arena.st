@@ -12,7 +12,7 @@ type Box = { label: String, items: List[String], big: Int, kids: List[Shape] }
 fn work(n: Int) -> Box {
   mut items := []
   for i in 0..n {
-    items = push(items, f"item {i}")
+    mut items.push(f"item {i}")
   }
   Box {
     label: "box " + to_string(n),
@@ -25,7 +25,7 @@ fn work(n: Int) -> Box {
 fn table(n: Int) -> Dict[String, List[Int]] {
   mut m := Dict[String, List[Int]] {}
   for i in 0..n {
-    m = insert(m, f"k{i}", [i, i * 2])
+    mut m.insert(f"k{i}", [i, i * 2])
   }
   m
 }
@@ -86,12 +86,12 @@ fn main() {
   // task's arena (which is then kept), and tasks pushing onto one list
   shared_list := [1, 2, 3]
   sizes := scope {
-    a := spawn arena(() -> len(work(30).items) + len(push(shared_list, 4)))
+    a := spawn arena(() -> len(work(30).items) + len(shared_list + [4]))
     b := spawn arena(() -> scope {
       inner := spawn work(7)
-      len((await inner).items) + len(push(shared_list, 5))
+      len((await inner).items) + len(shared_list + [5])
     })
-    c := spawn len(push(shared_list, 6)) + len(arena(() -> table(20)))
+    c := spawn len(shared_list + [6]) + len(arena(() -> table(20)))
     (await a, await b, await c)
   }
   print(sizes)

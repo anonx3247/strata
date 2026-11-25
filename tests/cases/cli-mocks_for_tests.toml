@@ -15,7 +15,7 @@ impl Files for MemDisk {
   }
 
   fn write(mut self, path: String, text: String) -> Result[(), FsError] {
-    self.files = insert(self.files, path, text)
+    mut self.files.insert(path, text)
     Ok(())
   }
 }
@@ -47,7 +47,7 @@ impl Files for MemDisk {
   }
 
   fn write(mut self, path: String, text: String) -> Result[(), FsError] {
-    self.files = insert(self.files, path, text)
+    mut self.files.insert(path, text)
     Ok(())
   }
 }
@@ -99,7 +99,7 @@ impl Files for MemDisk {
   }
 
   fn write(mut self, path: String, text: String) -> Result[(), FsError] {
-    self.files = insert(self.files, path, text)
+    mut self.files.insert(path, text)
     Ok(())
   }
 }

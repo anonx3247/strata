@@ -10,10 +10,11 @@ fn words(text: String) -> List[NonEmptyString] {
 fn frequencies(ws: List[NonEmptyString]) -> Dict[NonEmptyString, Int]
   ensures len(it) == len(set(ws))
   ensures all(ws, w -> contains(it, w)) {
-  fold(ws, Dict {}, (acc, w) -> match get(acc, w) {
-    Some(n) => insert(acc, w, n + 1),
-    None => insert(acc, w, 1),
-  })
+  mut counts := Dict[NonEmptyString, Int] {}
+  for w in ws {
+    mut counts.insert(w, (get(counts, w) ?? 0) + 1)
+  }
+  counts
 }
 
 /// The `n` most frequent words, most frequent first (ties alphabetical).
@@ -22,7 +23,7 @@ fn top(
   n: Natural,
 ) -> List[(NonEmptyString, Int)]
   ensures len(it) <= n {
-  take(sort_by(items(freq), pair -> (-pair.1, pair.0)), n)
+  take((items(freq)).sorted_by(pair -> (-pair.1, pair.0)), n)
 }
 
 /// Share of words that occur only once.
@@ -89,7 +90,7 @@ fn main() {
     }
     assert word == "the" && n == 3
     assert (word, n).1 == 3
-    assert sort(keys(Dict { "b": 2, "a": 1 })) == ["a", "b"]
+    assert (keys(Dict { "b": 2, "a": 1 })).sorted() == ["a", "b"]
     assert parse_int(" 42 ") == Some(42)
     assert round(2.6) == 3
   }

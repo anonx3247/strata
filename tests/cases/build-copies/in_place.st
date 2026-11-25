@@ -26,8 +26,8 @@ type Out = { inner: In, n: Int }
 
 impl Counter {
   fn add(mut self, i: Int) {
-    self.d = insert(self.d, i, i)
-    self.xs = push(self.xs, i)
+    mut self.d.insert(i, i)
+    mut self.xs.push(i)
     self.name += "x"
   }
 }
@@ -36,9 +36,9 @@ impl Counter {
 fn dict_local(n: Int) -> Int {
   mut d := Dict[Int, Int] {}
   for i in 0..n {
-    d = insert(d, i, i)
+    mut d.insert(i, i)
     if i % 3 == 0 {
-      d = remove(d, i - 3)
+      mut d.remove(i - 3)
     }
   }
   len(d)
@@ -48,18 +48,18 @@ fn dict_local(n: Int) -> Int {
 fn set_local(n: Int) -> Int {
   mut s := Set[Int] {}
   for i in 0..n {
-    s = insert(s, i)
+    mut s.insert(i)
     if i % 2 == 0 {
-      s = remove(s, i / 2)
+      mut s.remove(i / 2)
     }
   }
   len(s)
 }
 
 fn add_to(mut s: St, i: Int) {
-  s.xs = push(s.xs, i)
+  mut s.xs.push(i)
   v := get(s.d, i / 2) ?? 0
-  s.d = insert(s.d, i / 2, v + 1)
+  mut s.d.insert(i / 2, v + 1)
 }
 
 /// Fields of a record given to a `mut` parameter.
@@ -72,7 +72,7 @@ fn mut_param(n: Int) -> Int {
 }
 
 fn bump(mut s: Side, i: Int) {
-  s.words = insert(s.words, i, i)
+  mut s.words.insert(i, i)
   s.n += 1
 }
 
@@ -85,7 +85,7 @@ fn nested(n: Int) -> Int {
   }
   for i in 0..n {
     bump(mut b.bids, i)
-    b.asks.words = insert(b.asks.words, i, i)
+    mut b.asks.words.insert(i, i)
     b.asks.n += 1
   }
   len(b.bids.words) + len(b.asks.words) + b.bids.n + b.asks.n
@@ -95,8 +95,8 @@ fn nested(n: Int) -> Int {
 fn refined(n: Int) -> Int {
   mut r := Refined { words: Dict[Int, Word] {}, list: [] }
   for i in 0..n {
-    r.words = insert(r.words, i, i % 1000)
-    r.list = push(r.list, i % 7)
+    mut r.words.insert(i, i % 1000)
+    mut r.list.push(i % 7)
   }
   len(r.words) + len(r.list)
 }
@@ -118,7 +118,7 @@ fn extend(n: Int) -> Int {
   for i in 0..n {
     xs += [i]
     s += "ab"
-    o.inner.xs = push(o.inner.xs, i)
+    mut o.inner.xs.push(i)
     o.inner.s = o.inner.s + "c"
   }
   len(xs) + byte_len(s) + len(o.inner.xs) + byte_len(o.inner.s)
@@ -131,22 +131,24 @@ fn containers(n: Int) -> Int {
   mut accs := Dict[Int, Acc] {}
   mut dicts := Dict[Int, Dict[Int, Int]] {}
   for i in 0..n {
-    lists = insert(lists, i % 10, push(get(lists, i % 10) ?? [], i))
+    mut lists.insert(i % 10, (get(lists, i % 10) ?? []) + [i])
     a := get(accs, i % 100) ?? Acc { n: 0, total: 0 }
-    accs = insert(accs, i % 100, Acc { n: a.n + 1, total: a.total + i })
+    mut accs.insert(i % 100, Acc { n: a.n + 1, total: a.total + i })
     mut inner := get(dicts, i % 10) ?? Dict[Int, Int] {}
-    dicts = remove(dicts, i % 10)
-    inner = insert(inner, i, i)
-    dicts = insert(dicts, i % 10, inner)
+    mut dicts.remove(i % 10)
+    mut inner.insert(i, i)
+    mut dicts.insert(i % 10, inner)
   }
   len(lists) + len(accs) + len(dicts)
 }
 
-/// A temporary dict changed: `insert(insert(…), …)`.
+/// A new dict changed right after it is made.
 fn temporary(n: Int) -> Int {
   mut total := 0
   for i in 0..n {
-    d := insert(insert(Dict[Int, Int] { 1: 1 }, i, i), i + 1, i)
+    mut d := Dict[Int, Int] { 1: 1 }
+    mut d.insert(i, i)
+    mut d.insert(i + 1, i)
     total += len(d)
   }
   total

@@ -61,7 +61,7 @@ impl[T: Zero] Iterator[T] for Padded[T] {
 fn collect[T, I: Iterator[T]](it: I) -> List[T] {
   mut out := []
   for x in it {
-    out = push(out, x)
+    mut out.push(x)
   }
   out
 }

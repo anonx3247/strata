@@ -80,7 +80,7 @@ fn merge() {
         },
       }
     }
-    print(f"{got_nums} {got_words.sort()}")
+    print(f"{got_nums} {got_words.sorted()}")
   }
 }
 
