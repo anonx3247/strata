@@ -81,6 +81,10 @@ A trait's `model` ([the reference](language-reference.md#traits)) is what its co
 
 A trait's `invariant` is a refinement of every implementing type's model: a value of the trait's type carries it as its type's refinement (what a function taking `db: Db` knows, what a `mut` argument's new value is assumed to satisfy), each implementation's methods assume it of `self` (and other `Self` parameters) and must keep it in a `mut self` method and establish it in a result of type `Self`. A trait's `ensures` is proven in each `mut self` method. Contracts naming a model are assumed contracts (`(assumed: not checked when the program runs)`; one `verify` neither proves nor refutes makes its function assumed, `≈`): computing an abstraction at run time is what the implementation is there to avoid.
 
+## State graphs
+
+The solver also answers questions nobody wrote: `strata view --graph T` asks, for each function that takes and gives back a value holding the sum type `T`, whether it can move a value from one variant to another (an `ensures !(x is A && it is B)` of a copy of the function, or `!any(0..len(old xs), i -> old xs[i].status is A && xs[i].status is B)` through a list), and draws the moves that may happen: the type's pipeline, generated rather than declared. Proven moves are left out, so the graph says what the code can do, not what a comment says it does; [the tools](tools.md#state-graphs-how-a-types-values-move) show it, a run's moves and a diff's.
+
 ## Recursion and termination
 
 ```rust
