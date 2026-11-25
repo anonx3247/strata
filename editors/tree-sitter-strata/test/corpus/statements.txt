@@ -123,3 +123,64 @@ fn f() {
         (arguments
           (mut_expression
             (identifier)))))))
+
+================================================================================
+old, select and race as names
+================================================================================
+
+fn f(old: List[Int]) -> Int {
+  (old, rest) := split(old)
+  for d in old {
+    print(d)
+  }
+  x := old
+  y := select([a], [b])
+  race(1)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier)))))
+    (type_identifier)
+    (block
+      (binding
+        (tuple_pattern
+          (identifier)
+          (identifier))
+        (call_expression
+          (identifier)
+          (arguments
+            (identifier))))
+      (for_statement
+        (identifier)
+        (identifier)
+        (block
+          (call_expression
+            (identifier)
+            (arguments
+              (identifier)))))
+      (binding
+        (identifier)
+        (identifier))
+      (binding
+        (identifier)
+        (call_expression
+          (identifier)
+          (arguments
+            (list_expression
+              (identifier))
+            (list_expression
+              (identifier)))))
+      (call_expression
+        (identifier)
+        (arguments
+          (integer))))))

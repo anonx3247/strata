@@ -199,14 +199,26 @@ fn triangle(n: Natural) -> Natural {
 - After a `for`, the variables it changed have arbitrary values of their types.
 - A pass ends at the end of the body or at a `continue`, and what must hold after a pass is checked at each.
 
-A `while` loop terminates when a bound derived from its condition decreases on every pass. A property that must hold after a loop usually needs a loop invariant, a fact true at the head of the loop every time. The verifier infers invariants from these candidates:
+A `while` loop terminates when a bound derived from its condition decreases on every pass. A property that must hold after a loop usually needs a loop invariant, a fact true at the head of the loop every time.
+
+**Invariants derived from the code.** The verifier first reads invariants off the loop's code, as a compiler finds induction variables. They hold by construction, so they are assumed without a search. `x₀` is `x`'s value on entry:
+
+- An integer that every pass changes by the same amount on every path, including at a `continue` (`i += 1`, `j -= 2`), is an induction variable. Two of them keep a linear relation, such as `i - j == i₀ - j₀` or `2 * i - j == 2 * i₀ - j₀`.
+- An integer that every assignment in the loop only increases keeps `x >= x₀`, through branches and inner loops. The amount can be a literal or a length (`len`, `byte_len`). It is the other way round for one that only decreases.
+- With `while i < n`, where the loop doesn't change `n` and `i` goes up by at most 1 a pass, `i <= n` holds if it holds on entry. One question to the solver checks that. If the answer is no, `i <= n || i == i₀` holds anyway. `<=`, `>`, `>=` and `!=` are handled the same way.
+- A variable given only literals (or itself) is one of them or its value on entry. One given only values of at least `l` (literals, lengths, itself plus a non-negative amount) keeps `x >= l` if that holds on entry, and the same goes for an upper bound.
+- A list, dict or set that the loop only pushes to or inserts into doesn't get shorter (`len(xs) >= len(xs₀)`). One that it only pops or removes from doesn't get longer.
+
+A variable that the loop doesn't change keeps its value without any invariant. A place passed `mut`, assigned a value of another form, or named again by a binding inside the loop gets none of these facts. Neither does a sized integer, since sized integers wrap. The same facts hold at the head of a `for` and a `loop`.
+
+**A search, only where a check needs it.** When a check made after the start of a loop isn't proven with the derived invariants, `verify` runs that function again with a search for more invariants. Such a check can be an index, an `ensures`, an overflow, a written `invariant` or a termination bound. The search uses these candidates:
 
 - the condition's comparisons made non-strict (`i < n` gives `i <= n`, which still holds after the last pass)
 - the function's `ensures`, about the variable it returns
 - its `requires`
-- each integer the loop changes, compared with its value on entry (`x₀`), with 0, with the integer parameters, and with the other integers the loop changes
+- each integer the loop changes, compared with its value on entry, with 0, with the integer parameters, and with the other integers the loop changes
 
-Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates and the condition hold, and candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass, so they are assumed at the head. Facts already given by the declared types are omitted. `--checks` lists the invariants found:
+At first only the candidates that name a variable of the failing checks or of the loop's condition are tried. All of them are tried only if a check still fails. Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates, the derived invariants and the condition hold. Candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass, so they are assumed at the head. Facts already given by the declared types are omitted. `--checks` lists the invariants, derived and found:
 
 ```rust
 fn isqrt(n: Natural) -> Natural
@@ -220,17 +232,18 @@ fn isqrt(n: Natural) -> Natural
 ```
 
 ```text
-✓ isqrt                    proven (6 checks)
+✓ isqrt                    proven (7 checks)
     proven:  `let` annotated `Natural`
     proven:  assigning `r`: Natural
     proven:  result of `isqrt`: Natural
     proven:  ensures it * it <= n
+    proven:  invariant of `while (r + 1) * (r + 1) <= n`: r >= r₀ (derived)
     proven:  invariant of `while (r + 1) * (r + 1) <= n`: it * it <= n (it = r) (inferred)
     proven:  invariant of `while (r + 1) * (r + 1) <= n`: r <= n (inferred)
     terminates: `while (r + 1) * (r + 1) <= n` ends: `n - (r + 1) * (r + 1) + 1` goes down on every pass
 ```
 
-An invariant that no candidate states, such as the closed form of a sum, isn't found. The check is then fuzzed and the result says so, unless the loop states the invariant. An `invariant e` clause goes on its own line between the loop's header and its body, like a function's `requires`. It is proven on entry and after every pass, including at each `continue`, and then assumed at the head together with the inferred invariants, since each may depend on the others:
+Here `r <= n` and the `ensures` aren't derived (`r` is bounded through `(r + 1) * (r + 1)`), so the `ensures` fails without them and the loop is searched. An invariant that nothing derives and no candidate states, such as the closed form of a sum, isn't found. The check is then fuzzed and the result says so, unless the loop states the invariant. An `invariant e` clause goes on its own line between the loop's header and its body, like a function's `requires`. It is proven on entry and after every pass, including at each `continue`, and then assumed at the head together with the inferred invariants, since each may depend on the others:
 
 ```rust
 fn triangle_closed(n: Natural) -> Natural
@@ -247,7 +260,7 @@ fn triangle_closed(n: Natural) -> Natural
 ```
 
 ```text
-✓ triangle_closed          proven (9 checks)
+✓ triangle_closed          proven (10 checks)
     proven:  `let` annotated `Natural`
     proven:  `let` annotated `Natural`
     proven:  invariant `2 * total == i * (i + 1)` on entry to `while i < n`
@@ -256,11 +269,12 @@ fn triangle_closed(n: Natural) -> Natural
     proven:  invariant `2 * total == i * (i + 1)` after a pass of `while i < n`
     proven:  result of `triangle_closed`: Natural
     proven:  ensures 2 * it == n * (n + 1)
-    proven:  invariant of `while i < n`: i <= n (inferred)
+    proven:  invariant of `while i < n`: i >= i₀ (derived)
+    proven:  invariant of `while i < n`: i <= n (derived)
     terminates: `while i < n` ends: `n - i` goes down on every pass
 ```
 
-**Invariants found by search are written into the code.** Most loops' invariants are found quickly (a few queries, a few thousand solver resource units) and stay implicit. When finding them takes a real search, more than the 2M resource units a single proof may use, `verify` writes them into the code as `invariant` clauses on that loop. Later runs then only have to prove them, and readers can see them. `verify` prints one line per definition:
+**Invariants found by search are written into the code.** Most loops need no search, or find their invariants quickly (a few queries, a few thousand solver resource units), and they stay implicit. When finding them takes a real search, more than the 2M resource units a single proof may use, `verify` writes them into the code as `invariant` clauses on that loop. Later runs then only have to prove them, and readers can see them. `verify` prints one line per definition:
 
 ```text
 edited quoted_end: added `invariant lx.at <= n` to `while lx.at < n && char_at(lx, lx.at) != "\""` (found by search in 0.6 s, 3M solver resource units)
@@ -273,7 +287,7 @@ edited quoted_end: added `invariant lx.at <= n` to `while lx.at < n && char_at(l
 - `--no-write` writes nothing.
 - A loop with written invariants isn't searched. Its invariants are proven, and any further facts are asked only within a single proof's budget: 0.5M units per question, stopping at the first unanswered one.
 
-**One search budget per run.** All of a run's loop-invariant searches, for termination and for verification, draw on one pool of solver resource units, which are deterministic, unlike time. The default pool is 2,000M units, about twice what all of the compiler's loops take with nothing cached. std's loops take 53M, and the examples' less than 0.1M. A search already answered in the same run costs nothing. Once the pool is used up, the loops not yet searched are reported and their verdicts aren't kept:
+**One search budget per run.** All of a run's loop-invariant searches, for termination and for verification, draw on one pool of solver resource units, which are deterministic, unlike time. The default pool is 2,000M units. Since most loops need no search, a run takes far less: with nothing cached, the compiler's `main` module takes about 75M (460M when every loop was searched) and std about 2M. A search already answered in the same run costs nothing. Once the pool is used up, the loops not yet searched are reported and their verdicts aren't kept:
 
 ```text
 note: `quoted_end`: the invariant search budget was used up before `while …` was searched: write an `invariant` for that loop, or verify again with a larger budget (`--search-budget N`; this run's was 0k solver resource units)

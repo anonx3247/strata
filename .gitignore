@@ -1,2 +1,4 @@
 /target
 .strata/
+__pycache__/
+*.pyc
