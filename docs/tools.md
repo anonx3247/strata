@@ -93,8 +93,11 @@ fill them with `strata edit`, then `strata done` (or `strata abort` to undo the 
 $ strata done                             # once the holes are filled: one log entry for it all
 recorded "tax takes a rate" as one change: 3 definitions
 
-$ strata edit total                       # nothing piped in: opens `total` in $VISUAL / $EDITOR;
-                                          # what you save is the edit
+$ strata edit total                       # at a terminal, nothing piped in: opens `total` in
+                                          # $VISUAL / $EDITOR; what you save is the edit
+                                          # (with no one at the terminal, e.g. an agent's
+                                          # shell: an error saying to pipe the definitions in,
+                                          # or `--editor` to open the editor anyway)
 $ strata edit shop                        # the module `shop` (or `shop.strata`, also a new module)
 $ strata edit main.main                   # the definition `main` of the root module `main`
 $ strata edit                             # the whole package, one file per module

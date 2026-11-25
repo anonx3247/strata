@@ -1,0 +1,102 @@
+# `strata view NAME` and `strata find NAME` read core's builtins and std's
+# definitions too (also outside a package), with their docs: the builtins'
+# docs end with their cost (`/// Cost: ...`). `edit` keeps a builtin's
+# overloads apart.
+
+# (no package here: core's and std's names are still found)
+[[step]]
+strata = ["view", "Dict"]
+has = [
+  "/// Values by key, in no promised order (a hash table)",
+  "/// Cost: `get` and `contains` O(1) on average; `insert` O(1) amortized in",
+  "builtin type Dict[K, V]\n",
+]
+
+# every overload, each with its doc and cost
+[[step]]
+strata = ["view", "insert"]
+has = [
+  "builtin fn insert[K, V](d: Dict[K, V], k: K, v: V) -> Dict[K, V]",
+  "builtin fn insert[A](s: Set[A], x: A) -> Set[A]",
+  "/// Cost: O(1) amortized in place: in the statement `d = insert(d, k, v)`",
+  "/// Cost: O(1) amortized in place: in the statement `s = insert(s, x)`",
+]
+counts = { "builtin fn len" = 0 }
+
+[[step]]
+strata = ["view", "push,List"]
+has = ["// ── module core.types", "builtin type List[T]", "/// Cost: O(1) amortized", "builtin fn push[A](xs: List[A], x: A) -> List[A]"]
+
+# std's, qualified or (public, when core has no such name) by its own name
+[[step]]
+strata = ["view", "std.json.parse"]
+has = ["pub fn parse(text: String) -> Result[JsonValue, String]"]
+
+[[step]]
+strata = ["view", "JsonValue"]
+has = ["JsonValue"]
+
+[[step]]
+strata = ["view", "no_such_name_anywhere"]
+fails = true
+has = ["`no_such_name_anywhere` names no definition and no module, here or in core or std"]
+
+[[step]]
+strata = ["find", "Dict"]
+has = ["core.types.Dict"]
+
+# in a package its own definitions come first; a name it doesn't define is
+# core's
+[[step]]
+save = "main.strata"
+text = '''
+/// Mine.
+fn insert(x: Int) -> Int {
+  x
+}
+
+fn main() {
+  print(insert(1))
+}
+'''
+
+[[step]]
+write = "strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["view", "insert"]
+has = ["/// Mine.\nfn insert(x: Int) -> Int"]
+lacks = ["builtin fn insert"]
+
+[[step]]
+strata = ["view", "insert,Set"]
+has = ["fn insert(x: Int) -> Int", "builtin type Set[T]"]
+
+[[step]]
+strata = ["find", "Set"]
+has = ["core.types.Set"]
+
+# an edit of one overload of a builtin leaves the others (in a copy of core)
+[[step]]
+run = ["cp", "-R", "$ROOT/core", "core"]
+
+[[step]]
+strata = ["--file", "core", "edit", "builtins"]
+text = '''
+/// The number of elements, again.
+builtin fn len[A](s: Set[A]) -> Int
+'''
+
+[[step]]
+strata = ["--file", "core", "view", "builtins"]
+has = [
+  "/// The number of elements, again.\nbuiltin fn len[A](s: Set[A]) -> Int",
+  "builtin fn len[A](xs: List[A]) -> Int",
+  "builtin fn len[K, V](d: Dict[K, V]) -> Int",
+  "builtin fn contains(s: String, part: String) -> Bool",
+]
+
+[[step]]
+strata = ["--file", "core", "check"]
+has = ["ok: core checks"]

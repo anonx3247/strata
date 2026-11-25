@@ -671,6 +671,8 @@ strata interface shop.orders          # a module's public contract
 strata edit [MODULE] -m "why" < defs.strata
                                       # add or replace definitions by name; refused unless the
                                       # whole package still checks. --rm NAME deletes one
+                                      # (a short name too, when it names one definition:
+                                      # in MODULE first; a test by its title)
 strata rename OLD NEW                 # functions, types, variants, trait methods, fields (Type.field)
 strata move NAME MODULE               # to another module, imports follow
 strata log / strata diff              # the change history, as structural diffs

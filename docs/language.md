@@ -288,7 +288,7 @@ Variables are immutable unless declared `mut`. `while` and `for` loops are avail
 
 There are no shared references, so nothing changes behind your back: `ys := xs` is a copy, and changing `xs` afterwards leaves `ys` as it was (the same holds for passing a value or storing it in a field). There is no `copy` or `clone` to call; the copying is the compiler's business (compiled code shares the value and copies it only when one side changes it while the other still holds it). A declared type holds for the variable's whole life: every assignment is checked against it.
 
-**Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list is sliced with a range: `xs[1..3]`, `xs[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python. One element is `xs[i]`: `i` must be in range, which is checked when the code runs and proven by `verify`; `get(xs, i)` gives an `Option` instead. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
+**Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list is sliced with a range: `xs[1..3]`, `xs[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python. One element is `xs[i]`: `i` must be in range, which is checked when the code runs and proven by `verify`; `get(xs, i)` gives an `Option` instead. An element of a `mut` list is assigned the same way, `xs[i] = v` (and `xs[i] += 1`, `grid[r][c] = v`, `s.items[i] = v`, `s.items[i].qty = 3`): values never change, so it means `xs = set_at(xs, i, v)`, `xs` with element `i` replaced (a copy held elsewhere keeps the old one), with the same condition on `i`. It is O(1): the compiled code changes the list in place when nothing else holds it. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
 
 ```rust
 [x * x for x in xs where x > 0]
@@ -320,7 +320,7 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 
 - `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
 - `e?` does the same for an `Option`: the `Some` value, or return `None`.
-- `e except { fallback }` handles a failed `Result` here: the `Ok` value, or else the block. `except err { ... }` names the error. The fallback must produce the same type, or leave with `return`.
+- `e except { fallback }` handles a failed `Result` here: the `Ok` value, or else the block. `except err { ... }` names the error. The fallback must produce the same type, or leave with `return` (or, in a loop, `break` / `continue`: `x := opt or { continue }`): a block that ends in one never gives a value, so the binding gets the value's type.
 - `e or { fallback }` does the same for an `Option`: the `Some` value, or else the block (`None` has nothing to name).
 - `e !! value` and `e ?? value` are the short forms, for a fallback that is a single value on one line; such a fallback is always written that way. They bind tighter than comparisons and looser than arithmetic (`n ?? 0 + 1` is `n ?? (0 + 1)`, `n ?? 0 == 1` is `(n ?? 0) == 1`), and chain: `a ?? b ?? 0`.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.

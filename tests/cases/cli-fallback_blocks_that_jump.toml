@@ -1,0 +1,115 @@
+# A fallback block (`or { … }`, `except { … }`) that ends in `break`,
+# `continue` or `return` never gives a value: the binding gets the Option's
+# (the Result's) value type. A block that ends in a value must still give
+# the value's type.
+
+[[step]]
+save = "jumps.strata"
+text = '''
+fn evens(xs: List[Int]) -> Int {
+  mut total := 0
+  for x in xs {
+    v := (if x % 2 == 0 { Some(x) } else { None }) or { continue }
+    total = total + v
+  }
+  total
+}
+
+fn parse(s: String) -> Result[Int, String] {
+  if s == "" { Err("empty") } else { Ok(byte_len(s)) }
+}
+
+fn twice(s: String) -> Result[Int, String] {
+  n := parse(s) except e { return Err(e) }
+  Ok(n * 2)
+}
+
+fn until_none(xs: List[Option[Int]]) -> Int {
+  mut t := 0
+  for o in xs {
+    x := o or { break }
+    t = t + x
+  }
+  t
+}
+
+fn first_ok(xs: List[String]) -> Int {
+  for s in xs {
+    n := parse(s) except { continue }
+    return n
+  }
+  0
+}
+
+fn or_return(o: Option[Int]) -> Int {
+  y := o or {
+    mut z := 1
+    z += 1
+    return -z
+  }
+  y + 1
+}
+
+fn sum_until_empty(xs: List[String]) -> Int {
+  mut t := 0
+  mut i := 0
+  while i < len(xs) {
+    s := get(xs, i) ?? ""
+    i += 1
+    n := parse(s) except { break }
+    t += n
+  }
+  t
+}
+
+test "a fallback block that jumps gives no value" {
+  assert evens([1, 2, 3, 4]) == 6
+  assert until_none([Some(1), Some(2), None, Some(10)]) == 3
+  assert first_ok(["", "", "abc"]) == 3
+  assert first_ok([]) == 0
+  assert or_return(None) == -2
+  assert or_return(Some(3)) == 4
+  assert twice("ab") == Ok(4)
+  assert twice("") == Err("empty")
+  assert sum_until_empty(["a", "bb", "", "cccc"]) == 3
+}
+'''
+
+[[step]]
+strata = ["--file", "jumps.strata", "check"]
+has = ["ok"]
+
+[[step]]
+strata = ["--file", "jumps.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "jumps.strata", "view", "main"]
+capture = "jumps.st"
+
+[[step]]
+save = "jumps-r.strata"
+from_tmp = "jumps.st"
+
+[[step]]
+strata = ["--file", "jumps-r.strata", "view", "main"]
+out_file = "jumps.st"
+
+[[step]]
+write = "unit.src"
+text = """
+fn f(o: Option[Int]) -> Int {
+  x := o or {
+    g()
+  }
+  x
+}
+
+fn g() {
+  ()
+}"""
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file unit.strata edit < unit.src && \"$STRATA\" --file unit.strata check"]
+fails = true
+has = ["`or` fallback: expected `Int`, found `()`"]
