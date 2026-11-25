@@ -1,0 +1,40 @@
+# A loop whose pass passes a variable to a `mut` parameter gets back any
+# value of the parameter's type (what the callee wrote, nothing known of
+# it): a candidate invariant naming that variable, where a pass ends with
+# it so, is dropped without asking the solver. `words`' loop ends a pass
+# after `word(mut r)`, so `r.at <= n`, `r.at >= 0`, ... are dropped
+# there: its search asks only whether they hold on entry (under 1k units,
+# against 9k before; `lex.lex`'s outer loop: 4M before, none now).
+
+[[step]]
+save = "w.strata"
+text = '''
+type Reader = { text: List[String], at: Int, words: List[String] }
+
+fn word(mut r: Reader)
+  requires r.at >= 0 {
+  mut w := ""
+  while r.at < len(r.text) && r.text[r.at] != " " {
+    w += r.text[r.at]
+    r.at += 1
+  }
+  r.words = push(r.words, w)
+}
+
+fn words(text: List[String]) -> List[String] {
+  mut r := Reader { text, at: 0, words: [] }
+  n := len(text)
+  while r.at < n {
+    if r.text[r.at] == " " {
+      r.at += 1
+      continue
+    }
+    word(mut r)
+  }
+  r.words
+}
+'''
+
+[[step]]
+strata = ["--file", "w.strata", "verify", "--no-race", "--no-cache", "--show-searches"]
+has = ["search `words` `while r.at < n`: 0k, 0.0 s: nothing"]
