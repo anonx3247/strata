@@ -13,7 +13,7 @@ The modules of `std`, each with its types, traits and functions: their signature
 | [std.io](io.md) | The console, text in and out. |
 | [std.json](json.md) | JSON text, and records and sum types read from it and written to it. |
 | [std.memory](memory.md) | Arenas, for programs that allocate much and keep little. |
-| [std.orm](orm.md) | Records as SQLite tables. |
+| [std.orm](orm.md) | Records as SQLite tables: `derive Table for Todo` gives the table's schema, its rows written and read back as `Todo`s, and typed queries over its fields. |
 | [std.process](process.md) | The running program's arguments, environment and exit code, and the programs it runs. |
 | [std.python](python.md) | Calls to Python functions declared `extern python "module" fn …`. |
 | [std.regex](regex.md) | Regular expressions in regex-syntax's syntax, matched by a Pike VM or a DFA. |

@@ -1,7 +1,8 @@
 CREATE TABLE IF NOT EXISTS "todo" ("id" INTEGER PRIMARY KEY NOT NULL, "project" INTEGER NOT NULL REFERENCES "project" ("id"), "title" TEXT NOT NULL CHECK (("title" <> '') AND (length(CAST("title" AS BLOB)) <= 80)), "priority" INTEGER NOT NULL CHECK ((1 <= "priority") AND ("priority" <= 5)), "due" INTEGER, "done" INTEGER NOT NULL DEFAULT 0)
 Project { id: ProjectId(1), name: "home" }
-Todo { id: TodoId(1), project: ProjectId(1), title: "write docs", priority: 2, due: None, done: false }
-Some(Todo { id: TodoId(2), project: ProjectId(1), title: "buy milk", priority: 1, due: Some(3), done: false })
+Todo { id: TodoId(1), project: Key { value: 1 }, title: "write docs", priority: 2, due: None, done: false }
+Some(Todo { id: TodoId(2), project: Key { value: 1 }, title: "buy milk", priority: 1, due: Some(3), done: false })
+Ok(Some(Project { id: ProjectId(1), name: "home" }))
 ["buy milk", "write docs", "fix bike"]
 Ok(true)
 Ok(1)
@@ -9,6 +10,8 @@ Ok(1)
 Ok(2)
 Ok(true)
 ["write docs", "fix bike"]
+Err(Constraint { message: "FOREIGN KEY constraint failed" })
+Err(Constraint { message: "FOREIGN KEY constraint failed" })
 Err(Constraint { message: "CHECK constraint failed: (\"title\" <> '') AND (length(CAST(\"title\" AS BLOB)) <= 80)" })
 Err(Constraint { message: "CHECK constraint failed: name" })
 Err(BadRow { table: "project", message: "name: \"a/b\" does not satisfy `String where it != \"\" && !contains(it, \"/\")`" })
@@ -18,6 +21,9 @@ Ok(1)
 Ok(())
 CREATE TABLE IF NOT EXISTS "span" ("id" INTEGER PRIMARY KEY NOT NULL, "start" REAL NOT NULL, "end" REAL NOT NULL, "note" TEXT, CHECK ("start" <= "end"))
 CREATE TABLE IF NOT EXISTS "tag" ("id" TEXT PRIMARY KEY NOT NULL CHECK ("id" <> ''), "color" TEXT NOT NULL DEFAULT 'red')
+CREATE TABLE IF NOT EXISTS "item" ("code" TEXT PRIMARY KEY NOT NULL CHECK ("code" <> ''), "name" TEXT NOT NULL)
+CREATE TABLE IF NOT EXISTS "slot" ("shelf" INTEGER NOT NULL, "slot" INTEGER NOT NULL, "item" TEXT NOT NULL REFERENCES "item" ("code"), "note" TEXT REFERENCES "tag" ("id"), PRIMARY KEY ("shelf", "slot"))
+CREATE TABLE IF NOT EXISTS "delivery" ("id" INTEGER PRIMARY KEY NOT NULL, "to" BLOB NOT NULL, "items" BLOB NOT NULL)
 Span { id: 1, start: 1.5, end: 2.0, note: Some("lunch") }
 Err(Constraint { message: "CHECK constraint failed: start" })
 Ok(Tag { id: "home", color: "red" })
@@ -25,6 +31,18 @@ Err(Constraint { message: "UNIQUE constraint failed: tag.id" })
 Ok(Some(Tag { id: "home", color: "red" }))
 Ok(None)
 Ok([Span { id: 1, start: 1.5, end: 2.0, note: Some("lunch") }])
+Item { code: "B1", name: "bolt" }
+Err(Constraint { message: "UNIQUE constraint failed: item.code" })
+Ok(Slot { shelf: 1, slot: 2, item: Key { value: "B1" }, note: None })
+Ok(Slot { shelf: 1, slot: 3, item: Key { value: "B1" }, note: Some(Key { value: "home" }) })
+Err(Constraint { message: "UNIQUE constraint failed: slot.shelf, slot.slot" })
+Err(Constraint { message: "FOREIGN KEY constraint failed" })
+Err(Constraint { message: "FOREIGN KEY constraint failed" })
+Ok(true)
+Ok([Slot { shelf: 1, slot: 3, item: Key { value: "B1" }, note: Some(Key { value: "home" }) }])
+Ok([Delivery { id: 1, to: Address { city: "Paris", zip: "75001" }, items: ["tea", "cups"] }])
+Ok(Some(Delivery { id: 1, to: Address { city: "Paris", zip: "75001" }, items: ["tea", "cups"] }))
+Err(BadRow { table: "delivery", message: "to.city: \"\" does not satisfy `String where it != \"\"`" })
 Ok(())
 
 --- exit 0

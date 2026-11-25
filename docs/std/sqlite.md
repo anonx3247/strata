@@ -16,7 +16,7 @@ SQL's NULL, as a type of its own.
 ### SqlValue
 
 ```rust
-type SqlValue = Int | Float | String | Bool | Null
+type SqlValue = KeyValue | Float | Bool | Null
 ```
 
 A value crossing to SQLite or back: SQLite's storage classes, plus `Bool`.
@@ -59,12 +59,17 @@ capability Sqlite {
   fn open(path: String) -> Result[Connection, SqlError]
   /// A new, empty database in memory, gone once closed.
   fn memory() -> Result[Connection, SqlError]
+    assumed ensures match it {
+      Ok(c) => len(c.rows()) == 0,
+      Err(_) => true,
+    }
   /// The SQLite library's version, such as `3.51.0`.
   fn version() -> String
 }
 ```
 
-SQLite itself. Only the runtime makes one, for `main` and tests that ask for it.
+SQLite itself. Only the runtime makes one, for `main` and tests that ask
+for it.
 
 ### Row
 
@@ -88,7 +93,19 @@ A database SQLite opened with `sqlite.open(path)`. Close it when done.
 type Statement = { handle: Sqlite3Stmt, sql: String }
 ```
 
-A prepared statement from `db.prepare(sql)`. Bind its parameters, step through its rows, read their columns. Finalize it when done.
+A prepared statement from `db.prepare(sql)`. Bind its parameters, step
+through its rows, read their columns. Finalize it when done.
+
+### KeyValue
+
+```rust
+type KeyValue = Int | String
+```
+
+A key as the model `Database.rows` holds it: a key of one integer
+column its value (a `Bool`'s 0 or 1), of one text column its text, any
+other (a `REAL` column, a key of several columns) its values written out
+(`[1, "a"]`).
 
 ## Methods
 
@@ -261,6 +278,11 @@ Values that cross to SQLite as an `SqlValue`.
 
 ```rust
 capability trait Database {
+  /// Each row as its table and its key (a `KeyValue`), for `std.orm`'s
+  /// contracts: a row a `Key[T]` names exists, and a key is used once.
+  /// Statements run by hand don't update it, so after one it is unknown.
+  model rows: Set[(String, KeyValue)]
+
   /// Runs one statement with its `?` parameters in order. Returns how many rows it changed.
   fn execute(
     mut self,
@@ -297,6 +319,14 @@ fn sql[T: Sql](x: T) -> SqlValue
 ```
 
 `x` as an `SqlValue`. An `Option` gives its value or `Null`.
+
+### key_value_of
+
+```rust
+fn key_value_of(values: List[SqlValue]) -> KeyValue
+```
+
+The `KeyValue` of a row's key: its columns' values, in order.
 
 ## Implementations
 

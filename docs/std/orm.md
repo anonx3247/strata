@@ -1,6 +1,65 @@
 # std.orm
 
-Records as SQLite tables. `derive Table for Todo` gives the table's schema, its rows written and read back as `Todo`s, and typed queries over its fields.
+Records as SQLite tables: `derive Table for Todo` gives the
+table's schema, its rows written and read back as `Todo`s, and typed
+queries over its fields.
+
+```rust
+type Project = { id: Int = 0, name: String where it != "" }
+
+type Todo = {
+  id: Int = 0,
+  title: String where it != "",
+  priority: Int where 1 <= it && it <= 5,
+  done: Bool = false,
+  project: Key[Project],
+}
+
+derive Table for Project
+derive Table for Todo
+
+fn main(sqlite: Sqlite) -> Result[(), SqlError] {
+  mut db := sqlite.memory()!
+  Project.schema().create(mut db)!
+  Todo.schema().create(mut db)!
+  p := (Project { name: "home" }).insert(mut db)!
+  t := (Todo { title: "write docs", priority: 2, project: p.key() })
+    .insert(mut db)!
+  open := Todo.filter(Todo.done.eq(false))
+    .order_by(Todo.priority)
+    .all(db)!
+  ..
+}
+```
+
+The table is named after the type in snake case (`TodoItem`:
+`todo_item`), a column per field: `Int` and `Bool` (0 or 1) are
+`INTEGER`, `Float` is `REAL`, `String` is `TEXT`, an `Option` is the
+same column without `NOT NULL`, a `distinct` type is what it is made of.
+The key is written in the derive's block, `derive Table for Item { key
+code }` (`key (shelf, slot)` for one of several columns); without one,
+the field `id`, which an integer one SQLite gives each row (its row id).
+A `Key[T]` field is a key of `T`'s table (`REFERENCES`), an
+`Option[Key[T]]` one that may be NULL; a field holding a record, a union,
+a list or a dict whose type derives `Json` is kept as JSONB. A
+refinement is a `CHECK` where SQL can say it (comparisons of `it`,
+`byte_len(it)`, `it.field` for the record's own, literals, `&&`, `||`,
+`!`; of conditions joined by `&&`, those it can), a literal default is a
+`DEFAULT`, and every row read back is checked again in Strata, so a row
+breaking a refinement SQL couldn't state is an error value (`BadRow`),
+never a fault.
+
+The keys are invariants `verify` checks, over the database's model
+(`Database.tables`, each table's keys): `insert` requires the rows its
+`Key[T]` fields name to exist and its key to be new (unless SQLite gives
+it), `update` the same of the rows it names, and each says how the model
+changes; a delete of a row another names is refused by SQLite, an error
+value.
+
+Queries are values: `Todo.title` is a `KeyPath[Todo, String]`, so
+`Todo.title.eq("x")` (a `Cond[Todo]`) is checked against the field's
+type, and runs with the value as a parameter (`"title" IS ?`), never as
+SQL text.
 
 ## Types
 
@@ -9,18 +68,25 @@ Records as SQLite tables. `derive Table for Todo` gives the table's schema, its 
 ```rust
 type Column = {
   name: String,
-  /// `INTEGER`, `REAL` or `TEXT`.
+  /// `INTEGER`, `REAL`, `TEXT`, or `BLOB` (JSONB).
   sql_type: String,
   /// Whether it may be NULL: an `Option` field.
   nullable: Bool,
-  /// Whether it is the table's key, the field `id`.
+  /// Whether it is the table's key, or one of its columns.
   key: Bool,
-  /// The table whose keys its values are (`REFERENCES`).
-  references: Option[String],
-  /// Its field's refinement as written: `it != ""`.
+  /// The table and column its values are keys of (a `Key[T]` field):
+  /// `REFERENCES`.
+  references: Option[(String, String)],
+  /// Its field's refinement, as written (`it != ""`).
   condition: Option[String],
   /// Its field's default as written: `false`. It is the `DEFAULT` when it is a literal.
   default: Option[String] = None,
+  /// Whether SQLite gives its values: the default key `id`, an integer (the
+  /// row id).
+  generated: Bool = false,
+  /// Whether it holds JSONB (a record, union, list or dict deriving
+  /// `Json`): written with `jsonb(?)`, read with `json(..)`.
+  json: Bool = false,
 }
 ```
 
@@ -33,10 +99,13 @@ type Schema[R] = {
   table: String,
   columns: List[Column],
   condition: Option[String],
+  key: List[String] = [],
 }
 ```
 
-A table of records `R`: its name, its columns and the record's own refinement as written (`it.start <= it.end`). Made by `Todo.schema()`.
+A table of records `R`: its name, its columns, the record's own
+refinement (`it.start <= it.end`), as written, and its key's columns.
+`Todo.schema()`.
 
 ### Cond
 
@@ -44,7 +113,8 @@ A table of records `R`: its name, its columns and the record's own refinement as
 type Cond[R] = { sql: String, params: List[SqlValue] }
 ```
 
-A condition on rows of the table of `R`, such as `Todo.done.eq(false)`: SQL with `?` parameters, and their values in order.
+A condition on rows of the table of `R`, such as `Todo.done.eq(false)`:
+SQL with `?` parameters, and their values in order.
 Values are always passed as parameters, never as SQL text.
 
 ### Query
@@ -58,8 +128,22 @@ type Query[R] = {
 }
 ```
 
-A query on the table of `R`: the rows meeting a condition, in an order, at most so many.
-Made with `Todo.query()` or `Todo.filter(c)`. Run with `all`, `first`, `count` or `delete`.
+A query on the table of `R`: the rows meeting a condition, in an order, at
+most so many.
+Made with `Todo.query()` or `Todo.filter(c)`. Run with `all`, `first`,
+`count` or `delete`.
+
+### Key
+
+```rust
+type Key[T] = { value: KeyValue }
+```
+
+A key of a row of `T`'s table (a key of one column: an integer or text).
+A field `project: Key[Project]` is a foreign key: its column holds a
+`Project`'s key and `REFERENCES` its table, and `verify` checks that the
+row exists when a record holding it is inserted or updated. `p.key()`
+gives a row's; `k.load(db)` reads the row.
 
 ## Methods
 
@@ -75,9 +159,11 @@ fn sql(self) -> String
 
 ```rust
 fn create(self, mut db: Database) -> Result[(), SqlError]
+  assumed ensures db.rows == old db.rows
 ```
 
-Creates the table if it is missing, and turns on SQLite's `REFERENCES` checks on this connection.
+Make the table if it is missing (and have SQLite check `REFERENCES`
+on this connection): no row changes.
 
 ### Cond.and
 
@@ -143,6 +229,18 @@ fn clauses(self) -> (String, List[SqlValue])
 
 What follows `FROM table`: the condition, the order and the limit, with their parameters.
 
+### Key.load
+
+```rust
+fn load(self, db: Database) -> Result[Option[T], SqlError]
+  assumed ensures match it {
+    Ok(Some(r)) => contains(db.rows, (r.table_name(), self.value)),
+    _ => true,
+  }
+```
+
+The row of `T` with this key, if there is one.
+
 ## Traits
 
 ### Compare
@@ -164,8 +262,10 @@ trait Compare[R, T] {
 }
 ```
 
-Compares a column with a value of its field's type: `Todo.done.eq(false)`, where `Todo.done` is a `KeyPath[Todo, Bool]`.
-`eq` and `ne` match `None` too (SQL's `IS`). An order with `None` holds for no row.
+Compares a column with a value of its field's type: `Todo.done.eq(false)`,
+where `Todo.done` is a `KeyPath[Todo, Bool]`.
+`eq` and `ne` match `None` too (SQL's `IS`). An order with `None` holds
+for no row.
 
 ### Rows
 
@@ -188,22 +288,51 @@ Runs a query, giving its rows as records.
 
 ```rust
 derivable(Record) trait Table {
-  /// The table: its name, a column per field in order, and the record's own refinement.
+  /// The table: its name (the type's, in snake case), its columns (a
+  /// field's each, in order), the record's own refinement and its key.
   derived fn schema() -> Schema[Self]
-  /// Its values, one per column, in order.
-  derived fn values(self) -> List[SqlValue]
+  /// The name of its table (the type's, in snake case).
+  derived fn table_name(self) -> String
+  /// Its values, a column's each, in order (a JSON one as text).
+  derived fn values(self) -> Result[List[SqlValue], SqlError]
+  /// Its key (of several columns: their values written out, as
+  /// `key_value_of` writes them).
+  derived fn key(self) -> Key[Self]
+    assumed ensures it == self.key()
+  /// Whether each row its `Key[T]` fields name is in `rows` (a
+  /// database's model).
+  derived fn references_held(self, rows: Set[(String, KeyValue)]) -> Bool
+  /// Whether its key is new in `rows` (always, when SQLite gives it; a
+  /// key of several columns isn't followed: SQLite refuses it again).
+  derived fn key_free(self, rows: Set[(String, KeyValue)]) -> Bool
   /// The record a row holds, columns in field order, every refinement checked. A row breaking one is `BadRow`.
   derived fn from_row(r: Row) -> Result[Self, SqlError]
-  /// The record with the key SQLite gave it. A key that isn't an integer is kept.
+  /// The record with the key SQLite gave it (the default key `id`, an
+  /// integer; others are kept).
   derived fn with_key(self, id: Int) -> Self
-  /// Adds the record as a new row and returns it as kept.
-  /// An integer key is the one SQLite gives, and the `id` given is ignored.
+  /// Add the record as a new row: the record as kept, with the key SQLite
+  /// gave it when it gives one (the `id` given is then left out). The rows
+  /// its `Key[T]` fields name must exist, and its key be new.
   fn insert(self, mut db: Database) -> Result[Self, SqlError]
-  /// Writes the record over the row with its key. Returns whether there was one.
+    assumed requires self.references_held(db.rows)
+    assumed requires self.key_free(db.rows)
+    assumed ensures match it {
+      Ok(r) => db.rows == with(old db.rows, (self.table_name(), r.key().value)),
+      Err(_) => db.rows == old db.rows,
+    }
+  /// Write the record over the row with its key: whether there was one.
+  /// The rows its `Key[T]` fields name must exist.
   fn update(self, mut db: Database) -> Result[Bool, SqlError]
-  /// Deletes the row with the record's key. Returns whether there was one.
+    assumed requires self.references_held(db.rows)
+    assumed ensures db.rows == old db.rows
+  /// Delete the row with the record's key: whether there was one. A row
+  /// another table's `Key[T]` names isn't deleted: an error.
   fn delete(self, mut db: Database) -> Result[Bool, SqlError]
-  /// The row whose key is `key`, if there is one.
+    assumed ensures match it {
+      Ok(true) => db.rows == without(old db.rows, (self.table_name(), self.key().value)),
+      _ => db.rows == old db.rows,
+    }
+  /// The row whose key is `key` (a key of one column), if there is one.
   fn get[K: Sql](db: Database, key: K) -> Result[Option[Self], SqlError]
   /// Every row, in the order SQLite keeps them.
   fn all(db: Database) -> Result[List[Self], SqlError]
@@ -214,16 +343,11 @@ derivable(Record) trait Table {
 }
 ```
 
-A record kept as a row of a table: `derive Table for Todo`.
-
-- The table is named after the type in snake case: `todo_item` for `TodoItem`.
-- Each field is a column. `Int` and `Bool` (0 or 1) are `INTEGER`, `Float` is `REAL`, `String` is `TEXT`. An `Option` drops `NOT NULL`. A `distinct` type is what it is made of.
-- The field `id` is the `PRIMARY KEY`. An integer key is SQLite's row id, given to each row `insert` adds.
-- A `distinct` field whose type is named `<Table>Id` (`project: ProjectId`) is a key of that table: `REFERENCES project (id)`.
-- A refinement is a `CHECK` where SQL can say it, and a literal default is a `DEFAULT`.
-- Every row read back is checked again in Strata. A row breaking a refinement SQL couldn't state is a `BadRow` error.
+A record kept as a row of a table (see above): `derive Table for Todo`,
+`derive Table for Item { key code }` (see above).
 
 ## Implementations
 
 - `impl[R, T: Sql] Compare[R, T] for KeyPath[R, T]`
 - `impl[R: Table] Rows[R] for Query[R]`
+- `impl[T] Sql for Key[T]`
