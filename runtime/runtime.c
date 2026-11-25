@@ -1,14 +1,13 @@
-// The native runtime of compiled Strata programs: strings, printing, number
-// formatting and faults. Linked with the LLVM IR that `strata build` emits.
-// It mirrors the interpreter (src/interp.rs): the same output, the same fault
-// messages.
+// The C runtime of compiled Strata programs, linked with the code `strata
+// build` emits: memory, faults, tasks and channels, the host operations, and
+// the C versions of what core.rt provides in Strata.
 //
-// Memory is reference-counted (Perceus, as in Koka and Lean): every object
+// Memory is reference-counted (Perceus, as in Koka and Lean). Every object
 // has a count word just before it, so the layouts below start at the
 // object's pointer as if the count weren't there. Constants in the IR have a
-// count of 0, which never changes: they are never freed. The generated code
-// does the counting (`strata_dup`, `strata_release`, then its own drop of
-// the object's contents and `strata_free`); objects never form cycles,
+// count of 0, which never changes, so they are never freed. The generated
+// code does the counting: `strata_dup`, `strata_release`, then its own drop
+// of the object's contents and `strata_free`. Objects never form cycles,
 // since values never change once built.
 
 #ifdef __linux__
@@ -41,7 +40,7 @@ typedef struct {
   char bytes[];
 } Str;
 
-// Fault kinds, in the order of the IR's constants (`FaultKind` in interp.rs).
+// Fault kinds, in the order of the IR's constants.
 static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Runtime", "Hole", "Limit"};
 
 // ---- memory ----
@@ -120,10 +119,8 @@ void *strata_raw_reserve(int64_t n) {
   return r == MAP_FAILED ? NULL : r;
 }
 
-// The runtime written in Strata (core/rt.strata) replaces these when it is
-// linked in (`STRATA_CORE_RT`: every executable, and strata itself from the
-// second stage of its build on); without it, as when strata is first built,
-// they are C.
+// core.rt (core/rt.strata) replaces these when it is linked in
+// (`STRATA_CORE_RT`); without it they are C.
 #ifndef STRATA_CORE_RT
 // In check mode, every object made (to list those still alive at the end).
 static int64_t **made;
@@ -135,15 +132,15 @@ static _Noreturn void freed_again(const char *what) {
   abort();
 }
 
-// Small objects (with their count word, at most OBJECT_MAX bytes: most are
+// Small objects (at most OBJECT_MAX bytes with their count word: mostly
 // Options, tuples, records, list headers and short strings) come from free
-// lists, one per size class (16-byte steps), carved from 64 KB chunks of
-// one reserved range of addresses; `strata_free` knows them by their
-// address, and each chunk's class from `chunk_class`. Much cheaper than
-// malloc and free for objects made and dropped all the time. The lists are
-// shared by all threads, behind a spinlock (one atomic exchange when no
-// other thread wants it). Bigger objects, and every object in check mode
-// (whose freed objects are kept and marked), are malloc's.
+// lists, one per size class in 16-byte steps. The lists are carved from 64 KB
+// chunks of one reserved range of addresses. `strata_free` knows a small
+// object by its address, and its class from `chunk_class`. This is much
+// cheaper than malloc and free for objects made and dropped all the time.
+// The lists are shared by all threads behind a spinlock: one atomic exchange
+// when no other thread wants it. Bigger objects, and every object in check
+// mode, come from malloc.
 #define OBJECT_MAX 256
 #define CLASSES (OBJECT_MAX / 16 + 1)
 #define CHUNK ((size_t)1 << 16)
@@ -163,7 +160,7 @@ static void small_lock_give(void) { __atomic_store_n(&small_lock, 0, __ATOMIC_RE
 static int in_region(void *c) { return region && (char *)c >= region && (char *)c < region + REGION; }
 
 // A block of class `k` (16 * k bytes), or NULL when the region is used up
-// (or couldn't be reserved): malloc's then.
+// or couldn't be reserved. The caller then uses malloc.
 static int64_t *small_alloc(int k) {
   small_lock_take();
   void *b = free_list[k];
@@ -247,7 +244,7 @@ _Bool strata_release(void *p) {
   return *c > 0 && --*c == 0;
 }
 
-// Give an object's memory back (its contents already dropped).
+// Frees an object whose contents are already dropped.
 void strata_free(void *p) {
   if (THREADED) __atomic_fetch_add(&freed, 1, __ATOMIC_RELAXED);
   else freed++;
@@ -376,16 +373,15 @@ Str *strata_str_trim(Str *s);
 
 // ---- faults ----
 
-// The functions being run, outermost first (as the interpreter's call
-// stack): a fault shows them. A recursion is one run of the same function
-// (`down (95846 times)`), so a deep one costs nothing to keep; only the
-// first FRAMES runs are kept.
+// The functions being run, outermost first, which a fault shows. A
+// recursion is one run of the same function (`down (95846 times)`), so a
+// deep one costs nothing to keep. Only the first FRAMES runs are kept.
 #define FRAMES 4096
 // The call stack (`runs` in use, counting those past FRAMES), and the
-// state of the thread's run (a test, a fuzz case) and its faults: core.fault's
-// and core.test's `builtin thread static` blocks when core.rt is linked in
-// (`STRATA_CORE_RT`, laid out as these), this file's own thread-locals in
-// the first stage of strata's build.
+// state of the thread's run (a test, a fuzz case) and its faults. With
+// core.rt linked in (`STRATA_CORE_RT`) these are core.fault's and
+// core.test's `builtin thread static` blocks, laid out as these; without it,
+// this file's own thread-locals.
 typedef struct {
   int64_t runs;
   Str *frames[FRAMES];
@@ -467,9 +463,8 @@ void strata_trace_leave(Str *name, Str *value) {
 #ifndef STRATA_CORE_RT
 #endif
 
-// The call stack as `strata run` shows it ("" when empty): as the
-// `names::show_stack`, four or more calls in a row of one function
-// are one entry.
+// The call stack as `strata run` shows it, "" when empty. Four or more calls
+// in a row of one function are one entry.
 static char *stack_from(Str **frames, int64_t *counts, int64_t runs) {
   size_t n = 16;
   for (int64_t i = 0; i < runs && i < FRAMES; i++) n += ((size_t)frames[i]->len + 4) * (counts[i] < 4 ? (size_t)counts[i] : 1) + 32;
@@ -501,8 +496,8 @@ static void print_stack(void) {
 // ---- tests ----
 //
 // `strata test` with the JIT calls each test's function through
-// `strata_test`: a fault ends the test (back here, not out of the process),
-// and what it prints is kept, as the interpreter does.
+// `strata_test`. A fault ends the test, coming back here instead of ending
+// the process, and what the test prints is kept.
 
 // A run's state is per thread: the JIT may run code on several threads at
 // once (compile-time code in one, a test or fuzz case in another).
@@ -521,9 +516,9 @@ void strata_keep_printed(const char *b, int64_t n);
 #define keep_printed(b, n) strata_keep_printed((b), (int64_t)(n))
 #endif
 
-// Run test `f`: 0 when it got to its end, 1 after a fault (then
-// `strata_test_fault` says which). Each starts as the interpreter's: no
-// call stack, the generators' numbers from the start, nothing printed.
+// Runs test `f`: 0 when it got to its end, 1 after a fault (then
+// `strata_test_fault` says which). Each test starts with no call stack, the
+// generators' numbers from the start, and nothing printed.
 static void forget_senders(void);
 
 // A run inside `strata_test` (a test, a fuzz case): a panic there fails it
@@ -592,14 +587,14 @@ static void remove_waiter(Run *r, Waiter *w) {
   else r->tail = w->back;
 }
 
-// Cancellations pending (tasks told to stop, runs that panicked): while it
-// is 0, compiled code doesn't look further (`cancel_point` in llvm.rs).
+// Cancellations pending (tasks told to stop, runs that panicked). While it
+// is 0, compiled code doesn't look further (codegen's cancel points).
 int32_t strata_cancel_any = 0;
 
 // The part of a run the C runtime keeps while tasks are its own: the
-// boundary its panics stop at (`Contained`) and its threads (`Run`), the
-// caller's kept aside. core.test's `strata_test` calls these, as the first
-// stage's below does.
+// boundary its panics stop at (`Contained`) and its threads (`Run`), with
+// the caller's kept aside. `strata_test` calls these, core.test's or the
+// one below.
 typedef struct {
   Contained run, *outer;
   Run trun, *outer_run;
@@ -702,13 +697,12 @@ int32_t strata_test(void (*f)(void)) {
 }
 #endif
 
-// ---- fuzzing (`strata verify --jit`) ----
+// ---- fuzzing (`strata verify`) ----
 //
-// A fuzz driver (llvm.rs, `compile_fuzz`) generates a function's arguments,
-// hands each to strata (`strata_fuzz_keep`, src/llvm/jit.rs: read by its
-// shape), and calls it; `strata_fuzz` runs one case as
-// `strata_test` runs a test, with the generators seeded and a step budget
-// (each loop iteration and call is a step): past it, a `Limit` fault.
+// A fuzz driver generates a function's arguments and calls it.
+// `strata_fuzz` runs one case as `strata_test` runs a test, with the
+// generators seeded and a step budget. Each loop iteration and call is a
+// step; past the budget is a `Limit` fault.
 
 _Noreturn void strata_fault(int32_t kind, Str *msg);
 
@@ -721,9 +715,9 @@ void strata_step(void) {
   }
 }
 
-// The running case's arguments as code, for the compiler written in Strata
-// (compiler/codegen's drivers with `--fuzz-text`: `strata_fuzz_arg`), each
-// followed by a 0x1f byte; emptied when a case starts.
+// The running case's arguments as code, each followed by a 0x1f byte, for
+// the compiler (codegen's drivers with `--fuzz-text`). Emptied when a case
+// starts.
 
 void strata_fuzz_arg(Str *s) {
   RS->fuzz_args = realloc(RS->fuzz_args, RS->fuzz_args_len + (size_t)s->len + 2);
@@ -750,8 +744,8 @@ void strata_seed(int64_t seed) { RS->rng = (uint64_t)seed; }
 #endif
 
 // The `Code` capability (std.code): the codebase as typed values, which
-// strata builds (src/ui.rs) and writes into this program's memory
-// (src/llvm/native.rs) when it runs one. A built program has none.
+// strata writes into this program's memory when it runs one. A built
+// program has none.
 typedef Str *(*CodeVersion)(void);
 typedef void *(*CodeSnapshot)(Str **err);
 static CodeVersion code_version;
@@ -775,13 +769,13 @@ void *strata_host_code_snapshot(Str **err) {
 }
 
 #ifndef STRATA_CORE_RT
-// Values the host wrote into memory for compiled code to take
-// (`strata_run_call`'s arguments; llvm.rs, `Entry::Call`).
+// Values the host wrote into memory for compiled code to take:
+// `strata_run_call`'s arguments.
 void strata_set_given(int64_t *g) { RS->given = g; }
 int64_t strata_given(int64_t i) { return RS->given[i]; }
 
-// Compile-time code's value (`strata.ct.N` hands it over), for the compiler
-// to read (src/llvm/native.rs).
+// Compile-time code's value, handed over by `strata.ct.N`, for the compiler
+// to read.
 void strata_ct_keep(int64_t v) { RS->ct_kept = v; }
 int64_t strata_ct_kept(void) { return RS->ct_kept; }
 #endif
@@ -795,7 +789,7 @@ Str *strata_test_message(void) { return RS->fault_msg; }
 const char *strata_test_stack(void) { return RS->fault_stack ? RS->fault_stack : ""; }
 const char *strata_test_printed(void) { return RS->printed ? RS->printed : ""; }
 
-// A fault: its kind, then 256 if the interpreter shows no call stack for it.
+// A fault kind, plus 256 when no call stack is shown for it.
 static void finish_open_scopes(void);
 struct Contained;
 static void panic_contained(struct Contained *c);
@@ -902,14 +896,14 @@ _Noreturn void strata_fault_at(int32_t kind, Str *msg, char *task_stack);
 //
 // Cancelling a task (a `race`'s losers) stops it at its next wait: `send`,
 // `recv`, `select` and `await` give up, and the compiled code leaves each
-// function as `return` would, dropping what it holds (`cancel_point` in
-// llvm.rs), so nothing runs after the wait and nothing leaks. A task is
+// function as `return` would, dropping what it holds (codegen's cancel
+// points), so nothing runs after the wait and nothing leaks. A task is
 // cancelled when it or a task above it (the one that spawned it, ...) is.
 
 #define TASK_STACK ((size_t)64 << 20)
 
-// Channels, and tasks' ends, under one lock: what changes wakes every
-// waiter, which looks again (simple; a lock per channel can come later).
+// Channels and tasks' ends are under one lock. A change wakes every waiter,
+// which looks again.
 static pthread_mutex_t chan_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t chan_cond = PTHREAD_COND_INITIALIZER;
 
@@ -942,7 +936,7 @@ static _Bool holds_sender(Channel *c) {
 // A test starts holding none.
 static void forget_senders(void) { nheld = 0; }
 
-// Whether this thread held `c`, which it no longer does.
+// Removes `c` from the senders this thread holds; whether it held it.
 static _Bool unhold_sender(Channel *c) {
   for (int64_t i = 0; i < nheld; i++)
     if (held[i] == c) {
@@ -1115,7 +1109,7 @@ static _Bool wait_readable(int fd) {
     Reader *r = calloc(1, sizeof *r);
     if (!r || pipe(r->wake) != 0) {
       free(r);
-      return 1;  // no pipe: an uncancellable wait, as before
+      return 1;  // no pipe: an uncancellable wait
     }
     for (int i = 0; i < 2; i++) {
       fcntl(r->wake[i], F_SETFL, fcntl(r->wake[i], F_GETFL) | O_NONBLOCK);
@@ -1203,9 +1197,9 @@ static char *panic_stack(void) {
   return s;
 }
 
-// A panic in compiled code: inside a supervised task it is the task's
-// (recorded; the code then leaves its functions, see `fault` in llvm.rs);
-// anywhere else it ends the program, or the test, as `strata_fault`.
+// A panic in compiled code. Inside a supervised task it is recorded as the
+// task's, and the code then leaves its functions. Anywhere else it ends the
+// program, or the test, as `strata_fault` does.
 void strata_panic(int32_t kind, Str *msg) {
   if (contained && contained->supervised) {
     record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
@@ -1214,12 +1208,12 @@ void strata_panic(int32_t kind, Str *msg) {
   fault_at(kind, msg, NULL);
 }
 
-// A panic a builtin finds (a division by zero, `ord` of a long string, ...):
-// inside a supervised task it is the task's, recorded, and this returns 1:
-// the builtin then gives back a harmless value (0, an empty string), which
-// the compiled code never uses, since it checks for the panic right after
-// the call (`soft_faults` in llvm.rs) and leaves. Anywhere else it ends the
-// program, or the test, as `strata_fault`.
+// A panic a builtin finds (a division by zero, `ord` of a long string, ...).
+// Inside a supervised task it is recorded as the task's, and this returns 1.
+// The builtin then gives back a harmless value (0, an empty string), which
+// the compiled code never uses: it checks for the panic right after the
+// call and leaves. Anywhere else it ends the program, or the test, as
+// `strata_fault` does.
 static _Bool soft_fault(int32_t kind, Str *msg) {
   if (contained && contained->supervised) {
     record_panic(contained, kind & 255, msg, (kind & 256) ? strdup("") : panic_stack());
@@ -1865,11 +1859,11 @@ static void finish_open_scopes(void) {
 
 // ---- integers ----
 //
-// Written in Strata in core.int (core/int.strata), as the strings are in
-// core.str and the floats in core.float: these are the first stage's.
+// core.int (core/int.strata) replaces these when core.rt is linked in, as
+// core.str does the strings and core.float the floats.
 //
-// An `Int` never overflows (as the interpreter's): one in [-2^62, 2^62) is
-// itself, and any other is a big integer, a pointer kept in the 64-bit
+// An `Int` never overflows. One in [-2^62, 2^62) is itself, and any other
+// is a big integer, a pointer kept in the 64-bit
 // values outside that range: above it for positive ones, below for
 // negative ones, so comparing a small and a big integer as 64-bit values
 // is right. The generated code does small arithmetic itself and calls
@@ -2049,7 +2043,7 @@ static void mag_divmod(Num a, Num b, Num *q, Num *r) {
   *r = (Num){1, rn, rd};
 }
 
-// Euclidean division: the remainder is never negative (as the interpreter's).
+// Euclidean division: the remainder is never negative.
 static void num_divmod(Num a, Num b, int64_t *qv, int64_t *rv) {
   Num q, r;
   mag_divmod(a, b, &q, &r);
@@ -2303,7 +2297,7 @@ int64_t strata_int_lit(Str *s) {
 
 Str *strata_show_int(int64_t n);
 
-// `float(n)`: the nearest Float (Rust's `to_f64`: rounded to nearest, ties even).
+// `float(n)`: the nearest Float, ties to even.
 double strata_int_to_float(int64_t v) {
   if (!is_big(v)) return (double)v;
   Num x = num_of(v);
@@ -2472,9 +2466,8 @@ Str *strata_str_from_c(const char *c, Str *callee) {
 
 // ---- generated values (`mock`) ----
 //
-// As the interpreter's generators (src/generate.rs): the generated code
-// picks with these, from bounds the compiler read in the refinements. The
-// numbers are a fixed sequence (splitmix64 from 7), not the interpreter's.
+// The generated code picks with these, from bounds the compiler read in the
+// refinements. The numbers are a fixed sequence: splitmix64 from 7.
 
 // (`rng`, the state, is defined above)
 
@@ -2583,8 +2576,8 @@ static int shortest(double x, char digits[32], int *kk) {
   return neg;
 }
 
-// A float as serde_json writes it (the shortest digits that read back the
-// same, laid out as `ryu` does): 1.0, 0.1, 1e+21, 1.5e-7.
+// The shortest digits that read back the same, laid out as JSON writers
+// do: 1.0, 0.1, 1e+21, 1.5e-7.
 Str *strata_show_float(double x) {
   char digits[32];
   if (x == 0) return str_c(signbit(x) ? "-0.0" : "0.0");
@@ -2613,8 +2606,8 @@ Str *strata_show_float(double x) {
 }
 
 #ifndef STRATA_CORE_RT
-// A float as Rust's `Display` writes it, in messages: shortest digits,
-// never an exponent, no `.0` on whole numbers (1, 0.1, 1000000000000000000000).
+// A float in messages: shortest digits, never an exponent, no `.0` on whole
+// numbers (1, 0.1, 1000000000000000000000).
 static Str *show_float_plain(double x) {
   char digits[32], res[400], *r = res;
   if (x == 0) return str_c(signbit(x) ? "-0" : "0");
@@ -2705,7 +2698,7 @@ double strata_sqrt(double x) {
 // the buffer the elements as 64-bit slots. Lists never change: `push` writes
 // in place only past the end of what every list sharing the buffer has used,
 // so `out = push(out, x)` in a loop is amortized O(1). The generated code
-// reads `len` and the elements directly (the layout is in src/llvm.rs).
+// reads `len` and the elements directly, so codegen depends on this layout.
 //
 // Headers and buffers are counted objects: a header holds its buffer, and a
 // buffer holds its elements up to `used`. These functions borrow the lists
@@ -3086,8 +3079,8 @@ Tbl *strata_tbl_insert(Tbl *t, int64_t x, TblHash h, TblCmp c, int64_t dict, int
     tbl_hold(es->buf->data, n, kind);
     return tbl_new(es, tbl_index_copy(t->idx));
   }
-  // (a copy of the entries with room to grow, not `t`'s buffer extended:
-  // the new table is then its own, changed in place from now on)
+  // a copy of the entries with room to grow, instead of `t`'s buffer
+  // extended, so the new table is its own and later changes are in place
   tbl_hold(&x, 1, kind);
   List *es = strata_list_new(2 * (n + 1)), *idx;
   memcpy(es->buf->data, d, (size_t)n * 8);
@@ -3545,18 +3538,17 @@ void strata_print(Str *s) {
 
 // ---- the system (the `host_*` operations of std) ----
 //
-// As the interpreter's (`Interp::host_call`): a failure is a kind and a
-// message, the message as Rust writes an OS error ("No such file or
-// directory (os error 2)"). The generated code wraps results in `Option`
-// and `Result` (whose tags only it knows).
+// A failure is a kind and a message, an OS error written as "No such file
+// or directory (os error 2)". The generated code wraps results in `Option`
+// and `Result`, whose tags only it knows.
 
 static int prog_argc;
 // The program's name, as `--help` shows it: its file's, without the folder.
 static char *prog_name = "main";
 static char **prog_argv;
 
-// Running out of stack (deep recursion) is a fault, as in the interpreter:
-// a guard page hit near the end of the thread's stack, caught on a stack of
+// Running out of stack (deep recursion) is a fault: a guard page hit near
+// the end of the thread's stack, caught on a stack of
 // its own, is `strata_fault` (so a test's trap catches it too). Any other
 // bad access is reported as a crash.
 static _Thread_local char *stack_lo, *stack_hi;
@@ -3668,11 +3660,9 @@ Str *strata_prog_name(void) {
   return str_c(slash ? slash + 1 : prog_name);
 }
 
-// The options could not be read: the help asked for (on standard output), or
-// what is wrong with the arguments (on standard error).
-
-// `--help` (its section headings, `Usage:`, `Options:`…, in bold on a
-// terminal), or what is wrong with the arguments (`error:` in red).
+// The options could not be read. Prints the help asked for on standard
+// output, its headings (`Usage:`, `Options:`…) in bold on a terminal, or
+// what is wrong with the arguments on standard error, `error:` in red.
 void strata_options_error(_Bool help, Str *text) {
   if (help) {
     _Bool on = colors(1);
@@ -4047,11 +4037,8 @@ Str *strata_host_env_var(Str *name) {
 
 int64_t strata_pid(void) { return (int64_t)getpid(); }
 
-// Runs a program (looked up in PATH, never through a shell) with its
-// arguments in a working directory (`""`: this process's), its standard input
-// empty, and waits: `[exit code, stdout, stderr]` (the code as decimal text; a
-// program killed by a signal gives 128 + the signal, as shells do), or NULL and
-// the failure when it can't be started.
+// Appends what one `read` of `fd` gives to `*b`; NULL at the end or on an
+// error.
 static Str *read_all_into(char **b, size_t *n, size_t *cap, int fd) {
   char tmp[65536];
   ssize_t r = read(fd, tmp, sizeof tmp);
@@ -4098,9 +4085,15 @@ static int cloexec_pipe(int p[2]) {
   return 0;
 }
 
-// `input` is written to its standard input (then closed); `env` holds
-// `NAME=VALUE`s set for it; `inherit`: it uses this process's standard input,
-// output and error (a terminal, for an editor), and `[code, "", ""]` comes back.
+// Runs a program, looked up in PATH and never through a shell, with its
+// arguments in a working directory (`""`: this process's), and waits. Gives
+// `[exit code, stdout, stderr]`, the code as decimal text (128 + the signal
+// for a program killed by one, as shells do), or NULL and the failure when
+// it can't be started.
+// - `input` is written to its standard input, which is then closed.
+// - `env` holds `NAME=VALUE`s set for it.
+// - `inherit`: it uses this process's standard input, output and error (a
+//   terminal, for an editor), and `[code, "", ""]` comes back.
 List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env, _Bool inherit, Str **kind, Str **msg) {
   int64_t argc = args->len;
   char **argv = calloc((size_t)argc + 2, sizeof(char *));
@@ -4116,10 +4109,10 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
     if (cloexec_pipe(err) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); return NULL; }
     if (feed && cloexec_pipe(in) != 0) { os_error(kind, msg); close(out[0]); close(out[1]); close(err[0]); close(err[1]); return NULL; }
   }
-  // The child gets only the descriptors set up here (0, 1 and 2), none of
-  // this process's others: tasks run programs at the same time, and a pipe of
-  // one task's run left open in another's child kept its program's standard
-  // input from ending (and its output, so the run never finished).
+  // The child gets only the descriptors set up here (0, 1 and 2). Tasks run
+  // programs at the same time, and a pipe of one task's run left open in
+  // another's child would keep its program's standard input and output from
+  // ending.
   posix_spawnattr_t at;
   posix_spawnattr_init(&at);
   posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT);
@@ -4174,7 +4167,7 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
     snprintf(buf, sizeof buf, "can't run `%.*s`%s%s: %.*s", (int)program->len, program->bytes,
              d ? " in " : "", d ? d : "", (int)(*msg)->len, (*msg)->bytes);
     free(d);
-    // (the OS's message, now inside the fuller one)
+    // the OS's message is inside the fuller one
     str_drop(*msg);
     *msg = str_c(buf);
     return NULL;
@@ -4235,14 +4228,12 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
 
 // ---- strings ----
 //
-// The string built-ins (`interp::Interp::builtin`). Strings are UTF-8 and
-// indexed by character (code point). What depends on Unicode's tables (case
-// mappings, `is_alpha`) takes a table the compiler made from Rust's own
-// (`llvm.rs`, `unicode_table`), so both agree.
+// The string built-ins. Strings are UTF-8, and these index them by
+// character (code point). What depends on Unicode's tables (case mappings,
+// `is_alpha`) takes a table the compiler passes (codegen's `unicode_table`).
 //
-// Written in Strata in core.rt (core/rt.strata), which replaces these when it
-// is linked in (`STRATA_CORE_RT`); they stay for the first stage of strata's
-// build.
+// core.rt (core/rt.strata) replaces these when it is linked in
+// (`STRATA_CORE_RT`).
 
 #ifndef STRATA_CORE_RT
 // A character in UTF-8 at `o`: how many bytes it took.
@@ -4276,7 +4267,7 @@ static int64_t char_offset(Str *s, int64_t k) {
   }
   return i;
 }
-// Unicode's White_Space, as Rust's `char::is_whitespace`.
+// Unicode's White_Space.
 static int is_space(int32_t c) {
   return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xA0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
 }
@@ -4298,13 +4289,15 @@ Str *strata_str_trim(Str *s) {
   return str_from(s->bytes + a, b - a);
 }
 
-// The bytes from offset `a` to `b`, both clamped to 0..len; an offset inside
-// a character's bytes moves back to its start (never a fault).
+// Offset `i`, moved back to the start of the character whose bytes it is
+// inside.
 static int64_t char_start(Str *s, int64_t i) {
   while (i > 0 && i < s->len && ((unsigned char)s->bytes[i] & 0xC0) == 0x80) i--;
   return i;
 }
 
+// The bytes from offset `a` to `b`, both clamped to 0..len. An offset inside
+// a character's bytes moves back to its start; it is never a fault.
 Str *strata_str_byte_slice(Str *s, int64_t a, int64_t b) {
   if (a < 0) a = 0;
   if (b > s->len) b = s->len;
@@ -4373,7 +4366,7 @@ static const int32_t *case_row(int32_t c, const int32_t *t, int64_t n) {
   return NULL;
 }
 
-// `to_upper` / `to_lower`, with Rust's mappings (`table`). Lowercase `Σ` is
+// `to_upper` / `to_lower`, with the mappings in `table`. Lowercase `Σ` is
 // `ς` at the end of a word: after a cased character (`cased`), and not
 // before one.
 Str *strata_str_case(Str *s, const int32_t *table, int64_t n, const int32_t *cased, int64_t m, _Bool lower) {
@@ -4419,7 +4412,7 @@ _Bool strata_str_is(Str *s, int64_t class, const int32_t *ranges, int64_t n) {
   return 1;
 }
 
-// A string as Rust's `{:?}` writes it, in messages.
+// A string quoted and escaped, for messages.
 static Str *debug_str(Str *s) {
   Str *o = str_alloc(s->len * 10 + 2);
   char *p = o->bytes;
@@ -4480,9 +4473,9 @@ Str *strata_str_chr(int64_t c) {
 #endif
 
 #ifndef STRATA_CORE_RT
-// `parse_int`, as Rust's `BigInt` reads the trimmed string: a sign, then a
-// digit, then digits and `_`. False when it isn't a number; a fault when it
-// doesn't fit in 64 bits (big integers are not compiled yet).
+// `parse_int` of the trimmed string: a sign, then a digit, then digits and
+// `_`. False when it isn't a number. A fault when it doesn't fit in 64 bits:
+// not supported, parsing a big integer.
 static _Bool parse_int_trimmed(Str *t, int64_t *out);
 
 _Bool strata_parse_int(Str *s, int64_t *out) {
@@ -4531,8 +4524,8 @@ static _Bool parse_int_trimmed(Str *t, int64_t *out) {
 }
 #endif
 
-// `parse_float`, as Rust's `f64::from_str` reads the trimmed string (no hex,
-// no `_`; `inf` and `NaN` are not finite, so not numbers either).
+// `parse_float` of the trimmed string: no hex, no `_`. `inf` and `NaN` are
+// not finite, so they are not numbers either.
 static _Bool parse_float_trimmed(Str *t, double *out) {
   int64_t i = 0, n = t->len, digits = 0;
   const char *b = t->bytes;
@@ -4557,12 +4550,12 @@ static _Bool parse_float_trimmed(Str *t, double *out) {
   return 1;
 }
 
-// ---- f-string format specs (`interp::format_spec`) ----
+// ---- f-string format specs ----
 //
 // `strata_format` is core.fmt's when core.rt is linked in (`STRATA_CORE_RT`).
 
-// A float with `p` decimals, as Rust's `{:.p}` (the C library's with
-// core.rt too, as `strata_show_float`).
+// A float with `p` decimals, by the C library, with core.rt too, as
+// `strata_show_float`.
 Str *strata_show_float_fixed(double x, int64_t p) {
   int n = snprintf(NULL, 0, "%.*f", (int)p, x);
   Str *s = str_alloc(n);

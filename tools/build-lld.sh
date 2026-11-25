@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build lld's Mach-O linker as one static library, target/lld/liblld.a, for
-# the compiler's built-in linker (compiler/c/toolchain.cpp). Homebrew's lld
+# the compiler's built-in linker (compiler/c/lld.cpp). Homebrew's lld
 # ships only dylibs linked against libLLVM.dylib (161 MB, itself linked with
 # Homebrew's z3 and zstd), which a release can't carry; this compiles lld's
 # Common and MachO sources, from the llvm-project release matching Homebrew's
