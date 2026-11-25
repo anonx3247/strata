@@ -1,0 +1,83 @@
+# Sums over lists in contracts (`sum`, `sum` of a `map`, `fold` adding up):
+# by how the list was made (a literal's elements, a concatenation's parts,
+# a pushed element, a slice's positions in the list it is cut from: one
+# prefix-sum function per list, no quantifier), with bounds from the
+# elements' (non-negative, at least 1 each, at most what `all` says); a
+# wrong claim about a cut list is refuted
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+type Line = { qty: Positive, price: Natural }
+
+/// A pushed element adds to the sum.
+fn pushed(xs: List[Int], x: Int) -> List[Int]
+  ensures sum(it) == sum(xs) + x {
+  mut out := xs
+  mut out.push(x)
+  out
+}
+
+/// The sum of a concatenation.
+fn joined(a: List[Int], b: List[Int]) -> Int
+  ensures it == sum(a) + sum(b) {
+  sum(a + b)
+}
+
+/// A list cut in two.
+fn halves(xs: List[Int], k: Int) -> Int
+  requires 0 <= k && k <= len(xs)
+  ensures it == sum(xs) {
+  sum(xs[..k]) + sum(xs[k..])
+}
+
+/// Bounds from the elements' bounds.
+fn bounded(xs: List[Int]) -> Int
+  requires all(xs, x -> x <= 10)
+  ensures it <= 10 * len(xs) {
+  sum(xs)
+}
+
+/// Positive elements: at least one each.
+fn counted(xs: List[Positive]) -> Int
+  ensures it >= len(xs) {
+  sum(xs)
+}
+
+/// A total over records, by `map` and by `fold`.
+fn total(lines: List[Line]) -> Int
+  ensures it == lines.map(l -> l.qty).sum() && it >= len(lines) {
+  lines.fold(0, (acc, l) -> acc + l.qty)
+}
+
+/// An added line raises the total by its quantity.
+fn add_line(lines: List[Line], l: Line) -> List[Line]
+  ensures sum(it.map(x -> x.qty)) == sum(lines.map(x -> x.qty)) + l.qty {
+  lines + [l]
+}
+
+/// Wrong: the sum of a cut list is not more than the whole's.
+fn wrong_cut(xs: List[Int], k: Int) -> Int
+  requires 0 <= k && k <= len(xs)
+  ensures it <= sum(xs) {
+  sum(xs[..k])
+}
+
+fn main() {
+  print(sum(pushed([1], 2)))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ pushed                   proven (1 check)",
+  "✓ joined                   proven (1 check)",
+  "✓ halves                   proven (1 check)",
+  "✓ bounded                  proven (1 check)",
+  "✓ counted                  proven (1 check)",
+  "✓ total                    proven (1 check)",
+  "✓ add_line                 proven (2 checks)",
+  "✗ wrong_cut                Ensures violation",
+  "postcondition of `wrong_cut` violated: ensures it <= sum(xs)",
+]
