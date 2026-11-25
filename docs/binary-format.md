@@ -123,7 +123,7 @@ Bound       = param:str  traits:list(TypeExpr)
 TestDecl    = name:str  params:list(Param)  body:Expr
 TraitDecl   = name:str  params:list(str)  supers:list(TypeExpr)  methods:list(TraitMethod)  laws:list(Law)
               derivable:option(Derivable)  flags:byte  [models:list(ModelDecl)  invariants:list(Expr)  ensures:list(Expr)]
-              (flags: 1 a capability trait, 2 the bracketed part follows)
+              (flags: 1 a capability trait, 2 the bracketed part follows, 4 a `shared` trait)
 ModelDecl   = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr
 Derivable   = kind:TypeExpr  requires:list(Expr)
 TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool

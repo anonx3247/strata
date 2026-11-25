@@ -161,7 +161,7 @@
         },
         {
           "name": "keyword.declaration.strata",
-          "match": "\\b(fn|type|trait|impl|derive|derivable|capability|extern|builtin|static|thread|mock|law|test|let|is|as|use|from)\\b"
+          "match": "\\b(fn|type|trait|impl|derive|derivable|capability|extern|builtin|static|thread|mock|law|test|let|is|as|use|from)\\b|\\bshared\\b(?=\\s+trait\\b)"
         },
         {
           "name": "constant.language.boolean.strata",
