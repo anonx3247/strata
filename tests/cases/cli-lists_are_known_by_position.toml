@@ -20,10 +20,10 @@ fn tail(xs: Sorted) -> Sorted
 fn add_max(xs: Sorted, x: Int) -> Sorted
   requires len(xs) == 0 || xs[len(xs) - 1] <= x
 {
-  push(xs, x)
+  xs + [x]
 }
 fn bad_add(xs: Sorted, x: Int) -> Sorted {
-  push(xs, x)
+  xs + [x]
 }
 fn bad_lit() -> Sorted {
   xs := [1, 3, 2]
@@ -33,7 +33,7 @@ fn last_of_rev(xs: List[Int]) -> Bool
   requires len(xs) > 0
   ensures it
 {
-  reverse(xs)[len(xs) - 1] == xs[0]
+  xs.reversed()[len(xs) - 1] == xs[0]
 }
 fn joined(a: List[Int], b: List[Int]) -> Bool
   requires len(a) == 2 && len(b) > 0

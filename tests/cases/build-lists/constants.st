@@ -3,12 +3,12 @@ fn table() -> List[(Int, Int)] {
 }
 
 fn grow(mut xs: List[String]) {
-  xs = push(xs, "d")
+  mut xs.push("d")
 }
 
 fn main() {
   mut xs := table()
-  xs = push(xs, (5, 6))
+  mut xs.push((5, 6))
   mut t := (1, 2)
   t.0 = 9
   mut zs := ["a", "b", "c"]

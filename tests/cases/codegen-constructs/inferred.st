@@ -1,5 +1,5 @@
 fn fill(mut out: List[(String, Int)], n: Int) {
-  out = push(out, (f"k{n}", n))
+  mut out.push((f"k{n}", n))
 }
 
 fn merged(v: List[(Int, Int)]) -> List[(Int, Int)] {
@@ -13,10 +13,10 @@ fn merged(v: List[(Int, Int)]) -> List[(Int, Int)] {
           hi
         })]
       } else {
-        out = push(out, (a, b))
+        mut out.push((a, b))
       },
       None => {
-        out = push(out, (a, b))
+        mut out.push((a, b))
       },
     }
   }

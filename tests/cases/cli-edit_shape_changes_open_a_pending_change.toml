@@ -18,7 +18,7 @@ fn number(s: String) -> Int {
 fn tokenize(s: String) -> List[Int] {
   mut out := []
   for w in split(s, " ") {
-    out = push(out, number(w))
+    mut out.push(number(w))
   }
   out
 }
@@ -39,7 +39,7 @@ fn number(s: String, base: Int) -> Int {
 fn tokenize(s: String) -> List[Int] {
   mut out := []
   for w in split(s, " ") {
-    out = push(out, number(w))
+    mut out.push(number(w))
   }
   out
 }

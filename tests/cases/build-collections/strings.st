@@ -14,7 +14,7 @@ fn main() {
     ends_with("Zoë", "ë"),
     ends_with("a", "ab"),
   ])
-  print(reverse("Zoë!"))
+  print("Zoë!".reversed())
   print(chars("añb€😀"))
   print([
     get("Zoë".graphemes(), 2),

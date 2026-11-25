@@ -28,7 +28,7 @@ fn events(n: Int) -> List[Ev]
     } else {
       Stp { id: k }
     }
-    out = push(out, e)
+    mut out.push(e)
   }
   out
 }
@@ -46,7 +46,7 @@ fn parse(s: String) -> Line {
 }
 
 fn bump(mut ls: List[Line]) {
-  ls = push(ls, Cancel(2))
+  mut ls.push(Cancel(2))
 }
 
 fn handle(l: Line) -> String {

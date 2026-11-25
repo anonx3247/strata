@@ -7,7 +7,7 @@ type Log = { lines: List[String] }
 
 impl Out for Log {
   fn put(mut self, line: String) {
-    self.lines = push(self.lines, line)
+    mut self.lines.push(line)
   }
   fn count(self) -> Int {
     len(self.lines)
@@ -53,7 +53,7 @@ fn main() {
   mut o.put("abc")
   print(o.count())
   let xs: List[Out] = [Log { lines: ["p"] }, Tally { n: 2 }]
-  ys := push(xs, Tally { n: 7 })
+  ys := xs + [Tally { n: 7 }]
   print(ys.map(x -> x.count()))
   print(make(true).count() + make(false).count())
   print(pick(0).count() + pick(3).count())
