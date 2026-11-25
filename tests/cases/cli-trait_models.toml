@@ -145,7 +145,10 @@ strata = ["--file", "m.strata", "run", "--check-ghosts"]
 fails = true
 has = ["postcondition of `OneOrder.save` violated: ensures self.orders() == old self.orders().with(id, o)"]
 
-# a trait's invariant and ensures
+# a trait's invariant: a refinement of every implementing type's model
+# (each method of `self` knows it, a `mut self` one keeps it, a result of
+# type `Self` establishes it, a value of the trait carries it); its
+# `ensures`: every `mut self` method meets it
 [[step]]
 strata = ["--file", "s.strata", "edit"]
 text = '''
@@ -159,12 +162,15 @@ trait Stock {
     ensures self.count == old self.count + 1
   fn take(mut self) -> Bool
     ensures it == (old self.count > 0)
+  fn empty() -> Self
 }
 
 type Shelf = { n: Int }
 
 impl Stock for Shelf {
   model count = self.n
+
+  fn empty() -> Self = Shelf { n: 0 }
 
   fn add(mut self) {
     self.n += 1
@@ -185,6 +191,8 @@ type Leaky = { n: Int }
 
 impl Stock for Leaky {
   model count = self.n
+
+  fn empty() -> Self = Leaky { n: -1 }
 
   fn add(mut self) {
     self.n += 1
@@ -209,6 +217,12 @@ fn take_two(mut s: Stock) -> Int
   }
   got
 }
+
+/// What any stock's count is, without asking it.
+fn never_negative(s: Stock) -> Int
+  ensures s.count >= 0 {
+  0
+}
 '''
 
 [[step]]
@@ -224,7 +238,10 @@ has = [
   "✓ Leaky.add                proven (3 checks)",
   "✗ Leaky.take",
   "postcondition of `Leaky.take` violated: ensures self.count() >= 0",
-  "✓ take_two                 proven (2 checks)",
+  "✓ Shelf.empty              proven (1 check)",
+  "postcondition of `Leaky.empty` violated: ensures it.count() >= 0 (it = Leaky { n: -1 })",
+  "✓ take_two                 proven (1 check)",
+  "✓ never_negative           proven (1 check)",
 ]
 
 [[step]]
