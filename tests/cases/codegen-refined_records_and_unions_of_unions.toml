@@ -1,0 +1,60 @@
+# a refined record type (`{ ... } where`): its refinement names its fields,
+# and it is the field of another record (read, or bound by a pattern); a
+# union that includes another union; `[]` in a record literal and compared
+# (agents' codegen gaps, STRATA-ISSUES.md #5)
+
+[[step]]
+save = "p.strata"
+text = '''
+type Book = { name: String, bids: List[Int] }
+
+type Blank = { n: Int }
+type Malformed = { why: String }
+type Cmd = | Go(Int) | Stop
+type Line = Blank | Malformed | Cmd
+
+type Pos = { side: Int, qty: Int } where qty >= 0
+type Holder = { p: Pos }
+
+fn kind(l: Line) -> String {
+  match l {
+    Blank { n } => f"blank {n}",
+    Malformed { why } => why,
+    Go(k) => f"go {k}",
+    Stop => "stop",
+  }
+}
+
+fn main() {
+  b := Book { name: "x", bids: [] }
+  print(b.bids == [])
+  print(kind(Go(3)))
+  print(kind(Blank { n: 1 }))
+  h := Holder { p: Pos { side: 1, qty: 2 } }
+  print(h.p.side)
+  Holder { p } := h
+  print(p.side)
+  f := x -> x + 1
+  print(f(2))
+}
+
+test "empty" {
+  b := Book { name: "x", bids: [] }
+  assert b.bids == []
+}
+'''
+
+[[step]]
+strata = ["run", "p.strata"]
+stdout = '''
+true
+go 3
+blank 1
+1
+1
+3
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "test"]
+has = ["1 passed, 0 failed"]

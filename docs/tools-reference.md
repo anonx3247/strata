@@ -22,7 +22,7 @@ A location's path is made of the tree's field names and list positions: a block'
 
 `refs` looks for uses in the definitions whose header lists the target's definition (or a member's type or trait) as a dependency; a name the package doesn't define, given qualified (`std.list.map`), is looked for by name everywhere. A field's reads (`x.attempts`) count when the checker types `x` as the field's record, or when no other record has a field of that name; a type's own method's calls when the checker resolves them to it; a trait's or capability's method's calls by name. A root-module name used where a local of the same name is in scope is the local's.
 
-`strata check` follows each error with `--> LOCATION` and the code after `| `: the place is the first node, outermost first, written as code the message quotes (an expression or pattern before a type); without one, the definition's head. (The checker doesn't track places itself yet; nor do runtime faults, `--trace` and `verify`'s refutations: see IDEAS.md.)
+`strata check` follows each error with `--> LOCATION` and the code after `| `: the place is the first node, outermost first, written as code the message quotes (an expression or pattern before a type); without one, the definition's head. compiler/codegen's "not compiled yet" errors (`build`, `run`, `test`) end with the code they are in (`, in `CODE``) and are followed by its location in the same way. (The checker doesn't track places itself yet; nor do runtime faults, `--trace` and `verify`'s refutations: see IDEAS.md.)
 
 ## Packages
 

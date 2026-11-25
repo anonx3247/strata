@@ -1,0 +1,96 @@
+# `ensures` naming `result` (a list of a union of records) kept as a runtime
+# check; `[]` on either side of `==` in a test; a union that includes a
+# sum (`Cancel` its variant) (agents' codegen gaps, STRATA-ISSUES.md #5)
+
+[[step]]
+save = "p.strata"
+text = '''
+type Fill = { qty: Int, price: Int }
+type Stp = { id: Int }
+type Ev = Fill | Stp
+
+type Blank = { n: Int }
+type Malformed = { why: String }
+type Command = | Add(Int) | Cancel(Int) | Print
+type Line = Blank | Malformed | Command
+
+fn events(n: Int) -> List[Ev]
+  ensures len(result) == n
+  ensures result.all(e -> match e {
+    Fill { qty, .. } => qty > 0,
+    Stp { id } => id >= 0,
+  })
+{
+  mut out := []
+  for k in range(0, n) {
+    let e: Ev = if k % 2 == 0 {
+      Fill { qty: 1, price: k }
+    } else {
+      Stp { id: k }
+    }
+    out = push(out, e)
+  }
+  out
+}
+
+fn parse(s: String) -> Line {
+  if s == "" {
+    Blank { n: 0 }
+  } else if s == "P" {
+    Print
+  } else if s == "C" {
+    Cancel(1)
+  } else {
+    Malformed { why: s }
+  }
+}
+
+fn bump(mut ls: List[Line]) {
+  ls = push(ls, Cancel(2))
+}
+
+fn handle(l: Line) -> String {
+  match l {
+    Cancel(k) => f"cancel {k}",
+    Add(k) => f"add {k}",
+    Print => "print",
+    Blank { .. } => "blank",
+    Malformed { why } => why,
+  }
+}
+
+fn main() {
+  print(len(events(3)))
+  mut ls := [parse(""), parse("P"), parse("C"), parse("x")]
+  bump(mut ls)
+  print(ls.map(handle))
+  xs := [3, 1, 2]
+  ys := xs.map(x -> x * 2).filter(y -> y > 2)
+  print(ys)
+  pairs := [(1, "a"), (2, "b")]
+  print(pairs.map(p -> p.1))
+}
+
+test "lists" {
+  assert events(0) == []
+  assert [] == events(0)
+  assert parse("C") == Cancel(1)
+}
+'''
+
+[[step]]
+strata = ["run", "p.strata", "--all-checks"]
+stdout = '''
+3
+["blank", "print", "cancel 1", "x", "cancel 2"]
+[6, 4]
+["a", "b"]
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "test"]
+has = ["1 passed, 0 failed"]
+
+[[step]]
+strata = ["--file", "p.strata", "run", "handle", "Cancel(3)"]
+stdout = "\"cancel 3\"\n"
