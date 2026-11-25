@@ -1,0 +1,82 @@
+# Quantifiers over a dict's entries (a set's items): `all(d.items(), f)`
+# known (a `requires`) holds at every key the code reads, in the dict's
+# array or in one stored from it; to prove one, it is shown at a fresh key.
+# No quantifier is written for a dict. A wrong one is refuted.
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+/// Every balance is positive.
+fn all_positive(d: Dict[String, Int]) -> Bool {
+  all(d.items(), (_k, v) -> v > 0)
+}
+
+/// A balance read is positive.
+fn read_one(d: Dict[String, Int], k: String) -> Int
+  requires all_positive(d)
+  ensures it >= 0 {
+  match d.get(k) {
+    Some(v) => v,
+    None => 0,
+  }
+}
+
+/// A positive balance put in keeps every balance positive.
+fn put(d: Dict[String, Int], k: String, v: Int) -> Dict[String, Int]
+  requires all_positive(d) && v > 0
+  ensures all_positive(it) {
+  d.with(k, v)
+}
+
+/// The others are kept through a store.
+fn bump(d: Dict[String, Int], k: String) -> Dict[String, Int]
+  ensures all(d.items(), (j, v) -> j == k || it.get(j) == Some(v)) {
+  d.with(k, 1)
+}
+
+/// Wrong: a zero put in.
+fn put_zero(d: Dict[String, Int], k: String) -> Dict[String, Int]
+  requires all_positive(d)
+  ensures all_positive(it) {
+  d.with(k, 0)
+}
+
+/// A set's item read is one the quantifier is about.
+fn set_read(s: Set[Int], x: Int) -> Bool
+  requires all(s.to_list(), y -> y > 0)
+  ensures it ==> x > 0 {
+  s.contains(x)
+}
+
+/// `any` over the entries, by a witness.
+fn has_big(d: Dict[String, Int], k: String) -> Bool
+  requires d.get(k) == Some(100)
+  ensures it {
+  any(d.items(), (_j, v) -> v >= 100)
+}
+
+/// A record's refinement names its fields.
+type Table = { rows: Dict[Int, Int] }
+  where all(rows.items(), (k, v) -> v == k)
+
+/// Kept by a store that obeys it.
+fn add(t: Table, k: Int) -> Table {
+  Table { rows: t.rows.with(k, k) }
+}
+
+fn main() {
+  print(read_one(Dict[String, Int] { "a": 1 }, "a"))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ read_one                 proven (1 check)",
+  "✓ put                      proven (1 check)",
+  "✓ bump                     proven (1 check)",
+  "✗ put_zero                 Ensures violation (found by the solver)",
+  "✓ set_read                 proven (1 check)",
+  "✓ has_big                  proven (1 check)",
+  "✓ add                      proven",
+]

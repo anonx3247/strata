@@ -88,6 +88,7 @@
   "derive"
   "derivable"
   "capability"
+  "shared"
   "extern"
   "builtin"
   "static"

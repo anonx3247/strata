@@ -247,6 +247,33 @@ All rendered code is formatted to about 80 columns: long argument lists, record 
 Selectors: `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination. A part that names nothing is an error.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
 
+## State graphs: how a type's values move
+
+Nothing declares a pipeline: `strata view --graph T` reads it off the code. For a sum type `T` (`Status = Pending | Running | Done | Exhausted`), it finds each function that takes a value holding a `T` (a `T`, a record with one at a field path such as `Entry.status`, a list or dict of them, a trait's model) and gives one back (its result, a `mut` parameter, `mut self`), and asks, for each pair of variants, whether the function can move a value from one to the other (a list's element to the one at the same position, a dict's value to the one at the same key):
+
+```
+$ strata --file examples/tasks view --graph Status
+Status = Pending | Running | Done | Exhausted
+  (new)     -> Pending    by MemQueue.enqueue (possible)
+  (new)     -> Running    by MemQueue.claim (unknown)
+  Pending   -> Running    by MemQueue.claim (possible)
+  Pending   -> Done       by after_attempt (possible)
+  Running   -> Pending    by MemQueue.enqueue (unknown), after_attempt (possible)
+  ...
+  Exhausted -> Running    by MemQueue.claim (unknown)
+  Exhausted -> Done       by after_attempt (possible)
+  any       -> any        by MemQueue.record (unknown), MemQueue.release (unknown), ... (nothing proven impossible: --all lists their moves)
+proven impossible: 33 more (in 4 functions; --all lists them)
+```
+
+A turn of `MemQueue.claim`'s loop puts only `Running` entries in its table, so it makes no other move (proven by the body's shape); a run on generated inputs shows `Pending -> Running`. What needs a key followed through the loop (`Done -> Running`: `claim` only takes pending ones), or the trait's contracts over every entry of a dict (`all(d.items(), …)`, not modelled yet: `Queue.claim`, `run_worker`), stays unknown.
+
+Each move says what is known of it: `possible` (the solver found values that make it, its encoding of the function exact: no loop, no callee known only by its contract; or a run on generated inputs made it), `unknown`, or proven impossible (listed with `--all`). The body's shape answers first: a list kept (`filter`, slices, `xs + [x]`'s first part) moves nothing, an element added as written (`Entry { status: Pending, … }`) is an entry in that variant, a loop turn that puts values written as some variants (`mut self.table.insert(id, Entry { ..e, status: Running { … } })`) makes no move to another, and a method that hands its state to a function (`self = mem_claim(self, limit)`) moves as that function does. A trait's method with models moves as its contract says (`ensures self.entries == …`). A value made from nothing is an entry, `(new) -> Shipped by ship`. A function nothing is proven of (it calls functions whose contracts don't say what they do with the type) is put on one `any -> any` line instead of a line per move. `--html` writes a page with the graph drawn (the variants in a row, each move an arc labelled by its functions, coloured by what is known).
+
+From a run: `strata run --trace` prints each call and return; `strata view --graph T --trace FILE` reads those lines and counts the moves each call made (`Running -> Done by after_attempt ×2`).
+
+In a diff: `strata diff --graph T` adds how the moves changed, in words (`new move `Running -> Cancelled` by `cancel``, `` `expire` no longer reaches `Pending` ``); `--html` draws both graphs side by side, the moves added and removed marked.
+
 ## Reference docs: `strata doc`
 
 `strata doc` writes a package's reference from its `///` doc comments: a Markdown page for each module with public definitions, and an index (`README.md`) listing them, each with its doc's first sentence. A page is the module's doc (the comment that opens its file), then its public types, the methods of those types, its traits and its functions, each with its signature as Strata code (contracts and refinements included, as `view --level 1` prints it) and its doc, then the implementations of its traits and for its types. `-o DIR` chooses the folder (default `doc`; `std.io` is `DIR/io.md`, `shop.orders` `DIR/shop/orders.md`), and naming modules writes only their pages.

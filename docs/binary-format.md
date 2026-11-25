@@ -123,7 +123,7 @@ Bound       = param:str  traits:list(TypeExpr)
 TestDecl    = name:str  params:list(Param)  body:Expr
 TraitDecl   = name:str  params:list(str)  supers:list(TypeExpr)  methods:list(TraitMethod)  laws:list(Law)
               derivable:option(Derivable)  flags:byte  [models:list(ModelDecl)  invariants:list(Expr)  ensures:list(Expr)]
-              (flags: 1 a capability trait, 2 the bracketed part follows)
+              (flags: 1 a capability trait, 2 the bracketed part follows, 4 a `shared` trait)
 ModelDecl   = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr
 Derivable   = kind:TypeExpr  requires:list(Expr)
 TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool
@@ -184,6 +184,7 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 39 SupervisedSpawn(Expr)                                     supervised spawn e
      | 40 Old(Expr)                                                 old e (in an `ensures`: e where the function started)
      | 41 Assumed(Expr)                                             assumed requires/ensures/invariant e (verify only)
+     | 42 Spread(Expr)                                              ...e (a call's argument: the record's fields given to the parameters of their names)
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))

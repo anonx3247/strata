@@ -81,6 +81,30 @@ A trait's `model` ([the reference](language-reference.md#traits)) is what its co
 
 A trait's `invariant` is a refinement of every implementing type's model: a value of the trait's type carries it as its type's refinement (what a function taking `db: Db` knows, what a `mut` argument's new value is assumed to satisfy), each implementation's methods assume it of `self` (and other `Self` parameters) and must keep it in a `mut self` method and establish it in a result of type `Self`. A trait's `ensures` is proven in each `mut self` method. Contracts naming a model are assumed contracts (`(assumed: not checked when the program runs)`; one `verify` neither proves nor refutes makes its function assumed, `≈`): computing an abstraction at run time is what the implementation is there to avoid.
 
+## State graphs
+
+The solver also answers questions nobody wrote: `strata view --graph T` asks, for each function that takes and gives back a value holding the sum type `T`, whether it can move a value from one variant to another (an `ensures !(x is A && it is B)` of a copy of the function; through a list `!(graph_i < len(old xs) && graph_i < len(xs) && old xs[graph_i].status is A && xs[graph_i].status is B)` with the position a parameter of the copy, through a dict the same at a key `graph_key`; what the body's shape settles, a list kept or a call of a function that moves the type, isn't asked, and what the solver leaves unknown is run on generated inputs), and draws the moves that may happen: the type's pipeline, generated rather than declared. Proven moves are left out, so the graph says what the code can do, not what a comment says it does; [the tools](tools.md#state-graphs-how-a-types-values-move) show it, a run's moves and a diff's.
+
+## Laws of statements and shared traits
+
+A law may be a sequence of calls ending in what must hold ([the reference](language-reference.md#traits)). `verify` checks it for each implementation as a function whose body is the law and whose result must be `true`, its `Self` parameters assumed to meet the trait's invariants; the calls go through the implementation's methods. In `tests/cases/cli-shared_traits_and_laws`, a queue of task ids (`model pending: Set[Int]`, `model claimed: Set[Int]`) proves `enqueue_once` (enqueuing twice adds once) and `no_double_claim` (claiming twice succeeds at most once) for its in-memory implementation, and refutes `claim_after_enqueue` with the values and the steps:
+
+```text
+✗ law claim_after_enqueue for MemQueue Law violation (found by the solver)
+    input:   MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, 21
+    law `claim_after_enqueue` does not hold for `MemQueue` with q = MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, id = 21: after mut r := q; mut r.enqueue(id); mut r.claim(id)
+```
+
+Proven laws are not facts for callers: code over the trait sees only its contracts and invariants.
+
+The queue is a `shared trait`: many workers use one value. Its invariants hold under every interleaving, since each method is one atomic step that keeps them from any state where they hold. For code calling it, each call on a shared value starts from a model that is any value the invariants allow (the receiver is replaced, as if another worker had just acted), so:
+
+- `fn added(mut q: Queue, id: Int) -> Int where it == 0 || it == 1`, which only uses the results of two `enqueue`s, is proven;
+- `fn enqueued_now(mut q: Queue, id: Int) -> Int ensures q.pending.contains(id) || q.claimed.contains(id)` is proven: what the last call ensures lasts until the next call on `q`;
+- `fn second_adds_nothing(mut q: Queue, id: Int) -> Int where it == 0`, two `enqueue`s relying on the first one's effect, is not proven, and the reason says why: "`q` when `enqueue` is called: `Queue` is shared, so another worker may have changed it since the last call (only the trait's invariants are known)".
+
+Inside an implementation, a call on its own field (`self.db`) is not replaced: the method is one step, which `check` enforces (one call that changes the outside state per path; see [the reference](language-reference.md#traits)). A value of a type implementing the trait (`MemQueue`) is not shared: its code runs alone.
+
 ## Recursion and termination
 
 ```rust
@@ -398,7 +422,7 @@ fn add(xs: Sorted, x: Int) -> Sorted {
     result of `add`: [-952, 0, 1000, -676] does not satisfy `Sorted` (…)
 ```
 
-An element of a list of a checked type is a function of its position: its integers, strings and booleans are SMT functions of the position, so equal positions hold equal elements, and the list inside an element (a record's field) is a function of both positions. `all(xs, p)` and `all(lo..hi, i -> …)`, once known, become a fact quantified over the positions, which reaches the elements the code takes. A counterexample with a non-empty list is shown with up to 6 elements: the first elements of the parameters' lists are made when the function is, and asked for when the model has a non-empty list. Not yet: positions after `filter` and `sort` (only "some element of the list" is known there), and quantified facts nested inside one another (a conversation whose every tool result answers some earlier message), which the solver proves only by instantiating them by the thousand, past what a proof may cost.
+An element of a list of a checked type is a function of its position: its integers, strings and booleans are SMT functions of the position, so equal positions hold equal elements, and the list inside an element (a record's field) is a function of both positions. `all(xs, p)` and `all(lo..hi, i -> …)`, once known, become a fact quantified over the positions, which reaches the elements the code takes. A counterexample with a non-empty list is shown with up to 6 elements: the first elements of the parameters' lists are made when the function is, and asked for when the model has a non-empty list. Quantified facts nested inside one another (a conversation whose every tool result answers a call of some earlier message: `all(0..len(it), i -> … any(0..i, j -> any(calls, c -> c == id)))`) are made by polarity: an `all` that is only ever known true gives its fact over every position, one that is only ever proven only what proves it (some position where it fails, else it holds), so an `any` inside a known `all` is a witness position of the outer one, never a quantifier inside a quantifier. Appending calls and their results, or a result of a call a `requires` points at, is proven in milliseconds. Not yet: positions after `filter` and `sort` (only "some element of the list" is known there), and a witness moved by a concatenation in front of it (`a + b` of two such conversations).
 
 ## Bugs the solver finds
 

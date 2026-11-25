@@ -1,5 +1,7 @@
-# strata repl, its input piped: values kept between lines, definitions of
-# the session's own, the REPL's console, faults reported and the session kept
+# strata repl, its input piped: values kept between lines (in compiled
+# memory: functions and closures too), definitions of the session's own (a
+# value of a type redefined dropped), the REPL's console, `mut` methods,
+# faults reported and the session kept
 [[step]]
 save = "p.strata"
 text = """
@@ -27,6 +29,14 @@ triple(x)
 mut console.print(f"x is {x}")
 x
 :view double
+mut xs.push(7)
+xs
+inc := (n: Int) -> n + 1
+inc(x)
+add := (a: Int) -> (b: Int) -> a + b
+add5 := add(5)
+add5(1)
+type Point = { x: Int, y: Int, z: Int }
 """
 out = """
 3: Int
@@ -44,15 +54,105 @@ x is 10
 fn double(x: Int) -> Int {
   x * 2
 }
+[1, 2, 10, 7]: List[Int]
+inc: (Int) -> Int
+11: Int
+add: (Int) -> (Int) -> Int
+add5: (Int) -> Int
+6: Int
+dropped `p`: its type changed
+defined `Point`
 """
 
 [[step]]
 strata = ["--file", "p.strata", "repl"]
 text = """
 nope + 1
-[1, 2][5]
-disk.read("x")
+fn pick(xs: List[Int], i: Int) -> Int { xs[i] }
+fn outer(n: Int) -> Int { pick([1], n) }
+outer(3)
+mut ys := [1]
+ys = ys + [[1, 2][5]]
+ys
+process.var("HOME")
 :frobnicate
 """
 fails = true
-has = ["unknown variable `nope`", "index 5 out of range (length 2)", "unknown variable `disk`", "unknown command `:frobnicate`"]
+has = ["unknown variable `nope`", "fault (Runtime): index 3 out of range (length 1)\n    stack: outer -> pick", "fault (Runtime): index 5 out of range (length 2)", "[1]: List[Int]", "the REPL gives no `process`: `strata repl --allow process` gives the real one", "unknown command `:frobnicate`"]
+
+# the REPL's own capabilities: an in-memory folder for `disk`, `read_line`
+# reading the REPL's next input; the real files only with `--allow files`
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+mut disk.write("a.txt", "hi")
+disk.read("a.txt")
+disk.exists("p.strata")
+name := console.read_line()
+Ada
+name
+"""
+out = """
+Ok(()): Result[(), std.fs.FsError]
+Ok("hi"): Result[String, std.fs.FsError]
+false: Bool
+name: Option[String] = Some("Ada")
+Some("Ada"): Option[String]
+"""
+
+[[step]]
+strata = ["--file", "p.strata", "repl", "--allow", "files"]
+text = """
+disk.exists("p.strata")
+"""
+out = """
+true: Bool
+"""
+
+[[step]]
+strata = ["--file", "p.strata", "repl", "--allow", "net"]
+text = ""
+code = 2
+has = ["`--allow` takes `files` or `process` (comma-separated), not `net`"]
+
+# an input over several lines: read on while a bracket or block is open
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+fn sq(n: Int) -> Int {
+  n * n
+}
+xs := [
+  sq(2),
+  sq(3),
+]
+s := "a ( in a string"
+"""
+out = """
+defined `sq`
+xs: List[Int] = [4, 9]
+s: String = "a ( in a string"
+"""
+
+# `:save NAME`: a definition typed at the prompt written to the program
+# (its doc lines with it), checked as `strata add` checks it
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+/// Three times.
+fn triple(n: Int) -> Int {
+  n * 3
+}
+:save triple
+triple(2)
+:save nope
+"""
+fails = true
+has = ["defined `triple`", "1 definition changed, 3 in all", "6: Int", "no definition `nope` typed in this session"]
+
+[[step]]
+strata = ["--file", "p.strata", "view", "triple"]
+out = """
+/// Three times.
+fn triple(n: Int) -> Int
+"""

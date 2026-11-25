@@ -1,14 +1,16 @@
 // Builds the data behind the presentation (site/tour.html, and the landing page site/index.html) by running the
-// real `strata` CLI: every command output and every viewer snapshot shown on
-// the page is recorded here, nothing is written by hand.
+// real `strata` CLI: every command output and every snapshot of a codebase
+// shown on the page (its definitions by `strata header`, verdicts by `verify
+// --json`, holes by `holes --json`, changes by `diff --json`) is recorded
+// here, nothing is written by hand.
 //
 //   tools/bootstrap.sh && node site/build.mjs   (or STRATA=PATH node site/build.mjs)
 //
 // Writes site/data/*.js (one `STRATA[...] = {...}` per scene). The docs are a
 // site of their own, built by docs-site/.
 
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, cpSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync, rmSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,42 +19,118 @@ const SITE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(SITE);
 const STRATA = process.env.STRATA || join(ROOT, 'target/strata');
 const EX = join(ROOT, 'examples');
-const WORK = mkdtempSync(join(tmpdir(), 'strata-site-'));
-let port = 7861 + Math.floor(Math.random() * 100);
+const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'strata-site-')));
 
 /** Run strata in `cwd`, return its output as a terminal shows it (stdout and stderr, interleaved). */
 function run(cwd, args, input) {
   const r = spawnSync('sh', ['-c', '"$0" "$@" 2>&1', STRATA, ...args], { cwd, input, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
+  // (what `verify` found, kept for the codebase's snapshots, as a viewer would show it)
+  if (args[0] === 'verify' && !args.includes('--json')) keepVerdicts(cwd, args.slice(1));
   return { out: r.stdout, code: r.status };
 }
+/** Only what strata writes on standard output, as JSON. */
+function json(cwd, args) {
+  const r = spawnSync(STRATA, args, { cwd, encoding: 'utf8', maxBuffer: 1 << 28, env: { ...process.env, NO_COLOR: '1' } });
+  try { return JSON.parse(r.stdout); } catch { throw new Error(`strata ${args.join(' ')} in ${cwd}: no JSON:\n${r.stdout}${r.stderr}`); }
+}
 function git(cwd, ...args) { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
-const clean = s => s.replaceAll(WORK, '~').replace(/\s+$/, '');
+// (`(cached)`: what an earlier build verified, which a first run on the reader's machine wouldn't say)
+const clean = s => s.replaceAll(WORK, '~').replaceAll(' (cached)', '').replace(/\s+$/, '');
 
-/** A viewer on a package, answering /api/state and /api/changes. */
-async function viewer(cwd, label = '~/' + cwd.split('/').pop()) {
-  // a port nothing answers on yet: the user may have viewers of their own running
-  const answers = q => { try { execFileSync('curl', ['-sf', '-o', '/dev/null', `http://127.0.0.1:${q}/`], { stdio: 'ignore' }); return true; } catch (e) { return e.status !== 7; } };
-  while (answers(port)) port++;
-  const p = port++;
-  const child = spawn(STRATA, ['ui', '--port', String(p)], { cwd, stdio: 'ignore' });
-  for (let i = 0; i < 50; i++) {
-    try { execFileSync('curl', ['-sf', `http://127.0.0.1:${p}/api/state`], { stdio: 'ignore' }); break; } catch { await new Promise(r => setTimeout(r, 100)); }
+/** A package's module files (`main.strata`, `shop/orders.strata`), and the module each holds. */
+function modules(dir, sub = '') {
+  const out = [];
+  for (const e of readdirSync(join(dir, sub), { withFileTypes: true })) {
+    if (e.name.startsWith('.')) continue;
+    const rel = sub ? `${sub}/${e.name}` : e.name;
+    if (e.isDirectory()) out.push(...modules(dir, rel));
+    else if (e.name.endsWith('.strata')) out.push({ file: rel, module: rel.replace(/\.strata$/, '').replaceAll('/', '.') });
   }
-  // curl, not fetch: the viewer's tiny server closes each connection, which undici dislikes
-  const get = async q => JSON.parse(execFileSync('curl', ['-sf', `http://127.0.0.1:${p}${q}`], { encoding: 'utf8', maxBuffer: 1 << 28 }));
+  return out.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/** Top-level definitions of printed source, in order, each with its doc comments. */
+function chunks(src) {
+  const cs = [];
+  for (const l of src.trimEnd().split('\n')) {
+    if (!cs.length || (l && !/^[\s}]/.test(l) && cs.at(-1).at(-1) === '' && !cs.at(-1).every(x => x === '' || x.startsWith('//')))) cs.push([]);
+    cs.at(-1).push(l);
+  }
+  return cs.map(c => c.join('\n').trim());
+}
+
+/** Each definition of the package as `strata header` lists it: kind, name, hashes, what it uses, its text (no docs). */
+function definitions(dir) {
+  const out = [];
+  for (const { file, module } of modules(dir)) {
+    const q = n => module === 'main' ? n : `${module}.${n}`;
+    const texts = chunks(run(dir, ['header', file, '--text']).out);
+    const lines = run(dir, ['header', file]).out.split('\n').slice(1);
+    const ds = [];
+    for (const l of lines) {
+      let m;
+      if ((m = /^(\S+)\s+(.+)$/.exec(l))) ds.push({ kind: m[1], name: q(m[2].trim()), deps: [] });
+      else if ((m = /^\s+#(\w+)\s+interface #(\w+)/.exec(l))) Object.assign(ds.at(-1), { hash: m[1], interface_hash: m[2] });
+      else if ((m = /^\s+uses (.+)$/.exec(l))) ds.at(-1).deps = m[1].split(', ').map(q);
+    }
+    if (ds.length !== texts.length) throw new Error(`${file}: ${ds.length} definitions, ${texts.length} texts`);
+    ds.forEach((d, i) => { d.text = texts[i].split('\n').filter((l, k, all) => !(l.startsWith('///') && all.slice(0, k).every(x => x.startsWith('///')))).join('\n'); });
+    out.push(...ds);
+  }
+  return out;
+}
+
+/** The verdicts `verify` gave in each package, by function, with the hash of the definition they are about. */
+const VERDICTS = new Map();
+/** The definition a verdict's function is part of: itself, or the `impl` of its type (`MemDb.load`). */
+function ownerOf(ds, fn) {
+  const own = ds.find(d => d.name === fn);
+  if (own) return own;
+  return ds.find(d => d.kind === 'impl' && fn.startsWith(d.name.replace(/^(\w+\.)?impl .* for /, '$1') + '.'));
+}
+function keepVerdicts(dir, sel) {
+  if (!existsSync(join(dir, 'strata.toml'))) return;
+  const ds = definitions(dir);
+  const kept = VERDICTS.get(dir) || new Map();
+  for (const { fn, verdict } of json(dir, ['verify', ...sel, '--json'])) {
+    const d = ownerOf(ds, fn);
+    if (d) kept.set(fn, { owner: d.name, hash: d.hash, verdict });
+  }
+  VERDICTS.set(dir, kept);
+}
+/** The worst of a definition's verdicts (an `impl`'s methods'), still about what it is now. */
+const WORST = ['counterexample', 'incomplete', 'skipped', 'fuzzed', 'assumed', 'proven'];
+function verdictOf(dir, d) {
+  const vs = [...(VERDICTS.get(dir)?.values() || [])].filter(v => v.owner === d.name && v.hash === d.hash).map(v => v.verdict);
+  vs.sort((a, b) => WORST.indexOf(a.status) - WORST.indexOf(b.status));
+  return vs[0] ? { status: vs[0].status, args: vs[0].args, message: vs[0].message } : null;
+}
+
+/** A package as a viewer showed it, made of what strata's commands print: its definitions, and its Changes view. */
+function codebase(dir, label = '~/' + dir.split('/').pop()) {
   return {
-    /** The viewer's state, and its Changes view (all steps, and each step). */
-    async snap() {
-      const state = await get('/api/state');
-      state.label = label;
-      const all = await get('/api/changes');
+    /** The definitions, what each uses, its holes, verdict and text. */
+    state() {
+      const holes = json(dir, ['holes', '--json']);
+      const decls = definitions(dir).map(d => ({
+        ...d,
+        label: d.kind === 'test' ? d.name.replace(/^(\w+\.)?test "(.*)"$/, '$2') : d.name,
+        holes: holes.filter(h => h.decl === d.name),
+        verdict: verdictOf(dir, d),
+        text: { 2: d.text },
+      }));
+      return { label, decls };
+    },
+    /** The state, and the Changes view: all steps (`strata diff --json`), and each step. */
+    snap() {
+      const state = this.state();
+      const all = json(dir, ['diff', '--json']);
       const changes = { all };
-      for (const s of all.steps || []) changes[s.id] = await get(`/api/changes?step=${s.id}`);
+      // (`--step K` counts as `strata diff` shows the steps: by patch, from 1)
+      for (const s of all.steps || []) changes[s.id] = json(dir, ['diff', '--step', String(s.id + 1), '--json']);
       return { state, changes };
     },
-    /** Only the codebase, without the Changes view. */
-    async state() { return get('/api/state'); },
-    stop() { child.kill(); },
+    stop() {},
   };
 }
 
@@ -91,7 +169,7 @@ function graph(state) {
 {
   const dir = pkg('math', [join(EX, 'math.strata')]);
   const verify = run(dir, ['verify']);
-  const v = await viewer(dir);
+  const v = codebase(dir);
   emit('math', { verify: clean(verify.out), graph: graph((await v.snap()).state) });
   v.stop();
 }
@@ -106,24 +184,26 @@ function lineDiff(a, b) {
   return r.stdout.trimEnd();
 }
 const ST = (s) => s.replace(/^\n/, '');
+/** `strata run total`'s argument, as code. */
+const TRACE_ARG = '[Line { sku: "tea", qty: 2, unit_price: 450 }, Line { sku: "cup", qty: 1, unit_price: 1200 }]';
 const session = [];
 const texts = []; // [before, after] of each step, as text
 {
   const dir = pkg('shop', [join(EX, 'orders.strata')]);
-  const v = await viewer(dir);
+  const v = codebase(dir);
   const levels = {};
   for (const l of [0, 1, 2]) levels[l] = run(dir, ['view', 'slice:Order', '--level', String(l)]).out;
-  const trace = run(dir, ['run', 'total', '[[{"sku":"tea","qty":2,"unit_price":450},{"sku":"cup","qty":1,"unit_price":1200}]]', '--trace']);
-  const badInput = run(dir, ['run', 'total', '[[]]']);
+  const trace = run(dir, ['run', 'total', TRACE_ARG, '--trace']);
+  const badInput = run(dir, ['run', 'total', '[]']);
 
   /** One step of the session: a command (optionally with what was piped into it), its real output, the viewer after it. */
   async function step(s) {
-    const before = run(dir, ['render']).out;
+    const before = run(dir, ['view', 'main']).out;
     const r = s.args ? run(dir, s.args, s.input) : { out: '', code: 0 };
     for (const t of s.then || []) r.out += '\n$ strata ' + t.join(' ') + '\n' + run(dir, t).out;
     if (s.hidden) for (const h of s.hidden) run(dir, h.args, h.input);
     const snap = await v.snap();
-    const after = run(dir, ['render']).out;
+    const after = run(dir, ['view', 'main']).out;
     texts.push([before, after]);
     const linediff = lineDiff(before, after);
     session.push({ linediff, ...s, args: undefined, hidden: undefined, then: undefined, cmd: s.cmd ?? `strata ${s.args.join(' ')}`, input: s.input && ST(s.input), out: clean(r.out), code: r.code, ...snap });
@@ -137,8 +217,7 @@ const texts = []; // [before, after] of each step, as text
   await step({ who: 'agent', title: 'It fills the hole', sel: 'refund', args: ['edit', '-m', 'refund policy: fee of 5.00'], cmd: 'strata edit -m "refund policy: fee of 5.00"',
     input: `
 /// Refund what was paid, minus a 5.00 handling fee.
-fn refund(o: Order) -> Cents
-  ensures it >= 0 {
+fn refund(o: Order) -> Cents {
   match o {
     Pending { lines, .. } => total(lines) - 500,
     Shipped { .. } => 0,
@@ -154,12 +233,11 @@ test "refund keeps the handling fee" {
   await step({ who: 'agent', title: 'The tests pass', sel: 'refund', args: ['test'],
     say: 'Every test passes. They check the orders someone thought of: a 9.00 order, refunded 4.00.' });
   await step({ who: 'agent', title: 'Verification finds the bug', sel: 'refund', args: ['verify', 'refund'],
-    say: 'The contract says `ensures it >= 0`, for every order. The solver and the fuzzer look for one that breaks it: an order worth less than the fee would get a negative refund. The input that breaks it comes with the verdict.' });
+    say: 'A refund is `Cents`, which is never below zero, for every order. The solver and the fuzzer look for one that breaks it: an order worth less than the fee would get a negative refund. The input that breaks it comes with the verdict.' });
   await step({ who: 'agent', title: 'It fixes it, and proves it', sel: 'refund', args: ['edit', '-m', 'refund: never below zero'], cmd: 'strata edit -m "refund: never below zero"',
     input: `
 /// Refund what was paid, minus a 5.00 handling fee, never below zero.
-fn refund(o: Order) -> Cents
-  ensures it >= 0 {
+fn refund(o: Order) -> Cents {
   match o {
     Pending { lines, .. } => max(total(lines) - 500, 0),
     Shipped { .. } => 0,
@@ -176,8 +254,7 @@ fn total(lines: NonEmpty[Line], coupon: Cents) -> Cents {
   await step({ who: 'agent', title: 'It fills them, and closes the change', sel: 'refund', cmd: 'strata edit', args: ['edit'],
     input: `
 /// Refund what was paid, minus a 5.00 handling fee, never below zero.
-fn refund(o: Order) -> Cents
-  ensures it >= 0 {
+fn refund(o: Order) -> Cents {
   match o {
     Pending { lines, .. } => max(total(lines, 0) - 500, 0),
     Shipped { .. } => 0,
@@ -225,7 +302,7 @@ fn discount(amount: Cents) -> Cents {
   const holes = session[1].out;
   const at = t => session.findIndex(x => x.title === t);
   const couponsDiff = lineDiff(texts[at('A breaking change becomes holes')][0], texts[at('It fills them, and closes the change')][1]);
-  emit('orders', { couponsDiff, levels, trace: clean(trace.out), badInput: clean(badInput.out), holes, merge, source: levels[3] });
+  emit('orders', { traceCmd: `strata run total '${TRACE_ARG}' --trace`, couponsDiff, levels, trace: clean(trace.out), badInput: clean(badInput.out), holes, merge, source: levels[3] });
   // the page draws each step's codebase as a graph; it needs the Changes view only for the diffs it shows
   const DIFFS = ['It fills them, and closes the change', 'A rename is one change', 'It fixes it, and proves it'];
   emit('session', session.map(x => ({ ...x, state: undefined, changes: DIFFS.includes(x.title) ? x.changes : undefined, graph: graph(x.state) })));
@@ -235,7 +312,7 @@ fn discount(amount: Cents) -> Cents {
 {
   const dir = pkg('contract', [join(EX, 'orders.strata')]);
   // the example's `?refund_policy` hole is another story: fill it, so the only holes are this one's
-  run(dir, ['edit', '-m', 'refund: nothing yet'], 'fn refund(o: Order) -> Cents\n  ensures it >= 0 {\n  0\n}\n');
+  run(dir, ['edit', '-m', 'refund: nothing yet'], 'fn refund(o: Order) -> Cents {\n  0\n}\n');
   const discount = (params, req) => `/// 10% off orders of 100.00 or more.
 fn discount(${params}) -> Cents
 ${req ? '  requires amount >= 100\n' : ''}  ensures it <= amount {
@@ -258,14 +335,14 @@ fn checkout(lines: NonEmpty[Line]) -> Cents {
 `;
   const steps = [];
   const texts = [];
-  const cv = await viewer(dir);
+  const cv = codebase(dir);
   /** One step: a command, what was piped into it, and the commands run right after it; the codebase after it. */
   async function step(s) {
-    const before = run(dir, ['render']).out;
+    const before = run(dir, ['view', 'main']).out;
     const r = run(dir, s.args, s.input);
     let out = clean(r.out);
     for (const t of s.then || []) out += '\n\n$ strata ' + t.join(' ') + '\n' + clean(run(dir, t).out);
-    const after = run(dir, ['render']).out;
+    const after = run(dir, ['view', 'main']).out;
     texts.push([before, after]);
     steps.push({ ...s, args: undefined, then: undefined, cmd: s.cmd ?? `strata ${s.args.join(' ')}`, input: s.input?.trim(), out, linediff: lineDiff(before, after), graph: graph(await cv.state()) });
     console.log(`  contract ${steps.length}: ${s.title}`);
@@ -312,17 +389,17 @@ test "totals" {
   git(dir, 'config', 'user.name', 'agent');
   git(dir, 'config', 'user.email', 'agent@example.com');
   git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'tasks');
-  const mods = ['core', 'memory', 'print', 'sim'];
-  const text = () => mods.map(m => run(dir, ['render', m]).out).join('\n');
+  const mods = ['model', 'memory', 'print'];
+  const text = () => mods.map(m => run(dir, ['view', m]).out).join('\n');
   const before = text();
   const r = run(dir, ['rename', 'Task', 'Job']);
   if (r.code) throw new Error('rename Task Job: ' + r.out);
   const diff = lineDiff(before, text()).replace('a/main.strata', 'a/tasks').replace('b/main.strata', 'b/tasks');
-  const v = await viewer(dir);
+  const v = codebase(dir);
   const snap = await v.snap();
   v.stop();
   const step = snap.changes.all.steps.at(-1).id;
-  emit('rename', { cmd: 'strata rename Task Job', out: clean(r.out), diff, changes: { all: snap.changes.all, [step]: snap.changes[step] }, step });
+  emit('rename', { cmd: 'strata rename Task Job', out: clean(r.out), updated: +(/updated (\d+) definitions/.exec(r.out)?.[1] ?? 0), modules: mods.length, diff, changes: { all: snap.changes.all, [step]: snap.changes[step] }, step });
 }
 
 // ─────────────── what the language does now: small programs, stored, run and verified ───────────────
@@ -354,14 +431,14 @@ const own = o => {
     const dir = pkg('f-' + name, []);
     const r = run(dir, ['edit', '-m', name], text);
     if (r.code) throw new Error(`${name} doesn't check:\n${r.out}`);
-    return { dir, src: run(dir, ['render']).out.trimEnd(), at: (...args) => out(dir, args) };
+    return { dir, src: run(dir, ['view', 'main']).out.trimEnd(), at: (...args) => out(dir, args) };
   };
   const unfile = o => o;
 
   // capabilities: main names what it touches; the rest takes any implementation
   {
     const dir = ex('wc');
-    const src = run(dir, ['render']).out;
+    const src = run(dir, ['view', 'main']).out;
     writeFileSync(join(dir, 'notes.txt'), 'one two\nthree\n');
     F.capabilities = {
       main: defs(src, ['fn main(']), wc: defs(src, ['fn wc(']), test: defs(src, ['test "counts each file']),
@@ -370,7 +447,7 @@ const own = o => {
   }
   // mocks: a fake declared as a type; what it leaves out is generated
   {
-    const f = file('mocks', `use std.fs.{Files, FsError}
+    const f = file('mocks', `from std.fs use Files, FsError
 
 /// Save a note, then read it back.
 fn round_trip(mut fs: Files, text: String) -> Result[String, FsError] {
@@ -403,8 +480,8 @@ test "saving then loading" {
   // derive: code written by code, at compile time
   {
     const dir = ex('hello');
-    const src = run(dir, ['render']).out;
-    const json = file('json', `use std.json.{Json, parse, stringify}
+    const src = run(dir, ['view', 'main']).out;
+    const json = file('json', `from std.json use Json, parse, stringify
 
 type Signup = {
   email: String where contains(it, "@"),
@@ -419,7 +496,7 @@ fn read(text: String) -> String {
   json := parse(text) except e {
     return f"not JSON: {e}"
   }
-  match Signup.decode(json) {
+  match Signup.from_json(json) {
     Ok(s) => f"read: {s}",
     Err(e) => f"refused: {e}",
   }
@@ -427,7 +504,7 @@ fn read(text: String) -> String {
 
 /// Write a signup as JSON text.
 fn write(s: Signup) -> String {
-  match s.encode() {
+  match s.to_json() {
     Ok(json) => stringify(json),
     Err(e) => f"can't write: {e}",
   }
@@ -469,13 +546,13 @@ fn main() {
     const dir = ex('fuzzy');
     F.native = {
       comptime: f.src, comptime_run: unfile(f.at('run')),
-      externs: run(dir, ['render', 'text']).out.trimEnd(),
+      externs: run(dir, ['view', 'text']).out.trimEnd(),
       fuzzy_run: out(dir, ['run', '--', '--word', 'recieve']), fuzzy_verify: own(out(dir, ['verify'])),
     };
   }
   // std written in Strata: the regex parser
   {
-    const f = file('regex', `use std.regex.{parse, show}
+    const f = file('regex', `from std.regex use parse, show
 
 fn main() {
   match parse("(?i)ab|ac") {
@@ -530,7 +607,7 @@ fn sale(price: Cents) -> Cents {
   discount(price, 50)
 }
 `);
-    const src = run(dir, ['render']).out;
+    const src = run(dir, ['view', 'main']).out;
     V.contracts = { types: defs(src, ['type Cents', 'type Percent']), discount: defs(src, ['fn discount']), callers: defs(src, ['fn checkout', 'fn sale']), verify: out(dir, ['verify']) };
   }
   // tests that pass, and the detail they missed
@@ -557,7 +634,7 @@ test "everyone pays, and it adds up" {
   assert sum(s) == 1000
 }
 `);
-    const src = run(dir, ['render']).out;
+    const src = run(dir, ['view', 'main']).out;
     const tests = defs(src, ['test ']);
     const t = out(dir, ['test']);
     const withContract = `/// Split a bill between people. The shares add up to the total.
@@ -603,7 +680,7 @@ test "never negative" {
   assert points(0) >= 0
 }
 `);
-    const src = run(dir, ['render']).out;
+    const src = run(dir, ['view', 'main']).out;
     const t = out(dir, ['test']);
     const one = `/// Loyalty points earned on an order: 1 per euro, at most 500.
 fn points(cents: Int where it >= 0) -> Int
@@ -643,12 +720,12 @@ fn main() {
   print(f"biggest line: {best.sku}, {float(best.qty * best.price) / 100.0:.2}")
 }
 `);
-    V.sugar = { src: run(dir, ['render']).out.trim(), run: out(dir, ['run']) };
+    V.sugar = { src: run(dir, ['view', 'main']).out.trim(), run: out(dir, ['run']) };
   }
   // loops and termination, on examples/math.strata
   {
     const dir = pkg('v-math', [join(EX, 'math.strata')]);
-    const src = run(dir, ['render']).out;
+    const src = run(dir, ['view', 'main']).out;
     V.loops = {};
     for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['triangle', 'triangle_closed'], ['collatz', 'collatz_steps']])
       V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
@@ -674,12 +751,12 @@ fn record_wrong(best: Sorted, x: Int) -> Sorted {
   }
 }
 `);
-    V.loops.sorted = { code: run(s, ['render']).out.trim(), verify: out(s, ['verify']) };
+    V.loops.sorted = { code: run(s, ['view', 'main']).out.trim(), verify: out(s, ['verify']) };
   }
   // more of the language: data types, traits, values, comptime
   {
     const L = {};
-    const one = (name, text) => { const dir = prog(name, text); return { dir, src: run(dir, ['render']).out.trim(), run: out(dir, ['run']) }; };
+    const one = (name, text) => { const dir = prog(name, text); return { dir, src: run(dir, ['view', 'main']).out.trim(), run: out(dir, ['run']) }; };
     const refused = (dir, text) => ({ ...out(dir, ['edit'], text), cmd: 'strata edit', input: text.trim() });
     const a = one('shapes', `/// A shape: one of three variants, each with its own fields.
 type Shape =

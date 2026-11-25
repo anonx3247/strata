@@ -96,6 +96,7 @@ Cost: O(1).
 
 ```rust
 fn contains(self, k: K) -> Bool
+  ensures it == (find(self.root, k) != None)
 ```
 
 Whether `k` is one of its keys.
@@ -105,6 +106,7 @@ Cost: O(log n) comparisons.
 
 ```rust
 fn get(self, k: K) -> Option[V]
+  ensures it == find(self.root, k)
 ```
 
 The value of `k`, if it is one of its keys.
@@ -114,6 +116,18 @@ Cost: O(log n) comparisons.
 
 ```rust
 fn insert(mut self, k: K, v: V)
+  ensures self.size == old self.size
+    + if find(old self.root, k) == None {
+      1
+    } else {
+      0
+    }
+  ensures count(self.root) == count(old self.root)
+    + if find(old self.root, k) == None {
+      1
+    } else {
+      0
+    }
 ```
 
 `k` holding `v` (replacing its value if it has one).
@@ -123,6 +137,17 @@ Cost: O(log n) comparisons and new nodes.
 
 ```rust
 fn remove(mut self, k: K) -> Option[V]
+  ensures it == find(old self.root, k)
+  ensures self.size == old self.size - if it == None {
+    0
+  } else {
+    1
+  }
+  ensures count(self.root) == count(old self.root) - if it == None {
+    0
+  } else {
+    1
+  }
 ```
 
 `k` taken out: its value, if it was one of the keys.
@@ -150,6 +175,16 @@ Cost: O(log n).
 
 ```rust
 fn pop_first(mut self) -> Option[(K, V)]
+  ensures self.size == old self.size - if it == None {
+    0
+  } else {
+    1
+  }
+  ensures count(self.root) == count(old self.root) - if it == None {
+    0
+  } else {
+    1
+  }
 ```
 
 The entry of the smallest key, taken out.
@@ -159,6 +194,16 @@ Cost: O(log n).
 
 ```rust
 fn pop_last(mut self) -> Option[(K, V)]
+  ensures self.size == old self.size - if it == None {
+    0
+  } else {
+    1
+  }
+  ensures count(self.root) == count(old self.root) - if it == None {
+    0
+  } else {
+    1
+  }
 ```
 
 The entry of the largest key, taken out.
@@ -259,6 +304,7 @@ Cost: O(1).
 
 ```rust
 fn contains(self, x: T) -> Bool
+  ensures it == (find(self.root, x) != None)
 ```
 
 Whether `x` is one of its elements.
@@ -268,6 +314,18 @@ Cost: O(log n) comparisons.
 
 ```rust
 fn insert(mut self, x: T)
+  ensures self.size == old self.size
+    + if find(old self.root, x) == None {
+      1
+    } else {
+      0
+    }
+  ensures count(self.root) == count(old self.root)
+    + if find(old self.root, x) == None {
+      1
+    } else {
+      0
+    }
 ```
 
 `x` added (nothing changes if it is already there).
@@ -277,6 +335,17 @@ Cost: O(log n) comparisons and new nodes.
 
 ```rust
 fn remove(mut self, x: T) -> Bool
+  ensures it == (find(old self.root, x) != None)
+  ensures self.size == old self.size - if it {
+    1
+  } else {
+    0
+  }
+  ensures count(self.root) == count(old self.root) - if it {
+    1
+  } else {
+    0
+  }
 ```
 
 `x` taken out: whether it was there.
@@ -304,6 +373,16 @@ Cost: O(log n).
 
 ```rust
 fn pop_first(mut self) -> Option[T]
+  ensures self.size == old self.size - if it == None {
+    0
+  } else {
+    1
+  }
+  ensures count(self.root) == count(old self.root) - if it == None {
+    0
+  } else {
+    1
+  }
 ```
 
 The smallest element, taken out.
@@ -313,6 +392,16 @@ Cost: O(log n).
 
 ```rust
 fn pop_last(mut self) -> Option[T]
+  ensures self.size == old self.size - if it == None {
+    0
+  } else {
+    1
+  }
+  ensures count(self.root) == count(old self.root) - if it == None {
+    0
+  } else {
+    1
+  }
 ```
 
 The largest element, taken out.

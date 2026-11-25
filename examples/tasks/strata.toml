@@ -1,3 +1,3 @@
-# A package: its .strata files are its modules (core, memory, print, sim).
+# A package: its .strata files are its modules (model, memory, print).
 # Without `exports`, every `pub` definition is visible to other packages.
 name = "tasks"
