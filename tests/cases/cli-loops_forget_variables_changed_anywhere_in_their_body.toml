@@ -56,7 +56,7 @@ fn inserted(xs: List[Int], d: Dict[Int, Int]) -> Dict[Int, Int]
 '''
 
 [[step]]
-strata = ["--file", "m.strata", "verify", "--no-write"]
+strata = ["--file", "m.strata", "verify"]
 fails = true
 has = ["✗ pushed", "✗ inserted"]
 lacks = ["bug in the prover"]

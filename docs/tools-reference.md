@@ -19,6 +19,14 @@ A change to a body alone can't break anything else, so only that body is checked
 
 **Warnings.** An edit prints warnings about what it wrote, on stderr, as `strata check` does for everything: a contract that should be a refinement, or a refinement that should be a contract (`compiler/lint`). `strata fix [NAME]...` applies the change each warning shows and logs it like an edit. With `--file F`, it writes a script or folder outside any log, as `edit --file` does.
 
+**Loop invariants found where code is written.** `verify` and `build` never search for loop invariants: they use those derived from the loop's code and the `invariant` clauses written ([verification](verification.md#loops)). The search runs when code is written. After an edit, the changed functions that have loops are proven with the derived invariants, and where a check in or after a loop fails (or a loop isn't shown to end), invariants are searched for in that function and written into its code as `invariant` clauses, each loop with a warning:
+
+```text
+warning: in `quoted_end`: added `invariant lx.at <= n` to `while lx.at < n && char_at(lx, lx.at) != "\""` (found by search)
+```
+
+An invariant naming a variable's value before the loop gets a binding just before it (`start_i := i`), and the warning says so. In a package the clauses are a change of their own, logged as made by `edit` and committed like the edit. When nothing is found, the edit says which checks still fail (`warning: in `f`: not proven: …`). `--no-search` skips the search. For code written outside `strata` (a merge, another tool), `strata fix NAME` runs the same search on demand, for the functions named (also `module:m` or `prefix*`, as `verify` takes them; every function with loops when none is named), after the warnings' changes, and prints `fixed: in `f`: added …`. A run's searches share one budget of solver resource units (2,000M).
+
 **Derives written on a declaration.** A declaration given in an edit brings its `derive A, B for` line. A stored derive that `view` would show on that line (no block of methods, for a type or function in the same module, not `for module`) is removed if the line no longer names its trait, with `warning: removed derive std.toml.Toml for Point (no longer on its derive line)`. A declaration given with no derive line loses all such derives, matching what `view` would show. The removal is a change like `--rm`'s: it is listed, logged in `strata log`, and shown by the diffs. A declaration the edit doesn't give keeps its derives. Derives with a block, derives for other modules' declarations, and `for module` derives are removed only by `--rm`. `strata view NAME` and the editor opened on a selection (`strata edit Point`) show a declaration with its derive line, so editing a definition as `view` shows it never loses its derives.
 
 ## How it is stored

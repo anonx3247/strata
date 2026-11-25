@@ -1,9 +1,10 @@
 # cli.rs: loop_invariants_are_inferred: derived from the loop's code
 # (`early`'s `i <= 10`: `i` goes up by one a pass under `i < 10`), else,
-# where a check fails without more, searched among candidates from the
-# condition, the `ensures`, the `requires` and how the loop's integers
-# change; kept when they hold on entry and after every pass (`search`: `lo`
-# and `hi` jump to `mid`)
+# where a check fails without more, searched by `edit` among candidates
+# from the condition, the `ensures`, the `requires` and how the loop's
+# integers change; kept when they hold on entry and after every pass, and
+# written into the code (`search`: `lo` and `hi` jump to `mid`), where
+# `verify` proves them
 [[step]]
 save = "t.strata"
 text = '''
@@ -40,4 +41,4 @@ fn wrong(n: Natural) -> Int
 [[step]]
 strata = ["--file", "t.strata", "verify", "--checks", "--no-race"]
 fails = true
-has = ["✓ early ", "invariant of `while i < 10`: i <= 10 (derived)", "✓ search ", "invariant of `while lo < hi`: lo <= hi (inferred)", "✗ wrong", "found by the solver"]
+has = ["✓ early ", "invariant of `while i < 10`: i <= 10 (derived)", "✓ search ", "proven:  invariant `lo <= hi` after a pass of `while lo < hi`", "✗ wrong", "found by the solver"]
