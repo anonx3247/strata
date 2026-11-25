@@ -35,7 +35,7 @@ builtin fn chr(c: Int) -> String
   requires 0 <= c && c <= 1114111 && !(55296 <= c && c <= 57343)
 ```
 
-A name may have several signatures (`len` of a list, a dict or a set): the first whose parameters fit the arguments is called. `strata --file core view builtins` shows them all (`strata builtins` lists them in short); `strata --file core/ edit MODULE < text` stores a module of core as written (its names are global, nobody's module's), and `strata --file core check` checks the core strata is built with. Not yet contracts: `matches` with a pattern that isn't a regular expression, and a channel used after it ended.
+A name may have several signatures (`len` of a list, a dict or a set): the first whose parameters fit the arguments is called. `strata --file core view builtins` shows them all (`strata builtins` lists them in short); `strata --file core/ edit MODULE < text` stores a module of core as written (an edited builtin replaces the one of its name and parameters' types: the other overloads stay) (its names are global, nobody's module's), and `strata --file core check` checks the core strata is built with. Not yet contracts: `matches` with a pattern that isn't a regular expression, and a channel used after it ended.
 
 ## Compiling
 
