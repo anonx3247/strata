@@ -33,7 +33,9 @@ a folder or package), writes a file (`write`), runs `strata` (`strata =
 `fails`, `any_code`; 0 by default), texts in the output (`has`, `lacks`,
 `counts`), or the whole output (`out`, `stdout`, `out_file` (standard output), or `golden`: a
 file under the repository, standard output then standard error and `---
-exit N`, as `tests/data/build/expected` holds them). `memory = true` runs a
+exit N`, as `tests/data/build/expected` holds them). `needs = "python3"`
+skips the rest of the case (which passes) when that program isn't on the
+`PATH`. `memory = true` runs a
 built program with `STRATA_MEMORY=check`: it must free everything it made.
 `$ROOT` is the repository, `$TMP` the case's folder, `$STRATA` (in `run`) the
 executable checked. Each command's `verify` verdicts are kept in the folder it

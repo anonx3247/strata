@@ -361,7 +361,40 @@ Paths are relative to the package's folder, or absolute (`compiler/strata.toml` 
 
 - **A native module's capability** is asked for like any other: `main` and tests name it (`fn main(sqlite: Sqlite)`), its functions get it as `self` (`sqlite.open(path)`), and the program is linked with the package's `[native]` libraries. std's own are the system's: std.sqlite calls macOS's libsqlite3, which `strata build` links into the executables that use it (against a stub, `compiler/c/libsqlite3.tbd`, so no SDK is needed) and `strata run` / `strata test` load for the JIT. std's precompiled library leaves out what reaches C, so a program that doesn't use it doesn't link it.
 
-Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages but Python (`extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+
+## Foreign functions: `extern python`
+
+A Python function is declared with `extern python "MODULE" fn`, the Python module it is in, then a signature with contracts and no body. Values cross as JSON, through the derived `Json` trait (std.json), so its parameters and result are types with a JSON form: `Int`, `Float`, `Bool`, `String`, `List`, `Option`, `Dict[String, V]`, records and unions that derive `Json`, aliases of those. `examples/python` calls `text_utils.py`, beside its strata.toml:
+
+```rust
+from std.python use PythonError
+
+/// A post summed up (Python builds the `Card` as a dict).
+extern python "text_utils" fn summary(post: Post) -> Result[Card, PythonError]
+
+/// Text tools, in Python.
+pub capability TextTools {
+  fn card(post: Post) -> Result[Card, PythonError] {
+    summary(post)
+  }
+}
+```
+
+```toml
+# strata.toml (both optional)
+[python]
+executable = "python3"   # the Python to run (default: python3 on the PATH)
+path = ["py"]            # where its modules are, relative to the package (default: the package's folder)
+```
+
+- **A call is a `Result`.** The result is written `Result[T, PythonError]` (std.python): a Python exception (`Raised`, with its type's name, message and traceback; an import that fails too), a worker that can't start or ends while answering (`WorkerFailed`), a result that isn't a `T` (a set, a `NaN`, an integer beyond 2^53, a missing field, a broken refinement: `BadReply`), an argument with no JSON form (an integer beyond 2^53: `NotEncodable`) are values, never faults. `Result[(), PythonError]` takes whatever the function returns.
+- **How it crosses.** The arguments are written with `to_json` and passed positionally (a record is a dict with its fields and `"type"`); what the function returns is read with `T.from_json`, its refinements checked. So Pydantic models or TypedDicts on the Python side match the derived JSON (see std.json).
+- **One worker per run.** The first call starts `python3 -c DRIVER` (the driver is the runtime's), kept for the rest of the run, which imports the modules and answers one JSON line per call. Calls from several tasks take turns on it. What the Python code prints goes to standard error. A worker that ends fails the call it was answering, and the next call starts a new one. The modules' folders are fixed when the program is compiled (absolute paths), so a built executable finds them wherever it runs.
+- **Only its module's capabilities call it.** `extern python` functions are never `pub`, and only the capabilities of their module call them (not its other functions, not its tests): code that reaches Python takes the capability, which `main` and tests ask for.
+- **`verify` never runs Python.** An `extern python` function is assumed (`≈`), its contracts checked when it runs: `requires` before the call, `ensures` after it.
+
+Not yet: Python objects kept on the Python side (handles), keyword arguments, a Python function named apart from its Strata name, a pool of workers, embedding libpython, `async` functions.
 
 ## Exporting functions: `derive C for f`
 
