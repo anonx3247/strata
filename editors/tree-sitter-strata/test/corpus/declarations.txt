@@ -551,3 +551,87 @@ fn f(xs: List[Int]) -> Int ghost requires ok(xs) ghost ensures it >= 0 {
             (identifier)
             (identifier))))
       (identifier))))
+
+================================================================================
+Trait models, invariants and ensures
+================================================================================
+
+trait Stock {
+  model count: Int
+  ghost invariant self.count >= 0
+  ensures self.count >= old self.count - 1
+
+  fn add(mut self)
+    ensures self.count == old self.count + 1
+}
+
+impl Stock for Shelf {
+  model count = self.n
+
+  fn add(mut self) {
+    self.n += 1
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    (type_identifier)
+    (trait_body
+      (model_declaration
+        (identifier)
+        (type_identifier))
+      (trait_invariant
+        (binary_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (integer)))
+      (trait_ensures
+        (binary_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (binary_expression
+            (old_expression
+              (field_expression
+                (identifier)
+                (field_identifier)))
+            (integer))))
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (contract
+          (binary_expression
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (binary_expression
+              (old_expression
+                (field_expression
+                  (identifier)
+                  (field_identifier)))
+              (integer)))))))
+  (impl_declaration
+    (type_identifier)
+    (type_identifier)
+    (impl_body
+      (model_definition
+        (identifier)
+        (field_expression
+          (identifier)
+          (field_identifier)))
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (block
+          (assignment
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (integer)))))))
