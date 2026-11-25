@@ -1,0 +1,24 @@
+# `xs[i] = v` on a list nothing else holds is in place, O(1): a million
+# updates of a list of a million elements take as long as of a thousand
+# (a copy each time would be 10^12 element copies), through a record's
+# field and a grid's rows too; compiled and on the JIT, everything freed.
+
+[[step]]
+save = "lin.strata"
+from = "lin.st"
+
+[[step]]
+strata = ["build", "lin.strata", "-o", "prog", "--no-verify"]
+
+[[step]]
+run = ["perl", "-e", "alarm 20; exec @ARGV", "./prog"]
+stdout = "2000\n2\n3000\n3\n"
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "2000\n2\n3000\n3\n"
+
+[[step]]
+run = ["perl", "-e", "alarm 60; exec @ARGV", "$STRATA", "--file", "lin.strata", "run"]
+stdout = "2000\n2\n3000\n3\n"
