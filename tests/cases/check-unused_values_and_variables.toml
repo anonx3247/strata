@@ -1,0 +1,80 @@
+# an expression statement whose value isn't `()` is an error (values never
+# change: `push(xs, 1)` alone does nothing), said with how to keep it or
+# `_ := …`; a `mut` method call (`()`) and `_ := e` are fine. A variable never
+# read is a warning, one line each, in check, run and build (`_x`: none),
+# and one whose value has no effect isn't compiled at all
+
+[[step]]
+save = "values.strata"
+text = '''
+type Counter = { n: Int }
+
+impl Counter {
+  fn bump(mut self) {
+    self.n = self.n + 1
+  }
+}
+
+fn double(x: Int) -> Int { x * 2 }
+
+fn values(xs: List[Int], unused_param: Int, _quiet: Int) -> List[Int] {
+  push(xs, 1)
+  double(3)
+  len(xs) + 1
+  _ := push(xs, 2)
+  mut c := Counter { n: 0 }
+  mut c.bump()
+  if len(xs) > 0 {
+    double(1)
+  } else {
+    0
+  }
+  never_read := 5
+  _skipped := 6
+  match xs {
+    [first, ..] => print(f"{len(xs)}"),
+    [] => (),
+  }
+  xs
+}
+
+fn main() {
+  print(f"{values([1], 0, 0)}")
+}
+'''
+
+[[step]]
+strata = ["check", "values.strata"]
+code = 1
+has = ["error in values: the value of `push(xs, 1)` is not used: assign it (`xs = push(xs, 1)`) or discard it with `_ := …`", "error in values: the value of `double(3)` is not used: use it, or discard it with `_ := …`", "error in values: the value of `len(xs) + 1` is not used", "error in values: the value of `if len(xs) > 0 { …` is not used", "warning: in `values`: `unused_param` is never used (remove it, or name it `_unused_param`)", "warning: in `values`: `never_read` is never used", "warning: in `values`: `first` is never used"]
+lacks = ["`_quiet`", "`_skipped`", "c.bump()` is not", "push(xs, 2)` is not", "print(f"]
+
+[[step]]
+save = "unused.strata"
+text = '''
+fn total(xs: List[Int], unused_param: Int) -> Int {
+  marker := "unused-marker-text"
+  copy := xs
+  mut sum := 0
+  for x in xs {
+    sum += x
+  }
+  sum
+}
+
+fn main() {
+  print(f"{total([1, 2, 3], 0)}")
+}
+'''
+
+[[step]]
+strata = ["run", "unused.strata"]
+has = ["6\n", "warning: in `total`: `marker` is never used (remove it, or name it `_marker`)", "warning: in `total`: `copy` is never used", "warning: in `total`: `unused_param` is never used"]
+
+[[step]]
+strata = ["build", "unused.strata", "--emit-llvm", "-o", "unused.ll"]
+has = ["warning: in `total`: `marker` is never used"]
+
+[[step]]
+run = ["grep", "-c", "unused-marker-text", "unused.ll"]
+code = 1
