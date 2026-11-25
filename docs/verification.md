@@ -32,6 +32,12 @@ fn next_digit(d: Digit) -> Digit {
 
 The solver found `d = 9`, and running `next_digit(9)` confirmed it: a counterexample is only reported once it really fails.
 
+## Refinements and contracts
+
+A refinement is assumed of a parameter on entry and checked of each argument at the call, as a `requires` is; a result's is proven at each `return` and assumed by callers, as an `ensures` is. So a fact about one value is a refinement, and a contract is for what relates values (`requires lo <= hi`, `ensures it >= price`): `strata check` warns on a `requires` naming one parameter, an `ensures` naming only `it` (or only one element of a tuple result), and a refinement naming another parameter, and `strata fix` rewrites each (see [the language](language.md#refinements-and-contracts-one-way-each)). The verdicts don't change: the same checks are made, in their new places.
+
+Named results (`-> (q: Natural, r: Natural)`) are the tuple's elements in `ensures`: `verify` reads `q` as `it.0` and `r` as `it.1`, and a broken `ensures` is reported with them so (`ensures it.0 * b + it.1 == a`).
+
 ## Recursion and termination
 
 ```rust

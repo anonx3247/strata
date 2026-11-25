@@ -114,8 +114,9 @@ Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
             | 3 Type(TypeExpr)        a union member defined elsewhere (`Circle` in `Circle | Square { .. }`)
 
 FnDecl      = doc:list(str)  comments:list(str)  name:str  type_params:list(str)  bounds:list(Bound)
-              params:list(Param)  ret:TypeExpr  requires:list(Expr)  ensures:list(Expr)
+              params:list(Param)  ret:Result  requires:list(Expr)  ensures:list(Expr)
               terminates:bool  body:Expr  comptime:bool  derived:bool
+Result      = TypeExpr | 5 names:list(str) TypeExpr     -> (next: Q, added: Int): the names, then the tuple
 Param       = name:str  ty:TypeExpr  mutable:bool  comptime:bool
 Bound       = param:str  traits:list(TypeExpr)
 
