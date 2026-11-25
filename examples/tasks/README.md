@@ -49,10 +49,10 @@ Now the property is not simulated but stated once, as `Entry`'s refinement, so e
 
 - **Each method against the model**: `claim` hands out only pending tasks, each now `Running` under `by`'s lease with one more attempt, and changes nothing else; `record` and `release` succeed exactly when `by` holds every task (and no result is reported twice), and a refused call changes nothing; `expire` gives back exactly the overdue tasks.
 - **For every method** (the trait's `ensures`): the policy never changes, no task leaves or changes, and a new entry starts Pending with no attempt.
-- **Laws**: enqueuing again adds nothing (proven for `MemQueue`); two claims never hand out the same task; a worker whose lease ran out and was expired can't report.
+- **Laws** (all three proven for `MemQueue`): enqueuing again adds nothing; two claims never hand out the same task; a worker whose lease ran out and was expired can't report.
 - **`shared`**: many workers use one queue, so entrypoints can rely only on what each call returns: `run_worker`'s results are one per claimed attempt, at most a batch, each id once.
 
-`strata --file examples/tasks verify` proves the helpers, `drain`, `run_producer`, the demo and `enqueue_once`; the methods of `MemQueue` and the two other laws are fuzzed without a counterexample but not yet proven (see `IDEAS.md`, "Examples over trait models: what the prover lacks"): the contracts quantify over the model's dict (no quantifier over a dict's entries in the solver yet), helpers from `model` are opaque in `memory`'s proofs, and the generic implementation's queries time out.
+`strata --file examples/tasks verify` proves the helpers, `drain`, `run_producer`, the demo, `empty_queue`, `MemQueue.claim` and all three laws; `enqueue`, `record`, `release` and `expire` are fuzzed without a counterexample, most of their checks proven: what is left is their loops (the invariants relating the table to its value before the loop are not inferred) and `record`'s refused path (see `IDEAS.md`, "Examples over trait models: what the prover lacks").
 
 ## Gaps compared with the reference
 
