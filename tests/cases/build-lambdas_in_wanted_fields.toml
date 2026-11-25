@@ -1,0 +1,18 @@
+# a lambda with untyped parameters in a field whose type is known (inside
+# `Some`, in a generic function) gets its parameters' types from it, built,
+# every object freed
+
+[[step]]
+save = "by_key.strata"
+from = "by_key.st"
+
+[[step]]
+strata = ["build", "by_key.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+out = '''
+4
+2
+'''
