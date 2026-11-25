@@ -1,6 +1,6 @@
 # std.python
 
-std.python: calls to Python functions declared `extern python "module" fn …`.
+Calls to Python functions declared `extern python "module" fn …`.
 A module wraps them in a capability, so a signature shows what code can reach Python.
 
 ## Types

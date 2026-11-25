@@ -1,6 +1,6 @@
 # std.json
 
-std.json: JSON text, and records and sum types read from it and written to it.
+JSON text, and records and sum types read from it and written to it.
 `derive Json for T` writes the JSON a web front end sends and expects.
 
 ## Types

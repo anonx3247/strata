@@ -1,6 +1,6 @@
 # std.memory
 
-std.memory: arenas, for programs that allocate much and keep little.
+Arenas, for programs that allocate much and keep little.
 An arena allocates objects together, with no free list, and frees them all at once.
 
 ## Functions

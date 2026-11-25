@@ -1,6 +1,6 @@
 # std.toml
 
-std.toml: TOML 1.1 text (https://toml.io/en/v1.1.0) read into values and written from them, and `derive Toml` for records and sum types.
+TOML 1.1 text (https://toml.io/en/v1.1.0) read into values and written from them, and `derive Toml` for records and sum types.
 `parse` checks every rule of TOML 1.1. Not supported: `inf` and `nan`, since a Strata `Float` is finite.
 
 ## Types

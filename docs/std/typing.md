@@ -1,6 +1,6 @@
 # std.typing
 
-std.typing: types as values at compile time, for derivable traits.
+Types as values at compile time, for derivable traits.
 A `derivable(Record) trait` sees the type it is derived for as `Self`, and each `derived fn` is specialized for it.
 
 ## Types

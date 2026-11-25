@@ -1,6 +1,6 @@
 # std.process
 
-std.process: the running program's arguments, environment and exit code, and the programs it runs.
+The running program's arguments, environment and exit code, and the programs it runs.
 `main` may return `()` (exit code 0), an `ExitCode`, or a `Result` of either. An `Err` is written to standard error and exits with 1.
 
 ## Types

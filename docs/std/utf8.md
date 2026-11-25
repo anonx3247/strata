@@ -1,6 +1,6 @@
 # std.utf8
 
-std.utf8: text as UTF-8 bytes, and back. A byte is an `Int` from 0 to 255.
+Text as UTF-8 bytes, and back. A byte is an `Int` from 0 to 255.
 
 ## Functions
 

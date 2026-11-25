@@ -1,6 +1,6 @@
 # std.sqlite
 
-std.sqlite: SQLite databases through the system's libsqlite3.
+SQLite databases through the system's libsqlite3.
 `main` asks for `Sqlite` and passes the `Connection` on as a `Database`, so tests can use an in-memory database or a mock.
 
 ## Types

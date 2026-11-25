@@ -1,7 +1,7 @@
 # std.io
 
-std.io: the console, text in and out.
-`main` asks for a `Console`. The terminal runs it under `strata run`, the test's output in a test.
+The console, text in and out.
+`main` asks for a `Console`. It is the terminal under `strata run`, and the test's own output in a test.
 
 ## Types
 

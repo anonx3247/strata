@@ -1,6 +1,6 @@
 # std.term
 
-std.term: text styled for a terminal with ANSI escape codes.
+Text styled for a terminal with ANSI escape codes.
 A paint from `console.paint(stream)` is on only for a terminal. Off, it returns text unchanged.
 
 ## Types

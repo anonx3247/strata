@@ -1,6 +1,6 @@
 # std.ffi
 
-std.ffi: Strata functions called from other languages.
+Strata functions called from other languages.
 `derive C for add` or `derive Python for add` exports `add` from a library built with `strata build --lib`.
 
 ## Traits

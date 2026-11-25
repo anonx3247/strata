@@ -1,6 +1,6 @@
 # std.collections
 
-std.collections: ordered dictionaries and sets (AVL trees), and a priority queue (a binary heap).
+Ordered dictionaries and sets (AVL trees), and a priority queue (a binary heap).
 Use `Dict` or `Set`, which are hash tables, when the order doesn't matter: they are faster.
 
 ## Types

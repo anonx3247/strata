@@ -1,6 +1,6 @@
 # std.unicode
 
-std.unicode: sets of code points, Unicode properties, simple case folding and grapheme clusters (Unicode 16.0.0).
+Sets of code points, Unicode properties, simple case folding and grapheme clusters (Unicode 16.0.0).
 A set of code points is a `List[(Int, Int)]` of inclusive ranges, sorted, neither overlapping nor touching.
 
 ## Types

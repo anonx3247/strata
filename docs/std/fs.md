@@ -1,6 +1,6 @@
 # std.fs
 
-std.fs: files and folders. `main` asks for the `Disk`. Tests pass a `MemFiles`.
+Files and folders. `main` asks for the `Disk`. Tests pass a `MemFiles`.
 
 ## Types
 

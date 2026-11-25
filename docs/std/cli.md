@@ -1,6 +1,6 @@
 # std.cli
 
-std.cli: command-line options read into a record, and commands into a union, with `derive CommandLine`.
+Command-line options read into a record, and commands into a union, with `derive CommandLine`.
 `strata run` and a compiled program build `main`'s options from the arguments and answer `--help` from the doc comments.
 
 ## Types

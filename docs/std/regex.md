@@ -1,6 +1,6 @@
 # std.regex
 
-std.regex: regular expressions in regex-syntax's syntax, matched by a Pike VM or a DFA.
+Regular expressions in regex-syntax's syntax, matched by a Pike VM or a DFA.
 It also gives `strata verify` its model of `matches(s, pattern)`, sample texts for fuzzing, and the relations between two patterns.
 
 ## Types

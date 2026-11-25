@@ -1,6 +1,6 @@
 # std.orm
 
-std.orm: records as SQLite tables. `derive Table for Todo` gives the table's schema, its rows written and read back as `Todo`s, and typed queries over its fields.
+Records as SQLite tables. `derive Table for Todo` gives the table's schema, its rows written and read back as `Todo`s, and typed queries over its fields.
 
 ## Types
 

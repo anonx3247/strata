@@ -1,6 +1,6 @@
 # std.code
 
-std.code: a codebase as Strata's tools see it, for viewers and agents.
+A codebase as Strata's tools see it, for viewers and agents.
 The codebase is the current folder, a package with its log.
 
 ## Types

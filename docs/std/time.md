@@ -1,6 +1,6 @@
 # std.time
 
-std.time: the clock, waiting, and timers in `select`.
+The clock, waiting, and timers in `select`.
 `main` asks for a `SystemClock`. A test asks for a `VirtualClock`, whose timeouts happen at once.
 
 ## Types

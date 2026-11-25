@@ -1,6 +1,6 @@
 # std.web
 
-std.web: HTML pages built as values, one function per element, rendered by `render` or `document`.
+HTML pages built as values, one function per element, rendered by `render` or `document`.
 A page with events has a message type `M`. A page without events is an `Html[()]`.
 
 ## Types

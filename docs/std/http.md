@@ -1,6 +1,6 @@
 # std.http
 
-std.http: requests, responses and routes for `strata serve`.
+Requests, responses and routes for `strata serve`.
 A program serves the web by defining `fn handle(req: Request) -> Response`, which tests can call directly.
 
 ## Types
