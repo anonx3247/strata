@@ -45,8 +45,8 @@ typedef struct {
 static Proc procs[POOL_MAX];
 // (each thread's own: workers encoding functions ask at the same time)
 static __thread char *last_result;
-// (a solver started that didn't answer a command as it read it: scripts go
-// to a process each from then on)
+// set when a solver started that didn't answer a command as it read it;
+// from then on each script gets a process of its own
 static volatile int pool_broken;
 
 static void buf_add(Buf *b, const char *s, size_t n) {
@@ -85,8 +85,8 @@ static void proc_stop(Proc *p) {
   p->lines = 0;
 }
 
-// At exit: the processes told their input has ended, and waited for (their
-// time is this process's children's, as a process per script's was).
+// At exit, each process is told its input has ended and is waited for, so
+// its time counts as this process's children's.
 static void pool_end(void);
 static void register_end(void) { atexit(pool_end); }
 
