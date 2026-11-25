@@ -156,7 +156,7 @@ fn main() {
   print(split("a,b,c", ","))
   print(replace("aXbXc", "X", "--"))
   print(f"{3.14159:.2} [{42:>6}] [{"ab":<4}]")
-  print(chars("héllo").reverse())
+  print(chars("héllo").reversed())
   print(parse_float(" 2.5 "))
   print(lines("one\ntwo"))
   // reassigning in a loop
@@ -166,5 +166,5 @@ fn main() {
   }
   print(words)
   print(words[1..3])
-  print(words.sorted_by(w -> w).reverse())
+  print(words.sorted_by(w -> w).reversed())
 }

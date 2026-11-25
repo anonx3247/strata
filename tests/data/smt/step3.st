@@ -62,7 +62,7 @@ fn bad_literal() -> List[Pos] {
 fn pushed(xs: List[Pos]) -> List[Pos]
   ensures len(it) == len(xs) + 1
 {
-  push(xs, 4)
+  xs + [4]
 }
 
 fn joined(a: List[Pos], b: List[Pos]) -> List[Pos]
@@ -110,7 +110,7 @@ fn bag_first(b: Bag) -> Pos
 }
 
 fn bag_add(b: Bag, n: Pos) -> Bag {
-  Bag { ..b, items: push(b.items, n) }
+  Bag { ..b, items: b.items + [n] }
 }
 
 fn found(xs: List[Pos]) -> Pos {

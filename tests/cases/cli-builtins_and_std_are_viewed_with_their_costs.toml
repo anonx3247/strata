@@ -8,7 +8,7 @@
 strata = ["view", "Dict"]
 has = [
   "/// Values by key, in no promised order (a hash table)",
-  "/// Cost: `get` and `contains` O(1) on average; `insert` O(1) amortized in",
+  "/// Cost: `get` and `contains` O(1) on average; `mut d.insert(k, v)` O(1)",
   "builtin type Dict[K, V]\n",
 ]
 
@@ -16,16 +16,17 @@ has = [
 [[step]]
 strata = ["view", "insert"]
 has = [
-  "builtin fn insert[K, V](d: Dict[K, V], k: K, v: V) -> Dict[K, V]",
-  "builtin fn insert[A](s: Set[A], x: A) -> Set[A]",
-  "/// Cost: O(1) amortized in place: in the statement `d = insert(d, k, v)`",
-  "/// Cost: O(1) amortized in place: in the statement `s = insert(s, x)`",
+  "builtin fn insert[K, V](mut d: Dict[K, V], k: K, v: V)\n",
+  "builtin fn insert[A](mut s: Set[A], x: A)\n",
+  "builtin fn insert[A](mut xs: List[A], i: Int, x: A)\n",
+  "/// Sets key `k` to `v` (added, or its value replaced): `mut d.insert(k, v)`.",
+  "/// Cost: O(1) amortized, in place when nothing else holds `s`; O(n) when",
 ]
 counts = { "builtin fn len" = 0 }
 
 [[step]]
 strata = ["view", "push,List"]
-has = ["// ── module core.types", "builtin type List[T]", "/// Cost: O(1) amortized", "builtin fn push[A](xs: List[A], x: A) -> List[A]"]
+has = ["// ── module core.types", "builtin type List[T]", "/// Cost: O(1) amortized", "builtin fn push[A](mut xs: List[A], x: A)\n  ensures xs == old xs + [x]"]
 
 # std's, qualified or (public, when core has no such name) by its own name
 [[step]]

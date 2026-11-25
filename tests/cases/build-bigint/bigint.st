@@ -43,7 +43,7 @@ fn main() {
   n := 4611686018427387903
   print(n + 1)
   print(n + 1 - 1 == n)
-  print([big, 1, -big].sort())
+  print([big, 1, -big].sorted())
   print(Set { big, big * 1, 2 })
   print(Dict { big: "big" })
   print(f"{big:>40}")
@@ -65,6 +65,6 @@ fn main() {
   }
   print(acc > 0)
   ys := [big * 2, big * 3]
-  zs := ys.push(big * 4)
+  zs := ys + [big * 4]
   print(len(zs))
 }
