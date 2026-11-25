@@ -147,17 +147,17 @@ strata = ["--file", "step14.strata", "verify", "--no-cache", "--cases", "50"]
 env = { "STRATA_CACHE" = "$TMP/cache" }
 any_code = true
 stdout = '''
-✓ count_up                 proven (10 checks)
+✓ count_up                 proven (4 checks)
 ✓ seen_while               proven (2 checks)
-✓ spin                     proven (2 checks)
+✓ spin                     proven (1 check)
     may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order)
 ✓ uses_spin                proven (1 check)
     may not terminate: it calls `spin`, which may not terminate
-✓ first_loop               proven (nothing to check)
+✓ first_loop               proven (1 check)
     may not terminate: it has a `loop` without a `decreases` clause (only `for` loops, `while` loops whose bound goes down, and loops whose `decreases` measure goes down, are shown to end)
 ✓ uses_loop                proven (1 check)
     may not terminate: it calls `first_loop`, which may not terminate
-✓ marked                   proven (nothing to check)
+✓ marked                   proven (1 check)
     terminates if `marked` does (marked `terminates`, not proven)
 ✓ uses_marked              proven (3 checks)
     terminates if `marked` does (marked `terminates`, not proven)
@@ -171,12 +171,9 @@ stdout = '''
 ✓ apply_total              proven (1 check)
 ✓ uses_total               proven (1 check)
 ✓ down                     proven (4 checks)
-~ uses_down                fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
-    not proven: ensures it == (down(n) >= 0): the solver found a possible counterexample: n = 0, but running it did not fail
-~ sees_down                fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
-    not proven: ensures it == (down(2) == 2): the solver found a possible counterexample: , but running it did not fail
-~ sees_count               fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
-    not proven: ensures it == (count_up(2) == 2): the solver found a possible counterexample: , but running it did not fail
+✓ uses_down                proven (1 check)
+✓ sees_down                proven (1 check)
+✓ sees_count               proven (1 check)
 ~ sees_spin                fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
     not proven: ensures it == (spin(4) == 0): the solver found a possible counterexample:  (depends on the result of `spin` (only its contract is known)), but running it did not fail
     may not terminate: it calls `spin`, which may not terminate
@@ -306,7 +303,7 @@ strata = ["--file", "step4.strata", "verify", "--no-cache", "--cases", "50"]
 env = { "STRATA_CACHE" = "$TMP/cache" }
 any_code = true
 stdout = '''
-✓ sum_to                   proven (8 checks)
+✓ sum_to                   proven (7 checks)
 ✓ count_down               proven (3 checks)
 ✗ bad_loop                 Refinement violation (found by the solver)
     input:   0
@@ -315,17 +312,17 @@ stdout = '''
 ✗ wrong_invariant          Assert violation (found by the solver)
     input:   0
     invariant failed: i < n (left: 0, right: 0) (stack: wrong_invariant)
-✓ find_first               proven (4 checks)
+✓ find_first               proven (3 checks)
 ~ total                    fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
     not proven: result of `total`: Natural: the solver found a possible counterexample: xs = [], but running it did not fail
 ✓ first_big                proven (nothing to check)
-✓ skip_odd                 proven (nothing to check)
-✓ forever                  proven (nothing to check)
+✓ skip_odd                 proven (1 check)
+✓ forever                  proven (1 check)
     may not terminate: it has a `loop` without a `decreases` clause (only `for` loops, `while` loops whose bound goes down, and loops whose `decreases` measure goes down, are shown to end)
 ✗ divide_all               Runtime violation (found by the solver)
     input:   [0], 0
     division by zero (stack: divide_all)
-✓ ensures_loop             proven (9 checks)
+✓ ensures_loop             proven (8 checks)
 '''
 
 [[step]]
@@ -382,9 +379,9 @@ any_code = true
 stdout = '''
 ✓ count_down               proven (4 checks)
 ✓ search                   proven (4 checks)
-✓ spin                     proven (2 checks)
+✓ spin                     proven (1 check)
     may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order)
-✓ forever                  proven (nothing to check)
+✓ forever                  proven (1 check)
     may not terminate: it has a `loop` without a `decreases` clause (only `for` loops, `while` loops whose bound goes down, and loops whose `decreases` measure goes down, are shown to end)
 ✓ fact                     proven (1 check)
 ✓ up                       proven (1 check)
@@ -438,9 +435,9 @@ stdout = '''
     input:   -999.2508503161262
     postcondition of `wrong` violated: ensures it > x (it = -1998.5017006322523) (stack: wrong)
 ✓ checked                  proven (nothing to check)
-✓ sum_to                   proven (8 checks)
+✓ sum_to                   proven (7 checks)
 ✓ fact                     proven (2 checks)
-✓ spin                     proven (nothing to check)
+✓ spin                     proven (1 check)
     may not terminate: it has a `loop` without a `decreases` clause (only `for` loops, `while` loops whose bound goes down, and loops whose `decreases` measure goes down, are shown to end)
 ✓ collatz                  proven (nothing to check)
     terminates if `collatz` does (marked `terminates`, not proven)
@@ -467,7 +464,7 @@ stdout = '''
     input:   "þ", 4
     byte -996 out of range (2 bytes) (stack: padded_wrong)
 ✓ inside                   proven (2 checks)
-✓ slashes                  proven (1 check)
+✓ slashes                  proven (2 checks)
 ✓ ascii_code               proven (2 checks)
 '''
 
@@ -561,7 +558,7 @@ env = { "STRATA_CACHE" = "$TMP/cache" }
 any_code = true
 stdout = '''
 ✓ a                        proven (1 check)
-✓ units                    proven (3 checks)
+✓ units                    proven (4 checks)
     may not terminate: it has a `for` over an `Iterator` that isn't a `FiniteIterator`, which may never end (only `for` loops over lists, sets, dicts and finite iterators, and `while` loops whose bound goes down, are shown to end)
 ✓ longer                   proven (2 checks)
     may not terminate: it calls `units`, which may not terminate

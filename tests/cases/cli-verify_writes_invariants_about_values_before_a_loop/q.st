@@ -6,6 +6,12 @@ fn char_at(src: String, i: Int) -> String {
   }
 }
 
+fn next(i: Int) -> Int
+  ensures it == i + 1
+{
+  i + 1
+}
+
 fn quoted_end(src: String, from: Natural, tab: Int) -> Int
   requires from <= byte_len(src)
   ensures it <= byte_len(src)
@@ -26,7 +32,7 @@ fn quoted_end(src: String, from: Natural, tab: Int) -> Int
       s += ch
     }
     col += 1
-    at += 1
+    at = next(at)
   }
   at
 }
@@ -56,7 +62,7 @@ fn quoted_after(src: String, tab: Int) -> Int
       s += ch
     }
     start_at += 1
-    at += 1
+    at = next(at)
   }
   at
 }
