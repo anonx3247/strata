@@ -1,0 +1,47 @@
+# A `for` over a list infers what each pass keeps, as a `while` does: the
+# `ensures` of the variable returned, over the elements visited so far
+# (`n <= len(xs)`, every visited element a key, every kept one positive);
+# the list returned, `mut got := []`, has the result's type at the loop's
+# head
+[[step]]
+save = "f.strata"
+text = '''
+fn positives(xs: List[Int]) -> Int
+  ensures it <= len(xs)
+  ensures it >= 0 {
+  mut n := 0
+  for x in xs {
+    if x > 0 {
+      n += 1
+    }
+  }
+  n
+}
+
+fn marked(xs: List[Int], d: Dict[Int, Int]) -> Dict[Int, Int]
+  ensures all(xs, x -> it.contains(x))
+  ensures len(it) >= len(d) {
+  mut e := d
+  for x in xs {
+    mut e.insert(x, 1)
+  }
+  e
+}
+
+fn kept(xs: List[Int]) -> List[Int]
+  ensures len(it) <= len(xs)
+  ensures all(it, y -> y > 0) {
+  mut got := []
+  for x in xs {
+    if x > 0 {
+      mut got.push(x)
+    }
+  }
+  got
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-write"]
+has = ["✓ positives", "✓ marked", "✓ kept"]
+lacks = ["~ ", "✗ "]

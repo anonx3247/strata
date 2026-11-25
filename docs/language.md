@@ -660,4 +660,4 @@ signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
 
-**C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c).
+**C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c). **Python functions** with `extern python "module" fn`, their values crossing as JSON (`Json`) and every call a `Result[T, PythonError]`; see the [reference](language-reference.md#foreign-functions-extern-python).
