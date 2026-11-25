@@ -1,0 +1,22 @@
+# a call of a function one of the program's modules doesn't have, named in
+# full (`tests.input(...)` in module `tests`): an error of `check`, not a
+# call compiler/codegen can't compile (STRATA-ISSUES.md #5)
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+module = "tools"
+into = "$TMP/p/"
+from = "tools.st"
+
+[[step]]
+module = "tests"
+into = "$TMP/p/"
+from = "tests.st"
+
+[[step]]
+strata = ["--file", "p", "check"]
+fails = true
+has = ["error in test \"tests: uses a function the module lacks\": unknown function `tests.input`"]
