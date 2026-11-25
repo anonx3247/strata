@@ -252,19 +252,21 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 Nothing declares a pipeline: `strata view --graph T` reads it off the code. For a sum type `T` (`Status = Pending | Running | Done | Exhausted`), it finds each function that takes a value holding a `T` (a `T`, a record with one at a field path such as `Entry.status`, a list of them) and gives one back (its result, a `mut` parameter, `mut self`), and asks the solver, for each pair of variants, whether the function can move a value from one to the other:
 
 ```
-$ strata view --graph Status
+$ strata --file examples/tasks view --graph Status
 Status = Pending | Running | Done | Exhausted
-  Pending   -> Running    by mem_claim (unknown)
-  Running   -> Pending    by mem_record (unknown), mem_release (unknown)
-  Running   -> Exhausted  by mem_record (unknown), mem_release (unknown)
-  ...
-  any       -> any        by MemQueue.claim (possible), ... (nothing proven impossible: --all lists their moves)
-proven impossible: 57 more (in 5 functions; --all lists them)
+  Pending   -> Done       by after_attempt (possible)
+  Running   -> Pending    by after_attempt (possible)
+  Running   -> Done       by after_attempt (possible)
+  Running   -> Exhausted  by after_attempt (possible)
+  Done      -> Pending    by after_attempt (possible)
+  Done      -> Exhausted  by after_attempt (possible)
+  Exhausted -> Done       by after_attempt (possible)
+proven impossible: 5 more (in 1 functions; --all lists them)
 ```
 
 Each move says what is known of it: `possible` (the solver found values that make it), `unknown`, or proven impossible (listed with `--all`). A value made from nothing is an entry, `(new) -> Shipped by ship`. A function nothing is proven of (it calls functions whose contracts don't say what they do with the type) is put on one `any -> any` line instead of a line per move. `--html` writes a page with the graph drawn (the variants in a row, each move an arc labelled by its functions, coloured by what is known).
 
-From a run: `strata run --trace` prints each call and return; `strata view --graph T --trace FILE` reads those lines and counts the moves each call made (`Pending -> Running by mem_claim ×2`).
+From a run: `strata run --trace` prints each call and return; `strata view --graph T --trace FILE` reads those lines and counts the moves each call made (`Running -> Done by after_attempt ×2`).
 
 In a diff: `strata diff --graph T` adds how the moves changed, in words (`new move `Running -> Cancelled` by `cancel``, `` `expire` no longer reaches `Pending` ``); `--html` draws both graphs side by side, the moves added and removed marked.
 
