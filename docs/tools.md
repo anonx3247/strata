@@ -249,20 +249,20 @@ Every view is Strata text, so an agent can edit what it sees and send it back wi
 
 ## State graphs: how a type's values move
 
-Nothing declares a pipeline: `strata view --graph T` reads it off the code. For a sum type `T` (`Status = Pending | Running | Done | Exhausted`), it finds each function that takes a value holding a `T` (a `T`, a record with one at a field path such as `Entry.status`, a list of them) and gives one back (its result, a `mut` parameter, `mut self`), and asks the solver, for each pair of variants, whether the function can move a value from one to the other:
+Nothing declares a pipeline: `strata view --graph T` reads it off the code. For a sum type `T` (`Status = Pending | Running | Done | Exhausted`), it finds each function that takes a value holding a `T` (a `T`, a record with one at a field path such as `Entry.status`, a list or dict of them, a trait's model) and gives one back (its result, a `mut` parameter, `mut self`), and asks, for each pair of variants, whether the function can move a value from one to the other (a list's element to the one at the same position, a dict's value to the one at the same key):
 
 ```
 $ strata view --graph Status
 Status = Pending | Running | Done | Exhausted
-  Pending   -> Running    by mem_claim (unknown)
-  Running   -> Pending    by mem_record (unknown), mem_release (unknown)
-  Running   -> Exhausted  by mem_record (unknown), mem_release (unknown)
+  (new)     -> Pending    by mem_enqueue (possible), MemQueue.enqueue (possible)
+  Pending   -> Running    by mem_claim (possible), MemQueue.claim (possible)
+  Running   -> Pending    by mem_record (unknown), mem_release (possible), MemQueue.record (unknown), MemQueue.release (possible)
   ...
-  any       -> any        by MemQueue.claim (possible), ... (nothing proven impossible: --all lists their moves)
-proven impossible: 57 more (in 5 functions; --all lists them)
+  any       -> any        by run_steps (possible), queue_after (possible) (nothing proven impossible: --all lists their moves)
+proven impossible: 124 more (in 10 functions; --all lists them)
 ```
 
-Each move says what is known of it: `possible` (the solver found values that make it), `unknown`, or proven impossible (listed with `--all`). A value made from nothing is an entry, `(new) -> Shipped by ship`. A function nothing is proven of (it calls functions whose contracts don't say what they do with the type) is put on one `any -> any` line instead of a line per move. `--html` writes a page with the graph drawn (the variants in a row, each move an arc labelled by its functions, coloured by what is known).
+Each move says what is known of it: `possible` (the solver found values that make it, or a run on generated inputs made it), `unknown`, or proven impossible (listed with `--all`). The body's shape answers first: a list kept (`filter`, slices, `xs + [x]`'s first part) moves nothing, an element added as written (`Entry { status: Pending, … }`) is an entry in that variant, and a method that hands its state to a function (`MemQueue.claim` calling `mem_claim`) moves as that function does. A trait's method with models moves as its contract says (`ensures self.entries == …`). A value made from nothing is an entry, `(new) -> Shipped by ship`. A function nothing is proven of (it calls functions whose contracts don't say what they do with the type) is put on one `any -> any` line instead of a line per move. `--html` writes a page with the graph drawn (the variants in a row, each move an arc labelled by its functions, coloured by what is known).
 
 From a run: `strata run --trace` prints each call and return; `strata view --graph T --trace FILE` reads those lines and counts the moves each call made (`Pending -> Running by mem_claim ×2`).
 
