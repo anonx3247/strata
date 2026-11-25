@@ -68,6 +68,9 @@ defined `Point`
 strata = ["--file", "p.strata", "repl"]
 text = """
 nope + 1
+fn pick(xs: List[Int], i: Int) -> Int { xs[i] }
+fn outer(n: Int) -> Int { pick([1], n) }
+outer(3)
 mut ys := [1]
 ys = ys + [[1, 2][5]]
 ys
@@ -75,7 +78,7 @@ process.var("HOME")
 :frobnicate
 """
 fails = true
-has = ["unknown variable `nope`", "index 5 out of range (length 2)", "[1]: List[Int]", "the REPL gives no `process`: `strata repl --allow process` gives the real one", "unknown command `:frobnicate`"]
+has = ["unknown variable `nope`", "fault (Runtime): index 3 out of range (length 1)\n    stack: outer -> pick", "fault (Runtime): index 5 out of range (length 2)", "[1]: List[Int]", "the REPL gives no `process`: `strata repl --allow process` gives the real one", "unknown command `:frobnicate`"]
 
 # the REPL's own capabilities: an in-memory folder for `disk`, `read_line`
 # reading the REPL's next input; the real files only with `--allow files`
