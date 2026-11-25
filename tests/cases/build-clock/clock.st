@@ -34,7 +34,7 @@ fn main(clock: SystemClock) {
   }
   print(s)
   mut timeouts := 0
-  for i in 0..20 {
+  for _ in 0..20 {
     if timeout(clock, rx) is None {
       timeouts += 1
     }

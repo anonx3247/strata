@@ -9,7 +9,7 @@ fn a() {
   y = 3
   bump(y)
   bump(mut y)
-  show(mut y)
+  _ := show(mut y)
   bump(mut x)
   bump(3)
   q := mut y
