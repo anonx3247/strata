@@ -387,7 +387,7 @@ impl Files for MemDisk {
   }
 
   fn write(mut self, path: String, text: String) -> Result[(), FsError] {
-    self.files = insert(self.files, path, text)
+    mut self.files.insert(path, text)
     Ok(())
   }
 }
@@ -637,7 +637,7 @@ fn main() {
   ]
   ordered := [l.sku for l in lines where l.qty > 0]
   totals := Dict { l.sku: l.qty * l.price for l in lines }
-  best := sort_by(lines, l -> -l.qty * l.price)[0]
+  best := lines.sorted_by(l -> -l.qty * l.price)[0]
   print(f"ordered: {ordered}")
   print(f"totals: {totals}")
   print(f"biggest line: {best.sku}, {float(best.qty * best.price) / 100.0:.2}")
@@ -659,7 +659,7 @@ type Sorted = List[Int] where all(1..len(it), i -> it[i - 1] <= it[i])
 /// Adds a reading if it beats the last record.
 fn record(best: Sorted, x: Int) -> Sorted {
   if len(best) == 0 || x > best[len(best) - 1] {
-    push(best, x)
+    best + [x]
   } else {
     best
   }
@@ -668,7 +668,7 @@ fn record(best: Sorted, x: Int) -> Sorted {
 /// The same, compared with the first record instead of the last.
 fn record_wrong(best: Sorted, x: Int) -> Sorted {
   if len(best) == 0 || x > best[0] {
-    push(best, x)
+    best + [x]
   } else {
     best
   }
@@ -773,7 +773,7 @@ fn main() {
 
 /// Changes the caller's cart: the parameter says \`mut\`, and so does every call.
 fn add(mut cart: Cart, item: String) {
-  cart.items = push(cart.items, item)
+  mut cart.items.push(item)
 }
 
 fn main() {
@@ -853,7 +853,7 @@ fn with_progress(n: Int) -> (Int, List[Int]) {
       select {
         rx.recv() as r => match r {
           Some(k) => {
-            reports = push(reports, k)
+            mut reports.push(k)
           },
           None => {},
         },

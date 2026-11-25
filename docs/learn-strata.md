@@ -359,13 +359,21 @@ fn collections(xs: NonEmpty[Int], text: String) -> Int {
   squares := [x * x for x in xs where x > 0]
   grid := [(a, b) for a in 1..=2 for b in ["x", "y"]]
   d := Dict { "tea": 450, "cup": 1200 }
-  d2 := insert(d, "pot", 3000)
+  // A `mut` list, dict or set changes through its `mut` methods, in place:
+  // `push`, `pop`, `insert`, `remove`, `clear`, `sort`, `reverse`.
+  mut d2 := d
+  mut d2.insert("pot", 3000)
+  mut stack := [1, 2]
+  mut stack.push(3)
+  top := mut stack.pop()
+  // New values are expressions: `xs + [x]`, `xs.sorted()`, `xs.reversed()`.
+  more := xs + [4]
   price := get(d2, "tea") ?? 0
   lengths := Dict { w: len(w.code_points()) for w in split(text, " ") }
   s := Set { 1, 2, 2, 3 }
   empty := Dict[String, Int] {}
   total := fold(xs, 0, (acc, x) -> acc + x)
-  pairs := enumerate(zip(sort(xs), ["a", "b", "c"]))
+  pairs := enumerate(zip(xs.sorted(), ["a", "b", "c"]))
   head
     + maybe
     + len(rest)
@@ -598,6 +606,7 @@ test "a mocked capability" {
 - **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`. So is a union naming a set its module (or the prelude) names already: `type Answer = Some(Int) | None` is `Option[Int]`.
 - **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, `line.line_total()` is `line_total(line)`.
 - **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `fn save(mut self, …)` and the call `mut db.save(o)` (required there, an error anywhere else). Only a `mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument needs exactly the parameter's type. As an argument, a marked call takes parentheses: `f((mut q.pop()), x)`.
+- **Lists, dicts and sets change through `mut` methods**: `mut xs.push(x)`, `mut d.insert(k, v)`, `mut xs.sort()` (in place); `xs.push(x)` without the mark is an error, and a new value is an expression: `xs + [x]`, `xs.sorted()`.
 - **A declared type holds forever**: `mut x: Positive = 1` then `x = 0` is an error (at compile time for literals, at run time otherwise).
 - **Matches are exhaustive and every arm must be reachable.** Conditions comparing `it` with constants are decided exactly; anything else (`matches(it, …)`, a call) needs a `_` arm.
 - **`Result` and `Option` each have their own operators**: `!`, `except`, `!!` for a `Result`; `?`, `or`, `??` for an `Option`. Using one on the other type is an error. A single-value fallback is always written short (`x ?? 0`, not `x or { 0 }`); `??` and `!!` bind looser than arithmetic and tighter than comparisons.

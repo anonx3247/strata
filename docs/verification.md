@@ -373,11 +373,11 @@ fn tail(xs: Sorted) -> Sorted
 
 fn add_max(xs: Sorted, x: Int) -> Sorted
   requires len(xs) == 0 || xs[len(xs) - 1] <= x {
-  push(xs, x)
+  xs + [x]
 }
 
 fn add(xs: Sorted, x: Int) -> Sorted {
-  push(xs, x)
+  xs + [x]
 }
 ```
 
