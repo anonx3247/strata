@@ -1,0 +1,25 @@
+# Lists grown in arenas (std.memory): pushed onto in place, grown where
+# they are at their arena's top, grown by a copy, shared with a list that
+# keeps its own elements, extended, inserted into, in a field, nested; the
+# results copied out of their arenas; the same with arenas off
+# (STRATA_MEMORY=check: everything made is freed) and on the JIT
+
+[[step]]
+save = "lists.strata"
+from = "lists.st"
+
+[[step]]
+strata = ["build", "lists.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+stdout = "100000\n9999800017\n[0, 1, 4, 9, 16]\n3000\nl2999\n[1, 2, 3, 4]\n39\n44\n[2, 3, 99, 2, 3]\n[2, 3, 99, 2, 3]\n1001\n998\n500\n499\n500\n500\n60\n59\nSmall(58)\n[Small(0), Named(\"n1\"), Small(2)]\n[[], [Small(0)], [Small(0), Named(\"n1\")], [Small(0), Named(\"n1\"), Small(2)]]\n"
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "100000\n9999800017\n[0, 1, 4, 9, 16]\n3000\nl2999\n[1, 2, 3, 4]\n39\n44\n[2, 3, 99, 2, 3]\n[2, 3, 99, 2, 3]\n1001\n998\n500\n499\n500\n500\n60\n59\nSmall(58)\n[Small(0), Named(\"n1\"), Small(2)]\n[[], [Small(0)], [Small(0), Named(\"n1\")], [Small(0), Named(\"n1\"), Small(2)]]\n"
+
+[[step]]
+strata = ["run", "lists.strata"]
+stdout = "100000\n9999800017\n[0, 1, 4, 9, 16]\n3000\nl2999\n[1, 2, 3, 4]\n39\n44\n[2, 3, 99, 2, 3]\n[2, 3, 99, 2, 3]\n1001\n998\n500\n499\n500\n500\n60\n59\nSmall(58)\n[Small(0), Named(\"n1\"), Small(2)]\n[[], [Small(0)], [Small(0), Named(\"n1\")], [Small(0), Named(\"n1\"), Small(2)]]\n"

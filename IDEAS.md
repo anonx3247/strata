@@ -1339,6 +1339,34 @@ The user asked whether Strata needs manual memory management, an unsafe mode or 
     - Seen, not fixed (not run by any command or test): `compiler check core/rt.strata` reports core.rt's statics as unknown variables (on main too), and, since these groups, type errors Rust's checker doesn't give, on `I64` arithmetic with a literal (`0 - big_base()` and `8 + an` with `an := str_size(a)` typed `Int`, then refused as allocating), though the allocator's `128 + k * 8` passes: the cause isn't investigated. compiler/codegen compiles the same code (it doesn't go through that path).
     - Found on the way, fixed in llvm.rs: an `assert` comparing `I64`s dropped, after it passed, the `Int`s made to show its sides, which only its failing path had made (undefined values: core.mem's test of `div_unsigned` crashed `strata --file core test --rust`).
 
+### Memory: growing lists at an arena's top, and lanes (asked by the coordinator 2026-11-26; built, branch `list-lanes`)
+The idea comes from Goose (https://aardappel.github.io/goose/). Goose keeps several bump-allocated data stacks, and the compiler gives each growing value that is live at the same time its own stack. The value is then always on top, and growing it is a pointer bump that never copies. In Strata, a list is a header (length, buffer, offset) over a buffer (capacity, slots used, slots). Inside an arena (`std.memory.arena`), each copy of a full buffer leaves the old one as waste until the arena is freed.
+
+Measured first, on `strata check` of the compiler package (counters added to core.rt for the measurement only):
+- Arenas allocated 4.38 GB in all. Buffers left behind by list growth were 170 MB of it (3.9%), over 299,000 copies.
+- No growing buffer was ever its arena's last object. Each `push` made a new 24-byte header (40 bytes with the arena's words) after the buffer, so the buffer was never on top. The other objects the loop made sat 256 bytes to 1 MB above it.
+- Those headers were the larger waste: 17.8 million pushes in arenas, 711 MB (16% of arena bytes). For 99.8% of them, the old header was held once and dropped right after.
+
+Built, in this order:
+- `x = push(x, e)` and `mut x.push(e)` push in place when nothing else holds the list (codegen `push_in_place`, core.list `list_pushable` and `list_push_owned`). The header is kept and nothing is held again. Otherwise the push makes a new header, as before. This is a codegen change. Without it, the top of the arena is never reached.
+- core.rt `arena_grow`: an object that is its arena's last, with room left in its 1 MB chunk, grows where it is by moving the arena's next-object address. core.list uses it for a full buffer before copying (`buf_room` for owned lists, `buf_extended` for `list_push` and `list_extend` on a buffer whose slots past the list's end are unused). Correctness never depends on it: anything else is copied as before. Arenas are per thread, so only the arena's own thread moves its top. In check mode there are no arenas.
+- Case `build-arena_lists`: lists grown in arenas in each of these ways, copied out, the same with arenas off (`STRATA_MEMORY=check`, 0 live) and on the JIT.
+
+Measured after:
+- Arena bytes went from 4.38 GB to 3.42 GB (-22%). Waste from growth went from 170 MB to 32.5 MB (0.95% of arena bytes). Of 299,000 grows, 151,000 now happen at the top and 148,000 still copy. Pushes making a header went from 17.8 million to 0.5 million.
+- Objects allocated outside arenas went from 231 million to 211 million.
+- `strata check` of compiler/: 84.4 G instructions before, 81.4 G after (-3.6%); cycles -5%. Peak memory stayed at 408 MB, since arena chunks are reused.
+- A loop pushing 100 million integers outside any arena: 35.9 G instructions before, 18.8 G after, and 2.6 s down to 1.3 s. Peak memory stayed at 2.15 GB for 800 MB of data.
+
+Decided:
+- Lanes (a separate bump area per growing list in a loop, so it stays on top while the loop's other objects go elsewhere) are not built. After the two steps above, the growth waste lanes could remove is 0.95% of arena bytes, and copying those 32.5 MB costs a few milliseconds of a 7-second check. Lanes would need codegen to find the loops and give each list its own chunk run. They are worth building only if a program shows growth copies dominating an arena, such as a loop pushing freshly made strings into a large list.
+- A large list outside arenas (step 4 of the request) is not built yet. The measurement says it matters: the 100 million pushes peak at 2.7 times the data, because the last doubling holds the old and new buffers at once. The same loop in C peaks at 2.14 GB with malloc, copy and free, and at 803 MB with `realloc`, because macOS moves a large block's pages instead of copying them. core.mem has no `raw_realloc`, and core.rt is compiled at the bootstrap's first stage by the seed, which must know every builtin it calls. The builtin (core.mem declaration, codegen `mem_builtin`, `realloc` in the declarations) has to ship in a release first. Then `buf_room` can call it for an owned buffer over 1 MB that no arena made, outside check mode (check mode remembers each object by its address).
+
+Left:
+- `xs += ys` on a list (`list_extend`) still makes a new header each time. An in-place version for an owned list, like `push_in_place`, would remove those too.
+- An in-place push holds the list once more and the assignment then drops the old value, as `x = insert(x, …)` does: one `dup` and one release per push that only cancel out (`--memory-sites` shows them). Static uniqueness would remove both.
+- Inside an arena, a list's buffer is held once more by each new header, and a header dropped in an arena is never walked, so the count never comes back down. Once a push has made a new header, `list_owned` fails for that list for the rest of the arena, and `xs[i] = v` copies the list. In-place pushes avoid it for lists built by `push` alone.
+
 ### Memory: beyond counting (plan, 2026-11-26)
 Agreed with the user: reference counting stays the model, and the next steps remove counting where the compiler can see it isn't needed. Each step is chosen by measurements, in this order.
 1. Per-site counters (stream `mem-sites`, below): count each counting operation, allocation and in-place test by its place in the code, so the next steps are chosen by numbers.
