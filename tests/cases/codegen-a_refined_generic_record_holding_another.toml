@@ -1,0 +1,51 @@
+# a refined record with type parameters holding, in a dict, another one
+# declared after it (`Box[P]`'s `Dict[Int, Entry[P]]`): the refined types are
+# compiled in the order their fields need, and a generic field's refined
+# type gets the value's type arguments when an update of it is checked
+# (examples/tasks' `MemQueue`)
+
+[[step]]
+save = "box.strata"
+text = '''
+/// Entries by key, and the keys in the order they came.
+type Box[P] = {
+  table: Dict[Int, Entry[P]],
+  order: List[Int],
+} where len(it.table) == len(it.order)
+
+/// What a box holds under a key.
+type Entry[P] = { item: P, tries: Int } where it.tries >= 0
+
+fn add[P](mut b: Box[P], k: Int, x: P) {
+  if !b.table.contains(k) {
+    mut b.table.insert(k, Entry { item: x, tries: 0 })
+    mut b.order.push(k)
+  }
+}
+
+fn bump[P](mut b: Box[P], k: Int) {
+  match b.table.get(k) {
+    Some(e) => mut b.table.insert(k, Entry { ..e, tries: e.tries + 1 }),
+    None => (),
+  }
+}
+
+fn main() {
+  mut b: Box[String] = Box { table: Dict[Int, Entry[String]] {}, order: [] }
+  add(mut b, 1, "x")
+  add(mut b, 2, "y")
+  bump(mut b, 1)
+  print(b.table.get(1))
+  print(b.order)
+  mut c: Box[String] = b
+  mut c.table.insert(3, Entry { item: "z", tries: -1 })
+}
+'''
+
+[[step]]
+strata = ["run", "box.strata"]
+code = 101
+has = [
+  "Some(Entry { item: \"x\", tries: 1 })\n[1, 2]\n",
+  "fault (Refinement): constructing `Entry`: Entry { item: \"z\", tries: -1 } does not satisfy `Entry` (where it.tries >= 0)",
+]
