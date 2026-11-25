@@ -6,15 +6,10 @@
 #                                         PATH, else the latest release
 #   STRATA_SEED=EXE tools/bootstrap.sh    seed: EXE (a strata built before)
 #
-# The seed is a `strata` built before: STRATA_SEED, else one installed on the
-# PATH, else the latest release, downloaded (and its SHA-256 checked) into
-# target/seed. Stage 1 = the seed's build of compiler/ (by compiler/codegen);
-# each next stage is the previous one's build of it, until two in a row are
-# the same bytes (a fixed point: 2 builds with a seed of these sources, up
-# to 4 with an older one). That stage is target/strata, and
-# target/strata.identity its SHA-256, size and modification time (its
-# identity for the caches' keys, read instead of hashing it each run:
-# compiler/c/cache.c).
+# A downloaded release is checked against its SHA-256 and unpacked into
+# target/seed. The last stage is target/strata. target/strata.identity holds
+# its SHA-256, size and modification time, which the caches read instead of
+# hashing it each run (compiler/c/cache.c).
 #
 # Needs LLVM 23, zstd and clang (Homebrew: `brew install llvm zstd`) and lld
 # built from source into target/lld (tools/build-lld.sh): compiler/strata.toml
@@ -43,15 +38,15 @@ else
 fi
 echo "seed: $seed" >&2
 
-# (built where they are found: core/, std/ and the prelude are this
-# repository's; the compiler package isn't verified here: `strata
-# verify`. Each stage is named `strata`, in a folder of its own: the
-# linker signs an executable under its file's name. `--release`: optimized,
-# as builds are unoptimized by default.)
+# Each stage builds with this repository's core/, std/ and prelude, without
+# verifying the compiler (`strata verify` does that). Each stage is named
+# `strata`, in a folder of its own, since the linker signs an executable
+# under its file's name. Builds are unoptimized by default, hence
+# `--release`.
 #
-# The seed's home: this repository, as the seed's version lays it out (a
-# strata from before runtime/ looked for the prelude and the C runtime in
-# src/llvm/): a folder of links to core/, std/ and runtime/, under both names.
+# The seed's home is a folder of links to core/, std/ and runtime/. Older
+# seeds look for the prelude and the C runtime in src/llvm/, so they are
+# linked there too.
 seed_home=$root/target/seed-home
 rm -rf "$seed_home"
 mkdir -p "$seed_home/src/llvm"
@@ -62,12 +57,13 @@ ln -s "$root/runtime" "$seed_home/runtime"
 ln -s "$root/compiler" "$seed_home/compiler"
 ln -s "$root/runtime/prelude.strata" "$seed_home/src/llvm/prelude.strata"
 ln -s "$root/runtime/runtime.c" "$seed_home/src/llvm/runtime.c"
-# Stage A is the seed's build of these sources; each next stage is the
+# Stage 1 is the seed's build of these sources. Each next stage is the
 # previous one's build of them, until two in a row are the same bytes (a
-# fixed point). A seed built from these sources gives A = B. An older seed
-# (the last release) can take two more: A runs these sources' code but on
-# the seed's runtime and code generation, so B can differ from what B itself
-# builds (C), and C = D. More than four builds is a failure.
+# fixed point). A seed built from these sources gives 1 = 2. An older seed,
+# such as the last release, can take two more builds: stage 1 runs these
+# sources' code on the seed's runtime and code generation, so stage 2 can
+# differ from what stage 2 itself builds (3), and 3 = 4. More than four
+# builds is a failure.
 rm -rf target/stages
 mkdir -p target/stages/1
 STRATA_HOME=$seed_home "$seed" build "$root/compiler" --no-verify --release -o target/stages/1/strata
