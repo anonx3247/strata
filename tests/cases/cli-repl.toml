@@ -111,3 +111,22 @@ strata = ["--file", "p.strata", "repl", "--allow", "net"]
 text = ""
 code = 2
 has = ["`--allow` takes `files` or `process` (comma-separated), not `net`"]
+
+# an input over several lines: read on while a bracket or block is open
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+fn sq(n: Int) -> Int {
+  n * n
+}
+xs := [
+  sq(2),
+  sq(3),
+]
+s := "a ( in a string"
+"""
+out = """
+defined `sq`
+xs: List[Int] = [4, 9]
+s: String = "a ( in a string"
+"""
