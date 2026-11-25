@@ -303,6 +303,18 @@ _Bool strata_unique(void *p) {
   return 1;
 }
 
+// `strata_dup` / `strata_release` of `p` whose count word the compiled code
+// read already (core.rt's take it, to read it once).
+void strata_dup_word(void *p, int64_t v) {
+  (void)v;
+  strata_dup(p);
+}
+
+_Bool strata_release_word(void *p, int64_t v) {
+  (void)v;
+  return strata_release(p);
+}
+
 // Marks `p` shared between threads: whether it wasn't yet.
 _Bool strata_share(void *p) {
   int64_t v = __atomic_load_n(count_of(p), __ATOMIC_RELAXED);
