@@ -3,7 +3,7 @@ Greet people by name.
 Usage: hello [OPTIONS] [names...]
 
 Arguments:
-  [names...]     Who to greet (the world if nobody).
+  [names...]     Who to greet. The world if nobody.
 
 Options:
   --loud         Shout the greeting.
