@@ -1,7 +1,7 @@
 # a `noalloc` function that allocates: each kind of allocation refused, with
 # what allocates and where; a call of a function or method that isn't
 # `noalloc`; an update that happens in place only when nothing else holds
-# the value counts; so does a contract checked when it runs (a `ghost` one,
+# the value counts; so does a contract checked when it runs (an `assumed` one,
 # never run, doesn't: build-noalloc)
 
 [[step]]

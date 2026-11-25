@@ -501,16 +501,16 @@ fn drain(n: Int) {
             (integer)))))))
 
 ============================================================
-Ghost contracts
+Assumed contracts
 ============================================================
 
-fn f(xs: List[Int]) -> Int ghost requires ok(xs) ghost ensures it >= 0 {
-  ghost := 0
+fn f(xs: List[Int]) -> Int assumed requires ok(xs) assumed ensures it >= 0 {
+  assumed := 0
   for x in xs
-    ghost invariant ghost >= 0 {
-    ghost += x
+    assumed invariant assumed >= 0 {
+    assumed += x
   }
-  ghost
+  assumed
 }
 
 ------------------------------------------------------------
@@ -558,7 +558,7 @@ Trait models, invariants and ensures
 
 trait Stock {
   model count: Int
-  ghost invariant self.count >= 0
+  assumed invariant self.count >= 0
   ensures self.count >= old self.count - 1
 
   fn add(mut self)

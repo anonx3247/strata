@@ -227,8 +227,8 @@ module.exports = grammar({
     contract: ($) =>
       choice(
         'terminates',
-        seq(optional('ghost'), 'requires', $._expression),
-        seq(optional('ghost'), 'ensures', $._expression),
+        seq(optional('assumed'), 'requires', $._expression),
+        seq(optional('assumed'), 'ensures', $._expression),
         seq('decreases', $._expression),
       ),
 
@@ -306,8 +306,8 @@ module.exports = grammar({
 
     // `invariant self.count >= 0`, `ensures self.count >= old self.count - 1`
     // in a trait: what every method keeps, what every `mut self` one ensures
-    trait_invariant: ($) => seq(optional('ghost'), 'invariant', $._expression),
-    trait_ensures: ($) => seq(optional('ghost'), 'ensures', $._expression),
+    trait_invariant: ($) => seq(optional('assumed'), 'invariant', $._expression),
+    trait_ensures: ($) => seq(optional('assumed'), 'ensures', $._expression),
 
     // `model orders = self.all` in an `impl`
     model_definition: ($) =>
@@ -516,8 +516,8 @@ module.exports = grammar({
 
     continue_statement: (_) => 'continue',
 
-    // `ghost invariant e`: proven by verify, never checked at run time
-    invariant: ($) => seq(optional('ghost'), 'invariant', $._expression),
+    // `assumed invariant e`: trusted (proven by verify or assumed), never checked at run time
+    invariant: ($) => seq(optional('assumed'), 'invariant', $._expression),
 
     // `decreases n - i`, `decreases (a, b)`: why a loop ends
     decreases: ($) => seq('decreases', $._expression),
