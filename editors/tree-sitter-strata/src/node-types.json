@@ -150,6 +150,10 @@
         "named": true
       },
       {
+        "type": "old_expression",
+        "named": true
+      },
+      {
         "type": "or_expression",
         "named": true
       },
@@ -656,6 +660,10 @@
           {
             "type": "_type",
             "named": true
+          },
+          {
+            "type": "named_results",
+            "named": true
           }
         ]
       },
@@ -849,6 +857,21 @@
     "children": {
       "multiple": false,
       "required": false,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "decreases",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
       "types": [
         {
           "type": "_expression",
@@ -1067,6 +1090,10 @@
         "types": [
           {
             "type": "_type",
+            "named": true
+          },
+          {
+            "type": "named_results",
             "named": true
           }
         ]
@@ -1318,6 +1345,10 @@
       "required": false,
       "types": [
         {
+          "type": "decreases",
+          "named": true
+        },
+        {
           "type": "invariant",
           "named": true
         }
@@ -1364,6 +1395,10 @@
         "types": [
           {
             "type": "_type",
+            "named": true
+          },
+          {
+            "type": "named_results",
             "named": true
           }
         ]
@@ -1997,6 +2032,10 @@
       "required": false,
       "types": [
         {
+          "type": "decreases",
+          "named": true
+        },
+        {
           "type": "invariant",
           "named": true
         }
@@ -2198,6 +2237,47 @@
     }
   },
   {
+    "type": "named_result",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_type",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "named_results",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "named_result",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "negative_integer",
     "named": true,
     "fields": {},
@@ -2207,6 +2287,21 @@
       "types": [
         {
           "type": "integer",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "old_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
           "named": true
         }
       ]
@@ -3439,6 +3534,10 @@
       "required": false,
       "types": [
         {
+          "type": "decreases",
+          "named": true
+        },
+        {
           "type": "invariant",
           "named": true
         }
@@ -3664,6 +3763,10 @@
     "named": true
   },
   {
+    "type": "decreases",
+    "named": false
+  },
+  {
     "type": "derivable",
     "named": false
   },
@@ -3790,6 +3893,10 @@
   },
   {
     "type": "mut",
+    "named": false
+  },
+  {
+    "type": "old",
     "named": false
   },
   {
