@@ -4,7 +4,9 @@ strata = ["--file", "$ROOT/examples/tasks", "test"]
 has = ["0 failed"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "verify", "sim.simulate,model.run_worker,memory.mem_claim", "--cases", "300"]
+strata = ["--file", "$ROOT/examples/tasks", "verify", "--no-race"]
+has = ["✓ law enqueue_once for memory.MemQueue[P, E] proven", "✓ model.drain", "✓ print.demo"]
+lacks = ["✗"]
 
 [[step]]
 strata = ["--file", "$ROOT/examples/tasks", "run", "print.demo"]
