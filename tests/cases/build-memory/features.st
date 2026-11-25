@@ -40,7 +40,7 @@ fn parse_all(xs: List[String]) -> Result[List[Int], String] {
   mut out := []
   for x in xs {
     n := parse_int(x) or { return Err(f"bad {x}") }
-    out = push(out, n)
+    mut out.push(n)
   }
   Ok(out)
 }
@@ -52,7 +52,7 @@ fn total(xs: List[String]) -> Result[Int, String] {
 
 fn rename(mut n: Named, to: String) {
   n.name = to
-  n.tags = push(n.tags, "renamed")
+  mut n.tags.push("renamed")
 }
 
 fn describe(xs: List[Int]) -> String {
@@ -123,7 +123,7 @@ fn main() {
     if i > 7 {
       break
     }
-    acc = push(acc, s)
+    mut acc.push(s)
   }
   print(acc)
   for w in names {
@@ -138,13 +138,17 @@ fn main() {
   }
   // dicts and sets
   mut d := Dict { "a": 1 }
-  d = insert(d, "b", 2)
-  d = insert(d, "a", 3)
+  mut d.insert("b", 2)
+  mut d.insert("a", 3)
   print(d)
   print(get(d, "a"))
   print(keys(d))
   s := Set { "x", "y" }
-  print(insert(s, "z"))
+  print({
+    mut c := s
+    mut c.insert("z")
+    c
+  })
   print(contains(s, "x"))
   // strings
   text := "  Hello, World  "
@@ -152,7 +156,7 @@ fn main() {
   print(split("a,b,c", ","))
   print(replace("aXbXc", "X", "--"))
   print(f"{3.14159:.2} [{42:>6}] [{"ab":<4}]")
-  print(chars("héllo").reverse())
+  print(chars("héllo").reversed())
   print(parse_float(" 2.5 "))
   print(lines("one\ntwo"))
   // reassigning in a loop
@@ -162,5 +166,5 @@ fn main() {
   }
   print(words)
   print(words[1..3])
-  print(words.sort_by(w -> w).reverse())
+  print(words.sorted_by(w -> w).reversed())
 }

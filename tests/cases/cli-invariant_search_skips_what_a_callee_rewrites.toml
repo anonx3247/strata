@@ -18,7 +18,7 @@ fn word(mut r: Reader)
     w += r.text[r.at]
     r.at += 1
   }
-  r.words = push(r.words, w)
+  mut r.words.push(w)
 }
 
 fn words(text: List[String]) -> List[String] {
@@ -37,4 +37,4 @@ fn words(text: List[String]) -> List[String] {
 
 [[step]]
 strata = ["--file", "w.strata", "verify", "--no-race", "--no-cache", "--show-searches"]
-has = ["search `words` `while r.at < n`: 0k, 0.0 s: nothing"]
+has = ["search `words` `while r.at < n`: 1k, 0.0 s: nothing"]

@@ -33,7 +33,7 @@ fn canon(v: TomlValue) -> String {
     Boolean(b) => f"b:{b}",
     Moment(d) => "d:" + moment(d),
     Array(xs) => "[" + join(xs.map(x -> canon(x)), ",") + "]",
-    Table(fs) => "{" + join(sort(fs.map(f -> text(f.0) + "=" + canon(f.1))), ",") + "}",
+    Table(fs) => "{" + join((fs.map(f -> text(f.0) + "=" + canon(f.1))).sorted(), ",") + "}",
   }
 }
 

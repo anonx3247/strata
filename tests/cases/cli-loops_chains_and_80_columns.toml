@@ -16,8 +16,8 @@ fn steps(start: Positive) -> Natural {
 fn top(xs: List[Int]) -> Int {
   xs
     .filter(x -> x > 0)
-    .sort()
-    .reverse()
+    .sorted()
+    .reversed()
     .take(3)
     .sum()
 }

@@ -20,7 +20,7 @@ fn main() {
   print((xs, ys, zs))
   // take in place, then push
   xs = take(xs, 1)
-  xs = push(xs, "d")
+  mut xs.push("d")
   print(xs)
   // a field
   mut b := Board { cells: ["", "", ""], moves: 0 }

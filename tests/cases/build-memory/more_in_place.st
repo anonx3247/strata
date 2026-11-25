@@ -26,7 +26,7 @@ fn main() {
     total += c
     total += first(P { x: 1, name: to_string(i) }, P { x: i, name: "b" })
     if i % 100 == 0 {
-      kept = push(kept, wrap(P { x: i, name: "kept" + to_string(i) }))
+      mut kept.push(wrap(P { x: i, name: "kept" + to_string(i) }))
     }
     i += 1
   }
@@ -34,24 +34,24 @@ fn main() {
   // removing in place
   mut d := Dict[String, Int] {}
   for k in 0..300 {
-    d = insert(d, "k" + to_string(k), k)
+    mut d.insert("k" + to_string(k), k)
   }
   old := d
   for k in 0..300 {
     if k % 3 == 0 {
-      d = remove(d, "k" + to_string(k))
+      mut d.remove("k" + to_string(k))
     }
   }
-  d = remove(d, "absent")
+  mut d.remove("absent")
   print(f"{len(d)} {len(old)}")
   mut s := Set[Int] { 1, 2, 3 }
-  s = s.remove(2)
-  s = remove(s, 9)
+  mut s.remove(2)
+  mut s.remove(9)
   t := s
-  s = remove(s, 1)
+  mut s.remove(1)
   print(f"{s} {t}")
   mut c := Dict[String, Int] { "a": 1, "b": 2 }
-  c = remove(c, "a")
+  mut c.remove("a")
   e := Dict[String, Int] { "a": 1, "b": 2 }
   print(f"{c} {e}")
   print("done")

@@ -4,7 +4,7 @@ type P = { x: Int, y: Int }
 
 fn bump(mut s: State) {
   s.n += 1
-  s.errs = push(s.errs, "bumped")
+  mut s.errs.push("bumped")
 }
 
 // replaces the whole value moved in
@@ -33,7 +33,7 @@ fn main() {
   while i < 1000 {
     s.n += 1
     s.name = "s" + to_string(i)
-    s.errs = push(s.errs, to_string(i))
+    mut s.errs.push(to_string(i))
     i += 1
   }
   print(f"{s.n} {s.name} {len(s.errs)}")
@@ -54,7 +54,7 @@ fn main() {
   mut k := 0
   for e in s.errs {
     if k < 3 {
-      s.errs = push(s.errs, e)
+      mut s.errs.push(e)
     }
     k += 1
   }

@@ -10,7 +10,7 @@ type Point = { x: Int, y: Int }
 fn tally(words: List[String]) -> Dict[String, Int] {
   mut d: Dict[String, Int] = Dict {}
   for w in words {
-    d = insert(d, w, (get(d, w) ?? 0) + 1)
+    mut d.insert(w, (get(d, w) ?? 0) + 1)
   }
   d
 }
@@ -21,10 +21,26 @@ fn main() {
   print([len(d), len(Dict[Int, Int] {})])
   print(Dict[Int, String] {})
   print(dict([(3, "c"), (1, "a"), (3, "z"), (2, "b")]))
-  print(insert(d, "a", 10))
-  print(insert(d, "aa", 5))
-  print(remove(d, "b"))
-  print(remove(d, "zz"))
+  print({
+    mut c := d
+    mut c.insert("a", 10)
+    c
+  })
+  print({
+    mut c := d
+    mut c.insert("aa", 5)
+    c
+  })
+  print({
+    mut c := d
+    mut c.remove("b")
+    c
+  })
+  print({
+    mut c := d
+    mut c.remove("zz")
+    c
+  })
   print([get(d, "c"), get(d, "q")])
   print([contains(d, "a"), contains(d, "x")])
   print(keys(d))
@@ -40,7 +56,15 @@ fn main() {
   print(s)
   print([len(s), len(Set[String] {})])
   print([contains(s, 2), contains(s, 7)])
-  print([insert(s, 0), insert(s, 2), remove(s, 1), remove(s, 9)])
+  mut s0 := s
+  mut s0.insert(0)
+  mut s2 := s
+  mut s2.insert(2)
+  mut s1 := s
+  mut s1.remove(1)
+  mut s9 := s
+  mut s9.remove(9)
+  print([s0, s2, s1, s9])
   print(to_list(s))
   print([
     union(s, Set { 5, 0, 2 }),
@@ -52,7 +76,9 @@ fn main() {
   }
   print(s == Set { 1, 2, 3 })
   print(Dict { 1: "a" } == dict([(1, "a")]))
-  print(d != remove(d, "a"))
+  mut without_a := d
+  mut without_a.remove("a")
+  print(d != without_a)
   print(set(["pear", "apple", "fig", "apple"]))
   print(set([2.5, -1.0, 0.0, -0.5]))
   print(set([Blue, Red, Blue, Green]))

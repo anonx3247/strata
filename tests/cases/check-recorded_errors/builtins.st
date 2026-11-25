@@ -1,7 +1,7 @@
 fn a() -> String { abs(3) }
 fn b() -> Int { abs("x") }
 fn c(xs: List[Int]) -> String { len(xs) }
-fn d(xs: List[Int]) -> Int { push(xs, "s") }
+fn d(xs: List[Int]) -> Int { xs + ["s"] }
 fn e(s: String) -> Int { split(s, ",") }
 fn f(xs: List[String]) -> String { join(xs, 3) }
 fn g() -> Int { sqrt(2.0) }

@@ -33,9 +33,15 @@ test "each call means its receiver's method" {
   shout(mut c, "yo")
   assert printed(c) == ["saved hi", "false", "YO!"]
   dict_ := dict([("k", 1), ("j", 2)])
-  assert keys(dict_.remove("k")) == ["j"]
-  assert keys(remove(dict_, "j")) == ["k"]
-  assert to_list(set([1, 2]).remove(1)) == [2]
+  mut d1 := dict_
+  mut d1.remove("k")
+  assert keys(d1) == ["j"]
+  mut d2 := dict_
+  mut d2.remove("j")
+  assert keys(d2) == ["k"]
+  mut s := set([1, 2])
+  mut s.remove(1)
+  assert to_list(s) == [2]
   assert f.list("nope") == Err(NotFound { path: "nope" })
 }
 '''

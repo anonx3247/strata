@@ -17,7 +17,7 @@ test "strings" {
   assert s.replace("l", "L") == "héLLo wörLd"
   assert "a\nb\n".lines() == ["a", "b"]
   assert "ab".repeat(3) == "ababab"
-  assert "abc".reverse() == "cba"
+  assert "abc".reversed() == "cba"
   assert "Ab".to_upper() == "AB" && "Ab".to_lower() == "ab"
   assert is_digit("42") && !is_digit("4a") && !is_digit("")
   assert is_alpha("é") && is_space(" \t")

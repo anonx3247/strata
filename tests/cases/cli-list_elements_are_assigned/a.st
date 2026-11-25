@@ -37,7 +37,7 @@ fn main() {
   print(names)
   mut big := []
   for i in 0..10 {
-    big = push(big, i)
+    mut big.push(i)
   }
   for i in 0..len(big) {
     big[i] *= big[i]
