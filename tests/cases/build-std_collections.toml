@@ -1,0 +1,50 @@
+# std.collections (SortedDict, SortedSet, Heap) and the built-ins under them
+# (`compare`, `set_at`, `xs = set_at(xs, …)` and `xs = take(xs, …)` in
+# place), built and run with every object freed, and under `strata run`;
+# `set_at`'s index proven or refuted by `verify`
+
+[[step]]
+save = "ordered.strata"
+from = "ordered.st"
+
+[[step]]
+strata = ["build", "ordered.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "[(\"apple\", 6), (\"banana\", 4), (\"cherry\", 5), (\"fig\", 2), (\"kiwi\", 3), (\"pear\", 0)]\n(6, Some(2), None)\n(Some((\"fig\", 2)), Some((\"kiwi\", 3)))\n(Some((\"cherry\", 5)), Some((\"kiwi\", 3)))\n(Some((\"apple\", 6)), Some((\"pear\", 0)))\n[(\"banana\", 4), (\"cherry\", 5), (\"fig\", 2)]\n(Some(2), None, 5)\n(Some((\"apple\", 6)), Some((\"pear\", 0)))\n([\"banana\", \"cherry\", \"kiwi\"], [4, 5, 3])\n(3, 4)\n(500, Some((1, 973)), Some((999, 27)), [501, 503, 505, 507, 509])\n([1, 3, 4, 5, 9], true, false, [1, 3, 4, 5])\n(Some(1), Some(3), None, None, [3, 4])\n[(1, \"z\"), (2, \"a\"), (2, \"b\")]\n(Some(1), 6, [1, 3, 3, 5, 8, 9])\n(Some(1), Some(3), 4)\n[\"build\", \"deploy\", \"mail\"]\n[9, 5, 3]\ntrue\n(None, [])\n"
+
+[[step]]
+strata = ["run", "ordered.strata"]
+stdout = "[(\"apple\", 6), (\"banana\", 4), (\"cherry\", 5), (\"fig\", 2), (\"kiwi\", 3), (\"pear\", 0)]\n(6, Some(2), None)\n(Some((\"fig\", 2)), Some((\"kiwi\", 3)))\n(Some((\"cherry\", 5)), Some((\"kiwi\", 3)))\n(Some((\"apple\", 6)), Some((\"pear\", 0)))\n[(\"banana\", 4), (\"cherry\", 5), (\"fig\", 2)]\n(Some(2), None, 5)\n(Some((\"apple\", 6)), Some((\"pear\", 0)))\n([\"banana\", \"cherry\", \"kiwi\"], [4, 5, 3])\n(3, 4)\n(500, Some((1, 973)), Some((999, 27)), [501, 503, 505, 507, 509])\n([1, 3, 4, 5, 9], true, false, [1, 3, 4, 5])\n(Some(1), Some(3), None, None, [3, 4])\n[(1, \"z\"), (2, \"a\"), (2, \"b\")]\n(Some(1), 6, [1, 3, 3, 5, 8, 9])\n(Some(1), Some(3), 4)\n[\"build\", \"deploy\", \"mail\"]\n[9, 5, 3]\ntrue\n(None, [])\n"
+
+[[step]]
+save = "lists.strata"
+from = "lists.st"
+
+[[step]]
+strata = ["build", "lists.strata", "-o", "lists"]
+
+[[step]]
+run = ["./lists"]
+memory = true
+stdout = "[-1, 0, 1]\n[-1, 1, 1]\n[1, -1]\n[-1, -1, 1]\n-1\n1\n([\"a\", \"B\", \"c\"], [\"a\", \"b\", \"c\"])\n([\"a\", \"B\", \"a!\"], [\"a\", \"b\", \"c\"], [\"z\", \"b\", \"c\"])\n[\"a\", \"d\"]\nBoard { cells: [\"x0\", \"x1\", \"x2\"], moves: 3 }\n1779979416004714189\n"
+
+[[step]]
+save = "proofs.strata"
+from = "proofs.st"
+
+[[step]]
+strata = ["verify", "proofs.strata"]
+code = 1
+has = ["✓ swap                     proven (5 checks)", "✓ order                    proven (1 check)", "✗ first_to_zero", "index 0 out of range (length 0)"]
+
+# the example: Dijkstra's shortest routes with a Heap, a timetable in a SortedDict
+[[step]]
+strata = ["test", "--file", "$ROOT/examples/routes.strata"]
+has = ["✓ the shortest routes from Ash", "✓ the next departure", "2 passed, 0 failed"]
+
+[[step]]
+strata = ["run", "--file", "$ROOT/examples/routes.strata"]
+stdout = "Ash: 0 km\nBirch: 7 km\nCedar: 9 km\nDogwood: 20 km\nElm: 20 km\nFir: 11 km\nafter 0:00: 6:15 to Ash\nafter 7:40: 7:40 to Cedar\nafter 10:00: 12:30 to Elm\nafter 18:00: none today\nbetween 7:00 and 12:00: [\"7:40\", \"9:00\"]\n"
