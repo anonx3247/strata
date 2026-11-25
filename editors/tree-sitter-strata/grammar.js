@@ -210,14 +210,16 @@ module.exports = grammar({
         optional($._function_body),
       ),
 
+    // (`prec.right`: an `ensures` after a method without a body is the
+    // method's, as `strata` reads it)
     _function_signature: ($) =>
-      seq(
+      prec.right(seq(
         field('name', $.identifier),
         optional(field('type_parameters', $.type_parameters)),
         field('parameters', $.parameters),
         optional(seq('->', field('return_type', choice($._type, $.named_results)))),
         repeat($.contract),
-      ),
+      )),
 
     _function_body: ($) =>
       choice(field('body', $.block), seq('=', field('body', $._expression))),
@@ -284,7 +286,32 @@ module.exports = grammar({
       ),
 
     trait_body: ($) =>
-      seq('{', repeat(choice($.function_declaration, $.law_declaration)), '}'),
+      seq(
+        '{',
+        repeat(
+          choice(
+            $.model_declaration,
+            $.trait_invariant,
+            $.trait_ensures,
+            $.function_declaration,
+            $.law_declaration,
+          ),
+        ),
+        '}',
+      ),
+
+    // `model orders: Dict[Id, Order]`: a trait's abstract state
+    model_declaration: ($) =>
+      seq('model', field('name', $.identifier), ':', field('type', $._type)),
+
+    // `invariant self.count >= 0`, `ensures self.count >= old self.count - 1`
+    // in a trait: what every method keeps, what every `mut self` one ensures
+    trait_invariant: ($) => seq(optional('ghost'), 'invariant', $._expression),
+    trait_ensures: ($) => seq(optional('ghost'), 'ensures', $._expression),
+
+    // `model orders = self.all` in an `impl`
+    model_definition: ($) =>
+      seq('model', field('name', $.identifier), '=', field('value', $._expression)),
 
     // `law reflexive(a: Self): a == a`
     law_declaration: ($) =>
@@ -319,7 +346,8 @@ module.exports = grammar({
         optional(field('body', $.impl_body)),
       ),
 
-    impl_body: ($) => seq('{', repeat($.function_declaration), '}'),
+    impl_body: ($) =>
+      seq('{', repeat(choice($.model_definition, $.function_declaration)), '}'),
 
     // `capability Sqlite { fn open(…) … }`
     capability_declaration: ($) =>
