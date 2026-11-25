@@ -3315,6 +3315,20 @@ List *strata_list_extend(List *a, List *b, int64_t counted) { return strata_list
 // `s += t` (core.str's `str_append`; without core.rt, a new string each time).
 Str *strata_str_append(Str *a, Str *b, _Bool mine) { return strata_concat(a, b); }
 
+// `set_at` on a list something else holds too: a copy of `xs`, its other
+// elements held once more, element `i` replaced by `x` (handed over).
+List *strata_list_set(List *xs, int64_t i, int64_t x, int64_t counted) {
+  Buf *n = buf_new(xs->len);
+  memcpy(n->data, xs->buf->data + xs->off, (size_t)xs->len * 8);
+  dup_slots(n->data, i, counted);
+  dup_slots(n->data + i + 1, xs->len - i - 1, counted);
+  n->data[i] = x;
+  n->used = xs->len;
+  List *l = strata_alloc(sizeof(List));
+  *l = (List){xs->len, n, 0};
+  return l;
+}
+
 List *strata_range(int64_t lo, int64_t hi) {
   int64_t n = hi > lo ? hi - lo : 0;
   List *l = strata_list_new(n);

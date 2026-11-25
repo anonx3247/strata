@@ -1,0 +1,41 @@
+# `xs[i] = v` obliges `verify` to prove `0 <= i < len(xs)`, as reading
+# `xs[i]` does (`last_set`'s off-by-one is found), and the new list is
+# known by position: its length is the old one (a loop's bound stays
+# proven), element `i` is `v`, the others are the old ones; a list of a
+# refined element type checks only `v` (`zeroed`, `set_all`).
+
+[[step]]
+save = "v.strata"
+from = "v.st"
+
+[[step]]
+strata = ["--file", "v.strata", "verify"]
+fails = true
+has = [
+  "✓ doubled",
+  "✓ first_set",
+  "✓ put",
+  "✓ raised",
+  "✗ last_set",
+  "index 0 out of range (length 0)",
+]
+
+[[step]]
+save = "w.strata"
+from = "w.st"
+
+[[step]]
+strata = ["--file", "w.strata", "verify"]
+fails = true
+has = [
+  "✓ first_set",
+  "✗ zeroed",
+  "assigning `ys`: 0 does not satisfy `Pos`",
+  "✗ set_all",
+  "out of range (length 3)",
+]
+
+[[step]]
+strata = ["--file", "w.strata", "run"]
+fails = true
+has = ["[9, 2]", "[1, 5, 3]", "assigning `ys`: -5 does not satisfy `Pos`"]
