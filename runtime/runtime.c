@@ -4600,3 +4600,191 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
   return o;
 }
 #endif
+
+// ---- `extern python`: a Python worker ----
+//
+// std.python calls Python functions through one worker process for the whole
+// program: `PYTHON -c DRIVER PATH` (the driver below), started on the first
+// call, speaking JSON lines over its standard input and output: a request
+// `{"module": m, "function": f, "args": [...]}`, a reply `{"ok": value}`,
+// `{"error": {"type", "message", "traceback"}}` (an exception), or
+// `{"unencodable": message}` (a result with no JSON form: a set, a NaN).
+// Calls from several tasks (threads) take turns (`py_lock`): one request and its reply at a time. A
+// worker that ends (killed, `os._exit`, a crash) fails the call it was
+// answering (`{"failed": message}`, made here) and the next call starts a
+// new one. Its standard error is the program's (what Python prints goes
+// there: the driver points `sys.stdout` at it, keeping the real one for
+// replies). The worker ends when this process does (its input closes).
+static const char *py_driver =
+  "import sys, json, importlib, traceback\n"
+  "out = sys.stdout\n"
+  "sys.stdout = sys.stderr\n"
+  "for p in reversed([x for x in sys.argv[1].split(':') if x] if len(sys.argv) > 1 else []):\n"
+  "    sys.path.insert(0, p)\n"
+  "while True:\n"
+  "    line = sys.stdin.readline()\n"
+  "    if not line:\n"
+  "        break\n"
+  "    try:\n"
+  "        req = json.loads(line)\n"
+  "        f = getattr(importlib.import_module(req['module']), req['function'])\n"
+  "        result = f(*req['args'])\n"
+  "    except (KeyboardInterrupt, SystemExit):\n"
+  "        raise\n"
+  "    except BaseException as e:\n"
+  "        reply = json.dumps({'error': {'type': type(e).__name__, 'message': str(e), 'traceback': traceback.format_exc()}})\n"
+  "    else:\n"
+  "        try:\n"
+  "            reply = json.dumps({'ok': result}, allow_nan=False)\n"
+  "        except (TypeError, ValueError, RecursionError) as e:\n"
+  "            reply = json.dumps({'unencodable': str(e)})\n"
+  "    out.write(reply + '\\n')\n"
+  "    out.flush()\n";
+
+static pthread_mutex_t py_lock = PTHREAD_MUTEX_INITIALIZER;
+static pid_t py_pid = -1;
+static int py_to = -1, py_from = -1;
+// (what was read and not yet handed back)
+static char *py_buf = NULL;
+static size_t py_len = 0, py_cap = 0;
+// (the reply handed back: each thread's own, kept until its next call, so
+// the caller copies it after the lock is let go)
+static __thread char *py_reply = NULL;
+
+static const char *py_give(const char *s) {
+  free(py_reply);
+  py_reply = strdup(s);
+  return py_reply;
+}
+
+// `{"failed": "MESSAGE"}`, the message escaped as JSON.
+static const char *py_failed(const char *why) {
+  char esc[2600];
+  size_t k = 0;
+  for (const char *p = why; *p && k < sizeof esc - 8; p++) {
+    unsigned char c = (unsigned char)*p;
+    if (c == '"' || c == '\\') esc[k++] = '\\', esc[k++] = (char)c;
+    else if (c == '\n') esc[k++] = '\\', esc[k++] = 'n';
+    else if (c < 0x20) k += (size_t)snprintf(esc + k, 7, "\\u%04x", c);
+    else esc[k++] = (char)c;
+  }
+  esc[k] = 0;
+  char *out = malloc(k + 16);
+  snprintf(out, k + 16, "{\"failed\":\"%s\"}", esc);
+  free(py_reply);
+  py_reply = out;
+  return py_reply;
+}
+
+// The worker gone: its pipes closed, the process reaped; how it ended, in
+// `why`.
+static void py_stop(char *why, size_t n) {
+  if (py_to >= 0) close(py_to);
+  if (py_from >= 0) close(py_from);
+  py_to = py_from = -1;
+  py_len = 0;
+  snprintf(why, n, "the Python worker ended");
+  if (py_pid > 0) {
+    int st = 0;
+    if (waitpid(py_pid, &st, 0) == py_pid) {
+      if (WIFEXITED(st)) snprintf(why, n, "the Python worker ended (exit code %d)", WEXITSTATUS(st));
+      else if (WIFSIGNALED(st)) snprintf(why, n, "the Python worker was killed (signal %d)", WTERMSIG(st));
+    }
+  }
+  py_pid = -1;
+}
+
+static int py_start(const char *python, const char *path, char *why, size_t n) {
+  int in[2], out[2];
+  if (cloexec_pipe(in) != 0) return snprintf(why, n, "can't start the Python worker: %s", strerror(errno)), -1;
+  if (cloexec_pipe(out) != 0) {
+    snprintf(why, n, "can't start the Python worker: %s", strerror(errno));
+    close(in[0]);
+    close(in[1]);
+    return -1;
+  }
+  // (only its standard input, output and error: see `strata_host_run`)
+  posix_spawnattr_t at;
+  posix_spawnattr_init(&at);
+  posix_spawnattr_setflags(&at, POSIX_SPAWN_CLOEXEC_DEFAULT);
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, in[0], 0);
+  posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+  posix_spawn_file_actions_addinherit_np(&fa, 2);
+  char *argv[] = {(char *)python, "-c", (char *)py_driver, (char *)path, NULL};
+  extern char **environ;
+  pid_t pid;
+  int e = posix_spawnp(&pid, python, &fa, &at, argv, environ);
+  posix_spawn_file_actions_destroy(&fa);
+  posix_spawnattr_destroy(&at);
+  close(in[0]);
+  close(out[1]);
+  if (e != 0) {
+    close(in[1]);
+    close(out[0]);
+    snprintf(why, n, "can't start `%s`: %s", python, strerror(e));
+    return -1;
+  }
+#ifdef F_SETNOSIGPIPE
+  // (a worker that died breaks its pipe: writing fails with EPIPE, no SIGPIPE)
+  fcntl(in[1], F_SETNOSIGPIPE, 1);
+#endif
+  py_pid = pid;
+  py_to = in[1];
+  py_from = out[0];
+  py_len = 0;
+  return 0;
+}
+
+// Sends `request` (one line of JSON) to the worker, started first with
+// `python` and the module folders `path` (`:`-separated) if there is none,
+// and gives its reply line, or `{"failed": message}`.
+const char *python_worker_call(const char *python, const char *path, const char *request) {
+  pthread_mutex_lock(&py_lock);
+  char why[700];
+  if (py_pid < 0 && py_start(python, path, why, sizeof why) != 0) {
+    pthread_mutex_unlock(&py_lock);
+    return py_failed(why);
+  }
+  size_t len = strlen(request), sent = 0;
+  _Bool ok = 1;
+  while (ok && sent <= len) {
+    // (the request, then its newline)
+    const char *p = sent < len ? request + sent : "\n";
+    size_t m = sent < len ? len - sent : 1;
+    ssize_t w = write(py_to, p, m);
+    if (w < 0 && errno == EINTR) continue;
+    if (w <= 0) ok = 0;
+    else sent += (size_t)w;
+  }
+  if (!ok) {
+    py_stop(why, sizeof why);
+    pthread_mutex_unlock(&py_lock);
+    return py_failed(why);
+  }
+  for (;;) {
+    char *nl = py_len ? memchr(py_buf, '\n', py_len) : NULL;
+    if (nl) {
+      size_t k = (size_t)(nl - py_buf);
+      py_buf[k] = 0;
+      const char *r = py_give(py_buf);
+      memmove(py_buf, nl + 1, py_len - k - 1);
+      py_len -= k + 1;
+      pthread_mutex_unlock(&py_lock);
+      return r;
+    }
+    if (py_cap - py_len < 4096) {
+      py_cap = py_cap ? py_cap * 2 : 65536;
+      py_buf = realloc(py_buf, py_cap);
+    }
+    ssize_t r = read(py_from, py_buf + py_len, py_cap - py_len - 1);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) {
+      py_stop(why, sizeof why);
+      pthread_mutex_unlock(&py_lock);
+      return py_failed(why);
+    }
+    py_len += (size_t)r;
+  }
+}
