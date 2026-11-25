@@ -3565,6 +3565,13 @@ static void on_segv(int sig, siginfo_t *info, void *ctx) {
   (void)ctx;
   char *at = info->si_addr;
   if (stack_hi && at < stack_hi && at >= stack_lo - 65536) strata_fault(6, str_c("stack overflow (recursion too deep)"));
+  // a crash in a fuzz case (`verify` running a function in the compiler's
+  // own process): the case ends, not the compiler, which reads "crash" as
+  // a case it could not run
+  if (RS->trap && RS->counting) {
+    RS->counting = 0;
+    strata_fault(4, str_c(sig == SIGBUS ? "crash (signal SIGBUS)" : "crash (signal SIGSEGV)"));
+  }
   // a crash: what was running, then the signal as it would have been
   fflush(stdout);
   fprintf(stderr, "crash (signal %d) in:\n", sig);
