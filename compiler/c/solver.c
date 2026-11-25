@@ -317,6 +317,22 @@ static void solver_log(const char *flags, size_t n, uint64_t h, double secs, con
   fclose(lf);
 }
 
+// STRATA_SOLVER_DUMP=DIR: each script the solver is asked (not answered
+// from the memo) as DIR/HASH.smt2, its first answer after it as a comment.
+static void solver_dump(const char *script, size_t n, uint64_t h, const char *out, size_t len) {
+  const char *dir = getenv("STRATA_SOLVER_DUMP");
+  if (!dir || !*dir) return;
+  char path[4096];
+  snprintf(path, sizeof path, "%s/%016llx.smt2", dir, (unsigned long long)h);
+  FILE *f = fopen(path, "w");
+  if (!f) return;
+  fwrite(script, 1, n, f);
+  size_t first = 0;
+  while (out && first < len && out[first] != '\n') first++;
+  fprintf(f, "\n; answer: %.*s\n", (int)first, out ? out : "");
+  fclose(f);
+}
+
 // Whether `flags` (words separated by spaces) hold the word `w`.
 static int has_word(const char *flags, const char *w) {
   size_t n = strlen(w);
@@ -402,6 +418,7 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
   }
   if (out.len) fix_lines(result, out.buf, out.len, base);
   solver_log(flags, script_len, h1, now_s() - started, out.buf, out.len, "");
+  solver_dump(script, script_len, h1, out.buf, out.len);
   if (!done && dead == 2) buf_str(result, "timeout\n");
   if (has_word(flags, "budget")) {
     // (a search: how long it took, kept with its answer, so a later ask
