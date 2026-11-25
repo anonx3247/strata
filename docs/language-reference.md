@@ -6,6 +6,8 @@ The fine print of [the language](language.md): each section adds the rules and d
 
 A default is checked where the type is defined: it must have the field's type, and a literal must satisfy the field's refinement (`n: Positive = 0` is an error). It sees no variables, not even the other fields, and it is evaluated each time it is used. Generated values (mocks, fuzzing) still generate every field.
 
+**Key paths: a field named on its type.** `Todo.title`, a field of a record type written after the type's name, is a value: a `KeyPath[Todo, String]` (core's `type KeyPath[R, T] = { name: String, get: (R) -> T }`), the field's name and how to read it (`(Todo.title.get)(t)` is `t.title`). Its types come from the field's, so code taking one is checked against the record: `std.orm`'s queries (`Todo.done.eq(false)` needs a `Bool`, and gives a condition on `Todo`s only). A field the record doesn't have is an error (`type `Todo` has no field `x``). It is written out when the program is checked (`desugar.key_paths`: `KeyPath { name: "title", get: ($r: Todo) -> $r.title }`), so `view` shows `Todo.title` and nothing after the checker sees it. Not yet: a generic record's (`Pair.first`), paths through several fields (`Todo.owner.name`), and assigning through one.
+
 **Spreading a record into a call.** `f(a, ...x, ...y, b)` is the call written out by parameter name, when the program is checked: positional arguments written before the spreads give the first parameters, those after them the last, and each parameter between is the field of its name of the one record spread that has it (`x.qty`); other fields are left alone. Everything after the checker (the compiler, `verify`, the runtime checks) sees the ordinary call, and `view` shows it as written. It works for a function called by name, a method on a value (`r.m(...x)`, `mut r.m(...x)`; a trait value's or a type parameter's method through its trait), and a method called on a type (`Shop.new(...x)`, `self` included in its parameters). Errors, each naming the call: a parameter no record has a field for (parameters have no defaults), one two records both have (`is given by both ...x and ...y`: spread one of them, or pass that parameter positionally), a `mut` parameter left to a spread (a spread only reads: pass `mut v` positionally), a value that isn't a record (`...5`), a record that gives no parameter, a positional argument between spreads, more positional arguments than parameters, a function that is a variable (its parameters have no names) or a built-in, and a spread anywhere but such a call (a contract, a constructor: `Pt(...p)` is a parse error, `Pt { ..p, x: 1 }` is the record update). The value spread is read once: one that isn't a variable or a field of one (`...make()`) is bound first, before the call's other arguments, as is a receiver that isn't one. In the tree it is `Spread(Expr)`, a call's argument.
 
 ## Unions, variants and patterns
@@ -101,6 +103,21 @@ law enqueue_once(q: Self, id: Int) {
 
 The type is always named, so which implementation runs is always clear. A generic function that calls such a method is given its type arguments when it runs: each call passes the concrete type the checker inferred (or forwards the caller's own type parameter). So the type must be known at each call: `combine_any([])` alone is an error (annotate: `let xs: List[Money] = []`), and such a function can't be passed as a value (`map(combine_any)`): use a lambda. A trait-typed parameter (`xs: List[Empty]`) has no name to call `.empty()` on: write the type parameter when you need it.
 
+**Writing a `derive`.** `derive A, B for` written between a declaration's `///` docs and the declaration (`pub`, then `fn` or `type`) derives each trait for it:
+
+```rust
+/// A greeting for `name`.
+derive C, Python for
+pub fn greet(name: String) -> String {
+  f"Hello, {name}!"
+}
+
+derive CommandLine, Json for
+type Options = { count: Int, loud: Bool, name: String = "world" }
+```
+
+It is only a way of writing: each trait's derive is stored as its own definition (`derive CommandLine for Options`, `derive Json for Options`), exactly as the separate form `derive Json for Options` gives it, and `derive A, B for T` (a type, a function or `module`) gives one per trait too. `strata view`, the text `strata edit` opens and `strata doc` show a derive on its declaration when it has no block of methods written by hand, no type parameters or trait arguments, no comments of its own, and derives for a declaration of the same module shown with it; all of a declaration's such derives in one line, in their order in the module. The others (`derive Json for Point { ... }`, a type of another module, `derive C for module`) stay lines of their own, and a block needs a single trait. An edit replaces and adds derives by name like any definition. A declaration given in an edit gives its derive line too: a stored derive that would be shown on it whose trait the line no longer names (or the line left out) is removed, with a warning (`warning: removed derive std.toml.Toml for Options (no longer on its derive line)`); a declaration the edit doesn't give keeps its derives, and derives with a block, for another module's declaration, or `for module` are only removed by `strata edit --rm 'derive std.json.Json for Options'`. `strata view Options` (and the editor `strata edit Options` opens) shows the declaration with its derive line, so editing what it shows keeps them.
+
 ## Modules
 
 - **A file is a module.** In a folder, each `.strata` file (a binary module file) is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `view MODULE` prints one module as text, and `view --split DIR` writes the codebase's text out one `.st` file per module. A view that spans several modules (`view a,b`) labels each group with a `// ── module m` comment. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit m` targets a module, and `view module:m` shows one.
@@ -163,6 +180,8 @@ What counts as allocating, in its body and its contracts (a contract is checked 
 Reading is free: fields, elements (`xs[i]`, which faults when out of range: a fault ends the program or the task, so it isn't counted), `match`, comparisons, `if`, `while`, `for`, `return`, string literals, constants. Faults and failed contract checks are not counted either. Values the code generator puts on the stack (a constructor that doesn't leave its block, an argument the callee doesn't keep) still count: where it does so depends on the whole program, so `noalloc` doesn't rely on it.
 
 An `extern c fn` can be marked `noalloc`: like `terminates`, that is the C code's promise, not checked.
+
+**A whole module** is declared `noalloc` in its package's `strata.toml`: `noalloc = ["fast", "mem"]` lists modules as the package names them (a module covers the modules below it; `main` is the root module, `*` every one). Each function of those modules (functions, `impl`, trait and capability methods, `extern` ones) is then `noalloc` without being marked, and so is one added later. A function there that allocates is an error of `check`, `edit` and `verify`, naming the function and what allocates, as for a marked one. Calls into those modules, from anywhere, are calls to `noalloc` functions. A name in the list that is no module of the package is an error. core's runtime modules (core.rt, the allocator, and the modules it uses) and core.mem are declared this way in core's own `strata.toml`.
 
 ## Errors
 
@@ -361,7 +380,40 @@ Paths are relative to the package's folder, or absolute (`compiler/strata.toml` 
 
 - **A native module's capability** is asked for like any other: `main` and tests name it (`fn main(sqlite: Sqlite)`), its functions get it as `self` (`sqlite.open(path)`), and the program is linked with the package's `[native]` libraries. std's own are the system's: std.sqlite calls macOS's libsqlite3, which `strata build` links into the executables that use it (against a stub, `compiler/c/libsqlite3.tbd`, so no SDK is needed) and `strata run` / `strata test` load for the JIT. std's precompiled library leaves out what reaches C, so a program that doesn't use it doesn't link it.
 
-Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages but Python (`extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+
+## Foreign functions: `extern python`
+
+A Python function is declared with `extern python "MODULE" fn`, the Python module it is in, then a signature with contracts and no body. Values cross as JSON, through the derived `Json` trait (std.json), so its parameters and result are types with a JSON form: `Int`, `Float`, `Bool`, `String`, `List`, `Option`, `Dict[String, V]`, records and unions that derive `Json`, aliases of those. `examples/python` calls `text_utils.py`, beside its strata.toml:
+
+```rust
+from std.python use PythonError
+
+/// A post summed up (Python builds the `Card` as a dict).
+extern python "text_utils" fn summary(post: Post) -> Result[Card, PythonError]
+
+/// Text tools, in Python.
+pub capability TextTools {
+  fn card(post: Post) -> Result[Card, PythonError] {
+    summary(post)
+  }
+}
+```
+
+```toml
+# strata.toml (both optional)
+[python]
+executable = "python3"   # the Python to run (default: python3 on the PATH)
+path = ["py"]            # where its modules are, relative to the package (default: the package's folder)
+```
+
+- **A call is a `Result`.** The result is written `Result[T, PythonError]` (std.python): a Python exception (`Raised`, with its type's name, message and traceback; an import that fails too), a worker that can't start or ends while answering (`WorkerFailed`), a result that isn't a `T` (a set, a `NaN`, an integer beyond 2^53, a missing field, a broken refinement: `BadReply`), an argument with no JSON form (an integer beyond 2^53: `NotEncodable`) are values, never faults. `Result[(), PythonError]` takes whatever the function returns.
+- **How it crosses.** The arguments are written with `to_json` and passed positionally (a record is a dict with its fields and `"type"`); what the function returns is read with `T.from_json`, its refinements checked. So Pydantic models or TypedDicts on the Python side match the derived JSON (see std.json).
+- **One worker per run.** The first call starts `python3 -c DRIVER` (the driver is the runtime's), kept for the rest of the run, which imports the modules and answers one JSON line per call. Calls from several tasks take turns on it. What the Python code prints goes to standard error. A worker that ends fails the call it was answering, and the next call starts a new one. The modules' folders are fixed when the program is compiled (absolute paths), so a built executable finds them wherever it runs.
+- **Only its module's capabilities call it.** `extern python` functions are never `pub`, and only the capabilities of their module call them (not its other functions, not its tests): code that reaches Python takes the capability, which `main` and tests ask for.
+- **`verify` never runs Python.** An `extern python` function is assumed (`≈`), its contracts checked when it runs: `requires` before the call, `ensures` after it.
+
+Not yet: Python objects kept on the Python side (handles), keyword arguments, a Python function named apart from its Strata name, a pool of workers, embedding libpython, `async` functions.
 
 ## Exporting functions: `derive C for f`
 
@@ -392,9 +444,21 @@ clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
 
 - **What crosses** is what crosses `extern c`, the other way: the sized integers, `Float` (`double`), `Bool` (`bool`), `String` (`const char *` in, copied; `char *` out, a copy the caller frees with `free`), `()` (`void`), handles (`extern c type`, `void *`) and `Option` of one (NULL for `None`). A function with another type, or with type parameters, is refused at the `derive`, naming the parameter.
 - **The library starts its runtime when it is loaded**; the host keeps its signals and arguments. A library has no `main` (`--lib` leaves the program's out). A fault in Strata code ends the process, as in a program.
-- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is an export or a part of a file: `derived fn export() -> Self = Self` exports the function itself under its own name; `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
+- **A library exports only what its `derive`s export** (and `strata_string_free`, below): the program's other functions, std's and the runtime's are hidden, so two Strata libraries live in one process.
+- **`derive C for module`** derives `C` for every `pub fn` of the module; one that can't cross is reported, not left out.
+- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is told by its shape alone (never a marker): `derived fn export() -> Self = Self` exports the function itself under its own name; a `derived fn` with parameters (`derived fn json(args: String) -> String { .. }`) is a wrapper of the function, exported as `NAME_METHOD` (`add_json`), its body calling the function with `Self.call(p -> e)` / `Self.try_call(p -> e)` (`e` gives each argument, `p` its parameter, a `Field`); `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). A file is its parts in order, each paragraph (up to a blank line) once. So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
 
-Not yet: other languages (`derive Python`, `derive TypeScript`, `derive Rust`: typed wrappers over a C export taking JSON), static libraries, `mut` parameters, callbacks.
+### `derive Python for f`
+
+`derive Python for add` (`std.ffi`) exports `char *add_json(const char *args)`: the arguments as a JSON object by name, each read with its type's `Json` (refinements checked; an `Option` left out is `None`), the answer `{"ok": RESULT}` or `{"error": {"kind", "message", "value"}}`, never a crash (`kind`: `json`, `arguments`, `result`, or `err` for the function's own `Err`, its value in `value`); the caller frees it with `strata_string_free`. `strata build --lib` writes `NAME.py` beside the library: a typed Python module loading it with `ctypes`, a function per derived one, a dataclass per record (and a class per union, a subclass per variant), errors raised as `StrataError`:
+
+```python
+import geo                        # geo.py and libgeo.dylib, side by side
+geo.middle(geo.Point(0.0, 0.0), geo.Point(2.0, 4.0))   # Point(x=1.0, y=2.0)
+geo.divide(1, 0)                  # raises StrataError("err", "ByZero", {"type": "ByZero"})
+```
+
+Not yet: `derive TypeScript` / `Rust` (the same `NAME_json` export, other files), static libraries, `mut` parameters, callbacks.
 
 ## Programs
 
@@ -411,7 +475,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.cli](std/cli.md) | Command-line options, read into a record; commands, into a union. |
 | [std.code](std/code.md) | A codebase as Strata's tools see it: its definitions, each rendered as text with what it uses and what uses it, the checker's findings, the verifier's cached results and the package's log. |
 | [std.collections](std/collections.md) | A dictionary and a set kept in their keys' order, and a priority queue. |
-| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`. |
+| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`, `derive Python for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
 | [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
 | [std.io](std/io.md) | The console: text in and out. |
@@ -419,6 +483,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.memory](std/memory.md) | Memory, for programs that must be fast: arenas. |
 | [std.process](std/process.md) | The running program: its arguments, its environment variables and its exit code, and the other programs it runs. |
 | [std.regex](std/regex.md) |  |
+| [std.orm](std/orm.md) | Records as SQLite tables: `derive Table` (the schema, rows written and read back checked) and typed queries over their fields. |
 | [std.sqlite](std/sqlite.md) | SQLite databases through the system's libsqlite3: the `Sqlite` capability, connections as the `Database` capability trait, prepared statements, transactions. |
 | [std.term](std/term.md) | Text styled for a terminal: bold, dim, colors. |
 | [std.time](std/time.md) | The clock: the time now, waiting, and timers in `select`. |
@@ -466,6 +531,31 @@ derive Toml for Config
 config := Config.read_toml("name = \"app\"\n[[servers]]\nhost = \"a.example\"\n")!
 text := config.write_toml()!
 ```
+
+**Tables** (`std.orm`): a record that derives `Table` is kept as the rows of an SQLite table (`std.sqlite`), named after the type in snake case (`TodoItem`: `todo_item`). Each field is a column: `Int` and `Bool` are `INTEGER`, `Float` is `REAL`, `String` is `TEXT`, an `Option` the same column without `NOT NULL` (`None` is NULL), a `distinct` type what it is made of; any other field type, and `Option[Option[T]]`, is an error at the `derive`. The field named `id` is the key, which every table needs: an integer one is SQLite's row id, which `insert` gives each new row (the `id` given, `TodoId(0)` by default, is left out, and the record returned carries the new one); another key (`id: String`) is inserted as given. A `distinct` field of a type named `<Table>Id` (`project: ProjectId`) is a key of that table (`REFERENCES "project" ("id")`, which `create` has SQLite check). A refinement becomes a `CHECK` where SQL can say it: comparisons, `+`, `-`, `*`, `byte_len(it)`, numbers, strings, `true`, `false`, `!`, and `&&` / `||`; of a refinement joined by `&&`, the parts SQL can say (`it != "" && !contains(it, "/")` checks `<> ''`); a record's own refinement (`where it.start <= it.end`) is a table `CHECK`. A literal default is the column's `DEFAULT`. Every row read back is checked against the record's refinements again, so a row SQL let through that breaks one is an error value, `BadRow { table, message }`, never a fault. Everything is a `Result[_, SqlError]` and runs over a `Database`, so tests can pass a database in memory or a `mock`:
+
+```rust
+from std.orm use Table, Compare, Rows
+
+type Todo = {
+  id: TodoId = TodoId(0),
+  title: String where it != "" && byte_len(it) <= 80,
+  priority: Int where 1 <= it && it <= 5,
+  done: Bool = false,
+}
+derive Table for Todo
+
+Todo.schema().create(mut db)!                                // CREATE TABLE IF NOT EXISTS
+t := (Todo { title: "write docs", priority: 2 }).insert(mut db)!
+_ := (Todo { ..t, done: true }).update(mut db)!             // by key: whether it was there
+found := Todo.get(db, t.id)!                                  // Option[Todo]
+open := Todo.filter(Todo.done.eq(false).and(Todo.priority.le(3)))
+  .order_by(Todo.priority)
+  .limit(10)
+  .all(db)!
+```
+
+Queries are values (`Query[Todo]`, its condition a `Cond[Todo]`): `Todo.query()` (every row) or `Todo.filter(c)`, then `filter`, `order_by`, `order_by_desc` and `limit`, run by `all`, `first`, `count` and `delete`. A condition compares a column, named by its key path, with a value of its field's type: `eq`, `ne` (SQL's `IS`, `IS NOT`: `Todo.due.eq(None)` matches NULL), `lt`, `le`, `gt`, `ge` (an order with `None` holds for no row), joined with `and`, `either` (`or` is a keyword) and `not`. The checker sees the types through: a value of another type, a column of another table, or a field the record doesn't have is an error. Values are always parameters (`"done" IS ?`), never SQL text. A `distinct` key compared in a query needs `impl Sql for TodoId` (`self.value`). `Todo.schema()` is the table (its name, columns and `sql()`), `t.values()` a record's values, `Todo.from_row(r)` a row back. See `examples/todos_db.strata`. Not yet: joins and relations (a project's to-dos), migrations (a changed record against the table there), transactions as a scope, `LIKE` and `IN`, blobs, typed keys for `get`, and a record's fields read by column name.
 
 **Regular expressions** (`std.regex`) are written in Strata, so a self-hosted compiler can use them. `parse` reads the syntax of Rust's `regex` crate (Unicode by default: `\d`, `\w`, `\s` and `.` are Unicode's; `\p{Greek}`, `\p{gc=Lu}`, `\p{age=6.0}`; classes with `&&`, `--`, `~~` and `[[:alpha:]]`; named groups; the flags `imsUuRx`; `\b`, `\b{start}`, `\A`, `\z`; no look-around or back-references) into the tree regex-syntax builds: classes as ranges of code points with `(?i)` folded in, flags gone, the same simplifications (`ab|ac` is `a(?:b|c)`, `a|b` is `[ab]`). The trees of curated patterns were recorded while the two agreed (`tests/data/regex-curated.out`, the case `regex-curated`). The Unicode data (`std.unicode_tables`) is generated by `tools/unicode_tables.py` from regex-syntax's tables (Unicode 16.0.0).
 

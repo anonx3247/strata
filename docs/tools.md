@@ -155,7 +155,7 @@ fault (Refinement): result of `next_digit`: 10 does not satisfy `Digit` (where 0
 
 A compiled program behaves as `strata run`: the same output, and contracts are checked at run time with the same fault messages, exiting with 101. A fault prints the call stack (`    stack: main -> inner -> half`). Memory is reference-counted: a value is freed as soon as nothing holds it.
 
-`strata run` compiles the program in memory and runs it (a JIT), so it runs at native speed without a build step. `strata test` compiles the tests the same way: a fault ends the test, not the run, and what a test prints is shown only if it fails. How the compiler and the JIT work is in [internals](internals.md#compiling).
+`strata run` compiles the program in memory and runs it (a JIT), so it runs at native speed without a build step. A program changed since it was last verified starts at once while it is verified alongside, and its proven code (without the checks proven) is swapped in while it runs ([verification](verification.md#what-is-proven-isnt-checked-again); `--no-verify`, `--verify-alongside`, `--wait-for-proofs`). `strata test` compiles the tests the same way: a fault ends the test, not the run, and what a test prints is shown only if it fails. How the compiler and the JIT work is in [internals](internals.md#compiling).
 
 ## Structural diffs
 
@@ -342,6 +342,7 @@ A folder with a `strata.toml` is a **package**. Its `.strata` files are its modu
 ```toml
 name = "tasks"                         # `strata init` uses the folder's name; it stays when the folder moves (a worktree, a rename)
 exports = ["core", "memory.MemQueue"]  # optional: modules or definitions other packages can use; default every `pub`
+noalloc = ["memory"]                   # optional: modules whose every function is `noalloc`, checked (and the modules below; `main`: the root module)
 
 [deps]                                 # other packages, by path or git URL (read by the compiler in Strata, `compiler/deps`)
 json = { path = "../json" }

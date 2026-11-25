@@ -615,6 +615,7 @@ A program's entry point is `main`. It asks for what it needs by type, and `strat
 from std.cli use CommandLine
 
 /// Greet people by name.
+derive CommandLine for
 type Options = {
   /// Shout the greeting.
   loud: Bool = false,
@@ -623,8 +624,6 @@ type Options = {
   /// Who to greet (the world if nobody).
   names: List[String] = [],
 }
-
-derive CommandLine for Options
 
 fn main(opts: Options) {
   who := if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
@@ -647,18 +646,18 @@ cat README.md | strata run examples/wc
 
 `main` can also ask for `Console` and capabilities (`Disk`, `Process`, the program's own), in any order, and passes them on where a trait (`Files`, `Environment`) is wanted, so tests can pass stand-ins. It returns `()`, an `ExitCode`, or a `Result` of either: an `Err` is written to standard error and the exit code is 1.
 
-The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It has the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`), SQLite databases (`std.sqlite`), command lines (`std.cli`), sorted dictionaries and sets and a priority queue (`std.collections`), JSON and TOML (`std.json`, `std.toml`), HTTP and HTML as values (`std.http`, `std.web`), and regular expressions and Unicode (`std.regex`, `std.unicode`). Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
+The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It has the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`), SQLite databases (`std.sqlite`) and records kept as their tables (`std.orm`, `derive Table`), command lines (`std.cli`), sorted dictionaries and sets and a priority queue (`std.collections`), JSON and TOML (`std.json`, `std.toml`), HTTP and HTML as values (`std.http`, `std.web`), and regular expressions and Unicode (`std.regex`, `std.unicode`). Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
 
 **JSON**: a type that derives `Json` is read from JSON and written to it, every refinement checked:
 
 ```rust
 from std.json use Json, parse, stringify
 
+derive Json for
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
-derive Json for Signup
 
 signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
 
-**C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c).
+**C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c). **Python functions** with `extern python "module" fn`, their values crossing as JSON (`Json`) and every call a `Result[T, PythonError]`; see the [reference](language-reference.md#foreign-functions-extern-python).
