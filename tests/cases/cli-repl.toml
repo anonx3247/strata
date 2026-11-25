@@ -1,5 +1,7 @@
-# strata repl, its input piped: values kept between lines, definitions of
-# the session's own, the REPL's console, faults reported and the session kept
+# strata repl, its input piped: values kept between lines (in compiled
+# memory: functions and closures too), definitions of the session's own (a
+# value of a type redefined dropped), the REPL's console, `mut` methods,
+# faults reported and the session kept
 [[step]]
 save = "p.strata"
 text = """
@@ -27,6 +29,14 @@ triple(x)
 mut console.print(f"x is {x}")
 x
 :view double
+mut xs.push(7)
+xs
+inc := (n: Int) -> n + 1
+inc(x)
+add := (a: Int) -> (b: Int) -> a + b
+add5 := add(5)
+add5(1)
+type Point = { x: Int, y: Int, z: Int }
 """
 out = """
 3: Int
@@ -44,15 +54,25 @@ x is 10
 fn double(x: Int) -> Int {
   x * 2
 }
+[1, 2, 10, 7]: List[Int]
+inc: (Int) -> Int
+11: Int
+add: (Int) -> (Int) -> Int
+add5: (Int) -> Int
+6: Int
+dropped `p`: its type changed
+defined `Point`
 """
 
 [[step]]
 strata = ["--file", "p.strata", "repl"]
 text = """
 nope + 1
-[1, 2][5]
+mut ys := [1]
+ys = ys + [[1, 2][5]]
+ys
 disk.read("x")
 :frobnicate
 """
 fails = true
-has = ["unknown variable `nope`", "index 5 out of range (length 2)", "unknown variable `disk`", "unknown command `:frobnicate`"]
+has = ["unknown variable `nope`", "index 5 out of range (length 2)", "[1]: List[Int]", "unknown variable `disk`", "unknown command `:frobnicate`"]
