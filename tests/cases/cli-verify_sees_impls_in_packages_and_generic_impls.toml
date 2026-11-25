@@ -1,0 +1,48 @@
+# In a package, a trait's implementation is seen through by contracts as in
+# a single file (its trait and type named qualified, `a.Stack`, a call
+# elaborated as `Stack::items` not), helpers of another module included;
+# a generic implementation's methods are checked generically (`P` a sort
+# of its own), not at `Int` with a body typed at `P` (queries mixing two
+# sorts, which the solver refused).
+[[step]]
+write = "strata.toml"
+text = "name = \"impls\"\n"
+
+[[step]]
+module = "a"
+into = "$TMP/"
+text = '''
+pub fn has_key[V](d: Dict[Int, V], k: Int) -> Bool {
+  d.contains(k)
+}
+
+pub type Entry[P] = { payload: P, n: Natural }
+
+pub trait Store[P] {
+  model entries: Dict[Int, Entry[P]]
+  fn put(mut self, k: Int, p: P)
+    ensures has_key(self.entries, k)
+}
+'''
+
+[[step]]
+module = "b"
+into = "$TMP/"
+text = '''
+from a use Store, Entry, has_key
+
+pub type Mem[P] = { table: Dict[Int, Entry[P]], order: List[Int] }
+
+impl[P] Store[P] for Mem[P] {
+  model entries = self.table
+  fn put(mut self, k: Int, p: P) {
+    mut self.table.insert(k, Entry { payload: p, n: 0 })
+    mut self.order.push(k)
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", ".", "verify", "--no-race"]
+has = ["✓ b.Mem[P].put             proven (6 checks)"]
+lacks = ["the solver gave no answer", "only its contract is known"]

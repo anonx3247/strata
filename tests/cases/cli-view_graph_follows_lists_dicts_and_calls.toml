@@ -1,0 +1,219 @@
+# `strata view --graph T` through lists, dicts and calls (compiler/graph):
+# a list's elements paired by position, a dict's values by key; a list kept
+# (`filter`) or added to (`xs + [x]`, in a loop too) moves nothing of what
+# it kept and enters what it adds as written; a method that hands its value
+# to a function (`self = start(self, ids)`) moves as that function does; a
+# trait's method moves as its model's contract says (`ensures self.jobs ==
+# …`), and so does code calling it; what the solver can't show possible, a
+# run on generated inputs may (`contains(ids, j.id)`)
+
+# a queue of jobs in a list
+[[step]]
+strata = ["--file", "lq.strata", "edit"]
+text = '''
+pub type Phase =
+  | Waiting
+  | Active
+  | Finished
+
+pub type Job = { id: Int, phase: Phase }
+
+pub type Jobs = { jobs: List[Job] }
+
+pub fn add_all(q: Jobs, ids: List[Int]) -> Jobs {
+  mut next := q
+  for id in ids {
+    if !next.jobs.any(j -> j.id == id) {
+      next = Jobs { jobs: next.jobs + [Job { id, phase: Waiting }] }
+    }
+  }
+  next
+}
+
+pub fn start(q: Jobs, ids: List[Int]) -> Jobs {
+  Jobs { jobs: q.jobs.map(j -> if j.phase is Waiting && contains(ids, j.id) {
+    Job { ..j, phase: Active }
+  } else {
+    j
+  }) }
+}
+
+pub fn finish(q: Jobs, id: Int) -> Jobs {
+  Jobs { jobs: q.jobs.map(j -> if j.id == id && j.phase is Active {
+    Job { ..j, phase: Finished }
+  } else {
+    j
+  }) }
+}
+
+pub fn clear(q: Jobs) -> Jobs {
+  Jobs { jobs: q.jobs.filter(j -> !(j.phase is Finished)) }
+}
+
+impl Jobs {
+  fn begin(mut self, ids: List[Int]) {
+    self = start(self, ids)
+  }
+
+  fn tidy(mut self) {
+    self = clear(self)
+  }
+}
+
+fn main() {
+  mut q := add_all(Jobs { jobs: [] }, [1, 2])
+  mut q.begin([1])
+  q = finish(q, 1)
+  mut q.tidy()
+  print(len(q.jobs))
+}
+'''
+
+[[step]]
+strata = ["view", "--graph", "Phase", "--file", "lq.strata", "--all"]
+out = '''
+Phase = Waiting | Active | Finished
+  (new)    -> Waiting   by add_all (possible)
+  Waiting  -> Active    by start (possible), Jobs.begin (possible)
+  Active   -> Finished  by finish (possible)
+proven impossible:
+  (new)    -> Waiting   by start, finish, clear, Jobs.begin, Jobs.tidy
+  (new)    -> Active    by start, finish, add_all, clear, Jobs.begin, Jobs.tidy
+  (new)    -> Finished  by start, finish, add_all, clear, Jobs.begin, Jobs.tidy
+  Waiting  -> Active    by finish, add_all, clear, Jobs.tidy
+  Waiting  -> Finished  by start, finish, add_all, clear, Jobs.begin, Jobs.tidy
+  Active   -> Waiting   by start, finish, add_all, clear, Jobs.begin, Jobs.tidy
+  Active   -> Finished  by start, add_all, clear, Jobs.begin, Jobs.tidy
+  Finished -> Waiting   by start, finish, add_all, clear, Jobs.begin, Jobs.tidy
+  Finished -> Active    by start, finish, add_all, clear, Jobs.begin, Jobs.tidy
+'''
+
+# a board of jobs in a dict, behind a trait with a model
+[[step]]
+strata = ["--file", "dq.strata", "edit"]
+text = '''
+pub type Phase =
+  | Waiting
+  | Active { by: String }
+  | Finished
+
+pub type Job = { name: String, phase: Phase }
+
+/// Jobs kept by id.
+trait Board {
+  model jobs: Dict[Int, Job]
+
+  fn post(mut self, id: Int, name: String)
+    ensures self.jobs == if old self.jobs.contains(id) {
+      old self.jobs
+    } else {
+      old self.jobs.with(id, Job { name, phase: Waiting })
+    }
+
+  fn start(mut self, id: Int, by: String)
+    ensures self.jobs == match old self.jobs.get(id) {
+      Some(j) => if j.phase is Waiting {
+        old self.jobs.with(id, Job { ..j, phase: Active { by } })
+      } else {
+        old self.jobs
+      },
+      None => old self.jobs,
+    }
+}
+
+pub type Jobs = { all: Dict[Int, Job] }
+
+pub fn posted(q: Jobs, id: Int, name: String) -> Jobs {
+  if q.all.contains(id) {
+    q
+  } else {
+    Jobs { all: q.all.with(id, Job { name, phase: Waiting }) }
+  }
+}
+
+pub fn started(q: Jobs, id: Int, by: String) -> Jobs {
+  match q.all.get(id) {
+    Some(j) => if j.phase is Waiting {
+      Jobs { all: q.all.with(id, Job { ..j, phase: Active { by } }) }
+    } else {
+      q
+    },
+    None => q,
+  }
+}
+
+pub fn finish(mut q: Jobs, id: Int) {
+  match q.all.get(id) {
+    Some(j) => if j.phase is Active {
+      mut q.all.insert(id, Job { ..j, phase: Finished })
+    },
+    None => (),
+  }
+}
+
+pub fn forget(q: Jobs, id: Int) -> Jobs {
+  Jobs { all: q.all.without(id) }
+}
+
+impl Board for Jobs {
+  model jobs = self.all
+
+  fn post(mut self, id: Int, name: String) {
+    self = posted(self, id, name)
+  }
+
+  fn start(mut self, id: Int, by: String) {
+    self = started(self, id, by)
+  }
+}
+
+pub fn run_one(mut b: Board, id: Int) {
+  mut b.post(id, "job")
+  mut b.start(id, "me")
+}
+
+fn main() {
+  mut q := Jobs { all: Dict[Int, Job] {} }
+  mut q.post(1, "a")
+  mut q.start(1, "me")
+  finish(mut q, 1)
+  print(len(forget(q, 1).all))
+}
+'''
+
+[[step]]
+strata = ["view", "--graph", "Phase", "--file", "dq.strata"]
+out = '''
+Phase = Waiting | Active | Finished
+  (new)    -> Waiting   by posted (possible), Board.post (possible), Jobs.post (possible)
+  (new)    -> Active    by run_one (possible)
+  Waiting  -> Active    by started (possible), run_one (possible), Board.start (possible), Jobs.start (possible)
+  Active   -> Finished  by finish (possible)
+proven impossible: 72 more (in 9 functions; --all lists them)
+'''
+
+[[step]]
+strata = ["view", "--graph", "Phase", "--file", "dq.strata", "--all"]
+has = [
+  "Waiting  -> Finished  by posted, started, finish, run_one, Board.post, Board.start, forget, Jobs.post, Jobs.start",
+  "(new)    -> Waiting   by started, run_one, Board.start, finish, forget, Jobs.start",
+]
+
+# the tasks example over its model: a turn of `MemQueue.claim` puts only
+# `Running` entries, so its other moves are impossible
+[[step]]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks", "--all"]
+has = [
+  "Pending   -> Running    by MemQueue.claim (possible)",
+  "Running   -> Pending    by MemQueue.claim\n",
+  "after_attempt (possible)",
+]
+
+# the orders example: `ship` and `cancel` over any `Db` move as the
+# trait's contract says (a model of `save` is a move of some store)
+[[step]]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata"]
+has = [
+  "Pending   -> Shipped    by ship (possible)",
+  "Pending   -> Cancelled  by cancel (possible)",
+]

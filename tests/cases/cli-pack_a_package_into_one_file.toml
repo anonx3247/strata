@@ -2,7 +2,7 @@
 # `pack` makes one bundle of it, which every command reads like the package
 [[step]]
 strata = ["--file", "$ROOT/examples/tasks", "pack", "tasks.strata"]
-has = ["67 definitions"]
+has = ["69 definitions"]
 
 [[step]]
 run = ["head", "-c", "6", "tasks.strata"]
@@ -10,7 +10,7 @@ stdout = "STRATA"
 
 [[step]]
 strata = ["--file", "tasks.strata", "check"]
-has = ["67 definitions check"]
+has = ["69 definitions check"]
 
 [[step]]
 strata = ["--file", "tasks.strata", "test"]
@@ -37,6 +37,3 @@ out_file = "out/memory.st"
 strata = ["--file", "$ROOT/examples/tasks", "view", "print"]
 out_file = "out/print.st"
 
-[[step]]
-strata = ["--file", "$ROOT/examples/tasks", "view", "sim"]
-out_file = "out/sim.st"

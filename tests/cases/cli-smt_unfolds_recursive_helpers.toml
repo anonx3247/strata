@@ -1,0 +1,85 @@
+# Recursive helpers in contracts: a function that calls only itself,
+# finishes and can't otherwise fail (`count`, `has` over a tree) is an SMT
+# function whose defining equation is unfolded at each use (two levels),
+# so contracts using it are proven (`insert`'s by its own contract at the
+# recursive calls); a wrong one is refuted
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+/// A binary search tree of Ints.
+type Tree =
+  | Leaf
+  | Node { left: Tree, key: Int, right: Tree }
+
+/// How many keys a tree holds.
+fn count(t: Tree) -> Natural {
+  match t {
+    Leaf => 0,
+    Node { left, right, .. } => count(left) + 1 + count(right),
+  }
+}
+
+/// Whether `k` is in the tree.
+fn has(t: Tree, k: Int) -> Bool {
+  match t {
+    Leaf => false,
+    Node { left, key, right } => if k < key {
+      has(left, k)
+    } else if k > key {
+      has(right, k)
+    } else {
+      true
+    },
+  }
+}
+
+/// A node over two trees holds one more key than they do.
+fn join(l: Tree, k: Int, r: Tree) -> Tree
+  ensures count(it) == count(l) + count(r) + 1 && has(it, k) {
+  Node { left: l, key: k, right: r }
+}
+
+/// `k` put in: one more key when it wasn't there, and it is there.
+fn insert(t: Tree, k: Int) -> Tree
+  ensures has(it, k)
+  ensures count(it) == count(t) + if has(t, k) { 0 } else { 1 } {
+  match t {
+    Leaf => Node { left: Leaf, key: k, right: Leaf },
+    Node { left, key, right } => if k < key {
+      Node { left: insert(left, k), key, right }
+    } else if k > key {
+      Node { left, key, right: insert(right, k) }
+    } else {
+      t
+    },
+  }
+}
+
+/// The smallest tree with two keys.
+fn two(a: Int, b: Int) -> Tree
+  requires a < b
+  ensures count(it) == 2 && has(it, a) && has(it, b) {
+  Node { left: Leaf, key: a, right: Node { left: Leaf, key: b, right: Leaf } }
+}
+
+/// Wrong: a node's count is not its left's.
+fn wrong(l: Tree, k: Int) -> Tree
+  ensures count(it) == count(l) {
+  Node { left: l, key: k, right: Leaf }
+}
+
+fn main() {
+  print(count(insert(Leaf, 1)))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ join                     proven (1 check)",
+  "✓ insert                   proven (2 checks)",
+  "✓ two                      proven (1 check)",
+  "✗ wrong                    Ensures violation (found by the solver)",
+  "postcondition of `wrong` violated: ensures count(it) == count(l)",
+]

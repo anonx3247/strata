@@ -28,6 +28,17 @@ A console for tests. It reads its input from `input`, line by line, and
 keeps what is written: `out` is standard output as written, `err` the
 lines written to standard error.
 
+### ReplConsole
+
+```rust
+capability ReplConsole {}
+```
+
+The console `strata repl` gives the code typed at its prompt: what it
+writes is shown with the line's result (standard output and standard
+error, in the order written), and `read_line` reads the REPL's next
+input. Only `strata repl` makes one.
+
 ## Traits
 
 ### Console
@@ -79,3 +90,4 @@ The lines a recorder's standard output holds.
 
 - `impl Console for Terminal`
 - `impl Console for Recorder`
+- `impl Console for ReplConsole`

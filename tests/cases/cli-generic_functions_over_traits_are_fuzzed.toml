@@ -1,0 +1,104 @@
+# a generic function over traits with type arguments (`pump[T, N](mut s:
+# Store[T, N], mut src: Source[T, N])`, examples/tasks' `run_worker`) is
+# fuzzed with values of types implementing them: `impl Source[Int, String]
+# for Counter` binds `T` and `N`, then `Mem[Int, String]` is the store (a
+# mock of a trait would leave `T` unknown: it was skipped, "not compiled yet:
+# the type `T`")
+
+[[step]]
+save = "w.strata"
+text = '''
+/// A store of values of `T`, each with a note of `N`.
+trait Store[T, N] {
+  fn put(mut self, x: T, note: N) -> Int
+}
+
+/// A source of values.
+trait Source[T, N] {
+  fn next(mut self) -> List[(T, N)]
+}
+
+type Mem[T, N] = { items: List[(T, N)] }
+
+impl[T, N] Store[T, N] for Mem[T, N] {
+  fn put(mut self, x: T, note: N) -> Int {
+    mut self.items.push((x, note))
+    len(self.items)
+  }
+}
+
+type Counter = { n: Int }
+
+impl Source[Int, String] for Counter {
+  fn next(mut self) -> List[(Int, String)] {
+    self.n += 1
+    [(self.n, f"#{self.n}")]
+  }
+}
+
+/// Moves what the source gives into the store: how many the store holds.
+fn pump[T, N](mut s: Store[T, N], mut src: Source[T, N]) -> Int
+  ensures it >= 0 {
+  mut last := 0
+  for (x, note) in mut src.next() {
+    last = mut s.put(x, note)
+  }
+  last
+}
+'''
+
+[[step]]
+strata = ["--file", "w.strata", "verify"]
+has = ["~ pump                     fuzzed: 200 cases"]
+lacks = ["skipped", "not compiled yet"]
+
+[[step]]
+save = "w2.strata"
+text = '''
+/// A store of values of `T`, each with a note of `N`.
+trait Store[T, N] {
+  fn put(mut self, x: T, note: N) -> Int
+}
+
+/// A source of values.
+trait Source[T, N] {
+  fn next(mut self) -> List[(T, N)]
+}
+
+type Mem[T, N] = { items: List[(T, N)] }
+
+impl[T, N] Store[T, N] for Mem[T, N] {
+  fn put(mut self, x: T, note: N) -> Int {
+    mut self.items.push((x, note))
+    len(self.items)
+  }
+}
+
+type Counter = { n: Int }
+
+impl Source[Int, String] for Counter {
+  fn next(mut self) -> List[(Int, String)] {
+    self.n += 1
+    [(self.n, f"#{self.n}")]
+  }
+}
+
+/// Moves what the source gives into the store: how many the store holds.
+fn pump[T, N](mut s: Store[T, N], mut src: Source[T, N]) -> Int
+  ensures it < 1 {
+  mut last := 0
+  for (x, note) in mut src.next() {
+    last = mut s.put(x, note)
+  }
+  last
+}
+'''
+
+[[step]]
+strata = ["--file", "w2.strata", "verify"]
+code = 1
+has = [
+  "✗ pump                     Ensures violation (found by the fuzzer)",
+  "input:   Mem { items: [] }, Counter { n: ",
+  "postcondition of `pump` violated: ensures it < 1 (it = 1)",
+]

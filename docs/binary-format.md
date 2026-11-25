@@ -122,12 +122,16 @@ Bound       = param:str  traits:list(TypeExpr)
 
 TestDecl    = name:str  params:list(Param)  body:Expr
 TraitDecl   = name:str  params:list(str)  supers:list(TypeExpr)  methods:list(TraitMethod)  laws:list(Law)
-              derivable:option(Derivable)  capability:bool
+              derivable:option(Derivable)  flags:byte  [models:list(ModelDecl)  invariants:list(Expr)  ensures:list(Expr)]
+              (flags: 1 a capability trait, 2 the bracketed part follows, 4 a `shared` trait)
+ModelDecl   = comments:list(str)  doc:list(str)  name:str  ty:TypeExpr
 Derivable   = kind:TypeExpr  requires:list(Expr)
 TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool
 Law         = comments:list(str)  doc:list(str)  name:str  params:list(Param)  body:Expr
 ImplDecl    = type_params:list(str)  bounds:list(Bound)  trait_name:str  trait_args:list(TypeExpr)
-              for_type:TypeExpr  methods:list(FnDecl)  derived:bool
+              for_type:TypeExpr  methods:list(FnDecl)  flags:byte  [models:list(ModelDef)]
+              (flags: 1 `derive`, 2 the bracketed part follows)
+ModelDef    = comments:list(str)  name:str  value:Expr
 UseDecl     = path:str  alias:option(str)  items:option(list(UseItem))     use m [as a] (no items), from m use x, y as z
 UseItem     = name:str  alias:option(str)
 ExternDecl  = lang:Lang  item:ExternItem
@@ -178,7 +182,7 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 38 Race(list(SelectArm))                                     race { e as x => … }
      | 39 SupervisedSpawn(Expr)                                     supervised spawn e
      | 40 Old(Expr)                                                 old e (in an `ensures`: e where the function started)
-     | 41 Ghost(Expr)                                               ghost requires/ensures/invariant e (verify only)
+     | 41 Assumed(Expr)                                             assumed requires/ensures/invariant e (verify only)
      | 42 Spread(Expr)                                              ...e (a call's argument: the record's fields given to the parameters of their names)
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))

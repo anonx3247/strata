@@ -501,16 +501,16 @@ fn drain(n: Int) {
             (integer)))))))
 
 ============================================================
-Ghost contracts
+Assumed contracts
 ============================================================
 
-fn f(xs: List[Int]) -> Int ghost requires ok(xs) ghost ensures it >= 0 {
-  ghost := 0
+fn f(xs: List[Int]) -> Int assumed requires ok(xs) assumed ensures it >= 0 {
+  assumed := 0
   for x in xs
-    ghost invariant ghost >= 0 {
-    ghost += x
+    assumed invariant assumed >= 0 {
+    assumed += x
   }
-  ghost
+  assumed
 }
 
 ------------------------------------------------------------
@@ -551,3 +551,152 @@ fn f(xs: List[Int]) -> Int ghost requires ok(xs) ghost ensures it >= 0 {
             (identifier)
             (identifier))))
       (identifier))))
+
+================================================================================
+Trait models, invariants and ensures
+================================================================================
+
+trait Stock {
+  model count: Int
+  assumed invariant self.count >= 0
+  ensures self.count >= old self.count - 1
+
+  fn add(mut self)
+    ensures self.count == old self.count + 1
+}
+
+impl Stock for Shelf {
+  model count = self.n
+
+  fn add(mut self) {
+    self.n += 1
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    (type_identifier)
+    (trait_body
+      (model_declaration
+        (identifier)
+        (type_identifier))
+      (trait_invariant
+        (binary_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (integer)))
+      (trait_ensures
+        (binary_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (binary_expression
+            (old_expression
+              (field_expression
+                (identifier)
+                (field_identifier)))
+            (integer))))
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (contract
+          (binary_expression
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (binary_expression
+              (old_expression
+                (field_expression
+                  (identifier)
+                  (field_identifier)))
+              (integer)))))))
+  (impl_declaration
+    (type_identifier)
+    (type_identifier)
+    (impl_body
+      (model_definition
+        (identifier)
+        (field_expression
+          (identifier)
+          (field_identifier)))
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self)))
+        (block
+          (assignment
+            (field_expression
+              (identifier)
+              (field_identifier))
+            (integer)))))))
+
+============================================================
+Shared traits and laws of statements
+============================================================
+
+shared trait Queue {
+  model pending: Set[Int]
+  fn add(mut self, id: Int) -> Int
+  law once(q: Self, id: Int) {
+    mut r := q
+    mut r.add(id)
+    mut r.add(id) == 0
+  }
+}
+
+------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    (type_identifier)
+    (trait_body
+      (model_declaration
+        (identifier)
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier))))
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self))
+          (parameter
+            (identifier)
+            (type_identifier)))
+        (type_identifier))
+      (law_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (identifier)
+            (type_identifier))
+          (parameter
+            (identifier)
+            (type_identifier)))
+        (block
+          (variable_declaration
+            (identifier)
+            (identifier))
+          (mut_expression
+            (call_expression
+              (field_expression
+                (identifier)
+                (field_identifier))
+              (arguments
+                (identifier))))
+          (binary_expression
+            (mut_expression
+              (call_expression
+                (field_expression
+                  (identifier)
+                  (field_identifier))
+                (arguments
+                  (identifier))))
+            (integer)))))))

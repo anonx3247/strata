@@ -54,6 +54,49 @@ This holds whichever modules the traits come from: with `Console` (`std.io`) and
 
 **`Self` or the trait as a parameter**: `fn bigger(self, other: Self)` takes a value of the receiver's own type, `fn bigger(self, other: Shape)` any implementation. On a trait value (a `Shape`, of any implementation) a method taking `Self` can only be given the value itself or what its `Self`-returning methods make (`s.bigger(s.scaled(2))`); `xs[0].bigger(xs[1])` is an error, since `xs[1]` may be another implementation.
 
+**Models: what a trait's state means.** A trait may declare abstract state, `model name: Type`, one per line before its methods, and each implementation says what it is from its own state, `model name = e` (an expression over `self`). Contracts name a model as a field of a value of the trait (`self.orders`, `db.orders` for `db: Db` or `db: D` with `D: Db`), `old` included; code never reads one (it reads the state through the trait's methods). `invariant e` in a trait (over `self`) is a refinement of every implementing type's model, `Self where e`: every value of the trait carries it, so each method of `self` (and any `Self` parameter) knows it, a `mut self` method must keep it, and a method returning `Self` must establish it; a function taking `db: Db` knows it too. `ensures e` in a trait (with `old`) is met by every `mut self` method. There is no trait-level `requires`.
+
+```strata
+trait Db {
+  model orders: Dict[Int, Order]
+  invariant !self.orders.contains(0)
+
+  fn save(mut self, id: Int, o: Order)
+    ensures self.orders == old self.orders.with(id, o)
+  fn lookup(self, id: Int) -> Option[Order]
+    ensures it == self.orders.get(id)
+}
+
+impl Db for MemDb {
+  model orders = self.all
+
+  fn save(mut self, id: Int, o: Order) {
+    mut self.all.insert(id, o)
+  }
+  ...
+}
+```
+
+`d.with(k, v)` and `d.without(k)` (a dict; `s.with(x)`, `s.without(x)` for a set) are new values, for contracts. `verify` proves each implementation's methods against the trait's contracts with the model read through its `model` definition, and code taking the trait through the model alone ([verification](verification.md#trait-models)). A contract that names a model is assumed by default: proven by `verify`, not checked when the program runs (it would compute the model each time); `run`/`test --check-assumed` checks it. An `impl` must give every model of its trait (a mock type's may leave them out), and no other. `mock Db` of a trait with models runs the model: it holds the models (each starts empty: `{}`, `[]`, `0`, `""`, `false`, `None`), a method whose `ensures` say what a `mut self` method makes of a model (`self.orders == e`) and what it returns (`it == e`) does that, and any other method gives a generated result satisfying its contract, as every mock does. So `mock Db` is an in-memory reference implementation for tests.
+
+**Laws of statements.** A law (`law associative(a: Self, b: Self, c: Self): …`, a `Bool` every implementation must satisfy) may also be a block: statements, `mut` method calls on copies of its parameters among them, ending in the `Bool` that must hold.
+
+```strata
+law enqueue_once(q: Self, id: Int) {
+  mut r := q
+  mut r.enqueue(id)
+  (mut r.enqueue(id)) == 0
+}
+```
+
+`verify` proves it for each implementation, through its code or its methods' contracts, its `Self` parameters meeting the trait's invariants; a counterexample gives the values and the steps (`law `claim_after_enqueue` does not hold for `MemQueue` with q = MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, id = 21: after mut r := q; mut r.enqueue(id); mut r.claim(id)`). A law says what one worker sees when it makes those calls in a row, with no one else in between. A proven law is not a fact code calling the trait can use: callers reason through the methods' contracts (and the invariants) only.
+
+**`shared` traits: many workers, one value.** `shared trait Queue { … }` is a trait whose value many workers use at once: a backend whose state lives outside the program (a database, a remote queue), each worker holding a handle to it.
+
+- Each method is one atomic step on the model. Since every `mut self` method keeps the trait's invariants from any state where they hold, the invariants hold however the workers' calls interleave.
+- Code calling it can't carry facts about its models from one call to the next: another worker may act in between. Before each call on a value of a shared trait (`q: Queue`, `Q: Queue`), `verify` takes its model to be any value the invariants allow, so the call's `requires` must follow from its arguments and the invariants alone; its `ensures` relate that call's own before and after, and what they say of the model lasts until the next call on it. Its result keeps its facts: `a := mut q.enqueue(id)` is 0 or 1 whatever happened before.
+- An implementation's method is that one step: it changes its outside state (its fields whose type is a capability, a `capability trait` or another shared trait) through at most one call on each path. A read then a write (`self.db.select(id)` then `mut self.db.update(id, 1)`), or two writes, is an error: "another worker's call can run between `select` and `update`". A method taking `mut self` is a write, one taking `self` a read, and every function of a capability a write (it reaches the outside world). Several reads are fine, and so is a read after the write. A function passed into the one call (`mut self.db.transaction(id, s -> …)`) runs inside its step, so a transaction-style method is how an implementation reads and writes at once.
+
 **Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function. In a generic impl's methods they can be called on the impl's own type parameters too: `impl[T: Zero] Zero for List[T] { fn zero() -> Self { [T.zero()] } }`, or `fn padded(self, n: Int) -> Self { .. push(out, T.zero()) .. }` in `impl[T: Zero] Pad for List[T]`. Types are passed whole when the code runs: the type a method is called on (`List[Int]`), or the static type of the value it is called on, says what `T` is. (Only a value held as a trait type, `d: Describe`, doesn't carry its whole type.) A refined alias stays itself in a type argument: in `read[List[Port]]`, `T` is `Port`, whose methods are `Int`'s; so does one with type parameters (`type Many[T] = List[T] where len(it) >= 2`; `Many[Int]` has `List`'s methods) and a refinement written as a type argument (`List[Int where it % 2 == 0]`, shown as written in messages). **`T.check(x)`**, on any type (a type parameter: the type it is when the code runs), is `Ok(())` when `x` meets the type's refinements, else `Err` saying what it breaks: `Port.check(0)` is `Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")`.
 
 The type is always named, so which implementation runs is always clear. A generic function that calls such a method is given its type arguments when it runs: each call passes the concrete type the checker inferred (or forwards the caller's own type parameter). So the type must be known at each call: `combine_any([])` alone is an error (annotate: `let xs: List[Money] = []`), and such a function can't be passed as a value (`map(combine_any)`): use a lambda. A trait-typed parameter (`xs: List[Empty]`) has no name to call `.empty()` on: write the type parameter when you need it.
@@ -61,7 +104,7 @@ The type is always named, so which implementation runs is always clear. A generi
 ## Modules
 
 - **A file is a module.** In a folder, each `.strata` file (a binary module file) is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `view MODULE` prints one module as text, and `view --split DIR` writes the codebase's text out one `.st` file per module. A view that spans several modules (`view a,b`) labels each group with a `// ── module m` comment. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit m` targets a module, and `view module:m` shows one.
-- `examples/tasks/` is now four modules (`model`, `memory`, `print`, `sim`) that use each other only through their contracts.
+- `examples/tasks/` is three modules (`model`, `memory`, `print`) that use each other only through their contracts.
 
 ## Mutation
 
@@ -109,7 +152,7 @@ fn total(xs: List[I64]) -> I64
 }
 ```
 
-What counts as allocating, in its body and its contracts (a contract is checked when the function runs; a `ghost` one never runs, so it isn't looked at), loop invariants included:
+What counts as allocating, in its body and its contracts (a contract is checked when the function runs; an `assumed` one never runs, so it isn't looked at), loop invariants included:
 
 - **Making a value at run time**: a list, a tuple, a record or a variant with fields (`Point { x, y }`, `Some(x)`; one made of literals only is a constant, built once), a dict, a set, a closure, an f-string, a comprehension, a big integer literal, a task (`spawn`, `scope`, `await`, `select`, `race`), a `mock`, `?` and `except`.
 - **Arithmetic that makes a value**: `+ - * / % <<` and negation on `Int` (a big integer past 2^62: compute on `I64` and the other sized integers), `+` on strings and lists. Arithmetic on sized integers and `Float` is fine.
@@ -316,13 +359,15 @@ Paths are relative to the package's folder, or absolute (`compiler/strata.toml` 
 - **Contracts are assumed.** `verify` never proves foreign code: a foreign function's contract (`ensures it >= 0`) is taken as true where it is called, and the code calling it is verified like any other (fuzzing runs the compiled code, C included). A compiled program checks that contract at each call, as nothing proves it.
 - **Calling C** works wherever code runs: `strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it. C's own library (`strlen`, …) needs no `[native]`.
 
-Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+- **A native module's capability** is asked for like any other: `main` and tests name it (`fn main(sqlite: Sqlite)`), its functions get it as `self` (`sqlite.open(path)`), and the program is linked with the package's `[native]` libraries. std's own are the system's: std.sqlite calls macOS's libsqlite3, which `strata build` links into the executables that use it (against a stub, `compiler/c/libsqlite3.tbd`, so no SDK is needed) and `strata run` / `strata test` load for the JIT. std's precompiled library leaves out what reaches C, so a program that doesn't use it doesn't link it.
+
+Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
 
 ## Programs
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`): `derive CommandLine for Options` writes its `from_args` and `help` for that record, at compile time. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. A field whose doc starts with `-n` can also be given as `-n`; an `Option` field whose doc starts with `[name]` is an optional positional argument; a `List` field whose doc starts with its flag (`/// --rm …`) or a short name is an option given again and again (`--rm a --rm b`). **Commands** are a union that derives `CommandLine`: each member is a command (`Edit` is `edit`), its fields the command's options, its `///` doc the command's help; an options record with a field of that union reads its other fields as options before the command. `strata check` rejects a `CommandLine` record a command line can't fill.
 
-`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
+`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`) and `Sqlite` (`std.sqlite`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
 
 ## The standard library
 
@@ -340,6 +385,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.memory](std/memory.md) | Memory, for programs that must be fast: arenas. |
 | [std.process](std/process.md) | The running program: its arguments, its environment variables and its exit code, and the other programs it runs. |
 | [std.regex](std/regex.md) |  |
+| [std.sqlite](std/sqlite.md) | SQLite databases through the system's libsqlite3: the `Sqlite` capability, connections as the `Database` capability trait, prepared statements, transactions. |
 | [std.term](std/term.md) | Text styled for a terminal: bold, dim, colors. |
 | [std.time](std/time.md) | The clock: the time now, waiting, and timers in `select`. |
 | [std.toml](std/toml.md) | TOML text (version 1.1, https://toml.io/en/v1.1.0) read into values and written from them, and records and sum types read from TOML and written to it. |

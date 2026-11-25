@@ -1540,6 +1540,10 @@
         {
           "type": "function_declaration",
           "named": true
+        },
+        {
+          "type": "model_definition",
+          "named": true
         }
       ]
     }
@@ -2200,6 +2204,58 @@
           },
           {
             "type": "type_identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "model_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_type",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "model_definition",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_expression",
             "named": true
           }
         ]
@@ -2949,6 +3005,18 @@
         {
           "type": "law_declaration",
           "named": true
+        },
+        {
+          "type": "model_declaration",
+          "named": true
+        },
+        {
+          "type": "trait_ensures",
+          "named": true
+        },
+        {
+          "type": "trait_invariant",
+          "named": true
         }
       ]
     }
@@ -3053,6 +3121,36 @@
         },
         {
           "type": "visibility_modifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "trait_ensures",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "trait_invariant",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "_expression",
           "named": true
         }
       ]
@@ -3734,6 +3832,10 @@
     "named": false
   },
   {
+    "type": "assumed",
+    "named": false
+  },
+  {
     "type": "await",
     "named": false
   },
@@ -3840,10 +3942,6 @@
     "named": false
   },
   {
-    "type": "ghost",
-    "named": false
-  },
-  {
     "type": "hole",
     "named": true
   },
@@ -3896,6 +3994,10 @@
     "named": false
   },
   {
+    "type": "model",
+    "named": false
+  },
+  {
     "type": "mut",
     "named": false
   },
@@ -3930,6 +4032,10 @@
   {
     "type": "self",
     "named": true
+  },
+  {
+    "type": "shared",
+    "named": false
   },
   {
     "type": "spawn",

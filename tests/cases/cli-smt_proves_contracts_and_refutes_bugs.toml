@@ -43,7 +43,7 @@ counts = { "found by the solver" = 6 }
 # what can't be proven is fuzzed, with the reason
 [[step]]
 save = "f.strata"
-text = "fn mean(xs: List[Int]) -> Int where it >= 0 { if len(xs) == 0 { 0 } else { abs(xs.fold(0, (a, x) -> a + x)) / len(xs) } }\nfn neg(xs: List[Int]) -> Natural { xs.fold(0, (a, x) -> a + x) }\n"
+text = "fn mean(xs: List[Int]) -> Int where it >= 0 { if len(xs) == 0 { 0 } else { abs(xs.fold(1, (a, x) -> a * x)) / len(xs) } }\nfn neg(xs: List[Int]) -> Natural { xs.fold(1, (a, x) -> a * x) }\n"
 
 [[step]]
 strata = ["--file", "f.strata", "verify", "--no-race"]

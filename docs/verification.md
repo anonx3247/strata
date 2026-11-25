@@ -72,6 +72,39 @@ fn push_positive(mut xs: List[Int], x: Int)
 
 A trait method's contract works the same way: with `fn incr(mut self) ensures self.total() == old self.total() + 1` in a trait `Counter`, a generic `fn incr_twice[C: Counter](mut c: C) ensures c.total() == old c.total() + 2` calling `mut c.incr()` twice is proven (a method only known by its contract gives the same result on the same values). When an `ensures` with `old` stays a run-time check, the program takes each `old e` on entry and keeps it until the check, which shows both values; holding the value makes an update in place of it copy, so it is done only for a check `verify` didn't prove.
 
+## Trait models
+
+A trait's `model` ([the reference](language-reference.md#traits)) is what its contracts are about; each implementation's `model name = e` says what it is for that type. `verify` proves two things apart:
+
+- **each implementation** meets the trait's contracts, with the model replaced by its abstraction: `MemDb.save` is proven to make `self.all` equal to `old self.all.with(id, o)`; an implementation keeping only the last order saved (`model orders = match self.last { Some((k, o)) => Dict { k: o }, None => Dict {} }`) is refuted with a counterexample (an order already there, a second one saved: before, two entries; after, one);
+- **code over the trait** reasons only through the model: a model is an unknown value of its type, a function of the trait value it is read from (the same value gives the same model, wherever it came from: the branches of an `if` joined, `old db` when nothing changed it), constrained by the invariants and the methods' contracts. `fn ship(mut db: Db, id: Int) -> Result[(), String]` that looks the order up and saves it as shipped is proven to ensure `match old db.orders.get(id) { Some(o) => it is Ok && db.orders == (old db.orders).with(id, Order { ..o, shipped: true }), None => it is Err && db.orders == old db.orders }`.
+
+A trait's `invariant` is a refinement of every implementing type's model: a value of the trait's type carries it as its type's refinement (what a function taking `db: Db` knows, what a `mut` argument's new value is assumed to satisfy), each implementation's methods assume it of `self` (and other `Self` parameters) and must keep it in a `mut self` method and establish it in a result of type `Self`. A trait's `ensures` is proven in each `mut self` method. Contracts naming a model are assumed contracts (`(assumed: not checked when the program runs)`; one `verify` neither proves nor refutes makes its function assumed, `≈`): computing an abstraction at run time is what the implementation is there to avoid.
+
+## State graphs
+
+The solver also answers questions nobody wrote: `strata view --graph T` asks, for each function that takes and gives back a value holding the sum type `T`, whether it can move a value from one variant to another (an `ensures !(x is A && it is B)` of a copy of the function; through a list `!(graph_i < len(old xs) && graph_i < len(xs) && old xs[graph_i].status is A && xs[graph_i].status is B)` with the position a parameter of the copy, through a dict the same at a key `graph_key`; what the body's shape settles, a list kept or a call of a function that moves the type, isn't asked, and what the solver leaves unknown is run on generated inputs), and draws the moves that may happen: the type's pipeline, generated rather than declared. Proven moves are left out, so the graph says what the code can do, not what a comment says it does; [the tools](tools.md#state-graphs-how-a-types-values-move) show it, a run's moves and a diff's.
+
+## Laws of statements and shared traits
+
+A law may be a sequence of calls ending in what must hold ([the reference](language-reference.md#traits)). `verify` checks it for each implementation as a function whose body is the law and whose result must be `true`, its `Self` parameters assumed to meet the trait's invariants; the calls go through the implementation's methods. In `tests/cases/cli-shared_traits_and_laws`, a queue of task ids (`model pending: Set[Int]`, `model claimed: Set[Int]`) proves `enqueue_once` (enqueuing twice adds once) and `no_double_claim` (claiming twice succeeds at most once) for its in-memory implementation, and refutes `claim_after_enqueue` with the values and the steps:
+
+```text
+✗ law claim_after_enqueue for MemQueue Law violation (found by the solver)
+    input:   MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, 21
+    law `claim_after_enqueue` does not hold for `MemQueue` with q = MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, id = 21: after mut r := q; mut r.enqueue(id); mut r.claim(id)
+```
+
+Proven laws are not facts for callers: code over the trait sees only its contracts and invariants.
+
+The queue is a `shared trait`: many workers use one value. Its invariants hold under every interleaving, since each method is one atomic step that keeps them from any state where they hold. For code calling it, each call on a shared value starts from a model that is any value the invariants allow (the receiver is replaced, as if another worker had just acted), so:
+
+- `fn added(mut q: Queue, id: Int) -> Int where it == 0 || it == 1`, which only uses the results of two `enqueue`s, is proven;
+- `fn enqueued_now(mut q: Queue, id: Int) -> Int ensures q.pending.contains(id) || q.claimed.contains(id)` is proven: what the last call ensures lasts until the next call on `q`;
+- `fn second_adds_nothing(mut q: Queue, id: Int) -> Int where it == 0`, two `enqueue`s relying on the first one's effect, is not proven, and the reason says why: "`q` when `enqueue` is called: `Queue` is shared, so another worker may have changed it since the last call (only the trait's invariants are known)".
+
+Inside an implementation, a call on its own field (`self.db`) is not replaced: the method is one step, which `check` enforces (one call that changes the outside state per path; see [the reference](language-reference.md#traits)). A value of a type implementing the trait (`MemQueue`) is not shared: its code runs alone.
+
 ## Recursion and termination
 
 ```rust
@@ -389,7 +422,7 @@ fn add(xs: Sorted, x: Int) -> Sorted {
     result of `add`: [-952, 0, 1000, -676] does not satisfy `Sorted` (…)
 ```
 
-An element of a list of a checked type is a function of its position: its integers, strings and booleans are SMT functions of the position, so equal positions hold equal elements, and the list inside an element (a record's field) is a function of both positions. `all(xs, p)` and `all(lo..hi, i -> …)`, once known, become a fact quantified over the positions, which reaches the elements the code takes. A counterexample with a non-empty list is shown with up to 6 elements: the first elements of the parameters' lists are made when the function is, and asked for when the model has a non-empty list. Not yet: positions after `filter` and `sort` (only "some element of the list" is known there), and quantified facts nested inside one another (a conversation whose every tool result answers some earlier message), which the solver proves only by instantiating them by the thousand, past what a proof may cost.
+An element of a list of a checked type is a function of its position: its integers, strings and booleans are SMT functions of the position, so equal positions hold equal elements, and the list inside an element (a record's field) is a function of both positions. `all(xs, p)` and `all(lo..hi, i -> …)`, once known, become a fact quantified over the positions, which reaches the elements the code takes. A counterexample with a non-empty list is shown with up to 6 elements: the first elements of the parameters' lists are made when the function is, and asked for when the model has a non-empty list. Quantified facts nested inside one another (a conversation whose every tool result answers a call of some earlier message: `all(0..len(it), i -> … any(0..i, j -> any(calls, c -> c == id)))`) are made by polarity: an `all` that is only ever known true gives its fact over every position, one that is only ever proven only what proves it (some position where it fails, else it holds), so an `any` inside a known `all` is a witness position of the outer one, never a quantifier inside a quantifier. Appending calls and their results, or a result of a call a `requires` points at, is proven in milliseconds. Not yet: positions after `filter` and `sort` (only "some element of the list" is known there), and a witness moved by a concatenation in front of it (`a + b` of two such conversations).
 
 ## Bugs the solver finds
 
@@ -424,29 +457,31 @@ built t: 7 runtime checks left out (proven by `strata verify`), 0 kept
 
 Trait methods count too: their proofs are found under `verify`'s names for them (`Money.combine`). A proven division calls the runtime's division without its check for 0. The standard library is proven, all of it (the test `std_is_proven` keeps it so), so its precompiled library leaves out the checks inside its functions; those of their arguments and `requires` stay, since the calling program proves them or not. `--all-checks` compiles std with the program, every check kept. Other checks that run in C (a string's index, `split`'s separator) stay.
 
-### Ghost contracts: proven, never checked
+### Assumed contracts: trusted, never checked
 
-A contract that isn't proven stays a runtime check, and some cost too much to keep: an invariant of a whole data structure checked at every call, a loop invariant that walks a list at every pass (which makes the loop quadratic). Write `ghost` before the clause to leave it to `verify` alone:
+A contract that isn't proven stays a runtime check, and some cost too much to keep: an invariant of a whole data structure checked at every call, a loop invariant that walks a list at every pass (which makes the loop quadratic). Write `assumed` before the clause to leave it to `verify` alone:
 
 ```strata
 fn execute(mut b: Book, o: Order) -> List[Event]
-  ghost requires book_ok(b)
-  ghost ensures book_ok(b)
+  assumed requires book_ok(b)
+  assumed ensures book_ok(b)
   ensures len(it) >= 1
 {
   for l in b.levels
-    ghost invariant sorted(b.levels)
+    assumed invariant sorted(b.levels)
   {
     …
   }
 }
 ```
 
-- `verify` treats a ghost clause as any other: it proves it, refutes it with a counterexample, or fuzzes it, and notes its checks `(ghost: not checked when the program runs)`. A ghost `requires` is assumed inside the function and must be shown at its calls.
-- The compiled program never checks it, proven or not. `strata build` lists the ghost clauses `verify` didn't prove (a warning; the build goes on).
-- `strata run --check-ghosts` and `strata test --check-ghosts` compile them in, to check them on real runs. The fuzzer always checks them.
-- A ghost clause stays a clause: `check` doesn't suggest moving one that constrains a single parameter into a refinement (a refinement is checked when the program runs).
+A proven contract already leaves the compiled code, so the mark only matters for one `verify` doesn't prove: it says the contract is trusted, not checked, which is `verify`'s **assumed** level (`≈`), as for capability code and `extern c`.
 
-`strata build` also says when a written contract stays a runtime check that costs: a loop `invariant` it didn't prove (O(n) a pass when it walks a list), or a `requires` or `ensures` that walks a list (`all`, `any`, `sum`, `filter`, a comprehension), with the suggestion to prove it or make it ghost. On the order book of the benchmark, making its book-wide invariants ghost took a run of 32,000 commands from 18.1 s to 2.5 s.
+- `verify` treats an assumed contract as any other: it proves it (the function is then proven), or refutes it with a counterexample (a failure), noting its checks `(assumed: not checked when the program runs)`. One neither proven nor refuted (fuzzed without a failure) makes the function assumed rather than fuzzed, the report naming the contract (`≈ f  assumed: not proven: ensures … (assumed: trusted, never checked when the program runs)`); `--require proven` accepts it as it accepts other assumed code, listing it. An assumed `requires` is taken as true inside the function and must be shown at its calls.
+- The compiled program never checks it, proven or not. `strata build` lists the assumed contracts `verify` didn't prove (`N assumed contracts aren't proven: …`, a warning; the build goes on).
+- `strata run --check-assumed` and `strata test --check-assumed` compile them in, to check them on real runs. The fuzzer always checks them.
+- An assumed contract stays a clause: `check` doesn't suggest moving one that constrains a single parameter into a refinement (a refinement is checked when the program runs).
+
+`strata build` also says when a written contract stays a runtime check that costs: a loop `invariant` it didn't prove (O(n) a pass when it walks a list), or a `requires` or `ensures` that walks a list (`all`, `any`, `sum`, `filter`, a comprehension), with the suggestion to prove it or make it assumed. On the order book of the benchmark, making its book-wide invariants assumed took a run of 32,000 commands from 18.1 s to 2.5 s.
 
 Every result, option and setting of `strata verify` is in the [verification reference](verification-reference.md).

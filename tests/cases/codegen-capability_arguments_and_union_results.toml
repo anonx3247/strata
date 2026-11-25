@@ -1,0 +1,59 @@
+# A capability's functions with arguments get them (the capability is their
+# implicit `self`, which they may call through); a union in a `Result` made
+# in branches (`Ok(5)` in one, `Ok("a")` in the other) is the union's; a
+# union value pushed onto a list is held once (every object freed).
+
+[[step]]
+save = "main.strata"
+text = '''
+type Null
+
+type V = Int | String | Null
+
+pub capability Lamp {
+  fn shine(s: String, n: Int) -> String {
+    f"{s} {n}"
+  }
+
+  fn twice(s: String) -> String {
+    self.shine(s, 2)
+  }
+}
+
+fn value(t: Int) -> Result[V, String] {
+  if t == 1 {
+    Ok(5)
+  } else if t == 2 {
+    Ok("apple" + "s")
+  } else {
+    Ok(Null)
+  }
+}
+
+fn values() -> Result[List[V], String] {
+  mut out := []
+  for i in range(1, 4) {
+    x := value(i)!
+    mut out.push(x)
+  }
+  Ok(out)
+}
+
+fn main(lamp: Lamp) {
+  print(lamp.shine("on", 3))
+  print(lamp.twice("off"))
+  print(values())
+}
+'''
+
+[[step]]
+strata = ["build", "main.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "on 3\noff 2\nOk([5, \"apples\", Null])\n"
+
+[[step]]
+strata = ["run", "main.strata"]
+stdout = "on 3\noff 2\nOk([5, \"apples\", Null])\n"
