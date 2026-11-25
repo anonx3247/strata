@@ -83,7 +83,7 @@ A trait's `invariant` is a refinement of every implementing type's model: a valu
 
 ## State graphs
 
-The solver also answers questions nobody wrote: `strata view --graph T` asks, for each function that takes and gives back a value holding the sum type `T`, whether it can move a value from one variant to another (an `ensures !(x is A && it is B)` of a copy of the function, or `!any(0..len(old xs), i -> old xs[i].status is A && xs[i].status is B)` through a list), and draws the moves that may happen: the type's pipeline, generated rather than declared. Proven moves are left out, so the graph says what the code can do, not what a comment says it does; [the tools](tools.md#state-graphs-how-a-types-values-move) show it, a run's moves and a diff's.
+The solver also answers questions nobody wrote: `strata view --graph T` asks, for each function that takes and gives back a value holding the sum type `T`, whether it can move a value from one variant to another (an `ensures !(x is A && it is B)` of a copy of the function; through a list `!(graph_i < len(old xs) && graph_i < len(xs) && old xs[graph_i].status is A && xs[graph_i].status is B)` with the position a parameter of the copy, through a dict the same at a key `graph_key`; what the body's shape settles, a list kept or a call of a function that moves the type, isn't asked, and what the solver leaves unknown is run on generated inputs), and draws the moves that may happen: the type's pipeline, generated rather than declared. Proven moves are left out, so the graph says what the code can do, not what a comment says it does; [the tools](tools.md#state-graphs-how-a-types-values-move) show it, a run's moves and a diff's.
 
 ## Laws of statements and shared traits
 
