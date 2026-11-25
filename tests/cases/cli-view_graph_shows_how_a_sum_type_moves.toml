@@ -22,19 +22,25 @@ has = [
 ]
 
 # a field path through a list (`MemQueue.entries[i].status`): the same
-# element before and after; `mem_release` only moves running tasks
+# element before and after; `mem_release` only moves running tasks; what
+# `mem_enqueue`'s loop appends is written `Pending`; the `MemQueue` methods
+# move as the functions they hand their state to; `mem_claim`'s move is
+# shown possible by a run (the solver gives no model through its lists)
 [[step]]
 strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks"]
 has = [
-  "Running   -> Pending    by mem_record (unknown), mem_release (unknown)",
-  "Running   -> Exhausted  by mem_record (unknown), mem_release (unknown)",
-  "any       -> any        by mem_enqueue (",
-  "MemQueue.claim (possible)",
+  "(new)     -> Pending    by mem_enqueue (possible), MemQueue.enqueue (possible)",
+  "Pending   -> Running    by mem_claim (possible), MemQueue.claim (possible)",
+  "Running   -> Pending    by mem_record (unknown), mem_release (possible), MemQueue.record (unknown), MemQueue.release (possible)",
+  "any       -> any        by run_steps (possible), queue_after (possible)",
 ]
 
 [[step]]
 strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks", "--all"]
-has = ["Pending   -> Exhausted  by mem_claim, mem_record, mem_release, statuses"]
+has = [
+  "Pending   -> Exhausted  by mem_claim, mem_record, mem_release, statuses, mem_enqueue, MemQueue.enqueue, MemQueue.claim, MemQueue.record, MemQueue.release",
+  "Running   -> Pending    by mem_claim, statuses, mem_enqueue, MemQueue.enqueue, MemQueue.claim",
+]
 
 # a page with the graph drawn
 [[step]]
