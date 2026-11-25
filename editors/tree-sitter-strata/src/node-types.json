@@ -3840,6 +3840,10 @@
     "named": false
   },
   {
+    "type": "ghost",
+    "named": false
+  },
+  {
     "type": "hole",
     "named": true
   },

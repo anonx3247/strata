@@ -225,8 +225,8 @@ module.exports = grammar({
     contract: ($) =>
       choice(
         'terminates',
-        seq('requires', $._expression),
-        seq('ensures', $._expression),
+        seq(optional('ghost'), 'requires', $._expression),
+        seq(optional('ghost'), 'ensures', $._expression),
         seq('decreases', $._expression),
       ),
 
@@ -488,7 +488,8 @@ module.exports = grammar({
 
     continue_statement: (_) => 'continue',
 
-    invariant: ($) => seq('invariant', $._expression),
+    // `ghost invariant e`: proven by verify, never checked at run time
+    invariant: ($) => seq(optional('ghost'), 'invariant', $._expression),
 
     // `decreases n - i`, `decreases (a, b)`: why a loop ends
     decreases: ($) => seq('decreases', $._expression),
