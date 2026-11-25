@@ -39,7 +39,7 @@ fn main(clock: VirtualClock) {
     tx.close()
     mut out := []
     for v in rx {
-      out = push(out, v)
+      mut out.push(v)
     }
     out
   }

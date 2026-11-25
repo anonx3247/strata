@@ -202,7 +202,7 @@ mock MemDisk = { files: Dict[String, String] = Dict[String, String] {} }
 impl Files for MemDisk {
   fn read(self, path: String) -> Result[String, FsError] { Ok(get(self.files, path) ?? "") }
   fn write(mut self, path: String, text: String) -> Result[(), FsError] {
-    self.files = insert(self.files, path, text)
+    mut self.files.insert(path, text)
     Ok(())
   }
   // exists, list, ...: left out, generated
@@ -312,8 +312,8 @@ Procedural code is normal Strata: `loop { … }` repeats until `break`, and `con
 ```rust
 best := scores
   .filter(s -> s > 0)
-  .sort()
-  .reverse()
+  .sorted()
+  .reversed()
   .take(3)
 ```
 
@@ -338,7 +338,7 @@ Set { x % 3 for x in xs }
 Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early. A lambda of several parameters where a function of one tuple of as many elements is expected takes the tuple apart: `pairs.filter((k, v) -> v > 0)`, `xs.enumerate().map((i, x) -> i * x)` bind the elements, with the tuple's types (written without parameter types; a lambda passed where a function of two arguments is expected, as `fold`'s, stays one of two arguments). A parameter, a lambda's or a function's, can also be a pattern that always matches (a tuple, a record pattern, nested, `_`), with or without a type: `pairs.map(((a, b)) -> a + b)`, `fold(m, 0, (acc, (k, v)) -> acc + v)`, `((a, b): (Int, Int)) -> a * b`, `fn dist((x, y): (Int, Int)) -> Int`, `(Seg { from: Pt { x, y }, to }) -> …`. It means taking the argument and binding it with the pattern, as `:=` does; a pattern that may not match (a variant, a literal) is refused: take the value and `match` on it.
 ### Unused values and variables
 
-Values never change, so a statement whose value is dropped almost always means a mistake: `push(xs, 1)` on its own line makes a new list and throws it away. An expression statement whose value isn't `()` is an error (`the value of `push(xs, 1)` is not used: assign it (`xs = push(xs, 1)`) or discard it with `_ := …``), and a value dropped on purpose is written `_ := e`. That covers a call kept only for what it does through a capability when it also returns something, an `if` or `match` statement whose arms give values (discard the arms' values, or the whole), and `x + 1`; a `mut` method call returning `()` (`mut q.claim(2)`), a `spawn` (its task belongs to the `scope`) and a `return`/`break` are fine.
+Values never change, so a statement whose value is dropped almost always means a mistake: `xs + [1]` on its own line makes a new list and throws it away. An expression statement whose value isn't `()` is an error (`the value of `xs + [1]` is not used: use it, or discard it with `_ := …``), and a value dropped on purpose is written `_ := e`. That covers a call kept only for what it does through a capability when it also returns something, an `if` or `match` statement whose arms give values (discard the arms' values, or the whole), and `x + 1`; a `mut` method call returning `()` (`mut q.claim(2)`), a `spawn` (its task belongs to the `scope`) and a `return`/`break` are fine.
 
 A variable never read (a parameter, `x := e`, `mut x := e`, a binding of a pattern, a lambda's parameter) is a warning, not an error, since code may be partway written: one line each from `check`, `run`, `build` (when it verifies) and `edit`, naming the function. A name starting with `_` (`_x`, `_`) says the value is unused on purpose; an `impl` method's parameters, which its trait or type dictates, are not warned about. A variable whose value has no effect (a literal, a variable, a lambda, a field, a tuple or list of them) and that nothing reads isn't compiled at all.
 
@@ -346,27 +346,27 @@ Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7
 
 ## Values and copying
 
-Values never change: `insert(d, k, v)` is a new dict, and `d` is as it was. What makes that cheap is the rule compiled code follows: **an update of a value held by one thing only is made in place; a value something else still holds is copied first.** The copy is then held by one thing only, so the updates after it are in place again: sharing a value costs at most one copy per update that follows a share, never a copy per update.
+Values never change: `ys := xs + [x]` is a new list, and `xs` is as it was; a variable declared `mut` changes, by assignment or by a `mut` method (`mut d.insert(k, v)`), and a copy held elsewhere keeps the old value. What makes that cheap is the rule compiled code follows: **an update of a value held by one thing only is made in place; a value something else still holds is copied first.** The copy is then held by one thing only, so the updates after it are in place again: sharing a value costs at most one copy per update that follows a share, never a copy per update.
 
 An update is in place (when nothing else holds the value) in these forms:
 
-- `d = insert(d, k, v)`, `d = remove(d, k)` on a dict or a set, where `d` is a variable or a field at any depth (`s.d`, `b.bids.words`): O(1) each, on average. So is `insert`/`remove` on a temporary, as in `insert(insert(d, 1, 1), 2, 2)` (the inner result is held by nothing else).
+- `mut d.insert(k, v)`, `mut d.remove(k)` on a dict or a set, where `d` is a variable or a field at any depth (`mut s.d.insert(k, v)`, `mut b.bids.words.remove(k)`): O(1) each, on average.
 - `xs[i] = v` (`xs = set_at(xs, i, v)`) on a list: O(1).
 - `x.f = v` and `x.a.b = v`: a field of a record or tuple, at any depth (not of a `distinct` record or one with a refinement of its own, which is checked on the new record).
-- `xs = push(xs, e)`, `xs += ys`, `xs = xs + ys` on a list: O(1) per element added, on average, **even when `xs` is shared**: the list's buffer is extended past its end when no other list made from it has used those slots, and copied otherwise (with room for as much again, so a list grown over and over is copied O(log n) times).
+- `mut xs.push(e)`, `mut xs.pop()`, `xs += ys`, `xs = xs + ys`, `xs = xs + [e]` on a list: O(1) per element added, on average, **even when `xs` is shared**: the list's buffer is extended past its end when no other list made from it has used those slots, and copied otherwise (with room for as much again, so a list grown over and over is copied O(log n) times).
 - `s += t`, `s = s + t` on a string: in place when the string is held by `s` only (and the records on the way to it, for a field), else a copy, with room to grow.
 - A record's or a container's elements of a refined type (`Dict[Int, Word]`): an update checks what it adds (`insert`'s key and value, `push`'s element), not every element again.
 
-Any other expression makes a new value and leaves its operands as they were: `ys := insert(xs, …)` copies `xs` (it is still `xs`'s), and so does `xs + [x]` assigned to anything but `xs`. Write the update back to the place it reads.
+Any other expression makes a new value and leaves its operands as they were: `ys := xs + [x]` copies `xs` (it is still `xs`'s), and so do `xs.sorted()` and `xs.reversed()`. Change the place itself (`mut xs.push(x)`, `mut xs.sort()`) to update it in place.
 
 What holds a value (so that changing it through one of them copies it):
 
-- each variable, field, and container element it is stored in: `ys := xs` holds it twice, and the next `xs = insert(xs, …)` copies (once);
+- each variable, field, and container element it is stored in: `ys := xs` holds it twice, and the next `mut xs.insert(…)` copies (once);
 - a `mut` parameter is the caller's variable, by reference: `fn add(mut s: State)` changing `s.d` changes the caller's value in place, as does a `mut self` method (`mut c.add(1)`). A field given to a `mut` parameter, `bump(mut b.bids)`, is lent to the call: in place when the records on its path are held once and no other argument of the call reads `b`;
-- a value read out of a container is held by the container too: `insert(get(outer, k) ?? Dict {}, k2, v)` copies the inner dict every time (each step's copy is as big as the inner dict). Take it out first: `mut inner := get(outer, k) ?? Dict {}`, `outer = remove(outer, k)`, then change `inner` and put it back (a list read out is fine to `push` to: see above);
+- a value read out of a container is held by the container too: `mut inner := get(outer, k) ?? Dict {}` then `mut inner.insert(k2, v)` copies the inner dict every time (each step's copy is as big as the inner dict). Take it out first: `mut outer.remove(k)` after reading it, then change `inner` and put it back (`mut outer.insert(k, inner)`) (a list read out is fine to `push` to: see above);
 - a `for` loop holds what it runs over until it ends: changing the container inside the loop copies it once;
 - a closure holds what it captures, for as long as it exists;
-- a function's (not `mut`) parameter is still the caller's value: `mut e := d` then `e = insert(e, …)` copies `d` once;
+- a function's (not `mut`) parameter is still the caller's value: `mut e := d` then `mut e.insert(…)` copies `d` once;
 - a value sent to a task or a channel is held by the sender too while it still uses it.
 
 `strata run --copies` (and `strata test --copies`, `strata build --copies`) reports each copy made to change a value, when the program ends: per place in the code, how many, how big, and why (on standard error, the most bytes first):

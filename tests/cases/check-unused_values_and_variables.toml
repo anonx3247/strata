@@ -1,5 +1,6 @@
 # an expression statement whose value isn't `()` is an error (values never
-# change: `push(xs, 1)` alone does nothing), said with how to keep it or
+# change: `xs + [1]` alone does nothing, and `xs.push(1)` must be `mut
+# xs.push(1)`), said with how to keep it or
 # `_ := …`; a `mut` method call (`()`) and `_ := e` are fine. A variable never
 # read is a warning, one line each, in check, run and build (`_x`: none),
 # and one whose value has no effect isn't compiled at all
@@ -17,11 +18,15 @@ impl Counter {
 
 fn double(x: Int) -> Int { x * 2 }
 
+fn pushes(mut xs: List[Int]) {
+  xs.push(1)
+}
+
 fn values(xs: List[Int], unused_param: Int, _quiet: Int) -> List[Int] {
-  push(xs, 1)
+  xs + [1]
   double(3)
   len(xs) + 1
-  _ := push(xs, 2)
+  _ := xs + [2]
   mut c := Counter { n: 0 }
   mut c.bump()
   if len(xs) > 0 {
@@ -46,8 +51,8 @@ fn main() {
 [[step]]
 strata = ["check", "values.strata"]
 code = 1
-has = ["error in values: the value of `push(xs, 1)` is not used: assign it (`xs = push(xs, 1)`) or discard it with `_ := …`", "error in values: the value of `double(3)` is not used: use it, or discard it with `_ := …`", "error in values: the value of `len(xs) + 1` is not used", "error in values: the value of `if len(xs) > 0 { …` is not used", "warning: in `values`: `unused_param` is never used (remove it, or name it `_unused_param`)", "warning: in `values`: `never_read` is never used", "warning: in `values`: `first` is never used"]
-lacks = ["`_quiet`", "`_skipped`", "c.bump()` is not", "push(xs, 2)` is not", "print(f"]
+has = ["error in values: the value of `xs + [1]` is not used: use it, or discard it with `_ := …`", "error in pushes: `xs.push(…)`: `push` changes the list, dict or set it is called on: write `mut xs.push(…)` (a new list: `xs + [x]`)", "error in values: the value of `double(3)` is not used: use it, or discard it with `_ := …`", "error in values: the value of `len(xs) + 1` is not used", "error in values: the value of `if len(xs) > 0 { …` is not used", "warning: in `values`: `unused_param` is never used (remove it, or name it `_unused_param`)", "warning: in `values`: `never_read` is never used", "warning: in `values`: `first` is never used"]
+lacks = ["`_quiet`", "`_skipped`", "c.bump()` is not", "xs + [2]` is not", "print(f"]
 
 [[step]]
 save = "unused.strata"

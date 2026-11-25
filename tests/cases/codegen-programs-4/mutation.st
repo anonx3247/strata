@@ -7,7 +7,7 @@ type Counter = { n: Int, log: List[String] }
 impl Counter {
     fn bump(mut self, by: Int) {
         self.n += by
-        self.log = push(self.log, f"+{by}")
+        mut self.log.push(f"+{by}")
     }
 
     fn total(self) -> Int {
@@ -16,8 +16,8 @@ impl Counter {
 }
 
 fn push_twice(mut xs: List[Int], x: Int) {
-    xs = push(xs, x)
-    xs = push(xs, x * 10)
+    mut xs.push(x)
+    mut xs.push(x * 10)
 }
 
 fn rename(mut o: Outer, name: String) {
@@ -38,7 +38,7 @@ fn main() {
     keep := o
     o.x = 10
     o.inner.y = 20
-    o.items = push(o.items, "first" + "!")
+    mut o.items.push("first" + "!")
     print(o)
     print(keep)
     rename(mut o, "renamed")

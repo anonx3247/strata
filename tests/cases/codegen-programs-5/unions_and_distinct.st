@@ -43,7 +43,7 @@ fn main() {
     print(a == b)
     let c: Id = 41
     print(a == c)
-    print(sort([b, a, c]))
+    print([b, a, c].sorted())
     if b is String {
         print(f"{b}!")
     }
@@ -52,7 +52,7 @@ fn main() {
     print(u)
     print(u.value + 1)
     print(u == UserId(7))
-    print(sort([UserId(9), UserId(3)]))
+    print(([UserId(9), UserId(3)]).sorted())
     l := Label("x")
     print(f"{l} {l.value}")
     print(small(4))

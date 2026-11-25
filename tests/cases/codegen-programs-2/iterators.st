@@ -14,7 +14,7 @@ fn total[I: FiniteIterator[Int]](it: I) -> Int {
 fn firsts[I: Iterator[Int]](it: I, n: Int) -> List[Int] {
   mut out := []
   for x in it.take(n) {
-    out = push(out, x)
+    mut out.push(x)
   }
   out
 }

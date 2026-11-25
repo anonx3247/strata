@@ -56,7 +56,7 @@ stdout = '''
 error in a: function body: expected `String`, found `Int`
 error in b: no version of `abs` accepts (String); available:
 error in c: function body: expected `String`, found `Int`
-error in d: call to `push`, argument 2: expected `Int`, found `String`
+error in d: `+` operands: expected `List[Int]`, found `List[String]`
 error in d: function body: expected `Int`, found `List[Int]`
 error in e: function body: expected `Int`, found `List[String]`
 error in f: call to `join`, argument 2: expected `String`, found `Int`

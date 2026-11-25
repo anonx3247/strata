@@ -11,7 +11,7 @@ fn main() {
     tx.close()
     mut got := []
     for v in rx {
-      got = push(got, v)
+      mut got.push(v)
     }
     (await a + await b, got)
   }

@@ -10,7 +10,9 @@ fn has(c: Ctx, path: String) -> Bool {
 }
 
 fn without(d: Dict[String, Int], k: String) -> Dict[String, Int] {
-  remove(d, k)
+  mut out := d
+  mut out.remove(k)
+  out
 }
 
 fn main() {

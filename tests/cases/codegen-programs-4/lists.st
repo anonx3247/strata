@@ -11,7 +11,7 @@ fn total(items: List[Item]) -> Int {
 fn squares(n: Int) -> List[Int] {
     mut out := []
     for i in 0..n {
-        out = push(out, i * i)
+        mut out.push(i * i)
     }
     out
 }
@@ -72,5 +72,5 @@ fn main() {
     print(big)
     print(range(2, 5))
     let ys: List[String] = []
-    print(push(ys, "z"))
+    print(ys + ["z"])
 }

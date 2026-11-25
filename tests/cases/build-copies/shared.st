@@ -6,12 +6,12 @@
 fn kept(n: Int) -> Int {
   mut d := Dict[Int, Int] {}
   for i in 0..n {
-    d = insert(d, i, i)
+    mut d.insert(i, i)
   }
   // `old := d`: both hold it; the next insert copies it, once
   old := d
   for i in 0..n {
-    d = insert(d, n + i, i)
+    mut d.insert(n + i, i)
   }
   len(d) + len(old)
 }
@@ -19,11 +19,11 @@ fn kept(n: Int) -> Int {
 fn looped(n: Int) -> Int {
   mut d := Dict[Int, Int] {}
   for i in 0..n {
-    d = insert(d, i, i)
+    mut d.insert(i, i)
   }
   // the loop holds what it runs over: the first insert copies it
   for (k, v) in d {
-    d = insert(d, k, v + 1)
+    mut d.insert(k, v + 1)
   }
   len(d)
 }
@@ -34,7 +34,7 @@ fn captured(n: Int) -> Int {
   // a closure holds what it captures
   size := () -> len(d)
   for i in 0..n {
-    d = insert(d, i, i)
+    mut d.insert(i, i)
   }
   size() + len(d)
 }
@@ -42,14 +42,14 @@ fn captured(n: Int) -> Int {
 fn grown(d: Dict[Int, Int], k: Int) -> Dict[Int, Int] {
   // `d` is the caller's too (it reads it after the call)
   mut e := d
-  e = insert(e, k, k)
+  mut e.insert(k, k)
   e
 }
 
 fn passed(n: Int) -> Int {
   mut d := Dict[Int, Int] {}
   for i in 0..n {
-    d = insert(d, i, i)
+    mut d.insert(i, i)
   }
   e := grown(d, -1)
   len(d) + len(e)
@@ -59,7 +59,9 @@ fn nested_read(n: Int) -> Int {
   mut dicts := Dict[Int, Dict[Int, Int]] {}
   for i in 0..n {
     // the inner dict, read out with `get`, is the outer one's too
-    dicts = insert(dicts, 0, insert(get(dicts, 0) ?? Dict[Int, Int] {}, i, i))
+    mut inner := get(dicts, 0) ?? Dict[Int, Int] {}
+    mut inner.insert(i, i)
+    mut dicts.insert(0, inner)
   }
   len(dicts)
 }

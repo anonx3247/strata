@@ -1,0 +1,175 @@
+# Lists, dicts and sets change through `mut` methods (`mut xs.push(x)`,
+# `mut xs.pop()`, `mut xs.insert(i, x)`, `mut xs.remove(i)`, `clear`,
+# `sort`, `sort_by`, `reverse`, `mut d.insert(k, v)`, `mut s.remove(x)`, on
+# a variable or a field), new values come from expressions (`xs + [x]`,
+# `xs.sorted()`, `xs.reversed()`); the old functional forms and an unmarked
+# call are errors that say how to write them, `strata fix` rewrites them,
+# and `verify` knows what each method does (an index out of range is
+# refuted).
+
+[[step]]
+save = "m.strata"
+text = '''
+type Bag = { items: List[Int], seen: Set[Int] }
+
+fn add(mut b: Bag, x: Int) {
+  mut b.items.push(x)
+  mut b.seen.insert(x)
+}
+
+fn main() {
+  mut xs := [3, 1, 2]
+  mut xs.push(4)
+  last := mut xs.pop()
+  mut xs.insert(0, 9)
+  mut xs.remove(1)
+  mut xs.sort_by(x -> -x)
+  mut ys := xs
+  mut ys.reverse()
+  mut zs := ys
+  mut zs.clear()
+  mut d := Dict[String, Int] { "a": 1, "b": 2 }
+  mut d.remove("a")
+  mut d.insert("c", 3)
+  mut e := d
+  mut e.clear()
+  mut s := Set[Int] { 1, 2 }
+  mut s.remove(1)
+  mut b := Bag { items: [], seen: Set[Int] {} }
+  add(mut b, 5)
+  add(mut b, 6)
+  let empty: List[Int] = []
+  mut es := empty
+  none := mut es.pop()
+  print(f"{xs} {last} {ys} {zs} {e} {s} {b.items} {b.seen} {none}")
+  print(f"{len(d)} {get(d, "c")} {xs.sorted()} {xs.reversed()} {"abc".reversed()}")
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "run"]
+stdout = '''
+[9, 2, 1] Some(4) [1, 2, 9] [] Dict {} Set { 2 } [5, 6] Set { 5, 6 } None
+2 Some(3) [1, 2, 9] [1, 2, 9] cba
+'''
+
+[[step]]
+save = "old.strata"
+text = '''
+fn main() {
+  xs := [3, 1, 2]
+  mut xs.push(4)
+  mut ys := [1]
+  ys.push(3)
+  push(ys, 3)
+  zs := sort(ys)
+  n := mut ys.len()
+  print(f"{xs} {ys} {zs} {n}")
+}
+'''
+
+[[step]]
+strata = ["--file", "old.strata", "check"]
+code = 1
+has = [
+  "cannot let `push` change `xs`: it is not mutable",
+  "error in main: `ys.push(…)`: `push` changes the list, dict or set it is called on: write `mut ys.push(…)` (a new list: `xs + [x]`)",
+  "error in main: `push(ys, 3)`: `push` changes the list, dict or set it is called on: write `mut ys.push(…)`",
+  "error in main: `sort(ys)`: `sort` changes the list, dict or set it is called on: write `mut ys.sort(…)` (a new list: `xs.sorted()`)",
+  "error in main: `mut ys.len(…)`: `len` doesn't change its receiver",
+]
+
+[[step]]
+save = "fix.strata"
+text = '''
+fn main() {
+  mut xs := [3, 1, 2]
+  xs = push(xs, 4)
+  ys := push(xs, 5)
+  zs := sort(ys)
+  mut d := Dict[String, Int] {}
+  d = insert(d, "a", 1)
+  e := insert(d, "b", 2)
+  mut s := Set[Int] {}
+  s = s.insert(3)
+  xs = sort(xs)
+  t := reverse("abc")
+  print(f"{xs} {ys} {zs} {d} {e} {s} {t}")
+}
+'''
+
+[[step]]
+strata = ["--file", "fix.strata", "fix"]
+has = ["fixed: `main`: `push`, `sort`, `insert`, `reverse` as functions"]
+
+[[step]]
+strata = ["--file", "fix.strata", "view", "main"]
+stdout = '''
+fn main() {
+  mut xs := [3, 1, 2]
+  mut xs.push(4)
+  ys := xs + [5]
+  zs := ys.sorted()
+  mut d := Dict[String, Int] {}
+  mut d.insert("a", 1)
+  e := {
+    mut copy := d
+    mut copy.insert("b", 2)
+    copy
+  }
+  mut s := Set[Int] {}
+  mut s.insert(3)
+  mut xs.sort()
+  t := "abc".reversed()
+  print(f"{xs} {ys} {zs} {d} {e} {s} {t}")
+}
+'''
+
+[[step]]
+strata = ["--file", "fix.strata", "run"]
+stdout = '''
+[1, 2, 3, 4] [3, 1, 2, 4, 5] [1, 2, 3, 4, 5] Dict { "a": 1 } Dict { "a": 1, "b": 2 } Set { 3 } cba
+'''
+
+[[step]]
+save = "v.strata"
+text = '''
+fn pushed(xs: List[Int], x: Int) -> List[Int]
+  ensures len(it) == len(xs) + 1 && it[len(xs)] == x {
+  mut ys := xs
+  mut ys.push(x)
+  ys
+}
+
+fn inserted(xs: List[Int], i: Int) -> List[Int]
+  requires 0 <= i && i <= len(xs)
+  ensures len(it) == len(xs) + 1 {
+  mut ys := xs
+  mut ys.insert(i, 0)
+  ys
+}
+
+fn grow(mut xs: List[Int], x: Int)
+  ensures len(xs) == old len(xs) + 2 {
+  mut xs.push(x)
+  mut xs.push(x)
+}
+
+fn keyed(d: Dict[Int, Int], k: Int) -> Dict[Int, Int]
+  ensures contains(it, k) && get(it, k) == Some(1) {
+  mut e := d
+  mut e.insert(k, 1)
+  e
+}
+
+fn bad(xs: List[Int]) -> Int {
+  mut ys := xs
+  mut ys.remove(0)
+  len(ys)
+}
+'''
+
+[[step]]
+strata = ["--file", "v.strata", "verify", "--no-race", "--no-cache"]
+code = 1
+has = ["✓ pushed ", "✓ inserted ", "✓ grow ", "✓ keyed ", "✗ bad ", "assertion failed: 0 <= 0 && 0 < len(ys)"]

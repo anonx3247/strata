@@ -22,7 +22,7 @@ impl[T: Zero] Pad for List[T] {
   fn padded(self, n: Int) -> Self {
     mut out := self
     while len(out) < n {
-      out = push(out, T.zero())
+      mut out.push(T.zero())
     }
     out
   }
