@@ -52,6 +52,31 @@ This holds whichever modules the traits come from: with `Console` (`std.io`) and
 
 **`Self` or the trait as a parameter**: `fn bigger(self, other: Self)` takes a value of the receiver's own type, `fn bigger(self, other: Shape)` any implementation. On a trait value (a `Shape`, of any implementation) a method taking `Self` can only be given the value itself or what its `Self`-returning methods make (`s.bigger(s.scaled(2))`); `xs[0].bigger(xs[1])` is an error, since `xs[1]` may be another implementation.
 
+**Models: what a trait's state means.** A trait may declare abstract state, `model name: Type`, one per line before its methods, and each implementation says what it is from its own state, `model name = e` (an expression over `self`). Contracts name a model as a field of a value of the trait (`self.orders`, `db.orders` for `db: Db` or `db: D` with `D: Db`), `old` included; code never reads one (it reads the state through the trait's methods). `invariant e` in a trait (over `self`) is a refinement of every implementing type's model, `Self where e`: every value of the trait carries it, so each method of `self` (and any `Self` parameter) knows it, a `mut self` method must keep it, and a method returning `Self` must establish it; a function taking `db: Db` knows it too. `ensures e` in a trait (with `old`) is met by every `mut self` method. There is no trait-level `requires`.
+
+```strata
+trait Db {
+  model orders: Dict[Int, Order]
+  invariant !self.orders.contains(0)
+
+  fn save(mut self, id: Int, o: Order)
+    ensures self.orders == old self.orders.with(id, o)
+  fn lookup(self, id: Int) -> Option[Order]
+    ensures it == self.orders.get(id)
+}
+
+impl Db for MemDb {
+  model orders = self.all
+
+  fn save(mut self, id: Int, o: Order) {
+    mut self.all.insert(id, o)
+  }
+  ...
+}
+```
+
+`d.with(k, v)` and `d.without(k)` (a dict; `s.with(x)`, `s.without(x)` for a set) are new values, for contracts. `verify` proves each implementation's methods against the trait's contracts with the model read through its `model` definition, and code taking the trait through the model alone ([verification](verification.md#trait-models)). A contract that names a model is assumed by default: proven by `verify`, not checked when the program runs (it would compute the model each time); `run`/`test --check-ghosts` checks it. An `impl` must give every model of its trait (a mock type's may leave them out), and no other. `mock Db` of a trait with models runs the model: it holds the models (each starts empty: `{}`, `[]`, `0`, `""`, `false`, `None`), a method whose `ensures` say what a `mut self` method makes of a model (`self.orders == e`) and what it returns (`it == e`) does that, and any other method gives a generated result satisfying its contract, as every mock does. So `mock Db` is an in-memory reference implementation for tests.
+
 **Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function. In a generic impl's methods they can be called on the impl's own type parameters too: `impl[T: Zero] Zero for List[T] { fn zero() -> Self { [T.zero()] } }`, or `fn padded(self, n: Int) -> Self { .. push(out, T.zero()) .. }` in `impl[T: Zero] Pad for List[T]`. Types are passed whole when the code runs: the type a method is called on (`List[Int]`), or the static type of the value it is called on, says what `T` is. (Only a value held as a trait type, `d: Describe`, doesn't carry its whole type.) A refined alias stays itself in a type argument: in `read[List[Port]]`, `T` is `Port`, whose methods are `Int`'s; so does one with type parameters (`type Many[T] = List[T] where len(it) >= 2`; `Many[Int]` has `List`'s methods) and a refinement written as a type argument (`List[Int where it % 2 == 0]`, shown as written in messages). **`T.check(x)`**, on any type (a type parameter: the type it is when the code runs), is `Ok(())` when `x` meets the type's refinements, else `Err` saying what it breaks: `Port.check(0)` is `Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")`.
 
 The type is always named, so which implementation runs is always clear. A generic function that calls such a method is given its type arguments when it runs: each call passes the concrete type the checker inferred (or forwards the caller's own type parameter). So the type must be known at each call: `combine_any([])` alone is an error (annotate: `let xs: List[Money] = []`), and such a function can't be passed as a value (`map(combine_any)`): use a lambda. A trait-typed parameter (`xs: List[Empty]`) has no name to call `.empty()` on: write the type parameter when you need it.
@@ -91,6 +116,33 @@ A place passed `mut` is taken once the call's other arguments have run: in `both
 **Assigning an element.** `xs[i] = v`, on a list that can be changed (a `mut` variable, a `mut` parameter, a field of one), is `xs = set_at(xs, i, v)`: `xs` with element `i` replaced by `v`, the others unchanged, the length the same. `i` has the condition reading `xs[i]` has, `0 <= i && i < len(xs)`: a fault when the code runs, an obligation for `verify` (left out of the build once proven). Places nest: `s.xs[i] = v` is `s.xs = set_at(s.xs, i, v)`, `grid[r][c] = v` is `grid = set_at(grid, r, set_at(grid[r], c, v))`, `xs[i].f = v` changes the field in a copy of the element and puts it back; `+=` and the others read the element at the same index; an index other than a variable or a literal is computed once. When the list's element type is refined (`mut xs: List[Positive]`), only `v` is checked against it, not the whole list. It is O(1): compiled code replaces the element in place when nothing else holds the list (nor, for a field, the record; for `grid[r][c]`, the row: a shared row alone is copied, O(its length)), and copies the list first otherwise (O(n)), as `push` and `insert` do. A slice (`xs[a..b] = …`), a string's unit and a dictionary's key (`d[k]`, which isn't readable either) can't be assigned.
 
 They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the compiler and the prover treat them exactly as those calls.
+
+## Functions that allocate nothing: `noalloc`
+
+Allocation stays implicit (values are counted and freed when the last holder lets go). A function can be marked `noalloc` after its contract, next to `terminates`: `strata check` then refuses it if it might allocate, naming what allocates and where (`` `sum` is `noalloc` but allocates: a list made at run time (`[a, b]`) ``). Unlike `terminates`, which is assumed, `noalloc` is checked.
+
+```strata
+fn total(xs: List[I64]) -> I64
+  noalloc {
+  mut acc: I64 = 0.to_i64()
+  for x in xs {
+    acc += x
+  }
+  acc
+}
+```
+
+What counts as allocating, in its body and its contracts (a contract is checked when the function runs; a `ghost` one never runs, so it isn't looked at), loop invariants included:
+
+- **Making a value at run time**: a list, a tuple, a record or a variant with fields (`Point { x, y }`, `Some(x)`; one made of literals only is a constant, built once), a dict, a set, a closure, an f-string, a comprehension, a big integer literal, a task (`spawn`, `scope`, `await`, `select`, `race`), a `mock`, `?` and `except`.
+- **Arithmetic that makes a value**: `+ - * / % <<` and negation on `Int` (a big integer past 2^62: compute on `I64` and the other sized integers), `+` on strings and lists. Arithmetic on sized integers and `Float` is fine.
+- **Updates that are in place only sometimes**: `xs[i] = v`, `x.f = v`, `push`, `pop`, `insert`, `remove` and the other `mut` methods of lists, dicts and sets. The code replaces in place when nothing else holds the value, but that count is known only when it runs (a value passed in may be shared), and otherwise it copies: so they count. Nothing in place is assumed from a value's uniqueness.
+- **Calls**: of a function or method that isn't itself `noalloc` (each of a program's functions and methods by its name; a trait's method is `noalloc` when it is declared so and so is each implementation), of a function value (a parameter, a closure), and of the built-ins, except those that never allocate: `len`, `byte_len`, `byte_at`, `at` (`xs[i]`), `ord`, `contains`, `starts_with`, `ends_with`, `is_alpha`, `is_digit`, `is_space`, `compare`, `min`, `max`, `sqrt`, `float`, and the conversions to sized integers (`to_i64`, `wrap_u8`, …). A built-in's name called as a method is the built-in on a list, string, dict, set or number, and that type's method on any other type (which must be `noalloc`).
+- **A `for` over anything but a list or `range(a, b)`** (`a..b`): a set or a dict is made into a list, and an iterator's `next` makes each `Option` it gives. A `for` over a list borrows its elements; over a range it counts (`a..=b` is `range(a, b + 1)`: on `Int` that `+` counts).
+
+Reading is free: fields, elements (`xs[i]`, which faults when out of range: a fault ends the program or the task, so it isn't counted), `match`, comparisons, `if`, `while`, `for`, `return`, string literals, constants. Faults and failed contract checks are not counted either. Values the code generator puts on the stack (a constructor that doesn't leave its block, an argument the callee doesn't keep) still count: where it does so depends on the whole program, so `noalloc` doesn't rely on it.
+
+An `extern c fn` can be marked `noalloc`: like `terminates`, that is the C code's promise, not checked.
 
 ## Errors
 
@@ -297,26 +349,28 @@ Not yet: `main` asking for a native module's capability, structs passed by value
 
 ## The standard library
 
-The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency:
+The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. Each module has a reference page, generated from its doc comments by `strata doc` ([the index](std/README.md)): its types, methods, traits and functions, with their signatures, contracts and docs.
 
-| Module | What it has |
+| Module | |
 |---|---|
-| `std.io` | `Console` (`print`, `write`, `eprint`, `read_line`, `read_all`: the rest of standard input, `interactive`: whether it is a terminal, `paint(stream)`: a `Paint` for `Output` or `Errors`, on only where colors show); `Recorder` / `recorder(input)` / `printed(r)` for tests |
-| `std.fs` | `Files` (`read`, `read_bytes`, `write`, `write_bytes`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `remove`, `remove_all`, `rename`, `absolute`), `FsError`; `MemFiles` / `mem_files(files)` for tests |
-| `std.time` | `Clock` (`now`, `sleep`), the `SystemClock` capability, and the `VirtualClock` capability (its own time per test, moving by itself) for tests; `Duration` (`nanos`, `micros`, `ms`, `seconds`), `Instant`, `elapsed`; `clock.after(d)` as a `select` arm |
-| `std.process` | `Environment` (`args`, `var`, `current_dir`), `Commands` (`run`, and `run_with` taking `RunOptions`: standard input, environment variables, or the terminal; giving a `Finished`) with the runtime's `Launcher`, `ExitCode`; `FakeEnvironment` / `fake_environment(args, vars)` for tests |
-| `std.code` | `Codebase`, a capability, and the capability trait it implements, `Code` (`version`, `snapshot`): the codebase in the current folder as the tools see it: each `Definition` with its interface and source text, what it uses and what uses it, holes, errors and cached verdicts, and the package's log |
-| `std.term` | text styled for a terminal: `Paint` (`bold`, `dim`, `italic`, `underline`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`), from `console.paint(Output)`: on when the stream is a terminal, `NO_COLOR` unset and `TERM` not `dumb` (`FORCE_COLOR` forces it), else it gives text back as it is; `plain(text)` drops escape codes. `--help` headings show in bold and `error:` in red under the same rule |
-| `std.cli` | `CommandLine`: a record of options, or a union of commands, read from the arguments; `read_input(console, files, path)`: a file, or standard input for `-` |
-| `std.collections` | collections kept in order, for when a `Dict` or `Set` (hash tables, in no order) won't do: `SortedDict[K, V]` (an AVL tree by the keys' `compare` order: `get`, `insert`, `remove` in O(log n); `first`, `last`, `pop_first`, `pop_last`, `floor` / `ceiling` (the nearest key at or below / above one), `before` / `after` (strictly), `between(lo, hi)`, and `items`, `keys`, `values` in order), `SortedSet[T]` (the same for elements), and `Heap[T]`, a priority queue (a binary heap in a list: `push` and `pop` of the smallest in O(log n), `peek` in O(1); smallest by `compare`, by a key, `Heap.by(key)`, or by an order of your own, `Heap.with(order)`). `sorted_dict(pairs)`, `sorted_set(xs)`, `heap(xs)` (O(n)) make them from lists; `let d: SortedDict[String, Int] = SortedDict {}` is an empty one. They change in place through `mut` (`mut d.insert(k, v)`, `mut h.pop()`) when nothing else holds them |
-| `std.typing` | types as compile-time values, for derivable traits: `Type` (`name`, `doc`, `kind`, `args`, `fields`, `elements`, `members`, …, and `check`), `Kind`, `Field`, `Choice`; `setting(key)` reads the package's `strata.toml` while compiling, `compile_error` fails a `derive` with a message |
-| `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.from_json(parse(text)!)`, `stringify(s.to_json()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
-| `std.toml` | `Toml`: records and sum types read from TOML and written to it (`derive Toml for Config`; `Config.read_toml(text)`, `config.write_toml()`, `to_toml` / `from_toml` for `TomlValue`s), implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Dict[String, V]`, `Date`, `Time` and `DateTime`. TOML 1.1 read and written in Strata: `parse(text)` gives the document's root table (`List[(String, TomlValue)]`, keys in the order written) or an error saying where (`3:1: `b` is defined twice`); `TomlValue` is `Text`, `Integer`, `Number`, `Boolean`, `Moment` (a `DateTime`: optional `Date`, `Time` and `Offset`, TOML's four kinds), `Array` or `Table`; `lookup(doc, ["server", "port"])`; `stringify(doc)` writes TOML text |
-| `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json` (a value whose type has `Json`), `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
-| `std.web` | `Html[M]` and `Attr[M]`: HTML as values, one function per element (`div`, `p`, `table`, `button`, …) and attribute (`class`, `href`, `on_click(msg)`, …); `render`, `document(title, head, body)` |
-| `std.regex` | regular expressions written in Strata: `parse(pattern)` gives a `Regex` (`Literal`, `Class` of code-point ranges, `Look`, `Repeat`, `Capture`, `Concat`, `Alternation`) or an error; `show` prints the tree. `compile(r)` makes its Thompson NFA (`List[Inst]`), `is_full_match(prog, text)` runs it as a Pike VM, and `full_match(text, pattern)` does both: what `matches` means. `matcher(pattern)` makes a DFA (`Automaton`) when the pattern asserts nothing but `^` and `$`, else keeps the NFA; `run_matcher(m, text)` runs it. Compiled code uses them for every `matches` |
-| `std.unicode` | sets of code points as `List[(Int, Int)]` ranges (`union`, `intersect`, `difference`, `negate`, `contains_code`), properties (`property("Greek")`, `property_value("gc", "Lu")`), simple case folding (`case_fold`); Unicode 16.0 tables in `std.unicode_tables` |
-| `std.utf8` | text as UTF-8 bytes (`List[Int]`, each 0 to 255) and back: `encode(text)`, `decode(bytes)` / `decode_range(bytes, start, end)` (`None` if they aren't UTF-8) |
+| [std.cli](std/cli.md) | Command-line options, read into a record; commands, into a union. |
+| [std.code](std/code.md) | A codebase as Strata's tools see it: its definitions, each rendered as text with what it uses and what uses it, the checker's findings, the verifier's cached results and the package's log. |
+| [std.collections](std/collections.md) | A dictionary and a set kept in their keys' order, and a priority queue. |
+| [std.fs](std/fs.md) | Files and folders. |
+| [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
+| [std.io](std/io.md) | The console: text in and out. |
+| [std.json](std/json.md) | JSON text, and records and sum types read from it and written to it. |
+| [std.memory](std/memory.md) | Memory, for programs that must be fast: arenas. |
+| [std.process](std/process.md) | The running program: its arguments, its environment variables and its exit code, and the other programs it runs. |
+| [std.regex](std/regex.md) |  |
+| [std.term](std/term.md) | Text styled for a terminal: bold, dim, colors. |
+| [std.time](std/time.md) | The clock: the time now, waiting, and timers in `select`. |
+| [std.toml](std/toml.md) | TOML text (version 1.1, https://toml.io/en/v1.1.0) read into values and written from them, and records and sum types read from TOML and written to it. |
+| [std.typing](std/typing.md) | Types as values, for derivable traits. |
+| [std.unicode](std/unicode.md) | Sets of code points, Unicode's properties and simple case folding (Unicode 16.0.0, from std.unicode_tables). |
+| [std.unicode_tables](std/unicode_tables.md) | Unicode 16.0.0 character data, for `std.unicode`. |
+| [std.utf8](std/utf8.md) | Text as UTF-8 bytes, and back. |
+| [std.web](std/web.md) | HTML pages, built as values. |
 
 **JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends: a record is an object (with `"type"`, its type's name, when written; optional when read), a field left out takes its default, an `Option` is the value or `null` (or left out), a sum's variant is an object whose `"type"` names it (`{"type": "Circle", "r": 2}`, one positional field as `"value"`), a sum whose variants carry nothing is a string (`"Quiet"`), a tuple is an array, a `distinct` type is its underlying value, and a union is its member's value (reading takes the first member the JSON fits; members whose JSON overlaps are refused: `Int | Float`, two lists, `String` next to a choice, two members with the same `"type"`). Every refinement is checked, and errors say where: `home.zip: "1234" does not satisfy …`. Keys a record doesn't have are ignored, unless `strata.toml` says `unknown_keys = "error"` under `[json]`; `from_json_with(j, Reject)` or `from_json_with(j, Ignore)` decides for one call. Integers are within ±(2^53 − 1) both ways, the integers a JavaScript number holds exactly (`std.json.SafeInt`): reading or writing a larger one is an error (`to_json` returns a `Result`). A package that wants it proven instead sets `integers = "proven"` under `[json]`: then every integer field must be shown to be a `SafeInt` (typed so, or refined within it), and `strata verify` fails on one that may not be. A type with no such form (a function, `Option[Option[T]]`, a field named `type`, a variant with several positional fields) is an error at the `derive`, as is a field whose type doesn't derive `Json` itself. A generic type derives it for every type argument that has it (`derive Json for Pair` is `Pair[T]` for each `T: Json`). Through the generic impls, `Some(x)` where `x` is written as `null` (`Some(None)`) is an error from `to_json`; their elements' refinements are checked by `from_json` (`read[List[Port]]("[70000]")` is an `Err` naming `Port`). `print` shows any value as code.
 
@@ -330,7 +384,7 @@ signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
 
-**TOML** (`std.toml`) is read by a parser written in Strata, for `strata.toml` files once the tools read them in Strata. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. Its readings of 104 documents were recorded while it agreed with the `toml` crate, and checked since (`tests/data/toml-documents.out`, the case `toml-documents`), with what `stringify` writes reading back as the same value.
+**TOML** (`std.toml`) is read by a parser written in Strata, which is how the tools read `strata.toml` files. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. Its readings of 104 documents were recorded while it agreed with the `toml` crate, and checked since (`tests/data/toml-documents.out`, the case `toml-documents`), with what `stringify` writes reading back as the same value.
 
 ```rust
 from std.toml use parse, lookup, Integer

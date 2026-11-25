@@ -93,6 +93,7 @@
   "static"
   "thread"
   "law"
+  "model"
   "test"
 ] @keyword.storage.type
 
@@ -115,6 +116,7 @@
 ] @keyword
 
 [
+  "ghost"
   "requires"
   "ensures"
   "terminates"
