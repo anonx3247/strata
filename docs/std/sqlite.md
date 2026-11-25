@@ -68,6 +68,9 @@ type SqlError =
   | NotRepresentable { message: String }
   /// Any other error SQLite reported: its result code and message.
   | SqlFailed { code: Int, message: String }
+  /// A row read back that its record type refuses (`std.orm`): a value
+  /// breaking a refinement.
+  | BadRow { table: String, message: String }
 ```
 
 Why a database operation failed.
