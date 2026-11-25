@@ -7,7 +7,7 @@ from = "noalloc.st"
 
 [[step]]
 strata = ["--file", "noalloc.strata", "view", "main"]
-has = ["fn area(self) -> Float\n    noalloc\n", "fn manhattan(self) -> I64\n    noalloc {", "fn total(xs: List[I64]) -> I64\n  noalloc {"]
+has = ["fn area(self) -> Float\n    noalloc\n", "fn manhattan(self) -> I64\n    noalloc {", "fn total(xs: List[I64]) -> I64\n  ghost ensures it == xs.fold(0.to_i64(), (a, b) -> a + b)\n  noalloc {"]
 
 [[step]]
 strata = ["--file", "noalloc.strata", "check"]

@@ -1,7 +1,8 @@
 # a `noalloc` function that allocates: each kind of allocation refused, with
 # what allocates and where; a call of a function or method that isn't
 # `noalloc`; an update that happens in place only when nothing else holds
-# the value counts
+# the value counts; so does a contract checked when it runs (a `ghost` one,
+# never run, doesn't: build-noalloc)
 
 [[step]]
 save = "t.strata"
@@ -56,6 +57,12 @@ fn called(b: Bag, s: String, f: (I64) -> I64) -> I64
   _ := to_upper(s)
   helper(f(b.n))
 }
+
+fn contracted(xs: List[I64]) -> I64
+  ensures it == xs.fold(0.to_i64(), (a, b) -> a + b)
+  noalloc {
+  0.to_i64()
+}
 '''
 any_code = true
 
@@ -82,4 +89,6 @@ has = [
   "error in called: `called` is `noalloc` but allocates: a call to `to_upper`, a built-in that may allocate (`to_upper(s)`)",
   "error in called: `called` is `noalloc` but allocates: a call to `helper`, which isn't `noalloc` (`helper(f(b.n))`)",
   "error in called: `called` is `noalloc` but allocates: a call to a function value, which may allocate (`f(b.n)`)",
+  "error in contracted: `contracted` is `noalloc` but allocates: a call to `fold`, which isn't `noalloc` (`xs.fold(0.to_i64(), (a, b) -> a + b)`)",
+  "error in contracted: `contracted` is `noalloc` but allocates: a closure (`(a, b) -> a + b`)",
 ]

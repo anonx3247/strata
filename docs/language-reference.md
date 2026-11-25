@@ -107,7 +107,7 @@ fn total(xs: List[I64]) -> I64
 }
 ```
 
-What counts as allocating, in its body and its contracts (a contract not proven is checked when the function runs):
+What counts as allocating, in its body and its contracts (a contract is checked when the function runs; a `ghost` one never runs, so it isn't looked at), loop invariants included:
 
 - **Making a value at run time**: a list, a tuple, a record or a variant with fields (`Point { x, y }`, `Some(x)`; one made of literals only is a constant, built once), a dict, a set, a closure, an f-string, a comprehension, a big integer literal, a task (`spawn`, `scope`, `await`, `select`, `race`), a `mock`, `?` and `except`.
 - **Arithmetic that makes a value**: `+ - * / % <<` and negation on `Int` (a big integer past 2^62: compute on `I64` and the other sized integers), `+` on strings and lists. Arithmetic on sized integers and `Float` is fine.
