@@ -1,0 +1,104 @@
+# (the output: standard output, then standard error)
+# `strata run` on a program not verified since it changed starts at once with
+# every check, verifies it alongside (`--verify-alongside`; by default only
+# when stderr is a terminal) and swaps the proven code in while it runs;
+# the verdicts are kept, so the next run starts with the proven code and says
+# nothing. (STRATA_SWAP_WAIT=start: the program starts once the proven code
+# is in, so the summary is the same every time.)
+[[step]]
+save = "t.strata"
+text = '''
+type Small = Int where it >= 0 && it < 1000
+
+fn step(x: Small) -> Small {
+  (x * 7 + 3) % 1000
+}
+
+fn main() {
+  mut x: Small = 1
+  mut total := 0
+  for _ in 0..100000 {
+    x = step(x)
+    total += x
+  }
+  print(total)
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "run", "--verify-alongside"]
+env = { STRATA_CACHE = "$TMP/cache", STRATA_SWAP_WAIT = "start" }
+out = '''
+44950000
+note: verifying alongside: the program starts with every check, and the proven code is swapped in while it runs
+note: verified alongside (verified 2 changed: 2 proven, 0 fuzzed): 1 function swapped to its proven code while running
+'''
+
+# verified: the next run starts with the proven code, without a verifier
+[[step]]
+strata = ["--file", "t.strata", "run", "--verify-alongside"]
+env = { STRATA_CACHE = "$TMP/cache" }
+out = '''
+44950000
+'''
+
+# nobody watching (stderr not a terminal): no verifier, as before
+[[step]]
+save = "u.strata"
+text = '''
+type Small = Int where it >= 0 && it < 1000
+
+fn half(x: Small) -> Small {
+  x * 2
+}
+
+fn main() {
+  print(half(400))
+  print(half(600))
+}
+'''
+
+[[step]]
+strata = ["--file", "u.strata", "run"]
+env = { STRATA_CACHE = "$TMP/cache" }
+code = 101
+lacks = ["note:"]
+has = ["800", "result of `half`"]
+
+# a check that fails still fails, the counterexample said at the end
+[[step]]
+strata = ["--file", "u.strata", "run", "--verify-alongside"]
+env = { STRATA_CACHE = "$TMP/cache", STRATA_SWAP_WAIT = "start" }
+code = 101
+has = ["note: verifying alongside", "800", "result of `half`", "note: verified alongside (verified 2 changed: 0 proven, 0 fuzzed, 2 with a counterexample (`half`, `main`: see `strata verify`))"]
+
+# `--wait-for-proofs`: verified first, as `build` verifies
+[[step]]
+save = "v.strata"
+text = '''
+type Small = Int where it >= 0 && it < 1000
+
+fn third(x: Small) -> Small {
+  x / 3
+}
+
+fn main() {
+  print(third(999))
+}
+'''
+
+[[step]]
+strata = ["--file", "v.strata", "run", "--wait-for-proofs"]
+env = { STRATA_CACHE = "$TMP/cache" }
+out = '''
+333
+verified 2 changed: 2 proven, 0 fuzzed
+'''
+
+# `--no-verify`: what is cached, no verifier
+[[step]]
+strata = ["--file", "v.strata", "run", "--no-verify", "--verify-alongside"]
+env = { STRATA_CACHE = "$TMP/cache" }
+out = '''
+333
+'''

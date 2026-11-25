@@ -1,0 +1,112 @@
+# a package whose strata.toml declares a module `noalloc` (`noalloc =
+# ["fast"]`): every function of it is `noalloc` without being marked, and a
+# `noalloc` function elsewhere may call them; a function of it that
+# allocates is refused, one added later too (by `edit`, `check` and `verify`;
+# `build` says so); a `noalloc` naming no module of the package is an error
+
+[[step]]
+write = "app/strata.toml"
+text = "name = \"app\"\nnoalloc = [\"fast\"]\n"
+
+[[step]]
+strata = ["--file", "app/", "edit", "fast"]
+text = '''
+pub fn total(xs: List[I64]) -> I64 {
+  mut acc: I64 = 0.to_i64()
+  for x in xs {
+    acc += x
+  }
+  acc
+}
+
+pub fn twice(n: I64) -> I64 {
+  n + n
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "app/", "edit", "main"]
+text = '''
+use fast
+
+fn sum_twice(xs: List[I64]) -> I64
+  noalloc {
+  fast.twice(fast.total(xs))
+}
+
+fn main() {
+  print(sum_twice([1.to_i64(), 2.to_i64(), 3.to_i64()]))
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["check"]
+dir = "app"
+
+[[step]]
+strata = ["run"]
+dir = "app"
+stdout = "12\n"
+
+# a function added later to the module is covered: the edit is refused
+[[step]]
+strata = ["edit", "fast"]
+dir = "app"
+text = '''
+pub fn pair(n: I64) -> List[I64] {
+  [n, n]
+}
+'''
+code = 1
+has = [
+  "`pair` is `noalloc` but allocates: a list made at run time (`[n, n]`)",
+]
+
+# written all the same (`--file`), `check`, `verify` and `build` refuse it
+[[step]]
+strata = ["--file", "app/", "edit", "fast"]
+text = '''
+pub fn pair(n: I64) -> List[I64] {
+  [n, n]
+}
+
+pub fn label(n: Int) -> String {
+  f"{n}"
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["check"]
+dir = "app"
+code = 1
+has = [
+  "error in fast.pair: `pair` is `noalloc` but allocates: a list made at run time (`[n, n]`)",
+  "error in fast.label: `label` is `noalloc` but allocates: a string put together (`f\"{n}\"`)",
+]
+
+[[step]]
+strata = ["verify"]
+dir = "app"
+fails = true
+has = ["`pair` is `noalloc` but allocates: a list made at run time (`[n, n]`)"]
+
+[[step]]
+strata = ["build", "-o", "appbin"]
+dir = "app"
+# (build says what doesn't check, and builds all the same, as for any error)
+any_code = true
+has = ["`pair` is `noalloc` but allocates: a list made at run time (`[n, n]`)"]
+
+# a module the package doesn't have
+[[step]]
+write = "app/strata.toml"
+text = "name = \"app\"\nnoalloc = [\"fast\", \"slow\"]\n"
+
+[[step]]
+strata = ["check"]
+dir = "app"
+fails = true
+has = ["noalloc names `slow`, which is not a module of this package"]

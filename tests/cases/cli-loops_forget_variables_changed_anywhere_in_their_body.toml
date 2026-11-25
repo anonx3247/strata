@@ -26,3 +26,37 @@ strata = ["--file", "l.strata", "verify"]
 fails = true
 has = ["✗ count"]
 lacks = ["bug in the prover"]
+
+# a built-in changing its receiver (`mut got.push(x)`, `mut e.insert(…)`)
+# changes the variable too: neither loop keeps it as it was before
+[[step]]
+save = "m.strata"
+text = '''
+fn pushed(xs: List[Int]) -> List[Int]
+  ensures len(it) == 0
+{
+  mut got := []
+  for x in xs {
+    mut got.push(x)
+  }
+  got
+}
+
+fn inserted(xs: List[Int], d: Dict[Int, Int]) -> Dict[Int, Int]
+  ensures it == d
+{
+  mut e := d
+  mut i := 0
+  while i < len(xs) {
+    mut e.insert(i, 1)
+    i += 1
+  }
+  e
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "verify", "--no-write"]
+fails = true
+has = ["✗ pushed", "✗ inserted"]
+lacks = ["bug in the prover"]
