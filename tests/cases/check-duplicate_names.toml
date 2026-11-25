@@ -1,0 +1,84 @@
+# a name that must be unique where it is declared, given twice, is an error naming
+# where and what: a record's fields, a variant's fields, a sum's variants, a function's
+# (and a lambda's, a trait method's) parameters and type parameters, an impl's or a
+# trait's methods, a record literal's or update's fields, a record pattern's fields
+
+[[step]]
+save = "twice.strata"
+text = '''
+type R = { at: Int, at: String }
+
+type V = A { x: Int, x: Int } | B
+
+type S = C | D | C
+
+type W = E(Int) | F | E(String)
+
+trait Tr {
+  fn a(self) -> Int
+  fn a(self) -> Int
+  fn b(self, n: Int, n: Int) -> Int
+}
+
+type T = { x: Int }
+
+impl T {
+  fn m(self) -> Int { 1 }
+  fn m(self) -> Int { 2 }
+}
+
+trait Sized {
+  fn size(self) -> Int
+}
+
+impl Sized for T {
+  fn size(self) -> Int { 1 }
+  fn size(self) -> Int { 2 }
+}
+
+fn f(a: Int, a: Int) -> Int { a }
+
+fn idd[U, U](x: U) -> U { x }
+
+fn g() -> Int {
+  h := (a: Int, a: Int) -> a
+  h(1, 2)
+}
+
+fn ignored(_: Int, _: Int) -> Int { 0 }
+
+type P = { x: Int, y: Int }
+
+fn mk() -> P { P { x: 1, x: 2, y: 3 } }
+
+fn upd(p: P) -> P { P { ..p, y: 1, y: 2 } }
+
+fn pk(p: P) -> Int {
+  match p {
+    P { x, x: z, y } => z,
+  }
+}
+
+fn main() {
+  print("hi")
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file twice.strata check 2>&1 | grep -E \"^error in \" | LC_ALL=C sort; true"]
+stdout = '''
+error in R: field `at` is declared twice in `R`
+error in S: variant `C` is declared twice in `S`
+error in Tr: `a` is declared twice in trait `Tr`
+error in Tr: two parameters of `b` are named `n`
+error in V: field `x` is declared twice in `V`'s variant `A`
+error in W: variant `E` is declared twice in `W`
+error in f: two parameters are named `a`
+error in g: two parameters of a lambda are named `a`
+error in idd: two type parameters are named `U`
+error in impl Sized for T: `size` is defined twice in `impl Sized for T`
+error in impl T: `m` is defined twice in `impl T`
+error in mk: field `x` is given twice in `P { .. }`
+error in pk: field `x` is matched twice in the pattern `P { .. }`
+error in upd: field `y` is given twice in `P { .. }`
+'''
