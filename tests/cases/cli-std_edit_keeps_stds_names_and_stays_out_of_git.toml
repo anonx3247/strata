@@ -24,8 +24,7 @@ run = ["git", "commit", "-q", "-m", "std"]
 [[step]]
 strata = ["--file", "std", "edit", "json"]
 text = '''
-/// What `from_json` does with keys a record doesn't have: what the package's
-/// `[json]` says (`unknown_keys = "error"`), else ignore them.
+/// The package's `[json] unknown_keys` setting, else `Ignore`.
 fn default_keys() -> UnknownKeys {
   if setting("json.unknown_keys") == Some("err" + "or") {
     Reject
@@ -53,8 +52,7 @@ out = " M std/json.strata\n1\n"
 [[step]]
 strata = ["--file", "std", "edit", "std.json"]
 text = '''
-/// What `from_json` does with keys a record doesn't have: what the package's
-/// `[json]` says (`unknown_keys = "error"`), else ignore them.
+/// The package's `[json] unknown_keys` setting, else `Ignore`.
 fn default_keys() -> UnknownKeys {
   if setting("json.unknown_keys") == Some("error") {
     Reject

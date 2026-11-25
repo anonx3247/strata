@@ -10,9 +10,8 @@
 #   tools/reproducible.sh [PACKAGE] [BUILD FLAGS...]
 #   STRATA=EXE tools/reproducible.sh        (default target/strata)
 #
-# About a minute for compiler/ with --release (the default flags). It
-# caught LLVM's GlobalISel leaving state behind after the JIT
-# (compiler/c/jit.c, `toolchain_selection`).
+# About a minute for compiler/ with --release (the default flags). See
+# `toolchain_selection` in compiler/c/jit.c for the kind of bug it finds.
 set -e
 cd "$(dirname "$0")/.."
 root=$(pwd)

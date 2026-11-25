@@ -1,29 +1,7 @@
 # std.sqlite
 
-SQLite databases, through the system's libsqlite3.
-
-A database is reached through capabilities: `main` (or a test) asks for
-`Sqlite` and opens a file, or a database in memory, and hands the rest of
-the program the `Connection` as a `Database`, so tests can pass an
-in-memory database or a `mock`:
-
-```rust
-fn main(sqlite: Sqlite) -> Result[(), SqlError] {
-  mut db := sqlite.open("todo.db")!
-  (mut db.run("CREATE TABLE IF NOT EXISTS todo (title TEXT NOT NULL)"))!
-  _ := (mut db.execute("INSERT INTO todo VALUES (?)", ["write docs"]))!
-  for row in db.query("SELECT title FROM todo", [])! {
-    print(row.text(0)!)
-  }
-  mut db.close()
-}
-```
-
-Every failure is a value (`SqlError`): SQLite's own errors, a column read
-as the wrong type, an integer beyond 64 bits. Values cross as `SqlValue`:
-`Int`, `Float`, `String`, `Bool` (stored as 0 or 1) and `Null`; an
-`Option` becomes one with `sql(x)`. Blobs don't cross yet (SQL's `hex`
-and `unhex` carry them as text).
+SQLite databases through the system's libsqlite3.
+`main` asks for `Sqlite` and passes the `Connection` on as a `Database`, so tests can use an in-memory database or a mock.
 
 ## Types
 
@@ -33,7 +11,7 @@ and `unhex` carry them as text).
 type Null
 ```
 
-The type of SQL's NULL, as a value of its own.
+SQL's NULL, as a type of its own.
 
 ### SqlValue
 
@@ -41,35 +19,33 @@ The type of SQL's NULL, as a value of its own.
 type SqlValue = KeyValue | Float | Bool | Null
 ```
 
-A value crossing to SQLite or back: SQLite's storage classes but blobs,
-and `Bool` (stored as the integer 0 or 1, read back as an `Int`).
+A value crossing to SQLite or back: SQLite's storage classes, plus `Bool`.
+A `Bool` is stored as 0 or 1 and read back as an `Int`.
+Not supported: blobs. SQL's `hex` and `unhex` pass them as text.
 
 ### SqlError
 
 ```rust
 type SqlError =
-  /// The database couldn't be opened (a missing folder, no permission).
+  /// The database couldn't be opened: a missing folder, no permission.
   | CantOpen { path: String, message: String }
-  /// A constraint refused the change (`UNIQUE`, `NOT NULL`, `CHECK`, a
-  /// foreign key).
+  /// A constraint refused the change: `UNIQUE`, `NOT NULL`, `CHECK`, a foreign key.
   | Constraint { message: String }
   /// Another connection holds the database (SQLITE_BUSY, SQLITE_LOCKED).
   | Busy { message: String }
-  /// Column `column` holds a value of another type than the one asked for.
+  /// Column `column` holds another type than the one asked for.
   | WrongType { column: Int, wanted: String, found: String }
-  /// There is no column `column`: the rows have `count`.
+  /// There is no column `column`. The rows have `count`.
   | NoColumn { column: Int, count: Int }
-  /// There is no parameter `index`: the statement has `count`.
+  /// There is no parameter `index`. The statement has `count`.
   | NoParameter { index: Int, count: Int }
   /// `given` values for a statement with `wanted` parameters.
   | WrongParameters { given: Int, wanted: Int }
-  /// A value SQLite can't hold or this module can't read yet: an integer
-  /// beyond 64 bits, a NUL character in text, a blob.
+  /// A value SQLite can't hold or this module can't read: an integer beyond 64 bits, a NUL in text, a blob.
   | NotRepresentable { message: String }
-  /// Any other error SQLite reported: its result code and message.
+  /// Any other SQLite error, with its result code and message.
   | SqlFailed { code: Int, message: String }
-  /// A row read back that its record type refuses (`std.orm`): a value
-  /// breaking a refinement.
+  /// A row read back that its record type refuses (`std.orm`): a value breaks a refinement.
   | BadRow { table: String, message: String }
 ```
 
@@ -87,7 +63,7 @@ capability Sqlite {
       Ok(c) => len(c.rows()) == 0,
       Err(_) => true,
     }
-  /// The version of the SQLite library, `3.51.0`.
+  /// The SQLite library's version, such as `3.51.0`.
   fn version() -> String
 }
 ```
@@ -101,7 +77,7 @@ for it.
 type Row = { values: List[SqlValue] }
 ```
 
-A row of a query's result: its values, by column.
+A result row's values, by column.
 
 ### Connection
 
@@ -109,7 +85,7 @@ A row of a query's result: its values, by column.
 type Connection = { handle: Sqlite3, path: String }
 ```
 
-A database SQLite opened (`sqlite.open(path)`). Close it when done.
+A database SQLite opened with `sqlite.open(path)`. Close it when done.
 
 ### Statement
 
@@ -117,7 +93,7 @@ A database SQLite opened (`sqlite.open(path)`). Close it when done.
 type Statement = { handle: Sqlite3Stmt, sql: String }
 ```
 
-A prepared statement (`db.prepare(sql)`): bind its parameters, step
+A prepared statement from `db.prepare(sql)`. Bind its parameters, step
 through its rows, read their columns. Finalize it when done.
 
 ### KeyValue
@@ -139,7 +115,7 @@ other (a `REAL` column, a key of several columns) its values written out
 fn value(self, i: Int) -> Result[SqlValue, SqlError]
 ```
 
-The value of column `i` (from 0).
+The value of column `i`, from 0.
 
 ### Row.int
 
@@ -155,7 +131,7 @@ Column `i` as an integer.
 fn float(self, i: Int) -> Result[Float, SqlError]
 ```
 
-Column `i` as a float (an integer column too).
+Column `i` as a float. An integer column converts.
 
 ### Row.text
 
@@ -187,7 +163,7 @@ Whether column `i` is NULL.
 fn prepare(self, sql: String) -> Result[Statement, SqlError]
 ```
 
-`sql` (one statement) compiled, its parameters to bind.
+Compiles one statement.
 
 ### Connection.close
 
@@ -195,7 +171,7 @@ fn prepare(self, sql: String) -> Result[Statement, SqlError]
 fn close(mut self) -> Result[(), SqlError]
 ```
 
-Close the connection (what it prepared must be finalized first).
+Closes the connection. What it prepared must be finalized first.
 
 ### Connection.autocommit
 
@@ -211,7 +187,7 @@ Whether no transaction is open.
 fn parameter_count(self) -> Int where 0 <= it && it <= 2147483647
 ```
 
-How many parameters (`?`) the statement has.
+How many `?` parameters the statement has.
 
 ### Statement.column_count
 
@@ -227,7 +203,7 @@ How many columns its rows have.
 fn column_name(self, i: Int) -> Result[String, SqlError]
 ```
 
-The name of column `i` (from 0).
+The name of column `i`, from 0.
 
 ### Statement.bind
 
@@ -235,7 +211,7 @@ The name of column `i` (from 0).
 fn bind(mut self, i: Int, v: SqlValue) -> Result[(), SqlError]
 ```
 
-Bind parameter `i` (from 1, as SQLite counts them) to `v`.
+Binds parameter `i` to `v`. Parameters count from 1, as in SQLite.
 
 ### Statement.bind_all
 
@@ -243,7 +219,7 @@ Bind parameter `i` (from 1, as SQLite counts them) to `v`.
 fn bind_all(mut self, params: List[SqlValue]) -> Result[(), SqlError]
 ```
 
-Bind every parameter, in order: as many values as it has parameters.
+Binds every parameter in order. `params` must have one value per parameter.
 
 ### Statement.step
 
@@ -251,8 +227,7 @@ Bind every parameter, in order: as many values as it has parameters.
 fn step(mut self) -> Result[Bool, SqlError]
 ```
 
-Run the statement to its next row: `true` when there is one to read,
-`false` once it is done.
+Steps to the next row. `true` when there is one to read, `false` once done.
 
 ### Statement.value
 
@@ -276,7 +251,7 @@ The current row, every column.
 fn reset(mut self) -> Result[(), SqlError]
 ```
 
-Back to before the first row, the bindings kept.
+Goes back to before the first row, keeping the bindings.
 
 ### Statement.finalize
 
@@ -284,7 +259,7 @@ Back to before the first row, the bindings kept.
 fn finalize(mut self)
 ```
 
-Free the statement: it can't be used after.
+Frees the statement. It can't be used after.
 
 ## Traits
 
@@ -303,40 +278,37 @@ Values that cross to SQLite as an `SqlValue`.
 
 ```rust
 capability trait Database {
-  /// Each row as its table and its key (a `KeyValue`): what `verify` knows
-  /// of the rows, for `std.orm`'s contracts (a row a `Key[T]` names exists,
-  /// a key is used once). Statements run by hand say nothing of it, so after
-  /// one it is unknown again.
+  /// Each row as its table and its key (a `KeyValue`), for `std.orm`'s
+  /// contracts: a row a `Key[T]` names exists, and a key is used once.
+  /// Statements run by hand don't update it, so after one it is unknown.
   model rows: Set[(String, KeyValue)]
 
-  /// Run one statement with its parameters (`?` in `sql`, in order): how
-  /// many rows it changed.
+  /// Runs one statement with its `?` parameters in order. Returns how many rows it changed.
   fn execute(
     mut self,
     sql: String,
     params: List[SqlValue],
   ) -> Result[Int, SqlError]
-  /// Run one statement with its parameters: the rows it gives.
+  /// Runs one statement with its parameters. Returns its rows.
   fn query(
     self,
     sql: String,
     params: List[SqlValue],
   ) -> Result[List[Row], SqlError]
-  /// Run statements without parameters, one after the other (a schema).
+  /// Runs statements without parameters one after the other, such as a schema.
   fn run(mut self, sql: String) -> Result[(), SqlError]
   /// The row id of the last row inserted.
   fn last_insert_id(self) -> Int
-  /// Start a transaction.
+  /// Starts a transaction.
   fn begin(mut self) -> Result[(), SqlError]
-  /// Keep what the transaction changed.
+  /// Keeps what the transaction changed.
   fn commit(mut self) -> Result[(), SqlError]
-  /// Undo what the transaction changed.
+  /// Undoes what the transaction changed.
   fn rollback(mut self) -> Result[(), SqlError]
 }
 ```
 
-Running SQL: a database SQLite opened (a `Connection`), or a stand-in for
-it.
+Runs SQL: a `Connection`, or a stand-in in tests.
 
 ## Functions
 
@@ -346,7 +318,7 @@ it.
 fn sql[T: Sql](x: T) -> SqlValue
 ```
 
-`x` as an `SqlValue`: an `Option` is its value or `Null`.
+`x` as an `SqlValue`. An `Option` gives its value or `Null`.
 
 ### key_value_of
 

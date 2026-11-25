@@ -70,7 +70,7 @@ type Column = {
   name: String,
   /// `INTEGER`, `REAL`, `TEXT`, or `BLOB` (JSONB).
   sql_type: String,
-  /// Whether it may be NULL (an `Option` field).
+  /// Whether it may be NULL: an `Option` field.
   nullable: Bool,
   /// Whether it is the table's key, or one of its columns.
   key: Bool,
@@ -79,8 +79,7 @@ type Column = {
   references: Option[(String, String)],
   /// Its field's refinement, as written (`it != ""`).
   condition: Option[String],
-  /// Its field's default, as written (`false`): its `DEFAULT` when it is a
-  /// literal.
+  /// Its field's default as written: `false`. It is the `DEFAULT` when it is a literal.
   default: Option[String] = None,
   /// Whether SQLite gives its values: the default key `id`, an integer (the
   /// row id).
@@ -114,23 +113,25 @@ refinement (`it.start <= it.end`), as written, and its key's columns.
 type Cond[R] = { sql: String, params: List[SqlValue] }
 ```
 
-A condition on rows of the table of `R` (`Todo.done.eq(false)`): SQL
-with `?` parameters and their values, in order.
+A condition on rows of the table of `R`, such as `Todo.done.eq(false)`:
+SQL with `?` parameters, and their values in order.
+Values are always passed as parameters, never as SQL text.
 
 ### Query
 
 ```rust
 type Query[R] = {
   cond: Option[Cond[R]],
-  /// `"column" ASC` / `"column" DESC`, the first first.
+  /// `"column" ASC` or `"column" DESC`, the first given first.
   order: List[String],
   limit: Option[Int],
 }
 ```
 
-A query on the table of `R`: the rows meeting a condition, in an order,
-at most so many. Made with `Todo.query()` or `Todo.filter(c)`, run with
-`all`, `first`, `count` or `delete`.
+A query on the table of `R`: the rows meeting a condition, in an order, at
+most so many.
+Made with `Todo.query()` or `Todo.filter(c)`. Run with `all`, `first`,
+`count` or `delete`.
 
 ### Key
 
@@ -152,8 +153,7 @@ gives a row's; `k.load(db)` reads the row.
 fn sql(self) -> String
 ```
 
-`CREATE TABLE IF NOT EXISTS ...`: a `CHECK` for each refinement SQL
-can say.
+`CREATE TABLE IF NOT EXISTS ...`, with a `CHECK` for each refinement SQL can say.
 
 ### Schema.create
 
@@ -195,7 +195,7 @@ Rows not meeting it.
 fn filter(self, c: Cond[R]) -> Query[R]
 ```
 
-Only the rows meeting `c` too.
+Narrows to rows that also meet `c`.
 
 ### Query.order_by
 
@@ -203,8 +203,7 @@ Only the rows meeting `c` too.
 fn order_by[T](self, col: KeyPath[R, T]) -> Query[R]
 ```
 
-Ordered by the column `col`, smallest first (after the orders given
-before).
+Orders by `col`, smallest first, after the orders given before.
 
 ### Query.order_by_desc
 
@@ -212,7 +211,7 @@ before).
 fn order_by_desc[T](self, col: KeyPath[R, T]) -> Query[R]
 ```
 
-Ordered by the column `col`, largest first.
+Orders by `col`, largest first.
 
 ### Query.limit
 
@@ -228,8 +227,7 @@ At most `n` rows.
 fn clauses(self) -> (String, List[SqlValue])
 ```
 
-What follows `FROM table`: the condition, the order and the limit,
-with their parameters.
+What follows `FROM table`: the condition, the order and the limit, with their parameters.
 
 ### Key.load
 
@@ -264,8 +262,9 @@ trait Compare[R, T] {
 }
 ```
 
-Comparing a column with a value of its field's type: `Todo.done.eq(false)`.
-`eq` and `ne` match `None` too (SQL's `IS`); an order with `None` holds
+Compares a column with a value of its field's type: `Todo.done.eq(false)`,
+where `Todo.done` is a `KeyPath[Todo, Bool]`.
+`eq` and `ne` match `None` too (SQL's `IS`). An order with `None` holds
 for no row.
 
 ### Rows
@@ -278,12 +277,12 @@ trait Rows[R] {
   fn first(self, db: Database) -> Result[Option[R], SqlError]
   /// How many rows it selects.
   fn count(self, db: Database) -> Result[Int, SqlError]
-  /// Delete the rows it selects: how many.
+  /// Deletes the rows it selects. Returns how many.
   fn delete(self, mut db: Database) -> Result[Int, SqlError]
 }
 ```
 
-Running queries: the rows they select, as records.
+Runs a query, giving its rows as records.
 
 ### Table
 
@@ -306,8 +305,7 @@ derivable(Record) trait Table {
   /// Whether its key is new in `rows` (always, when SQLite gives it; a
   /// key of several columns isn't followed: SQLite refuses it again).
   derived fn key_free(self, rows: Set[(String, KeyValue)]) -> Bool
-  /// The record a row holds (its columns in field order), every
-  /// refinement checked: a row breaking one is `BadRow`.
+  /// The record a row holds, columns in field order, every refinement checked. A row breaking one is `BadRow`.
   derived fn from_row(r: Row) -> Result[Self, SqlError]
   /// The record with the key SQLite gave it (the default key `id`, an
   /// integer; others are kept).
@@ -338,7 +336,7 @@ derivable(Record) trait Table {
   fn get[K: Sql](db: Database, key: K) -> Result[Option[Self], SqlError]
   /// Every row, in the order SQLite keeps them.
   fn all(db: Database) -> Result[List[Self], SqlError]
-  /// A query of every row, to narrow (`filter`), order and limit.
+  /// A query of every row, to narrow with `filter`, order and limit.
   fn query() -> Query[Self]
   /// A query of the rows meeting `c`.
   fn filter(c: Cond[Self]) -> Query[Self]
