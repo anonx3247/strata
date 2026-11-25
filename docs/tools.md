@@ -247,6 +247,19 @@ All rendered code is formatted to about 80 columns: long argument lists, record 
 Selectors: `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination. A part that names nothing is an error.
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
 
+## Reference docs: `strata doc`
+
+`strata doc` writes a package's reference from its `///` doc comments: a Markdown page for each module with public definitions, and an index (`README.md`) listing them, each with its doc's first sentence. A page is the module's doc (the comment that opens its file), then its public types, the methods of those types, its traits and its functions, each with its signature as Strata code (contracts and refinements included, as `view --level 1` prints it) and its doc, then the implementations of its traits and for its types. `-o DIR` chooses the folder (default `doc`; `std.io` is `DIR/io.md`, `shop.orders` `DIR/shop/orders.md`), and naming modules writes only their pages.
+
+```text
+$ strata --file std doc -o docs/std          # the standard library's reference, docs/std/
+wrote 19 pages to docs/std
+$ strata doc --man -o man                    # man pages: man/man3/shop.orders.3
+$ man -M man shop.orders
+```
+
+`--man` writes man pages instead (section 3, named after the module: `std.io(3)`; default folder `man`), and for std also the `strata` command's, `strata(1)`, made from `strata help`. The [standard library's pages](std/README.md) on this site are `strata doc`'s, kept in `docs/std/`: write them again after changing std's docs.
+
 ## Finding code: `find`, `refs`, locations
 
 Three commands find code by what it is rather than by its text, so an agent doesn't need grep:
