@@ -1,0 +1,123 @@
+# a change of a function's shape (its parameters: how many, their order,
+# their types) that breaks its callers opens a pending change with a hole at
+# each broken call, as a changed return type does, also when the callers
+# are given in the same edit unchanged (a whole module, as the editor gives
+# it) or edited but still calling the old way; an edit that doesn't check
+# in itself is rejected
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit"]
+text = '''
+fn number(s: String) -> Int {
+  parse_int(s) ?? 0
+}
+
+fn tokenize(s: String) -> List[Int] {
+  mut out := []
+  for w in split(s, " ") {
+    out = push(out, number(w))
+  }
+  out
+}
+
+test "tokens" {
+  assert tokenize("1 2") == [1, 2]
+}
+'''
+
+# the whole module given back, `number` taking a base: the call is a hole
+[[step]]
+strata = ["edit", "-m", "number takes a base"]
+text = '''
+fn number(s: String, base: Int) -> Int {
+  parse_int(s) ?? base
+}
+
+fn tokenize(s: String) -> List[Int] {
+  mut out := []
+  for w in split(s, " ") {
+    out = push(out, number(w))
+  }
+  out
+}
+
+test "tokens" {
+  assert tokenize("1 2") == [1, 2]
+}
+'''
+has = ['''
+?pending_1  in tokenize
+      was: number(w)
+      why: call to `number`: expects 2 arguments, got 1''']
+
+[[step]]
+strata = ["abort"]
+
+# a caller edited in the same edit, still calling the old way: a hole too
+[[step]]
+strata = ["edit"]
+text = '''
+fn number(s: String, base: Int) -> Int {
+  parse_int(s) ?? base
+}
+
+fn tokenize(s: String) -> List[Int] {
+  [number(w) for w in split(trim(s), " ")]
+}
+'''
+has = ["?pending_1  in tokenize", "was: number(w)"]
+
+[[step]]
+strata = ["abort"]
+
+# a parameter's type changed
+[[step]]
+strata = ["edit"]
+text = "fn number(s: Int) -> Int { s }"
+has = ["?pending_1  in tokenize", "why: call to `number`, argument 1: expected `Int`, found `String`"]
+
+[[step]]
+strata = ["abort"]
+
+# parameters reordered
+[[step]]
+strata = ["edit"]
+text = '''
+fn pad(s: String, n: Int) -> String {
+  s + repeat(" ", n)
+}
+
+fn padded() -> String {
+  pad("x", 2)
+}
+'''
+
+[[step]]
+strata = ["edit"]
+text = "fn pad(n: Int, s: String) -> String { s + repeat(\" \", n) }"
+has = ["?pending_1  in padded", "was: pad(\"x\", 2)"]
+
+[[step]]
+strata = ["abort"]
+
+# an edit with an error of its own (no call to what it changed) is rejected
+[[step]]
+strata = ["edit"]
+text = '''
+fn number(s: String, base: Int) -> Int {
+  parse_int(s) ?? true
+}
+'''
+fails = true
+has = ["error in number:", "rejected: the codebase would not check"]
+
+[[step]]
+strata = ["status"]
+has = ["no pending change"]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
