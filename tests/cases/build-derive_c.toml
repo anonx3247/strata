@@ -8,7 +8,7 @@ from = "calc.st"
 
 [[step]]
 strata = ["--file", "calc.strata", "view", "main"]
-has = ["derive C for add\n"]
+has = ["/// The sum of two numbers.\nderive C for\npub fn add("]
 
 [[step]]
 strata = ["build", "calc.strata", "--lib"]

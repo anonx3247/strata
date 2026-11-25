@@ -1,0 +1,161 @@
+# `derive A, B for` above a `fn` or a `type` (after its docs, before `pub`),
+# and `derive A, B for T`: each trait's derive stored as its own definition,
+# exactly as `derive A for T` lines are; a derive with no block is shown on the
+# declaration in its module it derives for, those of one declaration in one
+# line, in their order.
+
+[[step]]
+strata = ["--file", "d.strata", "edit"]
+text = '''
+from std.ffi use C, Python
+from std.io use Console
+from std.json use Json, JsonValue, stringify
+from std.toml use Toml
+
+/// A greeting for `name`.
+derive C, Python for
+pub fn greet(name: String) -> String {
+  f"Hello, {name}!"
+}
+
+derive Json for
+type Options = {
+  count: Int,
+  loud: Bool,
+  name: String = "world",
+}
+
+type Point = { x: Int, y: Int }
+
+derive Json, Toml for Point
+
+derive C for module
+
+fn main(mut console: Console) {
+  console.print(
+    stringify(Options { count: 2, loud: false }.to_json() !! Null),
+  )
+  console.print(stringify(Point { x: 1, y: 2 }.to_json() !! Null))
+  console.print(greet("you"))
+}
+'''
+
+[[step]]
+strata = ["run", "d.strata"]
+stdout = "{\"type\":\"Options\",\"count\":2,\"loud\":false,\"name\":\"world\"}\n{\"type\":\"Point\",\"x\":1,\"y\":2}\nHello, you!\n"
+
+# stored as a derive definition per trait
+[[step]]
+strata = ["--file", "d.strata", "view", "main.*", "--level", "0"]
+has = [
+  "derive derive std.ffi.C for greet",
+  "derive derive std.ffi.Python for greet",
+  "impl   derive std.json.Json for Options",
+  "impl   derive std.json.Json for Point",
+  "impl   derive std.toml.Toml for Point",
+  "derive derive std.ffi.C for module",
+]
+
+# shown on their declarations; `for module` stays a line of its own
+[[step]]
+write = "d.st"
+text = '''
+from std.ffi use C, Python
+
+from std.io use Console
+
+from std.json use Json, JsonValue, stringify
+
+from std.toml use Toml
+
+/// A greeting for `name`.
+derive C, Python for
+pub fn greet(name: String) -> String {
+  f"Hello, {name}!"
+}
+
+derive Json for
+type Options = { count: Int, loud: Bool, name: String = "world" }
+
+derive Json, Toml for
+type Point = { x: Int, y: Int }
+
+derive C for module
+
+fn main(mut console: Console) {
+  console.print(
+    stringify(Options { count: 2, loud: false }.to_json() !! Null),
+  )
+  console.print(stringify(Point { x: 1, y: 2 }.to_json() !! Null))
+  console.print(greet("you"))
+}
+'''
+
+[[step]]
+strata = ["--file", "d.strata", "view", "main"]
+out_file = "d.st"
+
+# and read back as the same definitions
+[[step]]
+run = ["sh", "-c", "$STRATA --file e.strata edit < d.st"]
+
+[[step]]
+strata = ["--file", "e.strata", "view", "main"]
+out_file = "d.st"
+
+# the interface level shows them too; a definition viewed alone, without
+[[step]]
+strata = ["--file", "d.strata", "view", "Point", "--level", "1"]
+out = "type Point = { x: Int, y: Int }\n"
+
+[[step]]
+strata = ["--file", "d.strata", "view", "Point,derive std.json.Json for Point", "--level", "1"]
+out = "derive Json for\ntype Point = { x: Int, y: Int }\n"
+
+# an edit never deletes: a trait left out of the line keeps its derive (`--rm`
+# removes it)
+[[step]]
+strata = ["--file", "d.strata", "edit"]
+text = '''
+derive Json for
+type Point = { x: Int, y: Int }
+'''
+
+[[step]]
+strata = ["--file", "d.strata", "view", "Point,derive*", "--level", "1"]
+has = ["derive Json, Toml for\ntype Point"]
+
+[[step]]
+strata = ["--file", "d.strata", "edit", "--rm", "derive std.toml.Toml for Point"]
+text = ""
+
+[[step]]
+strata = ["--file", "d.strata", "view", "main.*", "--level", "0"]
+lacks = ["Toml for Point"]
+
+# a derive with methods written by hand names one trait
+[[step]]
+strata = ["--file", "bad.strata", "edit"]
+text = '''
+type P = { x: Int }
+
+derive Json, Toml for P {
+  fn x(self) -> Int {
+    1
+  }
+}
+'''
+fails = true
+has = ["a derive with methods written by hand names one trait"]
+
+# and the line goes above a `fn` or a `type`
+[[step]]
+strata = ["--file", "bad2.strata", "edit"]
+text = '''
+derive Json for
+trait T {
+  fn f(self) -> Int
+}
+'''
+fails = true
+has = ["is written on a `fn` or a `type`"]

@@ -101,6 +101,21 @@ law enqueue_once(q: Self, id: Int) {
 
 The type is always named, so which implementation runs is always clear. A generic function that calls such a method is given its type arguments when it runs: each call passes the concrete type the checker inferred (or forwards the caller's own type parameter). So the type must be known at each call: `combine_any([])` alone is an error (annotate: `let xs: List[Money] = []`), and such a function can't be passed as a value (`map(combine_any)`): use a lambda. A trait-typed parameter (`xs: List[Empty]`) has no name to call `.empty()` on: write the type parameter when you need it.
 
+**Writing a `derive`.** `derive A, B for` written between a declaration's `///` docs and the declaration (`pub`, then `fn` or `type`) derives each trait for it:
+
+```rust
+/// A greeting for `name`.
+derive C, Python for
+pub fn greet(name: String) -> String {
+  f"Hello, {name}!"
+}
+
+derive CommandLine, Json for
+type Options = { count: Int, loud: Bool, name: String = "world" }
+```
+
+It is only a way of writing: each trait's derive is stored as its own definition (`derive CommandLine for Options`, `derive Json for Options`), exactly as the separate form `derive Json for Options` gives it, and `derive A, B for T` (a type, a function or `module`) gives one per trait too. `strata view`, the text `strata edit` opens and `strata doc` show a derive on its declaration when it has no block of methods written by hand, no type parameters or trait arguments, no comments of its own, and derives for a declaration of the same module shown with it; all of a declaration's such derives in one line, in their order in the module. The others (`derive Json for Point { ... }`, a type of another module, `derive C for module`) stay lines of their own, and a block needs a single trait. An edit replaces and adds derives by name like any definition and never deletes: leaving a trait out of the line keeps its derive (`strata edit --rm 'derive std.json.Json for Options'` removes it).
+
 ## Modules
 
 - **A file is a module.** In a folder, each `.strata` file (a binary module file) is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `view MODULE` prints one module as text, and `view --split DIR` writes the codebase's text out one `.st` file per module. A view that spans several modules (`view a,b`) labels each group with a `// ── module m` comment. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit m` targets a module, and `view module:m` shows one.
