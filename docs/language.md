@@ -505,7 +505,7 @@ Every program has these without a `use`:
 
 | Type | Notes |
 |---|---|
-| `Int`, `Float`, `Bool`, `String` | `Int` never overflows: a machine integer while it fits, a big integer when it doesn't (like Python). `Float` is never NaN or infinite. There is no implicit Int/Float mixing (`float(n)`, `round(x)`). Strings are UTF-8 |
+| `Int`, `Float`, `Bool`, `String` | `Int` never overflows: a machine integer while it fits, a big integer when it doesn't (like Python). `Float` is never NaN or infinite. There is no implicit Int/Float mixing (`float(n)`, `round(x)`). Integer `/` and `%` are Euclidean: the remainder is never negative (`-7 / 2 == -4`, `-7 % 3 == 2`, `7 % -3 == 1`); for C's truncation, divide the magnitudes and put the sign back (`-(7 / 2) == -3`). `parse_int` takes an optional sign, `+` or `-` (`parse_int("+5") == Some(5)`): check the first character when only digits are wanted. Strings are UTF-8, and ordered (`<`, `<=`, `>`, `>=`, `compare`, `sort`) by their code points, which is UTF-8's byte order |
 | `I8` … `I64`, `U8` … `U64` | sized integers, for code that needs a fixed width: their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`) |
 | `()` | the unit type: "no meaningful value", Python's `None` as a *type* |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
@@ -537,6 +537,8 @@ for i in c { print(i) }            // 3, 2, 1
 ```
 
 Every iterator has `map` and `filter`, which are lazy. One that ends implements `FiniteIterator` too, and `verify` shows that a `for` loop over it ends. `xs.iter()` gives one over a list, a set or a dict, and a string's units are iterators.
+
+A finite iterator becomes a list where a `List` is expected and where it is shown, as if `to_list(...)` were written: passed for a `List` parameter (`count(s.graphemes())`), compared with a list (`s.graphemes() == ["a", "b"]`), printed, interpolated or given to `to_string` (`print(s.graphemes()[1..3])` prints `["b", "c"]`). An iterator that may not end can't become a list: that is an error, saying to take a part of it first (`.take(n)`). Each conversion walks the iterator once, O(n).
 
 ## Programs and the standard library
 
