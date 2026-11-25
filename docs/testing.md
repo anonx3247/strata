@@ -37,7 +37,7 @@ exit N`, as `tests/data/build/expected` holds them). `memory = true` runs a
 built program with `STRATA_MEMORY=check`: it must free everything it made.
 `$ROOT` is the repository, `$TMP` the case's folder, `$STRATA` (in `run`) the
 executable checked. Each command's `verify` verdicts are kept in the folder it
-runs in (`STRATA_VERDICTS`). The steps are `tools/check`'s `Step` record.
+runs in (`STRATA_VERDICTS`). A `strata run --verify-alongside` with `STRATA_SWAP_WAIT=start` starts the program once its verifier ended and the proven code is swapped in, so its summary is the same every time (`cli-run_verifies_alongside`). The steps are `tools/check`'s `Step` record.
 
 Cases run 4 at a time (`--jobs N`; `--jobs 1` for one at a time), each in a
 task of its own. Parallel runs once hung and removed files of `tests/cases`:
