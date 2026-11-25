@@ -1,0 +1,55 @@
+# A finite iterator becomes a list where a `List` is expected (a `List`
+# parameter) and where it is shown (`print`, `to_string`, f-strings), as if
+# `to_list(...)` were written; one that may not end is an error saying so
+# (STRATA-ISSUES #1, #9)
+
+[[step]]
+strata = ["--file", "i.strata", "edit"]
+text = '''
+fn count(xs: List[String]) -> Int { len(xs) }
+
+fn total(xs: List[Int]) -> Int { xs.fold(0, (a, b) -> a + b) }
+
+fn main() {
+  gs := "abc".graphemes()
+  print(count(gs))
+  i := 1
+  print(count(gs[i..len(gs)]))
+  print(gs == ["a", "b", "c"])
+  print(total("ab".bytes()))
+  print("a b".graphemes())
+  ks := "abcd".graphemes()
+  print(ks[1..len(ks)])
+  print(to_string("xy".code_points()))
+  print(f"{"hé".graphemes()}!")
+}
+'''
+
+[[step]]
+strata = ["--file", "i.strata", "run"]
+stdout = "3\n2\ntrue\n195\n[\"a\", \" \", \"b\"]\n[\"b\", \"c\", \"d\"]\n[120, 121]\n[\"h\", \"é\"]!\n"
+
+[[step]]
+strata = ["--file", "j.strata", "edit"]
+text = '''
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+fn total(xs: List[Int]) -> Int { len(xs) }
+
+fn main() {
+  print(total(Naturals { at: 0 }))
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "j.strata", "check"]
+fails = true
+has = ["`Naturals` is an iterator that may not end, so it can't become a `List`: take a part of it first (`.take(n)`)"]

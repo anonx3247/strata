@@ -1,0 +1,25 @@
+# Strings are ordered by their code points (`<`, `<=`, `>`, `>=`, as
+# `compare`); integer `/` and `%` are Euclidean; `parse_int` takes a sign
+# (STRATA-ISSUES P2)
+
+[[step]]
+strata = ["--file", "o.strata", "edit"]
+text = '''
+fn main() {
+  print("a" < "b")
+  print("b" <= "a")
+  print("é" > "z")
+  print("ab" >= "ab")
+  print("ab" < "abc")
+  print(compare("é", "z"))
+  print(parse_int("+5"))
+  print(-7 / 2)
+  print(-7 % 3)
+  print(-(7 / 2))
+  print(7 % -3)
+}
+'''
+
+[[step]]
+strata = ["--file", "o.strata", "run"]
+stdout = "true\nfalse\ntrue\ntrue\ntrue\n1\nSome(5)\n-4\n2\n-3\n1\n"
