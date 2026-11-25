@@ -114,8 +114,9 @@ Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
             | 3 Type(TypeExpr)        a union member defined elsewhere (`Circle` in `Circle | Square { .. }`)
 
 FnDecl      = doc:list(str)  comments:list(str)  name:str  type_params:list(str)  bounds:list(Bound)
-              params:list(Param)  ret:TypeExpr  requires:list(Expr)  ensures:list(Expr)
+              params:list(Param)  ret:Result  requires:list(Expr)  ensures:list(Expr)
               terminates:bool  body:Expr  comptime:bool  derived:bool
+Result      = TypeExpr | 5 names:list(str) TypeExpr     -> (next: Q, added: Int): the names, then the tuple
 Param       = name:str  ty:TypeExpr  mutable:bool  comptime:bool
 Bound       = param:str  traits:list(TypeExpr)
 
@@ -203,6 +204,8 @@ Stmt    = 0 Let(Pattern, option(TypeExpr), Expr)   1 Var(name:str, option(TypeEx
         | 6 Break   7 Continue   8 Expr(Expr)   9 Assert(Expr)   10 Comment(list(str))
         | 11 ComptimeFor(Pattern, Expr, body:Expr)          comptime for v in Self.members { … }
         | 12 Invariant(Expr)                                 a loop's `invariant e`, first in its body
+        | 13 Decreases(Expr)                                 a loop's `decreases e`, first in its body (with
+                                                             its invariants); a function's, its body's first
 
 Pattern = 0 Wild   1 Bind(str)   2 Int(int)   3 Str(str)   4 Bool(bool)
         | 5 Ctor(name:str, CtorPat)

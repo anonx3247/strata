@@ -23,8 +23,8 @@ trait Db {
   fn save(mut self, o: Order)        // `mut self`: saving changes the store
 }
 
-fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
-  ensures match it { Ok(o) => o is Shipped, Err(_) => true }
+fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString)
+  -> Result[Order, ShipError] where match it { Ok(o) => o is Shipped, Err(_) => true }
 {
   order := db.load(id) or { return Err(NotFound) }
   match order {
@@ -38,7 +38,6 @@ fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, Ship
 }
 
 fn refund(o: Order) -> Cents
-  ensures it >= 0
   = ?refund_policy          // a typed hole: callers still check
 
 test "a mocked store never breaks ship's contract" {
@@ -54,7 +53,7 @@ Refinements are structural: `type Quantity = Int where 1 <= it && it <= 99` is a
 
 ```rust
 fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }
-fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n { n / 2 }   // results may mention parameters
+fn halve(n: Natural) -> Int where it >= 0 ensures it * 2 <= n { n / 2 }
 ```
 
 The prelude provides the common ones: `Natural`, `Positive`, `Negative`, `NonZero`, `Probability`, `Percentage`, `NonEmpty[T]`, `NonEmptyString`. `strata builtins` lists them with every builtin function.
@@ -68,6 +67,27 @@ id.value                     // the underlying String
 ```
 
 A `distinct` type never mixes with its base or with other distinct types (`OrderId` ≠ `UserId`), it can have trait implementations, and it serialises to JSON as its underlying value.
+
+## Refinements and contracts: one way each
+
+A refinement says what one value is; a contract (`requires`, `ensures`) relates values. Each fact has one place:
+
+- a `requires` (or a conjunct of one: `a && b` is two) that names one parameter, and constants, is that parameter's refinement: `requires price >= 100` is `price: Cents where it >= 100`;
+- an `ensures` that names only `it` is the result's refinement: `ensures it >= 0` is `-> Cents where it >= 0`; one that names only an element of a tuple result (`it.1`, or a named result) is that element's: `-> (next: Q, added: Int where it >= 0)`;
+- a refinement names only `it` and constants: one that names another parameter (`k: Int where it <= n`) is a contract, `requires k <= n` (on the result, an `ensures`).
+
+`strata check` (and `strata edit`, for what it wrote) warns on each one written the other way, showing the replacement, and `strata fix` makes it (`strata fix NAME` for some definitions). A `mut` parameter keeps its `requires`: a refinement holds for the variable's whole life, a `requires` only on entry. A trait's methods, and an implementation's of a trait, are left as they are: the trait sets their signatures.
+
+**Named results.** A function returning a tuple can name its elements, for its readers and for its `ensures`, where the names are bound to the elements (`it` is still the whole tuple). Callers destructure the tuple as before:
+
+```rust
+pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> (next: MemQueue[P, E], added: Natural)
+  ensures added <= len(tasks)
+  ensures len(next.entries) == len(q.entries) + added
+{ ... }
+
+(q2, n) := mem_enqueue(q, tasks)
+```
 
 ## Records and defaults
 
@@ -270,7 +290,7 @@ fn restock(mut line: Line, extra: Int) { line.qty += extra }   // changes the ca
 restock(mut line, 5)                                           // and the call says so
 ```
 
-Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. A loop can state what stays true from pass to pass, between its header and its body: `while i < n` then `invariant 2 * total == i * (i + 1)` on the next line. It is checked at the loop's head when the program runs, and `strata verify` proves it (see [verification](verification.md#loops)); most loops need none, as `verify` infers simple ones. Method chains can be split across lines:
+Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. A loop can state what stays true from pass to pass, between its header and its body: `while i < n` then `invariant 2 * total == i * (i + 1)` on the next line. It is checked at the loop's head when the program runs, and `strata verify` proves it (see [verification](verification.md#loops)); most loops need none, as `verify` infers simple ones. A `while` or `loop` can also say why it ends, the same way: `decreases n - i`, or `decreases (left, size)` for measures compared in order (one goes down, or it stays and the next does); a recursive function says it beside `requires` (`decreases (m, n)`). It is proven by `verify` and checked when the program runs where it isn't (see [termination](verification-reference.md)); `verify` finds most measures on its own. Method chains can be split across lines:
 
 ```rust
 best := scores
@@ -298,7 +318,7 @@ Dict { w: len(w) for w in words }
 Set { x % 3 for x in xs }
 ```
 
-Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
+Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early. A lambda of several parameters where a function of one tuple of as many elements is expected takes the tuple apart: `pairs.filter((k, v) -> v > 0)`, `xs.enumerate().map((i, x) -> i * x)` bind the elements, with the tuple's types (written without parameter types; a lambda passed where a function of two arguments is expected, as `fold`'s, stays one of two arguments).
 
 ## Values and copying
 
@@ -536,7 +556,7 @@ c := Countdown { n: 3 }
 for i in c { print(i) }            // 3, 2, 1
 ```
 
-Every iterator has `map` and `filter`, which are lazy. One that ends implements `FiniteIterator` too, and `verify` shows that a `for` loop over it ends. `xs.iter()` gives one over a list, a set or a dict, and a string's units are iterators.
+Every iterator has `map`, `filter` and `enumerate` (each element with its index, `(i, x)`), which are lazy. One that ends implements `FiniteIterator` too, and `verify` shows that a `for` loop over it ends. `xs.iter()` gives one over a list, a set or a dict, and a string's units are iterators.
 
 A finite iterator becomes a list where a `List` is expected and where it is shown, as if `to_list(...)` were written: passed for a `List` parameter (`count(s.graphemes())`), compared with a list (`s.graphemes() == ["a", "b"]`), printed, interpolated or given to `to_string` (`print(s.graphemes()[1..3])` prints `["b", "c"]`). An iterator that may not end can't become a list: that is an error, saying to take a part of it first (`.take(n)`). Each conversion walks the iterator once, O(n).
 

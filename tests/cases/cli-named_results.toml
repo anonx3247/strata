@@ -1,0 +1,64 @@
+# named results (`-> (low: Int, high: Int)`): stored and shown as written, the
+# names bound in `ensures` to the tuple's elements (`it` is still the whole tuple),
+# proven by `verify` and checked at run time; callers destructure the tuple
+
+[[step]]
+save = "n.strata"
+text = '''
+/// Splits `n` in two halves.
+fn split(n: Int) -> (low: Int, high: Int)
+  requires n >= 0
+  ensures low + high == n
+  ensures low <= high && it.1 == high
+{
+  (n / 2, n - n / 2)
+}
+
+trait Halver {
+  fn halves(self, n: Int) -> (a: Int, b: Int) ensures a + b == n
+}
+
+type H = { k: Int }
+
+impl Halver for H {
+  fn halves(self, n: Int) -> (a: Int, b: Int) ensures a + b == n { (n / 2, n - n / 2) }
+}
+
+fn wrong(n: Int) -> (low: Int, high: Int) ensures low > high { (n, n) }
+
+fn main() {
+  (a, b) := split(5)
+  (c, d) := H { k: 1 }.halves(7)
+  print(f"{a} {b} {c} {d}")
+}
+'''
+
+[[step]]
+strata = ["--file", "n.strata", "view", "main"]
+has = [
+  '''
+fn split(n: Int) -> (low: Int, high: Int)
+  requires n >= 0
+  ensures low + high == n
+  ensures low <= high && it.1 == high {''',
+  "fn halves(self, n: Int) -> (a: Int, b: Int)\n    ensures a + b == n",
+]
+
+[[step]]
+strata = ["--file", "n.strata", "check"]
+has = ["ok: 6 definitions check"]
+
+[[step]]
+strata = ["--file", "n.strata", "run"]
+stdout = '''
+2 3 3 4
+'''
+
+[[step]]
+strata = ["--file", "n.strata", "verify"]
+fails = true
+has = ["✓ split ", "✓ H.halves ", "✗ wrong ", "postcondition of `wrong` violated"]
+
+[[step]]
+run = ["sh", "-c", "printf 'fn f() -> (a: Int, a: Int) { (1, 2) }\\n' | \"$STRATA\" --file bad.strata edit 2>&1; printf 'fn f() -> (a: Int) { 1 }\\n' | \"$STRATA\" --file one.strata edit 2>&1; printf 'fn f(a: Int) -> (a: Int, b: Int) { (1, 2) }\\n' | \"$STRATA\" --file two.strata edit 2>&1; true"]
+has = ["the result `a` is named twice", "named results are a tuple's elements", "the result `a` is named as a parameter"]
