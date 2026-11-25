@@ -304,7 +304,7 @@ Values never change, so a statement whose value is dropped almost always means a
 
 A variable never read (a parameter, `x := e`, `mut x := e`, a binding of a pattern, a lambda's parameter) is a warning, not an error, since code may be partway written: one line each from `check`, `run`, `build` (when it verifies) and `edit`, naming the function. A name starting with `_` (`_x`, `_`) says the value is unused on purpose; an `impl` method's parameters, which its trait or type dictates, are not warned about. A variable whose value has no effect (a literal, a variable, a lambda, a field, a tuple or list of them) and that nothing reads isn't compiled at all.
 
-Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
+Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early. A lambda of several parameters where a function of one tuple of as many elements is expected takes the tuple apart: `pairs.filter((k, v) -> v > 0)`, `xs.enumerate().map((i, x) -> i * x)` bind the elements, with the tuple's types (written without parameter types; a lambda passed where a function of two arguments is expected, as `fold`'s, stays one of two arguments).
 
 ## Values and copying
 
@@ -542,7 +542,7 @@ c := Countdown { n: 3 }
 for i in c { print(i) }            // 3, 2, 1
 ```
 
-Every iterator has `map` and `filter`, which are lazy. One that ends implements `FiniteIterator` too, and `verify` shows that a `for` loop over it ends. `xs.iter()` gives one over a list, a set or a dict, and a string's units are iterators.
+Every iterator has `map`, `filter` and `enumerate` (each element with its index, `(i, x)`), which are lazy. One that ends implements `FiniteIterator` too, and `verify` shows that a `for` loop over it ends. `xs.iter()` gives one over a list, a set or a dict, and a string's units are iterators.
 
 A finite iterator becomes a list where a `List` is expected and where it is shown, as if `to_list(...)` were written: passed for a `List` parameter (`count(s.graphemes())`), compared with a list (`s.graphemes() == ["a", "b"]`), printed, interpolated or given to `to_string` (`print(s.graphemes()[1..3])` prints `["b", "c"]`). An iterator that may not end can't become a list: that is an error, saying to take a part of it first (`.take(n)`). Each conversion walks the iterator once, O(n).
 
