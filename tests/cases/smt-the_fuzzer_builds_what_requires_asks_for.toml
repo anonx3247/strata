@@ -1,0 +1,41 @@
+# verify's fuzzer builds a `requires`'s inputs with the program's own
+# functions (`new_tally`, then `bump`s): random tallies almost never meet
+# `tally_ok` (13 of 800 did), built ones do
+
+[[step]]
+save = "u.strata"
+text = '''
+/// Ten points a step, each step's value logged.
+type Tally = { n: Int, log: List[Int] }
+
+fn tally_ok(t: Tally) -> Bool {
+  t.n >= 0 && t.n % 10 == 0 && len(t.log) * 10 == t.n
+}
+
+fn new_tally() -> Tally
+  ensures tally_ok(it) {
+  Tally { n: 0, log: [] }
+}
+
+fn bump(mut t: Tally, x: Int)
+  requires tally_ok(t)
+  ensures tally_ok(t) {
+  t.n += 10
+  t.log = t.log + [x]
+}
+
+fn total(t: Tally) -> Int
+  requires tally_ok(t)
+  ensures it == t.n {
+  mut s := 0
+  for _ in t.log {
+    s += 10
+  }
+  s
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verify --no-cache \"$TMP/u.strata\""]
+any_code = true
+has = ["~ total                    fuzzed: 200 cases, 68 discarded by `requires`", "✓ bump "]
