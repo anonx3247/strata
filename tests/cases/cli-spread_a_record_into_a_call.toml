@@ -1,0 +1,309 @@
+# `f(...x)`: a record spread into a call, its fields given to the
+# parameters of the same names (the others left alone). Written and read
+# back; positional arguments before the spreads give the first parameters,
+# after them the last; two records spread together; a method on a value,
+# on a type, on a trait value, through a bound, `mut` receivers; a value
+# that is no variable computed once; run, tested, and verified as the
+# ordinary call it is. Then each error: a parameter no record gives, one two
+# give, a `mut` parameter left to a spread, a value that isn't a record, a
+# record that gives nothing, a positional argument between spreads, too many
+# positional arguments, a function value, a built-in, a spread where no
+# call is, a constructor. Last, across a package's modules.
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+type Order = { id: Int, qty: Int, price: Int, note: String }
+
+type Fee = { fee: Int }
+
+type Pos = { x: Int, y: Int }
+
+type Box[T] = { item: T, count: Int }
+
+/// What an order costs.
+fn total(qty: Int, price: Int) -> Int {
+  qty * price
+}
+
+/// With a fee on top.
+fn with_fee(id: Int, qty: Int, price: Int, fee: Int) -> String {
+  f"{id}: {qty * price + fee}"
+}
+
+/// A new order, counting how many were made.
+fn make(mut made: Int, n: Int) -> Order {
+  made += 1
+  Order { id: n, qty: n + 1, price: 10, note: "made" }
+}
+
+fn show[T: Display](item: T, count: Int) -> String {
+  f"{item} x{count}"
+}
+
+type Shop = { name: String }
+
+impl Shop {
+  fn line(self, id: Int, note: String) -> String {
+    f"{self.name} #{id} {note}"
+  }
+
+  fn new(name: String) -> Shop {
+    Shop { name }
+  }
+}
+
+trait Shape {
+  fn scaled(self, x: Int, y: Int) -> Int
+}
+
+type Sq = { side: Int }
+
+impl Shape for Sq {
+  fn scaled(self, x: Int, y: Int) -> Int {
+    self.side * x * y
+  }
+}
+
+fn area[S: Shape](s: S, p: Pos) -> Int {
+  s.scaled(...p)
+}
+
+type Tally = { n: Int }
+
+impl Tally {
+  fn add(mut self, x: Int, y: Int) {
+    self.n += x + y
+  }
+}
+
+fn main() {
+  o := Order { id: 1, qty: 3, price: 7, note: "first" }
+  print(total(...o))
+  print(with_fee(...o, ...Fee { fee: 2 }))
+  print(with_fee(5, ...o, 1))
+  mut made := 0
+  print(total(...make(mut made, 4)))
+  print(made)
+  print(show(...Box { item: "pen", count: 2 }))
+  print(Shop { name: "corner" }.line(...o))
+  print(Shop.new(...Shop { name: "kiosk" }).line(...o))
+  p := Pos { x: 3, y: -4 }
+  print(area(Sq { side: 2 }, p))
+  let sq: Shape = Sq { side: 1 }
+  print(sq.scaled(...p))
+  mut t := Tally { n: 0 }
+  mut t.add(...p)
+  print(t.n)
+  print([Pos { x: 1, y: 1 }, p].map(q -> total(q.x, ...Order { id: 0, qty: 0, price: q.y, note: "" })))
+}
+
+test "a spread is the call written out" {
+  o := Order { id: 2, qty: 4, price: 5, note: "" }
+  assert total(...o) == total(o.qty, o.price)
+  assert with_fee(...o, 9) == with_fee(2, 4, 5, 9)
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "view", "main"]
+has = [
+  "  print(total(...o))\n",
+  "  print(with_fee(...o, ...Fee { fee: 2 }))\n",
+  "  print(with_fee(5, ...o, 1))\n",
+  "  print(total(...make(mut made, 4)))\n",
+  "  print(Shop.new(...Shop { name: \"kiosk\" }).line(...o))\n",
+  "  mut t.add(...p)\n",
+  "  assert with_fee(...o, 9) == with_fee(2, 4, 5, 9)\n",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "check"]
+has = ["ok: "]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+stdout = "21\n1: 23\n5: 22\n50\n1\npen x2\ncorner #1 first\nkiosk #1 first\n-24\n-12\n-1\n[1, -12]\n"
+
+[[step]]
+strata = ["--file", "t.strata", "test"]
+has = ["1 passed"]
+
+# verified as the call written out: `width`'s `requires` at each spread
+[[step]]
+strata = ["--file", "v.strata", "edit"]
+text = '''
+type Span = { lo: Int, hi: Int, label: String }
+
+/// The width of a span.
+fn width(lo: Int, hi: Int) -> Int
+  requires lo <= hi
+  ensures it == hi - lo {
+  hi - lo
+}
+
+/// A span's width, through a spread.
+fn span_width(s: Span) -> Int
+  requires s.lo <= s.hi
+  ensures it == s.hi - s.lo {
+  width(...s)
+}
+
+/// Unchecked: the span's `lo` may be above its `hi`.
+fn any_width(s: Span) -> Int {
+  width(...s)
+}
+'''
+
+[[step]]
+strata = ["--file", "v.strata", "verify", "--checks", "--no-race"]
+fails = true
+has = [
+  "✓ span_width",
+  "proven:  ensures it == s.hi - s.lo",
+  "✗ any_width",
+  "precondition of `width` violated: requires lo <= hi",
+]
+
+# the errors
+[[step]]
+strata = ["--file", "e.strata", "edit"]
+fails = true
+text = '''
+type Order = { id: Int, qty: Int, price: Int }
+
+type Price = { price: Int, currency: String }
+
+type Note = { text: String }
+
+type Count = { n: Int, qty: Int }
+
+fn total(qty: Int, price: Int) -> Int {
+  qty * price
+}
+
+fn label(id: Int, name: String) -> String {
+  f"{id} {name}"
+}
+
+fn counted(mut n: Int, qty: Int) {
+  n += qty
+}
+
+fn moved(p: Order) -> Order {
+  Order { ..p, id: p.id + 1 }
+}
+
+fn missing() -> String {
+  o := Order { id: 1, qty: 2, price: 3 }
+  label(...o)
+}
+
+fn twice() -> Int {
+  o := Order { id: 1, qty: 2, price: 3 }
+  p := Price { price: 4, currency: "EUR" }
+  total(...o, ...p)
+}
+
+fn nothing() -> Int {
+  o := Order { id: 1, qty: 2, price: 3 }
+  total(...o, ...Note { text: "x" })
+}
+
+fn changes() {
+  c := Count { n: 1, qty: 2 }
+  counted(...c)
+}
+
+fn not_record() -> Int {
+  total(...5)
+}
+
+fn between() -> Int {
+  o := Order { id: 1, qty: 2, price: 3 }
+  total(...o, 1, ...o)
+}
+
+fn too_many() -> Int {
+  o := Order { id: 1, qty: 2, price: 3 }
+  total(1, 2, ...o, 3)
+}
+
+fn local() -> Int {
+  o := Order { id: 1, qty: 2, price: 3 }
+  g := (qty: Int, price: Int) -> qty + price
+  g(...o)
+}
+
+fn builtin() -> Int {
+  o := Order { id: 1, qty: 2, price: 3 }
+  len(...o)
+}
+
+fn nested() -> Order {
+  o := Order { id: 1, qty: 2, price: 3 }
+  moved(...moved(o))
+}
+
+fn in_contract(qty: Int, price: Int) -> Int
+  ensures it == total(...Order { id: 0, qty, price }) {
+  qty * price
+}
+'''
+
+[[step]]
+strata = ["--file", "e.strata", "check"]
+fails = true
+has = [
+  "error in missing: `label(...o)`: no argument for parameter `name` of `label`: `o` (`Order`) has no field `name`",
+  "error in twice: `total(...o, ...p)`: parameter `price` of `total` is given by both `...o` and `...p` (each has a field `price`)",
+  "error in nothing: `total(...o, ...Note { text: \"x\" })`: `...Note { text: \"x\" }` gives no parameter of `total` (`Note` has no field named like a parameter left to fill)",
+  "error in changes: `counted(...c)`: parameter `n` of `counted` is `mut`: pass it as a positional argument (`mut …`), as a spread only reads `c`",
+  "error in not_record: `...5`: `5` is `Int`, not a record: a spread gives a record's fields",
+  "error in between: `total(...o, 1, ...o)`: a positional argument between spreads: write positional arguments before the spreads (they give the first parameters) or after them (the last)",
+  "error in too_many: `total(1, 2, ...o, 3)`: 3 positional arguments, but `total` takes 2",
+  "error in local: `g(...o)`: `g` is a variable, whose parameters have no names: a spread gives a record's fields to the parameters of a function or method called by name",
+  "error in builtin: `len(...o)`: `len` is built in: a spread gives a record's fields to the parameters of the program's functions and methods",
+  "error in nested: `moved(...moved(o))`: no argument for parameter `p` of `moved`: `moved(o)` (`Order`) has no field `p`",
+  "error in in_contract: `...Order { id: 0, qty, price }`: a spread gives a record's fields to the parameters of a function or method called by name; it can't be used here",
+]
+counts = { "error in nested" = 1 }
+
+# a constructor's fields are written out
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+type Pt = { x: Int, y: Int }
+
+fn f(p: Pt) -> Pt {
+  Pt(...p)
+}
+'''
+fails = true
+has = ["a spread (`...x`) gives a function's parameters, not a constructor's fields"]
+
+# across a package's modules
+[[step]]
+module = "shop"
+into = "$TMP/p/"
+text = '''
+pub type Order = { id: Int, qty: Int, price: Int }
+
+pub fn total(qty: Int, price: Int) -> Int {
+  qty * price
+}
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+text = '''
+from shop use Order, total
+
+fn main() {
+  print(total(...Order { id: 1, qty: 2, price: 5 }))
+}
+'''
+
+[[step]]
+strata = ["--file", "p", "run"]
+stdout = "10\n"

@@ -122,6 +122,25 @@ d := Retry {}
 
 A constructor that leaves out a field with a default gets the default; so does JSON input with the key missing, and a command line without the option. Nothing gets a default implicitly.
 
+### Spreading a record into a call
+
+`f(...x)` gives the fields of record `x` to the parameters of `f` with the same names; fields `f` doesn't take are left alone:
+
+```rust
+type Order = { id: Int, qty: Int, price: Int, note: String }
+type Fee = { fee: Int }
+
+fn total(qty: Int, price: Int) -> Int { qty * price }
+fn with_fee(id: Int, qty: Int, price: Int, fee: Int) -> Int { qty * price + fee }
+
+total(...order)                     // total(order.qty, order.price)
+with_fee(...order, 2)               // with_fee(order.id, order.qty, order.price, 2)
+with_fee(...order, ...Fee { fee: 2 })
+shop.line(...order)                 // methods, and `Shop.new(...x)`, alike
+```
+
+It is the call written out, decided when the program is checked, so it runs, compiles and is verified as that call. Positional arguments come before the spreads (they give the first parameters) or after them (the last); the spreads give the rest, each parameter from the one record that has a field of its name. A parameter no record gives, or two give, is an error, as is a record that gives none, and a `mut` parameter, which is passed explicitly (`mut x`). A value spread that isn't a variable or a field of one is computed once, before the call's other arguments.
+
 ## Unions, variants and patterns
 
 A union holds a value of any of its members. It is a union of sets, so it normalizes: `Int | Positive` is just `Int`, and different types stay apart.
