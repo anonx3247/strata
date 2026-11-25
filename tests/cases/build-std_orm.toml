@@ -1,11 +1,15 @@
 # std.orm: `derive Table` makes a table of a record (columns, the key, a
-# key of another table, refinements as CHECKs, defaults), inserts (the row
-# id read back as the key), updates, deletes, gets by key and runs typed
-# queries (`Todo.done.eq(false)`, `and`, `order_by`, `limit`, `count`,
-# `delete`); a row breaking a refinement SQL can't state is `BadRow`, not a
-# fault. Built (every object freed) and run; the example `todos_db` runs,
-# tests and verifies. What can't be a table is an error at the `derive`, a
-# query of the wrong type an error of the checker.
+# key named in the derive's block (`key code`, `key (shelf, slot)`),
+# `Key[T]` and `Option[Key[T]]` fields as keys of another table, records
+# and lists deriving `Json` as JSONB, refinements as CHECKs, defaults),
+# inserts (the row id read back as the key), updates, deletes, gets by key
+# and runs typed queries (`Todo.done.eq(false)`, `and`, `order_by`,
+# `limit`, `count`, `delete`); a row breaking a refinement SQL can't state
+# is `BadRow`, not a fault; SQLite refuses a key of no row and a delete of
+# a row another names. Built (every object freed) and run; the example
+# `todos_db` runs, tests and verifies; `verify` finds an insert naming a
+# row that may not exist. What can't be a table is an error at the
+# `derive`, a query of the wrong type an error of the checker.
 
 [[step]]
 save = "main.strata"
@@ -47,6 +51,67 @@ left: 2
 strata = ["--file", "$ROOT/examples/todos_db.strata", "verify"]
 lacks = ["✗"]
 
+# the derive's clauses are written back as given
+[[step]]
+strata = ["--file", "keys.strata", "edit"]
+text = '''
+from std.orm use Table, Key
+
+type Item = { code: String, name: String }
+
+derive Table for Item {
+  key code
+}
+
+type Slot = { shelf: Int, slot: Int, item: Key[Item] }
+
+derive Table for Slot {
+  key (shelf, slot)
+}
+'''
+
+[[step]]
+strata = ["--file", "keys.strata", "view", "main"]
+has = ["derive Table for Item {\n  key code\n}", "derive Table for Slot {\n  key (shelf, slot)\n}"]
+
+# verify: a to-do naming a project that may not be a row
+[[step]]
+strata = ["--file", "fk.strata", "edit"]
+text = '''
+from std.sqlite use Database, SqlError
+
+from std.orm use Table, Key
+
+type Project = { id: Int = 0, name: String where it != "" }
+
+derive Table for Project
+
+type Todo = { id: Int = 0, project: Key[Project], title: String where it != "" }
+
+derive Table for Todo
+
+/// The project is inserted first: the to-do's key names a row.
+fn good(mut db: Database) -> Result[Todo, SqlError] {
+  p := (Project { name: "home" }).insert(mut db)!
+  (Todo { project: p.key(), title: "x" }).insert(mut db)
+}
+
+/// A key of no project inserted.
+fn bad(mut db: Database) -> Result[Todo, SqlError] {
+  _ := (Project { name: "home" }).insert(mut db)!
+  (Todo { project: Key { value: 7 }, title: "x" }).insert(mut db)
+}
+'''
+
+[[step]]
+strata = ["--file", "fk.strata", "verify", "good", "--no-cache"]
+has = ["✓ good"]
+
+[[step]]
+strata = ["--file", "fk.strata", "verify", "bad", "--no-cache", "--require", "proven"]
+fails = true
+has = ["precondition of `Table::insert`: requires self.references_held(db.rows())", "the solver found a possible counterexample"]
+
 # what can't be a table
 [[step]]
 strata = ["--file", "no_key.strata", "edit"]
@@ -58,19 +123,63 @@ type Note = { text: String }
 derive Table for Note
 '''
 fails = true
-has = ["can't be a table without a key: give it a field named `id`"]
+has = ["`Note` can't be a table without a key: write `derive Table for Note { key FIELD }`, or give it a field named `id`"]
 
 [[step]]
-strata = ["--file", "list_field.strata", "edit"]
+strata = ["--file", "bad_key.strata", "edit"]
 text = '''
 from std.orm use Table
 
-type Note = { id: Int, tags: List[String] }
+type Note = { text: String }
+
+derive Table for Note {
+  key title
+}
+'''
+fails = true
+has = ["`key title`: `Note` has no field `title`"]
+
+[[step]]
+strata = ["--file", "bad_clause.strata", "edit"]
+text = '''
+from std.orm use Table
+
+type Note = { id: Int, text: String }
+
+derive Table for Note {
+  unique text
+}
+'''
+fails = true
+has = ["`unique` isn't a clause of `derive Table`"]
+
+[[step]]
+strata = ["--file", "not_table.strata", "edit"]
+text = '''
+from std.orm use Table, Key
+
+type Tag = { id: Int, name: String }
+
+type Note = { id: Int, tag: Key[Tag] }
 
 derive Table for Note
 '''
 fails = true
-has = ["`List[String]` can't be a column"]
+has = ["`Key[Tag]`: `Tag` isn't a table (`derive Table for Tag`)"]
+
+[[step]]
+strata = ["--file", "record_field.strata", "edit"]
+text = '''
+from std.orm use Table
+
+type Place = { city: String }
+
+type Note = { id: Int, place: Place }
+
+derive Table for Note
+'''
+fails = true
+has = ["`Place` can't be a column: a field holding a record is kept as JSON when its type derives `Json` (`derive Json for Place`), or is a key of another table's row (`Key[Place]`)"]
 
 [[step]]
 strata = ["--file", "double_option.strata", "edit"]

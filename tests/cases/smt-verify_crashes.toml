@@ -160,3 +160,27 @@ fn h(o: Option[Small]) -> Option[Small] {
 [[step]]
 run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file generic.strata verify --no-cache"]
 has = ["✓ h                        proven (1 check)"]
+
+# a fact about every element of a list that takes another element of the
+# same list (`contains(xs, …)`, an `all` over xs since #489): each element
+# given the fact took one more, until the stack overflowed (compiler's
+# merge.renames, 7.8 GB)
+[[step]]
+save = "chained.strata"
+text = '''
+fn chained(xs: List[Int]) -> Int
+  requires all(xs, x -> x >= 100 || contains(xs, x + 1))
+{
+  mut n := 0
+  for x in xs {
+    if x < 100 {
+      n += 1
+    }
+  }
+  n
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file chained.strata verify --no-cache"]
+has = ["✓ chained"]

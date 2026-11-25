@@ -1,22 +1,7 @@
 # std.code
 
-A codebase as Strata's tools see it: its definitions, each
-rendered as text with what it uses and what uses it, the checker's
-findings, the verifier's cached results and the package's log.
-
-```rust
-from std.code use Codebase, Snapshot
-
-fn main(code: Codebase) {
-  match code.snapshot() {
-    Ok(s) => print(f"{len(s.definitions)} definitions in {s.label}"),
-    Err(e) => print(e),
-  }
-}
-```
-
-The codebase is the current folder (a package, with its log), or the one
-`strata ui` shows: its viewer is a program that asks for `Code`.
+A codebase as Strata's tools see it, for viewers and agents.
+The codebase is the current folder, a package with its log.
 
 ## Types
 
@@ -57,15 +42,14 @@ type Definition = {
 }
 ```
 
-One definition. `name` is qualified by its module (`core.run`); `label`
-is what to call it (a test's description). `kind` is `fn`, `type`,
-`trait`, `impl`, `test` or `use`. `interface` is its signature and
-contracts (a type or trait whole), `source` the whole definition, both
-without the doc comment (`doc`). `deps` are the definitions it uses,
-`refs` those that use it, `impls` the `impl` blocks of a type or trait.
-`verdict` is what `strata verify` last found (`proven`, `fuzzed`, …) if
-it is still valid; `last_change` the index in `log` of the entry that
-last changed it.
+One definition of a codebase.
+
+- `name` is qualified by its module (`core.run`). `label` is a test's description, else the name.
+- `kind` is `fn`, `type`, `trait`, `impl`, `test` or `use`.
+- `interface` is the signature and contracts, or a whole type or trait. `source` is the whole definition. Neither holds the doc.
+- `deps` are the definitions it uses, `refs` those that use it, `impls` the `impl` blocks of a type or trait.
+- `verdict` is the last valid result of `strata verify` (`proven`, `fuzzed`, …).
+- `last_change` is the index in `log` of the entry that last changed it.
 
 ### Entry
 
@@ -73,9 +57,8 @@ last changed it.
 type Entry = { message: String, time: Option[Int], changes: List[Change] }
 ```
 
-An entry of a package's log: one `strata edit` (or other change), when
-(seconds since 1970), and the definitions it `added`, `removed`, or
-changed (`interface` or `body`).
+One `strata edit` or other change in a package's log.
+`time` is in seconds since 1970. `what` of a change is `added`, `removed`, `interface` or `body`.
 
 ### Change
 
@@ -89,8 +72,7 @@ type Change = { name: String, what: String }
 capability Codebase {}
 ```
 
-The codebase strata is looking at: the current folder, or the one
-`strata ui` shows. Only the runtime makes one.
+The codebase `strata` is looking at. Only the runtime makes one.
 
 ## Traits
 
@@ -98,15 +80,14 @@ The codebase strata is looking at: the current folder, or the one
 
 ```rust
 capability trait Code {
-  /// What changes whenever the code does: cheap to ask, to read the
-  /// snapshot only when it changed.
+  /// Cheap. Read the snapshot again only when it changed.
   fn version(self) -> String
-  /// The codebase now, or why it can't be read (a file that doesn't decode).
+  /// Fails when a file doesn't decode.
   fn snapshot(self) -> Result[Snapshot, String]
 }
 ```
 
-The capability to read a codebase.
+Reads a codebase.
 
 ## Implementations
 

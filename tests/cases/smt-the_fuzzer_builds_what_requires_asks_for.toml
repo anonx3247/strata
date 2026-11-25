@@ -2,7 +2,9 @@
 # functions (`new_tally`, then `bump`s): random tallies almost never meet
 # `tally_ok` (13 of 800 did), built ones do; a driver whose stepper can't
 # be compiled yet (`odd`) is compiled with its arguments generated, as
-# before
+# before. (`total` adds `5 + 5`, not `10`: with `s += 10` the loop's
+# invariant `s == 10 * i` is derived from its code, and `total` is proven,
+# not fuzzed.)
 
 [[step]]
 save = "u.strata"
@@ -31,7 +33,7 @@ fn total(t: Tally) -> Int
   ensures it == t.n {
   mut s := 0
   for _ in t.log {
-    s += 10
+    s = s + 5 + 5
   }
   s
 }
@@ -77,7 +79,7 @@ fn total(t: Tally) -> Int
   ensures it == t.n {
   mut s := 0
   for _ in t.log {
-    s += 10
+    s = s + 5 + 5
   }
   s
 }
