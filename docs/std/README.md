@@ -14,6 +14,7 @@ The modules of `std`, each with its types, traits and functions: their signature
 | [std.json](json.md) | JSON text, and records and sum types read from it and written to it. |
 | [std.memory](memory.md) | Memory, for programs that must be fast: arenas. |
 | [std.process](process.md) | The running program: its arguments, its environment variables and its exit code, and the other programs it runs. |
+| [std.python](python.md) | Calling Python functions (`extern python`). |
 | [std.regex](regex.md) |  |
 | [std.sqlite](sqlite.md) | SQLite databases, through the system's libsqlite3. |
 | [std.term](term.md) | Text styled for a terminal: bold, dim, colors. |
