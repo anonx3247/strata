@@ -118,6 +118,16 @@ $ strata run total '[]'                      # the arguments, as code, checked a
 error: invalid input: lines: [] does not satisfy `NonEmpty` (where len(it) > 0)
 ```
 
+`--copies` (on `run`, `test` and `build`) answers "is this loop copying my dict?": each copy the program made of a value in order to change it, reported when it ends, per place in the code (a location, for `strata view`), with how many, how big and why; `copies: none` when there was none. See [values and copying](language.md#values-and-copying) for when a value is copied.
+
+```
+$ strata run --copies
+copies: 2 copies, 14 kB, at 1 place (the most bytes first):
+  copied a Dict of up to 400 entries at app.kept@31f7e4cc/body/4/body/0/value: 2 times, 14 kB (shared: held 2 times)
+```
+
+A built program's first run takes a quarter of a second more than the next ones on macOS, which checks each new executable the first time it runs: time the second run.
+
 On a terminal, what the tools say is coloured as above: proven green, failures red, fuzzed or incomplete orange, a counterexample's input amber, hashes dim, holes yellow, function names bold, and in a diff what was removed red and what was added green. Code is highlighted wherever it is shown (`view`, a counterexample's input, a hole's goal and context, a failed assertion), with the site's colours: keywords, types, function names, strings, numbers, comments and docs, holes, and capabilities (and the traits they implement) in a colour of their own. As for programs (`std.term`), colour is on when the output is a terminal, `NO_COLOR` is unset and `TERM` isn't `dumb`; `FORCE_COLOR` forces it.
 
 What is printed to be read rather than followed (`view`, `find`, `refs`, `diff`, `log`, `holes`, `status`, `interface`, `builtins`, the help) goes through a pager on a terminal, as git does it: `$STRATA_PAGER`, else `$PAGER`, else `less -FRX` (with `LESS=FRX` unless `LESS` is set: it quits when the text fits on one screen and keeps the colours). `--no-pager`, or `STRATA_PAGER=cat` (or empty), turns it off. `check`, `verify` and `test` stream their results as they come, and `run` and `edit` never page.
