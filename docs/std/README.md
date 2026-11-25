@@ -14,6 +14,7 @@ The modules of `std`, each with its types, traits and functions: their signature
 | [std.memory](memory.md) | Memory, for programs that must be fast: arenas. |
 | [std.process](process.md) | The running program: its arguments, its environment variables and its exit code, and the other programs it runs. |
 | [std.regex](regex.md) |  |
+| [std.sqlite](sqlite.md) | SQLite databases, through the system's libsqlite3. |
 | [std.term](term.md) | Text styled for a terminal: bold, dim, colors. |
 | [std.time](time.md) | The clock: the time now, waiting, and timers in `select`. |
 | [std.toml](toml.md) | TOML text (version 1.1, https://toml.io/en/v1.1.0) read into values and written from them, and records and sum types read from TOML and written to it. |
