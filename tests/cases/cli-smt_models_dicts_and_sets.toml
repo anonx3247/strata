@@ -1,0 +1,140 @@
+# Dicts and sets in the solver: an array from each key to an `Option` of its
+# value (a set's: to whether it is in) and a size, through literals, `get`,
+# `contains`, `len`, `insert`, `remove`, `union`, equality (the same
+# entries), `old` and a `for` over the entries (each one in the array, its
+# value valid); refuted with a dict or set shown as a literal
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+type Loc = { side: Int, price: Int where it > 0 }
+
+type Book = { index: Dict[Int, Loc], used: Set[Int] }
+
+/// Puts `k` in: then it's there, with that value.
+fn put(d: Dict[Int, Int], k: Int, v: Int) -> Dict[Int, Int]
+  ensures contains(it, k) && get(it, k) == Some(v) {
+  insert(d, k, v)
+}
+
+/// A new key makes the dict one larger.
+fn grow(d: Dict[Int, Int], k: Int) -> Dict[Int, Int]
+  requires !contains(d, k)
+  ensures len(it) == len(d) + 1 {
+  insert(d, k, 0)
+}
+
+/// Putting back what is there changes nothing (equal dicts: the same
+/// entries).
+fn put_back(d: Dict[Int, Int], k: Int) -> Dict[Int, Int]
+  requires contains(d, k)
+  ensures it == d {
+  v := get(d, k) ?? 0
+  insert(d, k, v)
+}
+
+/// Literals.
+fn literals() -> Dict[String, Int]
+  ensures get(it, "a") == Some(1) && len(it) == 2 && !contains(it, "c") {
+  s := Set[Int] { 1, 2, 2 }
+  assert len(s) == 2 && contains(s, 2)
+  Dict[String, Int] { "a": 1, "b": 2 }
+}
+
+/// What a dict holds keeps its type's refinements.
+fn price_of(b: Book, id: Int) -> Int
+  ensures it > 0 {
+  match get(b.index, id) {
+    Some(l) => l.price,
+    None => 1,
+  }
+}
+
+/// Takes an order out of the book: no longer indexed, the ids used kept;
+/// one fewer when it was there, the book unchanged when it wasn't.
+fn take(mut b: Book, id: Int)
+  ensures !contains(b.index, id) && b.used == old b.used
+  ensures contains(old b.index, id) ==> len(b.index) == old len(b.index) - 1
+  ensures !contains(old b.index, id) ==> b == old b {
+  if contains(b.index, id) {
+    b.index = remove(b.index, id)
+  }
+}
+
+/// Records an id: a duplicate is rejected and changes nothing.
+fn record(mut b: Book, id: Int) -> Bool
+  ensures !it ==> b == old b
+  ensures contains(b.used, id) {
+  if contains(b.used, id) {
+    return false
+  }
+  b.used = insert(b.used, id)
+  true
+}
+
+/// Every price in the index is positive.
+fn all_positive(b: Book) -> Bool
+  ensures it {
+  for (_, l) in b.index {
+    if l.price <= 0 {
+      return false
+    }
+  }
+  true
+}
+
+/// A set's union holds both.
+fn both(a: Set[String], b: Set[String], x: String) -> Set[String]
+  requires contains(a, x)
+  ensures contains(it, x) && len(it) >= len(b) {
+  union(a, b)
+}
+
+/// Says it keeps the size, but a new key grows it.
+fn keeps_size(d: Dict[Int, Int], k: Int) -> Dict[Int, Int]
+  ensures len(it) == len(d) {
+  insert(d, k, 1)
+}
+
+/// Says no key maps to 0.
+fn no_zero(d: Dict[String, Int], k: String) -> Int
+  requires contains(d, k)
+  ensures it != 0 {
+  get(d, k) ?? 1
+}
+
+/// Says a set with two items never holds "x".
+fn without_x(s: Set[String]) -> Bool
+  requires len(s) >= 2
+  ensures it {
+  !contains(s, "x")
+}
+
+fn main() {
+  b := Book { index: Dict[Int, Loc] {}, used: Set[Int] {} }
+  print(f"{price_of(b, 3)} {len(literals())}")
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--checks", "--no-race"]
+fails = true
+has = [
+  "proven:  ensures contains(it, k) && get(it, k) == Some(v)",
+  "proven:  ensures len(it) == len(d) + 1",
+  "proven:  ensures it == d",
+  "proven:  assert len(s) == 2 && contains(s, 2)",
+  "proven:  ensures get(it, \"a\") == Some(1) && len(it) == 2 && !contains(it, \"c\")",
+  "✓ price_of                 proven (1 check)",
+  "proven:  ensures !contains(b.index, id) && b.used == old b.used",
+  "proven:  ensures contains(old b.index, id) ==> len(b.index) == old len(b.index) - 1",
+  "proven:  ensures !contains(old b.index, id) ==> b == old b",
+  "proven:  ensures !it ==> b == old b (early return)",
+  "✓ all_positive             proven (1 check)",
+  "proven:  ensures contains(it, x) && len(it) >= len(b)",
+  "✗ keeps_size               Ensures violation (found by the solver)",
+  "✗ no_zero                  Ensures violation (found by the solver)",
+  "input:   Dict[String, Int] {",
+  "postcondition of `no_zero` violated: ensures it != 0 (it = 0)",
+  "✗ without_x                Ensures violation (found by the solver)",
+  "input:   Set[String] {",
+]
