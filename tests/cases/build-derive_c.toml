@@ -87,3 +87,64 @@ text = "pub fn f() -> I32 {\n  1\n}\n"
 strata = ["build", "none.strata", "--lib"]
 fails = true
 has = ["nothing to export"]
+
+# a library exports only its derives' functions (and `strata_string_free`):
+# the program's other functions, std's and the runtime's are hidden
+[[step]]
+run = ["nm", "-gU", "libcalc.dylib"]
+has = ["T _add\n", "T _greet\n", "T _strata_string_free\n"]
+lacks = ["_strata_lib_init", "_strata_alloc", "_strata_slow_counts", "calc."]
+
+# `derive C for module`: every `pub fn` of the module, each one that can't
+# cross reported
+[[step]]
+save = "all.strata"
+text = '''
+from std.ffi use C
+
+/// Twice `n`.
+pub fn twice(n: I32) -> I32 {
+  n * 2
+}
+
+/// Whether `x` is positive.
+pub fn positive(x: Float) -> Bool {
+  x > 0.0
+}
+
+fn helper() -> I32 {
+  1
+}
+
+derive C for module
+'''
+
+[[step]]
+strata = ["build", "all.strata", "--lib"]
+has = ["built liball.dylib and all.h"]
+
+[[step]]
+run = ["cat", "all.h"]
+has = ["int32_t twice(int32_t n);", "bool positive(double x);"]
+lacks = ["helper"]
+
+[[step]]
+save = "some.strata"
+text = '''
+from std.ffi use C
+
+pub fn twice(n: I32) -> I32 {
+  n * 2
+}
+
+pub fn total(xs: List[Int]) -> Int {
+  xs.sum()
+}
+
+derive C for module
+'''
+
+[[step]]
+strata = ["--file", "some.strata", "check"]
+fails = true
+has = ["`total` can't be called from C: its parameter `xs` is a `List[Int]`"]

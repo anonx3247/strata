@@ -394,9 +394,21 @@ clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
 
 - **What crosses** is what crosses `extern c`, the other way: the sized integers, `Float` (`double`), `Bool` (`bool`), `String` (`const char *` in, copied; `char *` out, a copy the caller frees with `free`), `()` (`void`), handles (`extern c type`, `void *`) and `Option` of one (NULL for `None`). A function with another type, or with type parameters, is refused at the `derive`, naming the parameter.
 - **The library starts its runtime when it is loaded**; the host keeps its signals and arguments. A library has no `main` (`--lib` leaves the program's out). A fault in Strata code ends the process, as in a program.
-- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is an export or a part of a file: `derived fn export() -> Self = Self` exports the function itself under its own name; `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
+- **A library exports only what its `derive`s export** (and `strata_string_free`, below): the program's other functions, std's and the runtime's are hidden, so two Strata libraries live in one process.
+- **`derive C for module`** derives `C` for every `pub fn` of the module; one that can't cross is reported, not left out.
+- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is told by its shape alone (never a marker): `derived fn export() -> Self = Self` exports the function itself under its own name; a `derived fn` with parameters (`derived fn json(args: String) -> String { .. }`) is a wrapper of the function, exported as `NAME_METHOD` (`add_json`), its body calling the function with `Self.call(p -> e)` / `Self.try_call(p -> e)` (`e` gives each argument, `p` its parameter, a `Field`); `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). A file is its parts in order, each paragraph (up to a blank line) once. So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
 
-Not yet: other languages (`derive Python`, `derive TypeScript`, `derive Rust`: typed wrappers over a C export taking JSON), static libraries, `mut` parameters, callbacks.
+### `derive Python for f`
+
+`derive Python for add` (`std.ffi`) exports `char *add_json(const char *args)`: the arguments as a JSON object by name, each read with its type's `Json` (refinements checked; an `Option` left out is `None`), the answer `{"ok": RESULT}` or `{"error": {"kind", "message", "value"}}`, never a crash (`kind`: `json`, `arguments`, `result`, or `err` for the function's own `Err`, its value in `value`); the caller frees it with `strata_string_free`. `strata build --lib` writes `NAME.py` beside the library: a typed Python module loading it with `ctypes`, a function per derived one, a dataclass per record (and a class per union, a subclass per variant), errors raised as `StrataError`:
+
+```python
+import geo                        # geo.py and libgeo.dylib, side by side
+geo.middle(geo.Point(0.0, 0.0), geo.Point(2.0, 4.0))   # Point(x=1.0, y=2.0)
+geo.divide(1, 0)                  # raises StrataError("err", "ByZero", {"type": "ByZero"})
+```
+
+Not yet: `derive TypeScript` / `Rust` (the same `NAME_json` export, other files), static libraries, `mut` parameters, callbacks.
 
 ## Programs
 
@@ -413,7 +425,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.cli](std/cli.md) | Command-line options, read into a record; commands, into a union. |
 | [std.code](std/code.md) | A codebase as Strata's tools see it: its definitions, each rendered as text with what it uses and what uses it, the checker's findings, the verifier's cached results and the package's log. |
 | [std.collections](std/collections.md) | A dictionary and a set kept in their keys' order, and a priority queue. |
-| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`. |
+| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`, `derive Python for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
 | [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
 | [std.io](std/io.md) | The console: text in and out. |
