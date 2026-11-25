@@ -1,0 +1,175 @@
+# `old e` in an `ensures`: `e` where the function started, for `mut`
+# parameters and `mut self`. Written and read back; checked where it may go
+# (only an `ensures`, once, over what the function starts with); a needless
+# one (naming no `mut` parameter) is a warning `strata fix` drops; proven by
+# verify over the values before and after, at call sites through the
+# callee's contract (a trait method's too, from a generic caller); refuted
+# with the values before and after; checked when the program runs, showing
+# both
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+/// One more.
+fn bump(mut n: Int)
+  ensures n == old n + 1 {
+  n += 1
+}
+
+/// Two more, through `bump`'s contract.
+fn bump_twice(mut n: Int)
+  ensures n == old n + 2 {
+  bump(mut n)
+  bump(mut n)
+}
+
+/// Adds `x` at the end.
+fn push_one(mut xs: List[Int], x: Int)
+  ensures len(xs) == old len(xs) + 1 {
+  xs += [x]
+}
+
+/// Says it adds one, but leaves out what isn't positive.
+fn push_positive(mut xs: List[Int], x: Int)
+  ensures len(xs) == old len(xs) + 1 {
+  if x > 0 {
+    xs += [x]
+  }
+}
+
+/// `old` takes a unary expression: `old (a + b)` reads the sum before.
+fn shift(mut a: Int, mut b: Int)
+  ensures a + b == old (a + b) && a == old b && b == old a {
+  t := a
+  a = b
+  b = t
+}
+
+type Tally = { n: Int }
+
+trait Counter {
+  fn total(self) -> Int
+  fn incr(mut self)
+    ensures self.total() == old self.total() + 1
+}
+
+impl Counter for Tally {
+  fn total(self) -> Int = self.n
+
+  fn incr(mut self) {
+    self.n += 1
+  }
+}
+
+/// Any counter, through the trait's contract.
+fn incr_twice[C: Counter](mut c: C)
+  ensures c.total() == old c.total() + 2 {
+  mut c.incr()
+  mut c.incr()
+}
+
+fn main() {
+  mut k := 3
+  bump_twice(mut k)
+  print(k)
+  mut t := Tally { n: 0 }
+  incr_twice(mut t)
+  print(t.n)
+  mut ys := [1]
+  push_one(mut ys, 2)
+  push_positive(mut ys, 0)
+  print(ys)
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "view", "main"]
+has = [
+  "fn bump(mut n: Int)\n  ensures n == old n + 1 {\n",
+  "  ensures a + b == old (a + b) && a == old b && b == old a {\n",
+  "    ensures self.total() == old self.total() + 1\n",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--checks", "--no-race"]
+fails = true
+has = [
+  "proven:  ensures n == old n + 1",
+  "proven:  ensures n == old n + 2",
+  "proven:  ensures len(xs) == old len(xs) + 1",
+  "proven:  ensures a + b == old (a + b) && a == old b && b == old a",
+  "proven:  ensures self.Counter::total() == old self.Counter::total() + 1",
+  "proven:  ensures c.Counter::total() == old c.Counter::total() + 2",
+  "✗ push_positive",
+  "postcondition of `push_positive` violated: ensures len(xs) == old len(xs) + 1 (before: len(xs) = 0, after: len(xs) = 0)",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+fails = true
+has = [
+  "5\n2\n",
+  "postcondition of `push_positive` violated: ensures len(xs) == old len(xs) + 1 (before: len(xs) = 2, after: len(xs) = 2)",
+]
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+fn pre(mut n: Int)
+  requires old n > 0 {
+  n += 1
+}
+
+fn twice_old(mut n: Int)
+  ensures n == old old n + 1 {
+  n += 1
+}
+
+fn bound(mut xs: List[Int])
+  ensures xs.all(x -> x >= old x) {
+  xs = xs
+}
+
+fn result(mut n: Int) -> Int
+  ensures n == old n + it {
+  n += 1
+  1
+}
+
+fn result_old(mut n: Int) -> Int
+  ensures old it == n {
+  n
+}
+
+fn main() {
+  old := 3
+  print(old)
+}
+'''
+fails = true
+has = [
+  "error in pre: `old e` goes only in an `ensures` clause",
+  "error in twice_old: `old old n`: `old` once is enough (`old old e` is `old e`)",
+  "error in bound: `old x`: `x` is named inside the `ensures`, not there where the function starts",
+  "error in result_old: `old it`: `it` is the result, which is not there where the function starts",
+]
+lacks = ["error in result:", "error in main"]
+
+[[step]]
+strata = ["--file", "w.strata", "edit"]
+text = '''
+fn next(n: Int, mut log: List[Int]) -> Int
+  ensures it == old n + 1 && len(log) == old len(log) + 1 {
+  log += [n]
+  n + 1
+}
+'''
+has = [
+  "warning: `next`: `old n` names no `mut` parameter, so it is the same value before and after: `n` (`strata fix` makes the change)",
+]
+
+[[step]]
+strata = ["--file", "w.strata", "fix"]
+
+[[step]]
+strata = ["--file", "w.strata", "view", "main"]
+has = ["  ensures it == n + 1 && len(log) == old len(log) + 1 {\n"]
