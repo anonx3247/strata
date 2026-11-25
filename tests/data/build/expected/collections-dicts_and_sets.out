@@ -4,7 +4,7 @@ Dict {}
 Dict { 3: "z", 1: "a", 2: "b" }
 Dict { "b": 2, "a": 10, "c": 3 }
 Dict { "b": 2, "a": 1, "c": 3, "aa": 5 }
-Dict { "a": 1, "c": 3 }
+Dict { "c": 3, "a": 1 }
 Dict { "b": 2, "a": 1, "c": 3 }
 [Some(3), None]
 [true, false]

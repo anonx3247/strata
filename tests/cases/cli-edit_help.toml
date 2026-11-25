@@ -1,0 +1,10 @@
+# `strata edit --help` and `-h`: edit's lines of `strata help`, exit 0
+
+[[step]]
+strata = ["edit", "--help"]
+has = ["edit [MODULE] [-m MSG] [--rm NAME]..", "edit [MODULE | SELECTOR]", "?pending_N", "`--file F edit [MODULE]`"]
+lacks = ["unknown option", "rename <old>"]
+
+[[step]]
+strata = ["edit", "-h"]
+has = ["edit [MODULE] [-m MSG] [--rm NAME].."]

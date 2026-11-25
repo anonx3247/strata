@@ -1,0 +1,38 @@
+# docs/language.md's "Values and copying", pinned: the updates it says are
+# in place copy nothing (`--copies`: none) at two sizes, and run at 200,000
+# in well under the time limit (each was quadratic: a record inside a
+# record, `remove`, refined elements, `xs += [x]`, `s += t`), with every
+# object freed; the updates of a value something else holds copy it once
+# per update that follows the share, and a value read out of a container
+# and updated back every time, each reported at its location, with why
+
+[[step]]
+save = "in_place.strata"
+from = "in_place.st"
+
+[[step]]
+strata = ["--file", "in_place.strata", "run", "--copies"]
+out = "[667, 500, 1500, 4000, 2000, 3000, 5000, 120, 2998]\n[2667, 2000, 6000, 16000, 8000, 12000, 20000, 120, 11998]\ncopies: none\n"
+
+[[step]]
+strata = ["--file", "in_place.strata", "build", "--no-verify", "-o", "prog"]
+
+[[step]]
+run = ["perl", "-e", "alarm 20; exec @ARGV", "./prog", "200000"]
+stdout = "[133334, 100000, 300000, 800000, 400000, 600000, 1000000, 120, 599998]\n"
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "[667, 500, 1500, 4000, 2000, 3000, 5000, 120, 2998]\n[2667, 2000, 6000, 16000, 8000, 12000, 20000, 120, 11998]\n"
+
+[[step]]
+save = "shared.strata"
+from = "shared.st"
+
+[[step]]
+strata = ["--file", "shared.strata", "build", "--no-verify", "--copies", "-o", "shared"]
+
+[[step]]
+run = ["./shared"]
+out = "[300, 100, 101, 201, 1]\n[1200, 400, 401, 801, 1]\ncopies: 506 copies, 2,741 kB, at 5 places (the most bytes first):\n  copied a Dict of up to 399 entries at nested_read@53ddc3b5/body/1/body/2: 498 times, 2,697 kB (shared: held 3 times)\n  copied a Dict of up to 400 entries at kept@31f7e4cc/body/4/body/0/value: 2 times, 14 kB (shared: held 2 times)\n  copied a Dict of up to 400 entries at looped@2898fc39/body/3/body/0/value: 2 times, 14 kB (its entries are held elsewhere too: a `for` over it, or a list taken from it)\n  copied a Dict of up to 400 entries at grown@81d56075/body/2/value: 2 times, 14 kB (shared: held 2 times)\n  copied a Dict of 1 entry at captured@18388bd7/body/4/body/0/value: 2 times, 112 bytes (shared: held 2 times)\n"

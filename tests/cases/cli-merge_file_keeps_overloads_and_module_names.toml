@@ -1,0 +1,43 @@
+# merge-file pairs definitions as `edit` does: a builtin's overloads by
+# their parameters' types, not one name for all of them; and the merged
+# file keeps the module name its sides store (core's `core.builtins`, the
+# file `builtins.strata`)
+
+[[step]]
+run = ["sh", "-c", "mkdir -p core && cp \"$ROOT/core/strata.toml\" \"$ROOT/core/builtins.strata\" core/ && cp core/builtins.strata o.strata && cp o.strata a.strata && cp o.strata b.strata"]
+
+# ours changes the `I8` overload of to_int, theirs the `U64` one
+[[step]]
+write = "ours.st"
+text = '''
+/// `x` as an `Int` (ours).
+builtin fn to_int(x: I8) -> Int
+'''
+
+[[step]]
+write = "theirs.st"
+text = '''
+/// `x` as an `Int` (theirs).
+builtin fn to_int(x: U64) -> Int
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file a.strata edit core.builtins < ours.st >/dev/null 2>&1; \"$STRATA\" --file b.strata edit core.builtins < theirs.st >/dev/null 2>&1; true"]
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "core/builtins.strata"]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" header a.strata | head -1; \"$STRATA\" --no-pager --file a.strata view core.builtins | grep -c 'builtin fn to_int('; \"$STRATA\" --no-pager --file a.strata view core.builtins | grep -B1 'builtin fn to_int(x: \\(I8\\|I16\\|U64\\))'"]
+stdout = '''
+module core.builtins: 118 definitions
+8
+/// `x` as an `Int` (ours).
+builtin fn to_int(x: I8) -> Int
+--
+/// `x` as an `Int`.
+builtin fn to_int(x: I16) -> Int
+--
+/// `x` as an `Int` (theirs).
+builtin fn to_int(x: U64) -> Int
+'''

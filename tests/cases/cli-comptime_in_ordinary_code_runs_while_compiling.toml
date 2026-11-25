@@ -37,7 +37,7 @@ lacks = ["std.regex.parse", "@\"strata:shout\""]
 strata = ["--file", "v.strata", "edit"]
 text = "fn main() {\n  n := 3\n  print(comptime n + 1)\n}\n"
 fails = true
-has = ["unknown variable `n`", "written, but"]
+has = ["unknown variable `n`", "written: "]
 
 [[step]]
 strata = ["--file", "v.strata", "check"]

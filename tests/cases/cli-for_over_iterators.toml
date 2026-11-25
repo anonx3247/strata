@@ -130,7 +130,7 @@ fn c[I](it: I) {
 }
 '''
 any_code = true
-has = ["written, but bad.strata doesn't check"]
+has = ["written: bad.strata doesn't check"]
 
 [[step]]
 strata = ["--file", "bad.strata", "check"]

@@ -85,7 +85,7 @@ fn main() {
 }
 '''
 fails = true
-has = ["written, but", "`bigger` takes `other: Self`"]
+has = ["written: ", "`bigger` takes `other: Self`"]
 
 [[step]]
 strata = ["--file", "bad.strata", "check"]

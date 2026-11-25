@@ -1,0 +1,98 @@
+# Programs `strata verify` crashed on (strata-bench issue #4, and #448's
+# out-of-memory): each verifies now, under a time limit.
+
+# a: a type whose one variant is itself (`type LexErr`) was its own parent:
+# `sort_type` looked it up forever (a stack overflow)
+[[step]]
+save = "unit.strata"
+text = '''
+type LexErr
+
+fn f(x: Int) -> Result[Int, LexErr] {
+  if x > 0 { Ok(x) } else { Err(LexErr) }
+}
+
+fn g(x: Int) -> Int {
+  match f(x) {
+    Ok(v) => v,
+    Err(_) => 0,
+  }
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file unit.strata verify --no-cache"]
+has = ["✓ g", "✓ f"]
+
+# b: a list of a type whose refinement quantifies over its own list: the
+# refinement's lambda keeps the record, whose list holds the lambda again;
+# copying an element's lists went round that forever
+[[step]]
+save = "levels.strata"
+text = '''
+type Order = { id: Int, qty: Int }
+
+type Level = { price: Int, orders: List[Order] }
+  where all(it.orders, o -> o.qty > 0)
+
+fn first_qty(ls: List[Level]) -> Int
+  requires len(ls) > 0 && len(ls[0].orders) > 0
+  ensures it > 0
+{
+  ls[0].orders[0].qty
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file levels.strata verify --no-cache"]
+has = ["✓ first_qty                proven"]
+
+# c: a type named like a built-in one (`Set`) was taken for it when a
+# counterexample was replayed (signal 11): such a name is an error
+[[step]]
+save = "set.strata"
+text = '''
+type Tree =
+  | Leaf
+  | Node { key: Int, left: Tree }
+
+type Set = { root: Tree }
+'''
+
+[[step]]
+strata = ["--file", "set.strata", "check"]
+fails = true
+has = ["`Set` is a built-in type (pick another name)"]
+
+# #448: a `mut` value's recursive field changed in one branch of a `match`
+# to a generic callee's result (`Tree[T]`, not `Tree[K]`): merging the
+# branches took both trees apart without end (8.7 GB)
+[[step]]
+save = "tree.strata"
+text = '''
+type Tree[K] =
+  | Leaf
+  | Node { key: K, left: Tree[K] }
+
+type Bag[K] = { root: Tree[K] }
+
+fn second[T](t: Tree[T]) -> Tree[T] {
+  t
+}
+
+impl[K] Bag[K] {
+  fn pop_first(mut self) -> Int {
+    match self.root {
+      Leaf => 0,
+      Node { left, .. } => {
+        self.root = second(left)
+        1
+      },
+    }
+  }
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file tree.strata verify --no-cache"]
+has = ["✓ Bag.pop_first"]

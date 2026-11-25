@@ -37,7 +37,7 @@ fn derive(derive: Int) -> Int {
 }
 '''
 fails = true
-has = ["written, but", "`Point` isn't one"]
+has = ["written: ", "`Point` isn't one"]
 
 [[step]]
 write = "d.st"

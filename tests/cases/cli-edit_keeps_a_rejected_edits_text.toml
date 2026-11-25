@@ -1,0 +1,97 @@
+# a rejected edit is never lost: its text is kept in the package's
+# `.strata/rejected/edit-N.st` (and said where), from standard input (an edit
+# that doesn't check, one that doesn't parse) and from the editor (given up);
+# the folder is strata's own, so the commit never takes it
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+run = ["mkdir", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+strata = ["edit"]
+dir = "pkg"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount / 10
+}
+'''
+
+[[step]]
+strata = ["edit", "-m", "broken"]
+dir = "pkg"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount + true
+}
+'''
+fails = true
+has = ["rejected: the codebase would not check; nothing was changed", "the text is kept in ", "/pkg/.strata/rejected/edit-1.st: fix it, then pipe it to `strata edit` again"]
+
+[[step]]
+run = ["cat", "pkg/.strata/rejected/edit-1.st"]
+out = "fn tax(amount: Int) -> Int {\n  amount + true\n}\n"
+
+# one that doesn't parse: kept too, under the next number
+[[step]]
+strata = ["edit"]
+dir = "pkg"
+text = "fn tax(amount: Int -> Int {"
+fails = true
+has = ["parse error at", "/pkg/.strata/rejected/edit-2.st"]
+
+[[step]]
+run = ["cat", "pkg/.strata/rejected/edit-2.st"]
+out = "fn tax(amount: Int -> Int {"
+
+# the editor saves the same rejected text twice: given up, the text kept
+[[step]]
+write = "v/editor.sh"
+text = '''
+#!/bin/sh
+printf 'fn tax(amount: Int) -> Int {\n  len(true)\n}\n' > "$1"
+'''
+
+[[step]]
+strata = ["edit", "tax", "--editor"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/v/editor.sh'" }
+fails = true
+has = ["gave up: the text saved was rejected before", "/pkg/.strata/rejected/edit-3.st"]
+
+[[step]]
+run = ["cat", "pkg/.strata/rejected/edit-3.st"]
+has = ["len(true)"]
+
+# nothing changed, and nothing of strata's folder committed or showing in git
+[[step]]
+strata = ["view", "main"]
+dir = "pkg"
+has = ["amount / 10"]
+
+[[step]]
+run = ["git", "status", "--porcelain", "--untracked-files=all", "--", "."]
+dir = "pkg"
+out = ""
+
+[[step]]
+strata = ["edit", "-m", "fifth"]
+dir = "pkg"
+text = "fn tax(amount: Int) -> Int { amount / 5 }"
+has = ["committed to git"]
+
+[[step]]
+run = ["git", "ls-files"]
+dir = "pkg"
+out = "main.strata\nstrata.log\nstrata.toml\n"

@@ -1,0 +1,46 @@
+# `check` types a capability's methods as it does any trait's: the result of
+# `mut console.read_line()` (an `Option[String]`) is not an `Int`, and
+# `print` takes a `String` (both passed `check` before, then LLVM rejected
+# the first and the second crashed at run time)
+
+[[step]]
+save = "a.strata"
+text = '''
+from std.io use Console
+
+fn main(mut console: Console) {
+  let x: Int = mut console.read_line()
+  n := 3
+  mut console.print(n)
+  print(x)
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "check"]
+fails = true
+has = [
+  "error in main: let annotation: expected `Int`, found `Option[String]`",
+  "error in main: call to `print`, argument 2: expected `String`, found `Int`",
+]
+
+[[step]]
+save = "b.strata"
+text = '''
+from std.io use Console
+
+fn greet(mut console: Console) {
+  match mut console.read_line() {
+    Some(name) => mut console.print("hello " + name),
+    None => mut console.print("hello"),
+  }
+}
+
+fn main(mut console: Console) {
+  greet(mut console)
+}
+'''
+
+[[step]]
+strata = ["--file", "b.strata", "check"]
+has = ["ok:"]
