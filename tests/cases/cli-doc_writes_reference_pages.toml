@@ -1,0 +1,222 @@
+# `strata doc`: a package's reference from its `///` docs: a Markdown page
+# for each module with public definitions (its doc, then its types, methods,
+# traits, functions: signatures with their contracts, and docs) and an
+# index; `--man`: man pages (std's with the `strata` command's own)
+
+[[step]]
+write = "shop/strata.toml"
+text = "name = \"shop\"\n"
+
+[[step]]
+strata = ["--file", "shop/", "edit", "orders"]
+text = '''
+// shop.orders — orders and their totals.
+//
+// An order is a list of lines:
+//
+//   o := Order { lines: [Line { price: 3, count: 2 }] }
+//   total(o)    // 6
+//
+// - `Order`: what was bought
+// - `total`: what it costs,
+//   in cents
+
+/// A line of an order.
+pub type Line = { price: Int where it >= 0, count: Int where it >= 0 }
+
+/// What was bought.
+pub type Order = { lines: List[Line] }
+
+impl Order {
+  /// How many lines it has.
+  fn size(self) -> Int {
+    len(self.lines)
+  }
+}
+
+/// Things that have a price.
+pub trait Priced {
+  /// The price, in cents.
+  fn price(self) -> Int
+}
+
+impl Priced for Order {
+  fn price(self) -> Int {
+    total(self)
+  }
+}
+
+/// What an order costs, in cents.
+pub fn total(o: Order) -> Int
+  ensures it >= 0
+{
+  mut t := 0
+  for l in o.lines {
+    t += l.price * l.count
+  }
+  t
+}
+
+/// Half of `n`, rounded down.
+pub fn half(n: Int) -> Int
+  requires n >= 0
+{
+  n / 2
+}
+
+fn helper() -> Int {
+  1
+}
+'''
+
+[[step]]
+strata = ["--file", "shop/", "edit", "main"]
+text = '''
+use orders
+
+fn main() {
+  print(orders.half(4))
+}
+'''
+
+# the root module has nothing public: no page
+[[step]]
+strata = ["--file", "shop/", "doc", "-o", "out"]
+out = "wrote 2 pages to out\n"
+
+[[step]]
+run = ["cat", "out/README.md"]
+stdout = '''
+# shop
+
+The modules of `shop`, each with its types, traits and functions: their signatures, contracts and docs. Generated from the code's `///` docs by `strata doc`.
+
+| Module | |
+|---|---|
+| [shop.orders](orders.md) | Orders and their totals. |
+'''
+
+[[step]]
+run = ["cat", "out/orders.md"]
+stdout = '''
+# shop.orders
+
+Orders and their totals.
+
+An order is a list of lines:
+
+```rust
+o := Order { lines: [Line { price: 3, count: 2 }] }
+total(o)    // 6
+```
+
+- `Order`: what was bought
+- `total`: what it costs,
+  in cents
+
+## Types
+
+### Line
+
+```rust
+type Line = { price: Int where it >= 0, count: Int where it >= 0 }
+```
+
+A line of an order.
+
+### Order
+
+```rust
+type Order = { lines: List[Line] }
+```
+
+What was bought.
+
+## Methods
+
+### Order.size
+
+```rust
+fn size(self) -> Int
+```
+
+How many lines it has.
+
+## Traits
+
+### Priced
+
+```rust
+trait Priced {
+  /// The price, in cents.
+  fn price(self) -> Int
+}
+```
+
+Things that have a price.
+
+## Functions
+
+### total
+
+```rust
+fn total(o: Order) -> Int
+  ensures it >= 0
+```
+
+What an order costs, in cents.
+
+### half
+
+```rust
+fn half(n: Int) -> Int
+  requires n >= 0
+```
+
+Half of `n`, rounded down.
+
+## Implementations
+
+- `impl Priced for Order`
+'''
+
+# man pages: `man -M man shop.orders`
+[[step]]
+strata = ["--file", "shop/", "doc", "--man", "-o", "man"]
+out = "wrote 1 page to man\n"
+
+[[step]]
+run = ["cat", "man/man3/shop.orders.3"]
+has = [
+  ".TH \"SHOP.ORDERS\" 3 ",
+  ".SH NAME\nshop.orders \\- Orders and their totals.\n.SH SYNOPSIS\n.nf\nuse shop.orders\n.fi\n.SH DESCRIPTION\nAn order is a list of lines:\n.PP\n.RS 4\n.nf\no := Order { lines: [Line { price: 3, count: 2 }] }\n",
+  ".IP \\(bu 2\n`Order`: what was bought\n",
+  ".SH FUNCTIONS\n.SS total\n.RS 4\n.nf\nfn total(o: Order) -> Int\n  ensures it >= 0\n.fi\n.RE\n.PP\nWhat an order costs, in cents.\n",
+]
+lacks = ["helper", "fn main"]
+
+# std's, one module: its page and the command's, from its help
+[[step]]
+strata = ["--file", "$ROOT/std", "doc", "--man", "-o", "stdman", "std.io"]
+out = "wrote 2 pages to stdman\n"
+
+[[step]]
+run = ["cat", "stdman/man3/std.io.3", "stdman/man1/strata.1"]
+has = [
+  ".SH NAME\nstd.io \\- The console: text in and out.\n",
+  ".SS Recorder\n",
+  ".TH \"STRATA\" 1 ",
+  ".SH NAME\nstrata \\- an experimental language for working with agents\n.SH SYNOPSIS\n",
+  ".SS Documentation\n",
+  "  doc [MODULE].. [-o DIR] [--man]\n",
+]
+
+[[step]]
+strata = ["--file", "shop/", "doc", "nowhere"]
+fails = true
+has = ["no module `nowhere` in shop/"]
+
+[[step]]
+strata = ["--file", "shop/", "doc", "--html"]
+fails = true
+has = ["`strata doc` takes no option `--html`"]
