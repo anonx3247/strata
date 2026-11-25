@@ -25,31 +25,31 @@ $ strata --file examples/math.strata verify
     result of `next_digit`: 10 does not satisfy `Digit` (where 0 <= it && it <= 9) (stack: next_digit)
 ```
 
-`factorial` is proven for every input: its result is always positive, and it always terminates. `next_digit` is refuted with the input that breaks it, before anything runs.
+`factorial` is proven for every input: its result is always positive, and it always terminates. `verify` refutes `next_digit` before anything runs, and shows the input that breaks it.
 
 ## What Strata is for
 
-- **Constraints live in the types.** Refinement types (`Int where 1 <= it && it <= 99`), `requires` / `ensures` contracts, algebraic data types, unions and exhaustive matching.
-- **Contracts are proven, not just tested.** An SMT solver (Z3 or cvc5) proves what it can; what it can't prove is fuzzed, and every result says which. Termination is shown too, or flagged.
-- **You work on definitions, not files.** Definitions are syntax trees identified by content hash; text is a view at the level of detail you need, and every edit is checked against the whole codebase before it is committed.
-- **Incomplete programs still check.** A typed hole (`?name`) has a goal type, a context and obligations: a precise task to hand to an agent.
-- **Capabilities are values.** A database or a clock is a trait passed as a parameter, so a signature shows what code can touch, and a test passes a `mock`.
-- **Values read as code.** Every value is shown as it would be written (`Circle { radius: 2 }`), in messages, traces and counterexamples, and `strata run f ARGS` takes its arguments that way. JSON is a library (`derive Json`), read against the types, refinements included.
-- **Concurrency without colouring.** `scope`, `spawn` and `await` run tasks on threads, with channels, `select` and `race` (the losers cancelled); any function can block, and there is no `async`.
+- Types state constraints. Strata has refinement types (`Int where 1 <= it && it <= 99`), `requires` and `ensures` contracts, algebraic data types, unions and exhaustive matching.
+- Contracts are proven. An SMT solver (Z3 or cvc5) proves what it can, and a fuzzer tests the rest. Each result says which of the two it came from. Termination is proven too, or reported as unproven.
+- You edit definitions. Each definition is stored as a syntax tree and identified by the hash of its content. Text is a view of it, at the level of detail you ask for. Every edit is checked against the whole codebase before it is committed.
+- Incomplete programs still type-check. A typed hole (`?name`) has a goal type, a context and obligations, which together make a precise task to hand to an agent.
+- Capabilities are values. A database or a clock is a trait passed as a parameter. A function's signature shows what it can touch, and a test passes a `mock`.
+- Values print as code. Messages, traces and counterexamples show each value the way it would be written (`Circle { radius: 2 }`), and `strata run f ARGS` reads its arguments in the same syntax. JSON is a library (`derive Json`) that checks what it reads against the types, refinements included.
+- Concurrency has no function colouring. `scope`, `spawn` and `await` run tasks on threads. Tasks communicate with channels, `select` and `race`, which cancels the losers. Any function can block, and there is no `async`.
 
-> Status: **an experimental draft**. The compiler is written in Strata (`compiler/`) and builds itself: lexing, parsing, checking, verifying (with z3), and generating code through LLVM, to an executable (`strata build`) or in memory (the JIT, for `strata run`, `verify`'s fuzzing and compile-time code). The runtime is C (`runtime/runtime.c`) with its memory allocator written in Strata (`core.rt`).
+> Status: **an experimental draft**. The compiler is written in Strata (`compiler/`) and builds itself. It lexes, parses, type-checks, verifies (with Z3) and generates code through LLVM, either to an executable (`strata build`) or in memory. The in-memory JIT runs `strata run`, the fuzzing in `verify`, and compile-time code. The runtime is in C (`runtime/runtime.c`), except for the memory allocator, which is written in Strata (`core.rt`).
 
 ## Try it
 
-On macOS (Apple silicon), install the latest release in `~/.strata` (nothing else is needed: LLVM, the runtime, std and Z3 come with it):
+On macOS (Apple silicon), install the latest release into `~/.strata`. The release includes LLVM, the runtime, std and Z3, so nothing else is needed.
 
 ```sh
 curl -fsSL https://strata-lang.dev/install.sh | sh
 ```
 
-`STRATA_VERSION=v0.1` pins a release, `STRATA_INSTALL=DIR` installs elsewhere, and `STRATA_MODIFY_PATH=1` adds its `bin` to your shell's PATH. Running it again upgrades.
+Set `STRATA_VERSION=v0.1` to pin a release, `STRATA_INSTALL=DIR` to install somewhere else, or `STRATA_MODIFY_PATH=1` to add its `bin` to your shell's PATH. Running the script again upgrades.
 
-Or build it from source: Strata is written in Strata, so a `strata` builds the next one (`tools/bootstrap.sh` takes `STRATA_SEED`, else a `strata` on the PATH, else downloads the latest release). It links LLVM 23 and lld in, so building it needs them (only to build: the result needs nothing installed):
+To build from source, you need an existing `strata`, because the compiler is written in Strata. `tools/bootstrap.sh` uses `STRATA_SEED` if set, then a `strata` on the PATH, and otherwise downloads the latest release. The build links LLVM 23 and lld into the binary, so they are needed to build it but not to run it.
 
 ```sh
 brew install llvm zstd                 # LLVM 23, and clang
@@ -76,10 +76,11 @@ strata holes                       # what's left to implement
 
 ## Documentation
 
-- [The language](docs/language.md): types, refinements, unions, traits, modules, mutation, errors, tasks, programs.
+- [The language](docs/language.md): types, refinements, unions, traits, modules, mutation, errors, tasks and programs.
 - [Verification](docs/verification.md): what `strata verify` proves, with examples and the verifier's output.
 - [Tools](docs/tools.md): the command line, structural diffs, storage, packages and git.
-- Annex: [Learn Strata in Y minutes](docs/learn-strata.md) (the language in one valid file, for agents), and the references for [the language](docs/language-reference.md), [verification](docs/verification-reference.md) and [the tools](docs/tools-reference.md).
-- [Internals](docs/internals.md): how the source is laid out, `core`, the compiler; [the binary format](docs/binary-format.md).
-- [Ideas, decisions and open questions](IDEAS.md): where Strata is going.
-- [site/](site/README.md): the website (strata-lang.dev): a landing page and an interactive tour built from the real tools' output; [docs-site/](docs-site/README.md) publishes these docs on it.
+- [Learn Strata in Y minutes](docs/learn-strata.md): the whole language in one valid file, written for agents.
+- References: [the language](docs/language-reference.md), [verification](docs/verification-reference.md) and [the tools](docs/tools-reference.md).
+- [Internals](docs/internals.md): the source layout, `core` and the compiler. [The binary format](docs/binary-format.md) describes `.strata` files.
+- [IDEAS.md](IDEAS.md): decisions, open questions and plans.
+- [site/](site/README.md): the website, strata-lang.dev, with a landing page and a tour built from the real tools' output. [docs-site/](docs-site/README.md) publishes these docs there.
