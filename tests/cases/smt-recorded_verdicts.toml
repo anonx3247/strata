@@ -150,7 +150,7 @@ stdout = '''
 ✓ count_up                 proven (10 checks)
 ✓ seen_while               proven (2 checks)
 ✓ spin                     proven (2 checks)
-    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`)
+    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order)
 ✓ uses_spin                proven (1 check)
     may not terminate: it calls `spin`, which may not terminate
 ✓ first_loop               proven (nothing to check)
@@ -383,7 +383,7 @@ stdout = '''
 ✓ count_down               proven (4 checks)
 ✓ search                   proven (4 checks)
 ✓ spin                     proven (2 checks)
-    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`)
+    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order)
 ✓ forever                  proven (nothing to check)
     may not terminate: it has a `loop` (only `for` loops, and `while` loops whose bound goes down, are shown to end)
 ✓ fact                     proven (1 check)
