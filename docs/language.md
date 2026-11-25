@@ -615,6 +615,7 @@ A program's entry point is `main`. It asks for what it needs by type, and `strat
 from std.cli use CommandLine
 
 /// Greet people by name.
+derive CommandLine for
 type Options = {
   /// Shout the greeting.
   loud: Bool = false,
@@ -623,8 +624,6 @@ type Options = {
   /// Who to greet (the world if nobody).
   names: List[String] = [],
 }
-
-derive CommandLine for Options
 
 fn main(opts: Options) {
   who := if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
@@ -654,8 +653,8 @@ The **standard library** is the `std/` package, written in Strata and built into
 ```rust
 from std.json use Json, parse, stringify
 
+derive Json for
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
-derive Json for Signup
 
 signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
