@@ -1,0 +1,50 @@
+# A check where the solver gave up is kept like any other: its resource
+# limit is deterministic (`rlimit`), so it would give up again. One where it
+# ran out of time, or said nothing of why (as the stand-in below), isn't.
+# (a cache of its own: the same compiler run twice keeps its verdicts)
+
+[[step]]
+save = "g.strata"
+text = '''
+fn cubes(x: Int, y: Int, z: Int) -> Int
+  requires x > 1 && y > 1 && z > 1
+  ensures it != 0
+{
+  x * x * x + y * y * y - z * z * z
+}
+'''
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "20"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["~ cubes", "not proven: ensures it != 0: the solver gave up"]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "20"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["the solver gave up"]
+counts = { "(cached)" = 1 }
+
+[[step]]
+write = "shrug"
+text = '''
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo shrug 1.0; exit 0; fi
+cat > /dev/null
+echo unknown
+'''
+
+[[step]]
+run = ["chmod", "755", "shrug"]
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "20"]
+env = { STRATA_SOLVER = "$TMP/shrug", STRATA_CACHE = "$TMP/cache" }
+has = ["the solver gave up (it said nothing of why)"]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "20"]
+env = { STRATA_SOLVER = "$TMP/shrug", STRATA_CACHE = "$TMP/cache" }
+lacks = ["(cached)"]

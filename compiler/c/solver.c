@@ -43,7 +43,6 @@ typedef struct {
 } Buf;
 
 static Proc procs[POOL_MAX];
-static pthread_mutex_t pool_lock = PTHREAD_MUTEX_INITIALIZER;
 // (each thread's own: workers encoding functions ask at the same time)
 static __thread char *last_result;
 // (a solver started that didn't answer a command as it read it: scripts go
@@ -672,20 +671,21 @@ static int is_script(const char *solver) {
   return got == 2 && head[0] == '#' && head[1] == '!';
 }
 
-// Whether `solver` is kept running: Z3 (its `--version` says so), which
-// answers each command as it reads it, and not a script standing in for it.
-int32_t solver_pool_usable(const char *solver) {
-  static char known[4096];
-  static int answer = -1;
-  const char *off = getenv("STRATA_SOLVER_POOL");
-  if ((off && strcmp(off, "0") == 0) || pool_broken) return 0;
-  pthread_mutex_lock(&pool_lock);
-  if (answer >= 0 && strcmp(known, solver) == 0) {
-    int a = answer;
-    pthread_mutex_unlock(&pool_lock);
-    return a;
+// What `solver --version` says (its first line), asked once per solver: ""
+// for a script standing in for one (the tests'), which isn't asked.
+static pthread_mutex_t version_lock = PTHREAD_MUTEX_INITIALIZER;
+static char version_solver[4096], version_text[512];
+static int version_known;
+
+const char *solver_version(const char *solver) {
+  pthread_mutex_lock(&version_lock);
+  if (version_known && strcmp(version_solver, solver) == 0) {
+    pthread_mutex_unlock(&version_lock);
+    return version_text;
   }
-  int a = 0;
+  char text[512];
+  size_t n = 0;
+  text[0] = 0;
   int out[2];
   if (!is_script(solver) && pipe(out) == 0) {
     pid_t pid = fork();
@@ -703,20 +703,28 @@ int32_t solver_pool_usable(const char *solver) {
     }
     close(out[1]);
     if (pid > 0) {
-      char text[512];
-      size_t n = 0;
       ssize_t got;
       while (n < sizeof text - 1 && (got = read(out[0], text + n, sizeof text - 1 - n)) > 0) n += (size_t)got;
       text[n] = 0;
       waitpid(pid, NULL, 0);
-      a = strstr(text, "Z3 version") != NULL;
     }
     close(out[0]);
   }
-  snprintf(known, sizeof known, "%s", solver);
-  answer = a;
-  pthread_mutex_unlock(&pool_lock);
-  return a;
+  char *nl = strchr(text, '\n');
+  if (nl) *nl = 0;
+  snprintf(version_solver, sizeof version_solver, "%s", solver);
+  snprintf(version_text, sizeof version_text, "%s", text);
+  version_known = 1;
+  pthread_mutex_unlock(&version_lock);
+  return version_text;
+}
+
+// Whether `solver` is kept running: Z3 (its `--version` says so), which
+// answers each command as it reads it, and not a script standing in for it.
+int32_t solver_pool_usable(const char *solver) {
+  const char *off = getenv("STRATA_SOLVER_POOL");
+  if ((off && strcmp(off, "0") == 0) || pool_broken) return 0;
+  return strstr(solver_version(solver), "Z3 version") != NULL;
 }
 
 // `jobs` (as `solver_pool_run` takes them) queued to run when nothing else

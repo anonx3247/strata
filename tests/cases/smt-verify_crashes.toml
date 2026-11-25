@@ -96,3 +96,67 @@ impl[K] Bag[K] {
 [[step]]
 run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file tree.strata verify --no-cache"]
 has = ["✓ Bag.pop_first"]
+
+# c, the SQL agent's: a dict in a counterexample was shown as a list (`[]`),
+# and the replay bound that list where a dict goes (signal 11 in
+# `strata_verify_replay_0`); an empty dict is shown as one now
+[[step]]
+save = "db.strata"
+text = '''
+type Table = { name: String, cols: List[String] }
+
+type Db = { tables: Dict[String, Table] }
+
+fn size(db: Db, n: Int) -> Int ensures result > 0 {
+  n
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file db.strata verify --no-cache"]
+fails = true
+has = ["input:   Db { tables: Dict[String, Table] {} }, 0"]
+
+# a crash while a function runs for `verify` (here a bad pointer given to
+# C) ends that run, not `verify` or `build`: the function is left unproven
+[[step]]
+save = "crash.strata"
+text = '''
+extern c fn strlen(p: I64) -> I64
+
+fn bad(n: Int) -> Int ensures result >= 0 {
+  strlen(to_i64(0)).to_int()
+}
+
+fn main() {
+  print(1)
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file crash.strata verify --no-cache"]
+has = ["- bad                      skipped: running it crashed (SIGSEGV)"]
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 120; exec @ARGV' \"$STRATA\" --file crash.strata build -o crash && ./crash"]
+has = ["1"]
+
+# #448's root: a generic callee's result is shaped at the call's types
+# (`Option[Small]`, not `Option[T]`), when its arguments tell them
+[[step]]
+save = "generic.strata"
+text = '''
+type Small = Int where 0 <= it && it <= 10
+
+fn keep[T](o: Option[T]) -> Option[T] {
+  o
+}
+
+fn h(o: Option[Small]) -> Option[Small] {
+  keep(o)
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file generic.strata verify --no-cache"]
+has = ["✓ h                        proven (1 check)"]
