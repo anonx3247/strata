@@ -38,7 +38,7 @@ The type of SQL's NULL, as a value of its own.
 ### SqlValue
 
 ```rust
-type SqlValue = Int | Float | String | Bool | Null
+type SqlValue = KeyValue | Float | Bool | Null
 ```
 
 A value crossing to SQLite or back: SQLite's storage classes but blobs,
@@ -83,6 +83,10 @@ capability Sqlite {
   fn open(path: String) -> Result[Connection, SqlError]
   /// A new, empty database in memory, gone once closed.
   fn memory() -> Result[Connection, SqlError]
+    assumed ensures match it {
+      Ok(c) => len(c.rows()) == 0,
+      Err(_) => true,
+    }
   /// The version of the SQLite library, `3.51.0`.
   fn version() -> String
 }
@@ -115,6 +119,17 @@ type Statement = { handle: Sqlite3Stmt, sql: String }
 
 A prepared statement (`db.prepare(sql)`): bind its parameters, step
 through its rows, read their columns. Finalize it when done.
+
+### KeyValue
+
+```rust
+type KeyValue = Int | String
+```
+
+A key as the model `Database.rows` holds it: a key of one integer
+column its value (a `Bool`'s 0 or 1), of one text column its text, any
+other (a `REAL` column, a key of several columns) its values written out
+(`[1, "a"]`).
 
 ## Methods
 
@@ -288,6 +303,12 @@ Values that cross to SQLite as an `SqlValue`.
 
 ```rust
 capability trait Database {
+  /// Each row as its table and its key (a `KeyValue`): what `verify` knows
+  /// of the rows, for `std.orm`'s contracts (a row a `Key[T]` names exists,
+  /// a key is used once). Statements run by hand say nothing of it, so after
+  /// one it is unknown again.
+  model rows: Set[(String, KeyValue)]
+
   /// Run one statement with its parameters (`?` in `sql`, in order): how
   /// many rows it changed.
   fn execute(
@@ -326,6 +347,14 @@ fn sql[T: Sql](x: T) -> SqlValue
 ```
 
 `x` as an `SqlValue`: an `Option` is its value or `Null`.
+
+### key_value_of
+
+```rust
+fn key_value_of(values: List[SqlValue]) -> KeyValue
+```
+
+The `KeyValue` of a row's key: its columns' values, in order.
 
 ## Implementations
 

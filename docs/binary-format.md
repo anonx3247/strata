@@ -129,9 +129,10 @@ Derivable   = kind:TypeExpr  requires:list(Expr)
 TraitMethod = comments:list(str)  doc:list(str)  decl:FnDecl  default:bool
 Law         = comments:list(str)  doc:list(str)  name:str  params:list(Param)  body:Expr
 ImplDecl    = type_params:list(str)  bounds:list(Bound)  trait_name:str  trait_args:list(TypeExpr)
-              for_type:TypeExpr  methods:list(FnDecl)  flags:byte  [models:list(ModelDef)]
-              (flags: 1 `derive`, 2 the bracketed part follows)
+              for_type:TypeExpr  methods:list(FnDecl)  flags:byte  [models:list(ModelDef)]  [clauses:list(DeriveClause)]
+              (flags: 1 `derive`, 2 the models follow, 4 a derive's clauses follow)
 ModelDef    = comments:list(str)  name:str  value:Expr
+DeriveClause = comments:list(str)  name:str  names:list(str)    key code, key (shelf, slot)
 UseDecl     = path:str  alias:option(str)  items:option(list(UseItem))     use m [as a] (no items), from m use x, y as z
 UseItem     = name:str  alias:option(str)
 ExternDecl  = lang:Lang  item:ExternItem

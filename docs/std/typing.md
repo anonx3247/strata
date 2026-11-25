@@ -87,6 +87,10 @@ type Type = {
   /// What an alias or a `distinct` type stands for (`type Count = Int where
   /// it > 0`: `Int where it > 0`), when it is one: its `name` is its own.
   base: Option[Type] = None,
+  /// The clauses of the derive block it is derived with, on `Self` in a
+  /// `derived fn` (`derive Table for Todo { key code }`: `key` and
+  /// `["code"]`); empty elsewhere.
+  clauses: List[Clause] = [],
 }
 ```
 
@@ -143,6 +147,16 @@ type Choice = Type
 
 A union whose members carry nothing (`type Level = Quiet | Loud`).
 
+### Clause
+
+```rust
+type Clause = { name: String, names: List[String] }
+```
+
+A clause of a derive block: its word and the names after it (`key
+(project, slug)`: `key` and `["project", "slug"]`). What it means is
+the trait's.
+
 ## Functions
 
 ### compile_error
@@ -163,3 +177,13 @@ fn setting(comptime key: String) -> Option[String]
 A setting of the package being compiled, from its `strata.toml`
 (`setting("json.unknown_keys")` is `[json]`'s `unknown_keys`), if set:
 known while compiling.
+
+### implements
+
+```rust
+fn implements(comptime t: Type, comptime trait_name: String) -> Bool
+```
+
+Whether the type `t` has an `impl` (or a `derive`) of the trait named
+`trait_name` (`"Json"`, or qualified): known while compiling, so `if
+comptime implements(t, "Json") { .. }` keeps the branch that fits.
