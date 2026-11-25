@@ -130,6 +130,13 @@ fn div_mod(a: Natural, b: Positive) -> (q: Natural, r: Natural)
   (a / b, a % b)
 }
 
+// A `mut` parameter changes: in `ensures` its name is its value at the
+// end, and `old e` is `e` where the function started.
+fn push_one(mut xs: List[Int], x: Int)
+  ensures len(xs) == old len(xs) + 1 {
+  xs += [x]
+}
+
 // ─── 5. Records, variants and unions ───────────────────────────────────────
 type Line = { sku: Sku, qty: Quantity, unit_price: Cents }
 

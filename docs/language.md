@@ -89,6 +89,23 @@ pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> (next: MemQ
 (q2, n) := mem_enqueue(q, tasks)
 ```
 
+**`old`: a value before the call.** A function can change its `mut` parameters (and a method `mut self`), so its `ensures` may relate what they are when it returns to what they were when it started: `old e` is `e` evaluated where the function started. In an `ensures`, a `mut` parameter's name is its value at the end:
+
+```rust
+fn push_one(mut xs: List[Int], x: Int)
+  ensures len(xs) == old len(xs) + 1 {
+  xs += [x]
+}
+
+trait Counter {
+  fn total(self) -> Int
+  fn incr(mut self)
+    ensures self.total() == old self.total() + 1
+}
+```
+
+`old` is a prefix keyword that binds tighter than any operator: `old a + b` is `(old a) + b`, and it takes a whole chain of fields and calls (`old q.entries.get(id)`); parentheses only group (`old (a + b)`, `old(x)` is `old x`). Its value has the type of `e`. It goes only in an `ensures`, once (`old old e` is an error), over what the function starts with: its parameters, not `it` nor a name bound inside the clause (a lambda's parameter). `old e` where `e` names no `mut` parameter is the same value before and after: `strata check` warns, and `strata fix` drops the `old`. Callers rely on the contract with the arguments' values before and after the call, as `verify` sees it (a generic function calling a trait's `mut self` method too); a broken one shows both values (`before: len(xs) = 2, after: len(xs) = 2`). Outside an `ensures`, `old` is an ordinary name (`old := x`).
+
 ## Records and defaults
 
 A record's field can have a default, written after its type. Nothing gets a default implicitly.
