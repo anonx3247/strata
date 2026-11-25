@@ -3488,6 +3488,132 @@ void strata_copied(int64_t kind, void *obj, int64_t n, Str *what, Str *site, Str
   copies_note(kind, items, bytes, held, what, site, why);
 }
 
+// ---- `--memory-sites`: counting operations by site ----
+
+// A program built with `--memory-sites` counts each counting operation at
+// its site: codegen's `counted_sites` numbers them and adds to
+// `strata_site_counts`, two words a site, with one atomic add each (so the
+// counts are exact while tasks run). The first word counts the operation,
+// the second, for an allocation, the blocks made in an arena; for a test
+// (`unique`, `owned`), the times it found the value held once; for a list
+// or string extended (`push`, `append`), the times it was done in place.
+int64_t *strata_site_counts;
+// The sites' table (codegen's `@strata.sites.text`): a line a site, its
+// kind, function, location and code, separated by tabs; its lines, and how
+// many.
+static const char *site_text;
+static const char **site_lines;
+static int64_t site_n;
+
+// Site `i`'s field `k` of its table line (0 kind, 1 function, 2 location,
+// 3 code), copied into `out`.
+static void site_field(int64_t i, int k, char *out, size_t cap) {
+  const char *s = site_lines[i];
+  for (int j = 0; j < k && *s && *s != '\n'; s++)
+    if (*s == '\t') j++;
+  size_t n = 0;
+  while (s[n] && s[n] != '\t' && s[n] != '\n') n++;
+  if (n >= cap) n = cap - 1;
+  memcpy(out, s, n);
+  out[n] = 0;
+}
+
+static int site_by_count(const void *a, const void *b) {
+  int64_t x = strata_site_counts[2 * *(const int64_t *)a], y = strata_site_counts[2 * *(const int64_t *)b];
+  if (x != y) return x < y ? 1 : -1;
+  return *(const int64_t *)a < *(const int64_t *)b ? -1 : 1;
+}
+
+static const char *site_kinds[] = {"alloc", "stack", "dup", "release", "unique", "owned", "push", "append", "arena"};
+#define SITE_KINDS 9
+
+// At the end: the totals by kind and the 20 sites counted most, on stderr;
+// with STRATA_MEMORY_SITES=PATH, every site to PATH, most counted first, a
+// line each: count, second count, kind, function, location, code (tabs
+// between). Allocations made inside the runtime's own functions (a list
+// grown, a string joined) have no site: their number is the objects made
+// (`strata_memory_allocated`) less the heap blocks the sites made.
+static void sites_report(void) {
+  int64_t total[SITE_KINDS] = {0}, second[SITE_KINDS] = {0}, reached[SITE_KINDS] = {0}, sites[SITE_KINDS] = {0};
+  int64_t *order = malloc((size_t)(site_n ? site_n : 1) * sizeof(int64_t));
+  int *kind = malloc((size_t)(site_n ? site_n : 1) * sizeof(int));
+  char f[256];
+  for (int64_t i = 0; i < site_n; i++) {
+    order[i] = i;
+    site_field(i, 0, f, sizeof f);
+    kind[i] = 0;
+    for (int k = 0; k < SITE_KINDS; k++)
+      if (!strcmp(f, site_kinds[k])) kind[i] = k;
+    total[kind[i]] += strata_site_counts[2 * i];
+    second[kind[i]] += strata_site_counts[2 * i + 1];
+    sites[kind[i]]++;
+    if (strata_site_counts[2 * i]) reached[kind[i]]++;
+  }
+  qsort(order, (size_t)site_n, sizeof(int64_t), site_by_count);
+  fprintf(stderr, "memory sites: %lld sites\n", (long long)site_n);
+  for (int k = 0; k < SITE_KINDS; k++) {
+    fprintf(stderr, "  %-8s %12lld at %lld of %lld sites", site_kinds[k], (long long)total[k], (long long)reached[k], (long long)sites[k]);
+    if (k == 0) fprintf(stderr, " (heap %lld, arena %lld)", (long long)(total[k] - second[k]), (long long)second[k]);
+    if (k == 4 || k == 5) fprintf(stderr, " (held once %lld, shared %lld)", (long long)second[k], (long long)(total[k] - second[k]));
+    if (k == 6 || k == 7) fprintf(stderr, " (in place %lld, new buffer %lld)", (long long)second[k], (long long)(total[k] - second[k]));
+    fputc('\n', stderr);
+  }
+#ifdef STRATA_CORE_RT
+  int64_t made = strata_memory_allocated();
+#else
+  int64_t made = allocated;
+#endif
+  fprintf(stderr, "  allocations inside the runtime's functions: %lld\n", (long long)(made - (total[0] - second[0])));
+  fprintf(stderr, "top sites:\n");
+  char fn[256], code[256];
+  for (int64_t j = 0; j < site_n && j < 20; j++) {
+    int64_t i = order[j], c = strata_site_counts[2 * i], d = strata_site_counts[2 * i + 1];
+    if (c == 0) break;
+    site_field(i, 1, fn, sizeof fn);
+    site_field(i, 3, code, sizeof code);
+    fprintf(stderr, "  %12lld %-8s", (long long)c, site_kinds[kind[i]]);
+    if (kind[i] == 0) fprintf(stderr, " arena %lld", (long long)d);
+    if (kind[i] == 4 || kind[i] == 5) fprintf(stderr, " shared %lld", (long long)(c - d));
+    if (kind[i] == 6 || kind[i] == 7) fprintf(stderr, " new buffer %lld", (long long)(c - d));
+    fprintf(stderr, "  %s  %s\n", fn, code);
+  }
+  const char *path = getenv("STRATA_MEMORY_SITES");
+  FILE *out = path && *path ? fopen(path, "w") : NULL;
+  if (out) {
+    fputs("count\tsecond\tkind\tfunction\tlocation\tcode\n", out);
+    for (int64_t j = 0; j < site_n; j++) {
+      int64_t i = order[j];
+      const char *s = site_lines[i];
+      size_t n = 0;
+      while (s[n] && s[n] != '\n') n++;
+      fprintf(out, "%lld\t%lld\t%.*s\n", (long long)strata_site_counts[2 * i], (long long)strata_site_counts[2 * i + 1], (int)n, s);
+    }
+    fclose(out);
+  } else if (path && *path) {
+    fprintf(stderr, "memory sites: can't write %s\n", path);
+  }
+  fflush(stderr);
+}
+
+// A program built with `--memory-sites` starts (`main`, after
+// `strata_init`): its sites' table `text`, its counters made, all 0, and
+// the report registered for the end. Cost: one pass over the table.
+void strata_sites_start(const char *text) {
+  if (site_text) return;
+  site_text = text;
+  for (const char *s = text; *s; s++)
+    if (*s == '\n') site_n++;
+  site_lines = malloc((size_t)(site_n ? site_n : 1) * sizeof(char *));
+  int64_t k = 0;
+  for (const char *s = text; *s && k < site_n; k++) {
+    site_lines[k] = s;
+    while (*s && *s != '\n') s++;
+    if (*s) s++;
+  }
+  strata_site_counts = calloc((size_t)(2 * site_n + 2), sizeof(int64_t));
+  atexit(sites_report);
+}
+
 // Before `push` (`n` 1) or `xs += ys` (`n` the length of `ys`): a copy when
 // a slot of `xs`'s buffer it needs is taken already (another list made from
 // the same one grew past it, or `xs` is a slice); running out of room only
