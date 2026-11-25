@@ -92,6 +92,33 @@ A place passed `mut` is taken once the call's other arguments have run: in `both
 
 They are written in the tree as such, so they render back as written. When the program is resolved they become the builtins (`range`, `slice`, `map`, `filter`, `fold`), so the checker, the compiler and the prover treat them exactly as those calls.
 
+## Functions that allocate nothing: `noalloc`
+
+Allocation stays implicit (values are counted and freed when the last holder lets go). A function can be marked `noalloc` after its contract, next to `terminates`: `strata check` then refuses it if it might allocate, naming what allocates and where (`` `sum` is `noalloc` but allocates: a list made at run time (`[a, b]`) ``). Unlike `terminates`, which is assumed, `noalloc` is checked.
+
+```strata
+fn total(xs: List[I64]) -> I64
+  noalloc {
+  mut acc: I64 = 0.to_i64()
+  for x in xs {
+    acc += x
+  }
+  acc
+}
+```
+
+What counts as allocating, in its body and its contracts (a contract is checked when the function runs; a `ghost` one never runs, so it isn't looked at), loop invariants included:
+
+- **Making a value at run time**: a list, a tuple, a record or a variant with fields (`Point { x, y }`, `Some(x)`; one made of literals only is a constant, built once), a dict, a set, a closure, an f-string, a comprehension, a big integer literal, a task (`spawn`, `scope`, `await`, `select`, `race`), a `mock`, `?` and `except`.
+- **Arithmetic that makes a value**: `+ - * / % <<` and negation on `Int` (a big integer past 2^62: compute on `I64` and the other sized integers), `+` on strings and lists. Arithmetic on sized integers and `Float` is fine.
+- **Updates that are in place only sometimes**: `xs[i] = v`, `x.f = v`, `push`, `pop`, `insert`, `remove` and the other `mut` methods of lists, dicts and sets. The code replaces in place when nothing else holds the value, but that count is known only when it runs (a value passed in may be shared), and otherwise it copies: so they count. Nothing in place is assumed from a value's uniqueness.
+- **Calls**: of a function or method that isn't itself `noalloc` (each of a program's functions and methods by its name; a trait's method is `noalloc` when it is declared so and so is each implementation), of a function value (a parameter, a closure), and of the built-ins, except those that never allocate: `len`, `byte_len`, `byte_at`, `at` (`xs[i]`), `ord`, `contains`, `starts_with`, `ends_with`, `is_alpha`, `is_digit`, `is_space`, `compare`, `min`, `max`, `sqrt`, `float`, and the conversions to sized integers (`to_i64`, `wrap_u8`, …). A built-in's name called as a method is the built-in on a list, string, dict, set or number, and that type's method on any other type (which must be `noalloc`).
+- **A `for` over anything but a list or `range(a, b)`** (`a..b`): a set or a dict is made into a list, and an iterator's `next` makes each `Option` it gives. A `for` over a list borrows its elements; over a range it counts (`a..=b` is `range(a, b + 1)`: on `Int` that `+` counts).
+
+Reading is free: fields, elements (`xs[i]`, which faults when out of range: a fault ends the program or the task, so it isn't counted), `match`, comparisons, `if`, `while`, `for`, `return`, string literals, constants. Faults and failed contract checks are not counted either. Values the code generator puts on the stack (a constructor that doesn't leave its block, an argument the callee doesn't keep) still count: where it does so depends on the whole program, so `noalloc` doesn't rely on it.
+
+An `extern c fn` can be marked `noalloc`: like `terminates`, that is the C code's promise, not checked.
+
 ## Errors
 
 - Each works on its own type only: `except` / `!!` on an `Option`, or `or` / `??` on a `Result`, is an error. So a `Result[Option[T], E]` reads one way: `(load(k) !! None) ?? default` handles the error, then the missing value.

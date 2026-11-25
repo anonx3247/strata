@@ -545,6 +545,20 @@ fn triangle(n: Natural) -> Natural
   acc
 }
 
+// `noalloc` after the contract is checked, not assumed: the function makes
+// nothing on the heap (no list, string, record, closure, `Int` past 2^62)
+// and calls only `noalloc` functions and the built-ins that allocate
+// nothing (`len`, `xs[i]`, comparisons). An update that is in place only
+// when nothing else holds the value (`xs[i] = v`, `push`) counts.
+fn dot(xs: List[I64], ys: List[I64] where len(it) == len(xs)) -> I64
+  noalloc {
+  mut acc: I64 = 0.to_i64()
+  for i in 0..len(xs) {
+    acc += xs[i] * ys[i]
+  }
+  acc
+}
+
 // ─── 14. Tasks: work in parallel, without `async` ────────────────────────────
 // `spawn e` runs `e` in a task of the enclosing `scope`, which ends once all
 // its tasks have. `await` gives a task's result (a tuple's, a list's).
