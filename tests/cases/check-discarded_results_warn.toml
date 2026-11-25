@@ -1,0 +1,37 @@
+# a `Result` thrown away with `_ := e` is allowed, but always said as a
+# warning (its error is lost), in check, run and build; any other value
+# discarded with `_ :=` says nothing, and neither does a `Result` used
+
+[[step]]
+save = "drop.strata"
+text = '''
+fn parse_age(s: String) -> Result[Int, String] {
+  if s == "" {
+    Err("empty")
+  } else {
+    Ok(byte_len(s))
+  }
+}
+
+fn main() {
+  _ := parse_age("")
+  _ := byte_len("abc")
+  match parse_age("ab") {
+    Ok(n) => print(f"{n}"),
+    Err(e) => print(e),
+  }
+}
+'''
+
+[[step]]
+strata = ["check", "drop.strata"]
+has = ["warning: in `main`: `_ := parse_age(\"\")` throws away a `Result`: an error from it is ignored", "ok: 2 definitions check"]
+lacks = ["byte_len(\"abc\")", "parse_age(\"ab\")"]
+
+[[step]]
+strata = ["run", "drop.strata"]
+has = ["warning: in `main`: `_ := parse_age(\"\")` throws away a `Result`", "2"]
+
+[[step]]
+strata = ["build", "drop.strata", "-o", "drop"]
+has = ["warning: in `main`: `_ := parse_age(\"\")` throws away a `Result`"]

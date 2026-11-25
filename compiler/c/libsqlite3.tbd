@@ -1,0 +1,14 @@
+--- !tapi-tbd
+# libsqlite3, as far as std.sqlite uses it (its `extern c` functions): lld
+# reads this stub in place of the SDK's, as libSystem.tbd; dyld finds the
+# real /usr/lib/libsqlite3.dylib, which macOS ships. A function std.sqlite
+# starts to call is added here.
+tbd-version:     4
+targets:         [ arm64-macos ]
+install-name:    '/usr/lib/libsqlite3.dylib'
+current-version: 380
+compatibility-version: 9
+exports:
+  - targets:     [ arm64-macos ]
+    symbols:     [ '_sqlite3_bind_double', '_sqlite3_bind_int64', '_sqlite3_bind_null', '_sqlite3_bind_parameter_count', '_sqlite3_bind_text', '_sqlite3_changes64', '_sqlite3_close_v2', '_sqlite3_column_count', '_sqlite3_column_double', '_sqlite3_column_int64', '_sqlite3_column_name', '_sqlite3_column_text', '_sqlite3_column_type', '_sqlite3_db_handle', '_sqlite3_errmsg', '_sqlite3_errstr', '_sqlite3_exec', '_sqlite3_extended_result_codes', '_sqlite3_finalize', '_sqlite3_get_autocommit', '_sqlite3_last_insert_rowid', '_sqlite3_libversion', '_sqlite3_open', '_sqlite3_prepare_v2', '_sqlite3_reset', '_sqlite3_step' ]
+...

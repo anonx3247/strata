@@ -1,0 +1,59 @@
+# std.sqlite: a program asking for `Sqlite` (and `Disk`) opens databases in
+# memory and in a file, creates a table, inserts and queries (an `Option` as
+# NULL), runs transactions (rolled back, committed), uses a prepared
+# statement, and gets every failure as a value; built (linked with the
+# system's libsqlite3, every object freed) and under `strata run` (the JIT
+# loads the library); tests ask for `Sqlite` or mock a `Database`; `verify`
+# proves it. A program without std.sqlite doesn't link libsqlite3.
+
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+strata = ["build", "main.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/std_sqlite.out"
+
+[[step]]
+strata = ["run", "main.strata"]
+golden = "tests/data/build/expected/std_sqlite.out"
+
+[[step]]
+strata = ["--file", "main.strata", "test"]
+has = ["✓ a test asks for SQLite", "✓ a mock database", "2 passed, 0 failed"]
+
+[[step]]
+strata = ["--file", "main.strata", "verify"]
+lacks = ["✗", "skipped", "incomplete"]
+
+[[step]]
+run = ["otool", "-L", "prog"]
+has = ["/usr/lib/libsqlite3.dylib"]
+
+[[step]]
+save = "plain.strata"
+text = '''
+fn main() {
+  print("no database")
+}
+'''
+
+[[step]]
+strata = ["build", "plain.strata", "-o", "plain"]
+
+[[step]]
+run = ["otool", "-L", "plain"]
+lacks = ["sqlite"]
+
+# the example: a reading list, its shelves added in transactions
+[[step]]
+strata = ["--file", "$ROOT/examples/books.strata", "test"]
+has = ["✓ a shelf is added whole or not at all", "✓ marking a book read", "2 passed, 0 failed"]
+
+[[step]]
+strata = ["run", "--file", "$ROOT/examples/books.strata"]
+stdout = "Ok(4)\nErr(Constraint { message: \"UNIQUE constraint failed: book.title\" })\nOk(true)\nOk(false)\n[x] Dune, Frank Herbert (1965)\n[x] The Left Hand of Darkness, Ursula K. Le Guin (1969)\n[ ] The Dispossessed, Ursula K. Le Guin (1974)\n[ ] Notes, Anonymous (?)\nby Le Guin: 2\nleft to read: 2\n"

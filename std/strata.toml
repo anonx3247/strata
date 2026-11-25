@@ -2,3 +2,9 @@
 # `use std.io.*` without declaring a dependency. Its modules are named
 # `std.io`, `std.fs`, ... wherever they are used.
 name = "std"
+
+# The C libraries std's modules call (std.sqlite: libsqlite3), the system's
+# own: linked into the executables that call them (lld, through the stub
+# compiler/c/libsqlite3.tbd), loaded for the JIT.
+[native]
+libs = ["sqlite3"]

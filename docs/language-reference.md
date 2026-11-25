@@ -6,6 +6,8 @@ The fine print of [the language](language.md): each section adds the rules and d
 
 A default is checked where the type is defined: it must have the field's type, and a literal must satisfy the field's refinement (`n: Positive = 0` is an error). It sees no variables, not even the other fields, and it is evaluated each time it is used. Generated values (mocks, fuzzing) still generate every field.
 
+**Spreading a record into a call.** `f(a, ...x, ...y, b)` is the call written out by parameter name, when the program is checked: positional arguments written before the spreads give the first parameters, those after them the last, and each parameter between is the field of its name of the one record spread that has it (`x.qty`); other fields are left alone. Everything after the checker (the compiler, `verify`, the runtime checks) sees the ordinary call, and `view` shows it as written. It works for a function called by name, a method on a value (`r.m(...x)`, `mut r.m(...x)`; a trait value's or a type parameter's method through its trait), and a method called on a type (`Shop.new(...x)`, `self` included in its parameters). Errors, each naming the call: a parameter no record has a field for (parameters have no defaults), one two records both have (`is given by both ...x and ...y`: spread one of them, or pass that parameter positionally), a `mut` parameter left to a spread (a spread only reads: pass `mut v` positionally), a value that isn't a record (`...5`), a record that gives no parameter, a positional argument between spreads, more positional arguments than parameters, a function that is a variable (its parameters have no names) or a built-in, and a spread anywhere but such a call (a contract, a constructor: `Pt(...p)` is a parse error, `Pt { ..p, x: 1 }` is the record update). The value spread is read once: one that isn't a variable or a field of one (`...make()`) is bound first, before the call's other arguments, as is a receiver that isn't one. In the tree it is `Spread(Expr)`, a call's argument.
+
 ## Unions, variants and patterns
 
 **A union's type parameters are wrapped**, in a member it declares (`type Option[T] = Some(T) | None`, `type OrError[T] = Value(T) | Problem`) or in a type (`type Many[T] = List[T] | Problem`): never a member on its own (`T | Problem`), nor two members alike (`List[A] | List[B]`), which couldn't be told apart. A union of two types is written `A | B` where it is used; there is no `Either[A, B]`. So a generic union is named by its members too: `List[Int] | Problem` is `Many[Int]` (and renders so), and `impl[T] Show for Many[T]` applies to it.
@@ -357,13 +359,48 @@ Paths are relative to the package's folder, or absolute (`compiler/strata.toml` 
 - **Contracts are assumed.** `verify` never proves foreign code: a foreign function's contract (`ensures it >= 0`) is taken as true where it is called, and the code calling it is verified like any other (fuzzing runs the compiled code, C included). A compiled program checks that contract at each call, as nothing proves it.
 - **Calling C** works wherever code runs: `strata build`, and `strata run` / `strata test` with the JIT, which compiles the `[native]` sources into a library with clang and loads it. C's own library (`strlen`, …) needs no `[native]`.
 
-Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+- **A native module's capability** is asked for like any other: `main` and tests name it (`fn main(sqlite: Sqlite)`), its functions get it as `self` (`sqlite.open(path)`), and the program is linked with the package's `[native]` libraries. std's own are the system's: std.sqlite calls macOS's libsqlite3, which `strata build` links into the executables that use it (against a stub, `compiler/c/libsqlite3.tbd`, so no SDK is needed) and `strata run` / `strata test` load for the JIT. std's precompiled library leaves out what reaches C, so a program that doesn't use it doesn't link it.
+
+Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+
+## Exporting functions: `derive C for f`
+
+The other way: C calling Strata. A trait can be derivable over functions (`derivable(Function) trait C`), and `derive C for add` (a function's name after `for`, where a type's would be) makes `add` callable from C. `C` is std's (`std.ffi`):
+
+```rust
+from std.ffi use C
+
+/// The sum of two numbers.
+pub fn add(a: I32, b: I32) -> I32 {
+  a + b
+}
+
+derive C for add
+```
+
+`strata build --lib` builds the program as a shared library (`libNAME.dylib`; `-o` names it) exporting each such function under its own name, and writes its header beside it (`NAME.h`), each function declared after its doc:
+
+```c
+/// The sum of two numbers.
+int32_t add(int32_t a, int32_t b);
+```
+
+```sh
+strata build calc.strata --lib                      # libcalc.dylib, calc.h
+clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
+```
+
+- **What crosses** is what crosses `extern c`, the other way: the sized integers, `Float` (`double`), `Bool` (`bool`), `String` (`const char *` in, copied; `char *` out, a copy the caller frees with `free`), `()` (`void`), handles (`extern c type`, `void *`) and `Option` of one (NULL for `None`). A function with another type, or with type parameters, is refused at the `derive`, naming the parameter.
+- **The library starts its runtime when it is loaded**; the host keeps its signals and arguments. A library has no `main` (`--lib` leaves the program's out). A fault in Strata code ends the process, as in a program.
+- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is an export or a part of a file: `derived fn export() -> Self = Self` exports the function itself under its own name; `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
+
+Not yet: other languages (`derive Python`, `derive TypeScript`, `derive Rust`: typed wrappers over a C export taking JSON), static libraries, `mut` parameters, callbacks.
 
 ## Programs
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`): `derive CommandLine for Options` writes its `from_args` and `help` for that record, at compile time. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. A field whose doc starts with `-n` can also be given as `-n`; an `Option` field whose doc starts with `[name]` is an optional positional argument; a `List` field whose doc starts with its flag (`/// --rm …`) or a short name is an option given again and again (`--rm a --rm b`). **Commands** are a union that derives `CommandLine`: each member is a command (`Edit` is `edit`), its fields the command's options, its `///` doc the command's help; an options record with a field of that union reads its other fields as options before the command. `strata check` rejects a `CommandLine` record a command line can't fill.
 
-`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`) and `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
+`main` can also ask for `Console` (`std.io`; the environment chooses it: the terminal) and capabilities, in any order: std's `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself, as the tools see it, a `Code`) and `Sqlite` (`std.sqlite`), or the program's own. It names them, and passes them on where `Files` or `Environment` is wanted: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so that tests can pass `mem_files(...)`. It returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either: an `Err` is written to standard error and the exit code is 1. A runtime fault exits with 101. `strata run <fn> [ARGS]` still calls a single function (its arguments written as code).
 
 ## The standard library
 
@@ -374,6 +411,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.cli](std/cli.md) | Command-line options, read into a record; commands, into a union. |
 | [std.code](std/code.md) | A codebase as Strata's tools see it: its definitions, each rendered as text with what it uses and what uses it, the checker's findings, the verifier's cached results and the package's log. |
 | [std.collections](std/collections.md) | A dictionary and a set kept in their keys' order, and a priority queue. |
+| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
 | [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
 | [std.io](std/io.md) | The console: text in and out. |
@@ -381,6 +419,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.memory](std/memory.md) | Memory, for programs that must be fast: arenas. |
 | [std.process](std/process.md) | The running program: its arguments, its environment variables and its exit code, and the other programs it runs. |
 | [std.regex](std/regex.md) |  |
+| [std.sqlite](std/sqlite.md) | SQLite databases through the system's libsqlite3: the `Sqlite` capability, connections as the `Database` capability trait, prepared statements, transactions. |
 | [std.term](std/term.md) | Text styled for a terminal: bold, dim, colors. |
 | [std.time](std/time.md) | The clock: the time now, waiting, and timers in `select`. |
 | [std.toml](std/toml.md) | TOML text (version 1.1, https://toml.io/en/v1.1.0) read into values and written from them, and records and sum types read from TOML and written to it. |

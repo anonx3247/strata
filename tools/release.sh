@@ -20,6 +20,10 @@
 #                                   executables, loaded by the JIT
 #     libSystem.tbd                 the stub executables are linked against
 #                                   (no SDK on the user's machine)
+#     libsqlite3.tbd                the stub of macOS's libsqlite3, for the
+#                                   executables that call std.sqlite (std.o
+#                                   leaves that code out: it is compiled with
+#                                   the programs using it)
 #     z3                            the SMT solver `verify` runs
 #     IDENTITY                      bin/strata's SHA-256, size and
 #                                   modification time: its identity for the
@@ -121,6 +125,7 @@ sed -n 's/^; precompiled //p' "$DIST/std.ll" > "$HOME_DIR/std/names"
 
 # libSystem's stub: everything the shipped objects call must be in it
 cp compiler/c/libSystem.tbd "$HOME_DIR/libSystem.tbd"
+cp compiler/c/libsqlite3.tbd "$HOME_DIR/libsqlite3.tbd"
 tools/libsystem-tbd.sh "$HOME_DIR/runtime-lto.o" "$HOME_DIR/std/std.o" > "$DIST/libSystem.tbd"
 missing=$(tr ',' '\n' < "$DIST/libSystem.tbd" | sed -n "s/.*'\(.*\)'.*/\1/p" | sort -u | comm -23 - "$(tr ',' '\n' < compiler/c/libSystem.tbd | sed -n "s/.*'\(.*\)'.*/\1/p" | sort -u > "$DIST/have"; echo "$DIST/have")")
 if [ -n "$missing" ]; then

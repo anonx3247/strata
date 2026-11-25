@@ -35,7 +35,7 @@ H=$T/home
 clean() { env -i PATH="$T/bin" HOME="$H" TMPDIR="$H" STRATA_CC=/nonexistent "$@"; }
 clean sh -c 'command -v clang || command -v ld || command -v z3' && { echo "release-check: the PATH still has developer tools" >&2; exit 1; }
 cp -R examples/hello examples/wc "$H/"
-cp examples/math.strata "$H/"
+cp examples/math.strata examples/books.strata "$H/"
 # (a program of the user's reaching std.unicode's graphemes, whose tables
 # are comptime values the release ships)
 cat > "$H/letters.st" <<'EOF'
@@ -98,6 +98,14 @@ said verify math.strata
 grep -q 'proven' "$H/u.out" || { cat "$H/u.out" >&2; fail "verify math.strata"; }
 user --file math.strata test
 grep -q ' passed, 0 failed$' "$H/u.out" || fail "--file math.strata test"
+# std.sqlite: the system's libsqlite3, loaded for the JIT and linked (through
+# lib/strata/libsqlite3.tbd) into the executable
+user run books.strata
+grep -q '^left to read: 2$' "$H/u.out" || fail "run books.strata"
+user --file books.strata test
+grep -q '^2 passed, 0 failed$' "$H/u.out" || fail "--file books.strata test"
+user build books.strata -o booksx
+clean "$H/booksx" | grep -q '^left to read: 2$' || fail "booksx (built by \`strata build books.strata\`)"
 # the shipped cache: what it holds is read from it, never computed again
 # into the own cache (HOME's)
 [ -n "$(find "$L/cache" -type f)" ] || fail "lib/strata/cache is empty"

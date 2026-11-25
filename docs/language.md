@@ -122,6 +122,25 @@ d := Retry {}
 
 A constructor that leaves out a field with a default gets the default; so does JSON input with the key missing, and a command line without the option. Nothing gets a default implicitly.
 
+### Spreading a record into a call
+
+`f(...x)` gives the fields of record `x` to the parameters of `f` with the same names; fields `f` doesn't take are left alone:
+
+```rust
+type Order = { id: Int, qty: Int, price: Int, note: String }
+type Fee = { fee: Int }
+
+fn total(qty: Int, price: Int) -> Int { qty * price }
+fn with_fee(id: Int, qty: Int, price: Int, fee: Int) -> Int { qty * price + fee }
+
+total(...order)                     // total(order.qty, order.price)
+with_fee(...order, 2)               // with_fee(order.id, order.qty, order.price, 2)
+with_fee(...order, ...Fee { fee: 2 })
+shop.line(...order)                 // methods, and `Shop.new(...x)`, alike
+```
+
+It is the call written out, decided when the program is checked, so it runs, compiles and is verified as that call. Positional arguments come before the spreads (they give the first parameters) or after them (the last); the spreads give the rest, each parameter from the one record that has a field of its name. A parameter no record gives, or two give, is an error, as is a record that gives none, and a `mut` parameter, which is passed explicitly (`mut x`). A value spread that isn't a variable or a field of one is computed once, before the call's other arguments.
+
 ## Unions, variants and patterns
 
 A union holds a value of any of its members. It is a union of sets, so it normalizes: `Int | Positive` is just `Int`, and different types stay apart.
@@ -341,6 +360,8 @@ Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7
 ### Unused values and variables
 
 Values never change, so a statement whose value is dropped almost always means a mistake: `xs + [1]` on its own line makes a new list and throws it away. An expression statement whose value isn't `()` is an error (`the value of `xs + [1]` is not used: use it, or discard it with `_ := …``), and a value dropped on purpose is written `_ := e`. That covers a call kept only for what it does through a capability when it also returns something, an `if` or `match` statement whose arms give values (discard the arms' values, or the whole), and `x + 1`; a `mut` method call returning `()` (`mut q.claim(2)`), a `spawn` (its task belongs to the `scope`) and a `return`/`break` are fine.
+
+A `Result` discarded with `_ := e` is allowed (the program may not care whether it failed), but its error is lost, so it is always a warning, from `check`, `run`, `build` and `verify` (`warning: in `main`: `_ := parse_age("")` throws away a `Result`: an error from it is ignored`). Handle it with `match`, pass it on, or keep the warning as a reminder; no other value discarded with `_ :=` is warned about.
 
 A variable never read (a parameter, `x := e`, `mut x := e`, a binding of a pattern, a lambda's parameter) is a warning, not an error, since code may be partway written: one line each from `check`, `run`, `build` (when it verifies) and `edit`, naming the function. A name starting with `_` (`_x`, `_`) says the value is unused on purpose; an `impl` method's parameters, which its trait or type dictates, are not warned about. A variable whose value has no effect (a literal, a variable, a lambda, a field, a tuple or list of them) and that nothing reads isn't compiled at all.
 
@@ -626,7 +647,7 @@ cat README.md | strata run examples/wc
 
 `main` can also ask for `Console` and capabilities (`Disk`, `Process`, the program's own), in any order, and passes them on where a trait (`Files`, `Environment`) is wanted, so tests can pass stand-ins. It returns `()`, an `ExitCode`, or a `Result` of either: an `Err` is written to standard error and the exit code is 1.
 
-The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It has the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`), command lines (`std.cli`), sorted dictionaries and sets and a priority queue (`std.collections`), JSON and TOML (`std.json`, `std.toml`), HTTP and HTML as values (`std.http`, `std.web`), and regular expressions and Unicode (`std.regex`, `std.unicode`). Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
+The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It has the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`), SQLite databases (`std.sqlite`), command lines (`std.cli`), sorted dictionaries and sets and a priority queue (`std.collections`), JSON and TOML (`std.json`, `std.toml`), HTTP and HTML as values (`std.http`, `std.web`), and regular expressions and Unicode (`std.regex`, `std.unicode`). Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
 
 **JSON**: a type that derives `Json` is read from JSON and written to it, every refinement checked:
 
