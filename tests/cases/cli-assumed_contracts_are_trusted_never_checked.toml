@@ -1,0 +1,141 @@
+# an assumed contract (`assumed requires`, `assumed ensures`, `assumed
+# invariant`) is trusted, never compiled into a runtime check: `verify`
+# proves it if it can (then it is proven), refutes it if it is false (a
+# counterexample, noted as an assumed one), and otherwise reports the
+# function at the assumed level (≈), as capability code, naming the
+# contract; `--require proven` accepts it as it accepts other assumed code.
+# A false one doesn't fault when the program runs, and `build` lists those
+# not proven without failing. `--check-assumed` (`run`, `test`) checks them
+# after all.
+
+[[step]]
+save = "assumed.strata"
+text = '''
+/// The sum of `xs`, from `k`: claimed (falsely) to be `k + 7`.
+fn total(xs: List[Int], k: Int) -> Int
+  assumed requires xs.all(x -> x >= k)
+  assumed ensures it == k + 7
+{
+  mut s := k
+  for x in xs
+    assumed invariant s >= k
+  {
+    s += x
+  }
+  s
+}
+
+fn main() {
+  print(total([1, 2], 0))
+  print(total([-5], 3))
+}
+
+test "the total of two" {
+  assert total([1, 2], 0) == 3
+}
+'''
+
+# written and read back
+[[step]]
+strata = ["--file", "assumed.strata", "view", "main"]
+has = [
+  "  assumed requires xs.all(x -> x >= k)",
+  "  assumed ensures it == k + 7",
+  "    assumed invariant s >= k",
+]
+
+# `assumed` is a word only before a clause
+[[step]]
+save = "word.strata"
+text = '''
+fn main() {
+  assumed := 3
+  print(assumed)
+}
+'''
+
+[[step]]
+strata = ["run", "word.strata"]
+stdout = "3\n"
+
+# never checked: a false `ensures`, a `requires` and an `invariant` a call
+# breaks, and the program runs
+[[step]]
+strata = ["run", "assumed.strata"]
+stdout = "3\n-2\n"
+
+[[step]]
+strata = ["--file", "assumed.strata", "test"]
+lacks = ["✗"]
+
+# a false one is refuted, noted as assumed
+[[step]]
+strata = ["--file", "assumed.strata", "verify"]
+code = 1
+has = ["ensures it == k + 7", "(assumed: not checked when the program runs)"]
+
+# build says which aren't proven, and builds
+[[step]]
+strata = ["--file", "assumed.strata", "build", "-o", "assumed"]
+has = [
+  "assumed contracts aren't proven: trusted, never checked when the program runs",
+  "  in `total`: assumed ensures it == k + 7",
+  "built assumed",
+]
+
+[[step]]
+run = ["./assumed"]
+stdout = "3\n-2\n"
+
+# `--check-assumed` checks them
+[[step]]
+strata = ["run", "assumed.strata", "--check-assumed"]
+code = 101
+has = ["postcondition of `total` violated: ensures it == k + 7"]
+
+[[step]]
+strata = ["--file", "assumed.strata", "test", "--check-assumed"]
+any_code = true
+has = ["✗", "ensures it == k + 7"]
+
+# one neither proven nor refuted: the function is assumed (≈), the contract
+# named, and `--require proven` accepts it as assumed
+[[step]]
+save = "open.strata"
+text = '''
+/// `x`, claimed with a fact of fourth powers the solver doesn't prove.
+fn same(x: Int) -> Int
+  assumed ensures it * it * it * it % 7 != 3
+{
+  x
+}
+
+/// `x`, claimed with a fact the solver proves.
+fn again(x: Int) -> Int
+  assumed ensures it == x
+{
+  x
+}
+
+fn main() {
+  print(same(4) + again(1))
+}
+'''
+
+[[step]]
+strata = ["--file", "open.strata", "verify", "--require", "proven"]
+has = [
+  "≈ same                     assumed: not proven: ensures it * it * it * it % 7 != 3",
+  "(assumed: trusted, never checked when the program runs)",
+  "✓ again                    proven (1 check)",
+  "policy: `proven` accepts `same` as assumed (trusted, not checked)",
+]
+
+[[step]]
+strata = ["--file", "open.strata", "build", "-o", "open"]
+has = [
+  "1 assumed contract isn't proven",
+  "  in `same`: assumed ensures it * it * it * it % 7 != 3",
+  "built open",
+]
+lacks = ["in `again`"]

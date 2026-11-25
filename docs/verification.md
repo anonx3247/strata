@@ -79,7 +79,7 @@ A trait's `model` ([the reference](language-reference.md#traits)) is what its co
 - **each implementation** meets the trait's contracts, with the model replaced by its abstraction: `MemDb.save` is proven to make `self.all` equal to `old self.all.with(id, o)`; an implementation keeping only the last order saved (`model orders = match self.last { Some((k, o)) => Dict { k: o }, None => Dict {} }`) is refuted with a counterexample (an order already there, a second one saved: before, two entries; after, one);
 - **code over the trait** reasons only through the model: a model is an unknown value of its type, a function of the trait value it is read from (the same value gives the same model, wherever it came from: the branches of an `if` joined, `old db` when nothing changed it), constrained by the invariants and the methods' contracts. `fn ship(mut db: Db, id: Int) -> Result[(), String]` that looks the order up and saves it as shipped is proven to ensure `match old db.orders.get(id) { Some(o) => it is Ok && db.orders == (old db.orders).with(id, Order { ..o, shipped: true }), None => it is Err && db.orders == old db.orders }`.
 
-A trait's `invariant` is a refinement of every implementing type's model: a value of the trait's type carries it as its type's refinement (what a function taking `db: Db` knows, what a `mut` argument's new value is assumed to satisfy), each implementation's methods assume it of `self` (and other `Self` parameters) and must keep it in a `mut self` method and establish it in a result of type `Self`. A trait's `ensures` is proven in each `mut self` method. Contracts naming a model are assumed (`(ghost: not checked when the program runs)`): computing an abstraction at run time is what the implementation is there to avoid.
+A trait's `invariant` is a refinement of every implementing type's model: a value of the trait's type carries it as its type's refinement (what a function taking `db: Db` knows, what a `mut` argument's new value is assumed to satisfy), each implementation's methods assume it of `self` (and other `Self` parameters) and must keep it in a `mut self` method and establish it in a result of type `Self`. A trait's `ensures` is proven in each `mut self` method. Contracts naming a model are assumed contracts (`(assumed: not checked when the program runs)`; one `verify` neither proves nor refutes makes its function assumed, `≈`): computing an abstraction at run time is what the implementation is there to avoid.
 
 ## Recursion and termination
 
@@ -433,29 +433,31 @@ built t: 7 runtime checks left out (proven by `strata verify`), 0 kept
 
 Trait methods count too: their proofs are found under `verify`'s names for them (`Money.combine`). A proven division calls the runtime's division without its check for 0. The standard library is proven, all of it (the test `std_is_proven` keeps it so), so its precompiled library leaves out the checks inside its functions; those of their arguments and `requires` stay, since the calling program proves them or not. `--all-checks` compiles std with the program, every check kept. Other checks that run in C (a string's index, `split`'s separator) stay.
 
-### Ghost contracts: proven, never checked
+### Assumed contracts: trusted, never checked
 
-A contract that isn't proven stays a runtime check, and some cost too much to keep: an invariant of a whole data structure checked at every call, a loop invariant that walks a list at every pass (which makes the loop quadratic). Write `ghost` before the clause to leave it to `verify` alone:
+A contract that isn't proven stays a runtime check, and some cost too much to keep: an invariant of a whole data structure checked at every call, a loop invariant that walks a list at every pass (which makes the loop quadratic). Write `assumed` before the clause to leave it to `verify` alone:
 
 ```strata
 fn execute(mut b: Book, o: Order) -> List[Event]
-  ghost requires book_ok(b)
-  ghost ensures book_ok(b)
+  assumed requires book_ok(b)
+  assumed ensures book_ok(b)
   ensures len(it) >= 1
 {
   for l in b.levels
-    ghost invariant sorted(b.levels)
+    assumed invariant sorted(b.levels)
   {
     …
   }
 }
 ```
 
-- `verify` treats a ghost clause as any other: it proves it, refutes it with a counterexample, or fuzzes it, and notes its checks `(ghost: not checked when the program runs)`. A ghost `requires` is assumed inside the function and must be shown at its calls.
-- The compiled program never checks it, proven or not. `strata build` lists the ghost clauses `verify` didn't prove (a warning; the build goes on).
-- `strata run --check-ghosts` and `strata test --check-ghosts` compile them in, to check them on real runs. The fuzzer always checks them.
-- A ghost clause stays a clause: `check` doesn't suggest moving one that constrains a single parameter into a refinement (a refinement is checked when the program runs).
+A proven contract already leaves the compiled code, so the mark only matters for one `verify` doesn't prove: it says the contract is trusted, not checked, which is `verify`'s **assumed** level (`≈`), as for capability code and `extern c`.
 
-`strata build` also says when a written contract stays a runtime check that costs: a loop `invariant` it didn't prove (O(n) a pass when it walks a list), or a `requires` or `ensures` that walks a list (`all`, `any`, `sum`, `filter`, a comprehension), with the suggestion to prove it or make it ghost. On the order book of the benchmark, making its book-wide invariants ghost took a run of 32,000 commands from 18.1 s to 2.5 s.
+- `verify` treats an assumed contract as any other: it proves it (the function is then proven), or refutes it with a counterexample (a failure), noting its checks `(assumed: not checked when the program runs)`. One neither proven nor refuted (fuzzed without a failure) makes the function assumed rather than fuzzed, the report naming the contract (`≈ f  assumed: not proven: ensures … (assumed: trusted, never checked when the program runs)`); `--require proven` accepts it as it accepts other assumed code, listing it. An assumed `requires` is taken as true inside the function and must be shown at its calls.
+- The compiled program never checks it, proven or not. `strata build` lists the assumed contracts `verify` didn't prove (`N assumed contracts aren't proven: …`, a warning; the build goes on).
+- `strata run --check-assumed` and `strata test --check-assumed` compile them in, to check them on real runs. The fuzzer always checks them.
+- An assumed contract stays a clause: `check` doesn't suggest moving one that constrains a single parameter into a refinement (a refinement is checked when the program runs).
+
+`strata build` also says when a written contract stays a runtime check that costs: a loop `invariant` it didn't prove (O(n) a pass when it walks a list), or a `requires` or `ensures` that walks a list (`all`, `any`, `sum`, `filter`, a comprehension), with the suggestion to prove it or make it assumed. On the order book of the benchmark, making its book-wide invariants assumed took a run of 32,000 commands from 18.1 s to 2.5 s.
 
 Every result, option and setting of `strata verify` is in the [verification reference](verification-reference.md).

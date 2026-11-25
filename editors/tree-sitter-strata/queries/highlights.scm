@@ -116,7 +116,7 @@
 ] @keyword
 
 [
-  "ghost"
+  "assumed"
   "requires"
   "ensures"
   "terminates"

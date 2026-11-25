@@ -1,6 +1,6 @@
 // `noalloc` functions: machine integers and floats, reading lists, strings,
 // records and variants, loops over a list or a range, and calls of other
-// `noalloc` functions, functions and methods; a `ghost` contract (never
+// `noalloc` functions, functions and methods; an `assumed` contract (never
 // run) may allocate
 
 type Point = { x: I64, y: I64 }
@@ -41,7 +41,7 @@ fn magnitude(n: I64) -> I64
 }
 
 fn total(xs: List[I64]) -> I64
-  ghost ensures it == xs.fold(0.to_i64(), (a, b) -> a + b)
+  assumed ensures it == xs.fold(0.to_i64(), (a, b) -> a + b)
   noalloc {
   mut acc: I64 = 0.to_i64()
   for x in xs {
