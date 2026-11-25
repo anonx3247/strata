@@ -28,7 +28,8 @@ strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks"]
 has = [
   "Running   -> Pending    by mem_record (unknown), mem_release (unknown)",
   "Running   -> Exhausted  by mem_record (unknown), mem_release (unknown)",
-  "any       -> any        by mem_enqueue (unknown), MemQueue.enqueue (possible or unknown)",
+  "any       -> any        by mem_enqueue (",
+  "MemQueue.claim (possible)",
 ]
 
 [[step]]

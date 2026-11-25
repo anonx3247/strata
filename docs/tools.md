@@ -258,7 +258,7 @@ Status = Pending | Running | Done | Exhausted
   Running   -> Pending    by mem_record (unknown), mem_release (unknown)
   Running   -> Exhausted  by mem_record (unknown), mem_release (unknown)
   ...
-  any       -> any        by MemQueue.claim (possible or unknown), ... (nothing proven impossible: --all lists their moves)
+  any       -> any        by MemQueue.claim (possible), ... (nothing proven impossible: --all lists their moves)
 proven impossible: 57 more (in 5 functions; --all lists them)
 ```
 
