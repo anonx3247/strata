@@ -332,7 +332,7 @@ signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
 
-**TOML** (`std.toml`) is read by a parser written in Strata, for `strata.toml` files once the tools read them in Strata. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. Its readings of 104 documents were recorded while it agreed with the `toml` crate, and checked since (`tests/data/toml-documents.out`, the case `toml-documents`), with what `stringify` writes reading back as the same value.
+**TOML** (`std.toml`) is read by a parser written in Strata, which is how the tools read `strata.toml` files. It checks every rule of TOML 1.1: keys and tables defined twice, tables closed once written (inline tables; tables made by dotted keys can't get a `[header]`, nor header tables dotted keys), integers within 64 bits, dates that exist (`2023-02-29` is an error), seconds that may be left out (`07:32`), inline tables over several lines with a trailing comma, `\e` and `\xHH` escapes. A Strata `Float` is finite, so `inf` and `nan` are errors. Its readings of 104 documents were recorded while it agreed with the `toml` crate, and checked since (`tests/data/toml-documents.out`, the case `toml-documents`), with what `stringify` writes reading back as the same value.
 
 ```rust
 from std.toml use parse, lookup, Integer
