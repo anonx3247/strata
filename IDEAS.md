@@ -1348,6 +1348,7 @@ Decided:
 
 Left:
 - `xs += ys` on a list (`list_extend`) still makes a new header each time. An in-place version for an owned list, like `push_in_place`, would remove those too.
+- An in-place push holds the list once more and the assignment then drops the old value, as `x = insert(x, …)` does: one `dup` and one release per push that only cancel out (`--memory-sites` shows them). Static uniqueness would remove both.
 - Inside an arena, a list's buffer is held once more by each new header, and a header dropped in an arena is never walked, so the count never comes back down. Once a push has made a new header, `list_owned` fails for that list for the rest of the arena, and `xs[i] = v` copies the list. In-place pushes avoid it for lists built by `push` alone.
 
 ### Memory: beyond counting (plan, 2026-11-26)
