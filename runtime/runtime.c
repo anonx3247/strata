@@ -2841,10 +2841,14 @@ static List *append(List *l, int64_t x) {
 // A `Dict[K, V]` or a `Set[A]` is a hash table: a block { tag 0, entries,
 // index } laid out as the tuple `(List[E], List[Int])` the generated code
 // takes it for (so it is held, dropped and copied as one), E a dict's
-// `(K, V)` pairs or a set's elements. The entries are kept in the order
-// they came in, a removal closing the gap, so `for`, `len`, `items` and
-// showing one are the entries list's; that order is the table's, not the
-// language's (nothing should assume one). The index is open addressing
+// `(K, V)` pairs or a set's elements. A new entry goes after the others
+// and a removal moves the last entry into the gap (so a removal is O(1)),
+// so `for`, `len`, `items` and showing one are the entries list's; that
+// order is the table's, not the language's (nothing should assume one),
+// and the same whether a table was changed in place or copied. A table
+// copied to be changed (`insert`, `remove` on a table held elsewhere) is
+// the new table's alone (its entries, index and their buffers held once),
+// so the changes after it are in place. The index is open addressing
 // with linear probing over a power of two of slots, at most half of them
 // used: a used slot holds `tag << 32 | (entry + 1)`, the tag 30 bits of the
 // key's hash (most other keys of the slot are told apart without comparing
@@ -2958,6 +2962,40 @@ static int64_t tbl_search(int64_t *d, int64_t n, List *idx, int64_t k, TblHash h
   }
 }
 
+// A copy of an index, its own (none stays none).
+static List *tbl_index_copy(List *idx) {
+  if (idx->len == 0) return NO_LIST;
+  List *l = tbl_slots(idx->len);
+  memcpy(l->buf->data, tbl_data(idx), (size_t)idx->len * 8);
+  return l;
+}
+
+// The slot of `s` (`cap` of them) that holds entry `e`, whose key's mixed
+// hash is `m`.
+static uint64_t tbl_slot_of(int64_t *s, int64_t cap, uint64_t m, int64_t e) {
+  uint64_t i = m & (uint64_t)(cap - 1);
+  while ((s[i] & 0xFFFFFFFF) != e + 1) i = (i + 1) & (uint64_t)(cap - 1);
+  return i;
+}
+
+// Slot `i` emptied, the slots after it in its run moved back where a search
+// still finds them (linear probing's deletion, no tombstones); `d` the
+// entries, for their keys' home slots.
+static void tbl_unplace(int64_t *s, int64_t cap, uint64_t i, int64_t *d, TblHash h, int64_t dict) {
+  uint64_t mask = (uint64_t)(cap - 1), j = i;
+  for (;;) {
+    j = (j + 1) & mask;
+    if (!s[j]) break;
+    uint64_t home = tbl_mix(h(tbl_key(d[(s[j] & 0xFFFFFFFF) - 1], dict))) & mask;
+    // (s[j] may move to i when its home isn't cyclically in (i, j])
+    if (i < j ? home <= i || home > j : home <= i && home > j) {
+      s[i] = s[j];
+      i = j;
+    }
+  }
+  s[i] = 0;
+}
+
 static Tbl *tbl_new(List *es, List *idx) {
   Tbl *t = strata_alloc(sizeof(Tbl));
   *t = (Tbl){0, es, idx};
@@ -3046,11 +3084,16 @@ Tbl *strata_tbl_insert(Tbl *t, int64_t x, TblHash h, TblCmp c, int64_t dict, int
     es->buf->data[e] = x;
     es->buf->used = es->len = n;
     tbl_hold(es->buf->data, n, kind);
-    strata_dup(t->idx);
-    return tbl_new(es, t->idx);
+    return tbl_new(es, tbl_index_copy(t->idx));
   }
+  // (a copy of the entries with room to grow, not `t`'s buffer extended:
+  // the new table is then its own, changed in place from now on)
   tbl_hold(&x, 1, kind);
-  List *es = strata_list_push(t->es, x, kind), *idx;
+  List *es = strata_list_new(2 * (n + 1)), *idx;
+  memcpy(es->buf->data, d, (size_t)n * 8);
+  es->buf->data[n] = x;
+  es->buf->used = es->len = n + 1;
+  tbl_hold(es->buf->data, n, kind);
   if (n + 1 <= TBL_SMALL) idx = NO_LIST;
   else if (t->idx->len == 0 || 2 * (n + 1) > t->idx->len) idx = tbl_index(tbl_data(es), n + 1, h, dict);
   else {
@@ -3062,7 +3105,8 @@ Tbl *strata_tbl_insert(Tbl *t, int64_t x, TblHash h, TblCmp c, int64_t dict, int
   return tbl_new(es, idx);
 }
 
-// `remove`: the entry of key `k` taken out (the others in order).
+// `remove`: the entry of key `k` taken out, the last one in its place (as
+// `strata_tbl_remove_at` does in place).
 Tbl *strata_tbl_remove(Tbl *t, int64_t k, TblHash h, TblCmp c, int64_t dict, int64_t kind) {
   int64_t n = t->es->len, *d = tbl_data(t->es);
   int64_t e = tbl_search(d, n, t->idx, k, h, c, dict);
@@ -3072,8 +3116,8 @@ Tbl *strata_tbl_remove(Tbl *t, int64_t k, TblHash h, TblCmp c, int64_t dict, int
   }
   if (n == 1) return strata_tbl_empty();
   List *es = strata_list_new(n - 1);
-  memcpy(es->buf->data, d, (size_t)e * 8);
-  memcpy(es->buf->data + e, d + e + 1, (size_t)(n - e - 1) * 8);
+  memcpy(es->buf->data, d, (size_t)(n - 1) * 8);
+  if (e < n - 1) es->buf->data[e] = d[n - 1];
   es->buf->used = es->len = n - 1;
   tbl_hold(es->buf->data, n - 1, kind);
   return tbl_new(es, tbl_index(es->buf->data, n - 1, h, dict));
@@ -3132,25 +3176,30 @@ void strata_tbl_add(Tbl *t, int64_t x, TblHash h, int64_t dict) {
   } else tbl_place(tbl_data(idx), idx->len, tbl_mix(h(tbl_key(x, dict))), n);
 }
 
-// In an owned table: entry `e` taken out (those after it moved down), and
+// In an owned table: entry `e` taken out, the last entry moved into its
+// place (O(1): its slot emptied, the last entry's slot renumbered), and
 // returned for the caller to drop.
 int64_t strata_tbl_remove_at(Tbl *t, int64_t e, TblHash h, int64_t dict) {
   List *es = t->es;
   Buf *b = es->buf;
-  int64_t old = b->data[e];
-  memmove(b->data + e, b->data + e + 1, (size_t)(b->used - e - 1) * 8);
+  int64_t last = es->len - 1, old = b->data[e];
+  List *idx = t->idx;
+  if (idx->len != 0) {
+    if (last <= TBL_SMALL) {
+      t->idx = NO_LIST;
+      tbl_free_index(idx);
+    } else {
+      int64_t cap = idx->len, *s = tbl_data(idx);
+      tbl_unplace(s, cap, tbl_slot_of(s, cap, tbl_mix(h(tbl_key(old, dict))), e), b->data, h, dict);
+      if (e != last) {
+        uint64_t j = tbl_slot_of(s, cap, tbl_mix(h(tbl_key(b->data[last], dict))), last);
+        s[j] = (s[j] & ~(int64_t)0xFFFFFFFF) | (e + 1);
+      }
+    }
+  }
+  b->data[e] = b->data[last];
   b->used--;
   es->len--;
-  List *idx = t->idx;
-  if (idx->len == 0) return old;
-  if (es->len <= TBL_SMALL) {
-    t->idx = NO_LIST;
-    tbl_free_index(idx);
-  } else {
-    memset(idx->buf->data, 0, (size_t)idx->len * 8);
-    for (int64_t i = 0; i < es->len; i++)
-      tbl_place(idx->buf->data, idx->len, tbl_mix(h(tbl_key(b->data[i], dict))), i);
-  }
   return old;
 }
 
