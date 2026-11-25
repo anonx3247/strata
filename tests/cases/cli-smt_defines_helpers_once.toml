@@ -1,0 +1,83 @@
+# Helpers in contracts are SMT definitions stated once per query: a
+# recursive helper over a tree (`size`, `total`) a `define-fun-rec`, a
+# helper without recursion (`weight`) a `define-fun`, a helper whose
+# `ensures it == e` defines it (`twice`) that `e`. Contracts using them are
+# proven (`flip`'s by its own contract at its recursive calls), wrong ones
+# refuted, and each query stays small: the helpers' bodies are not copied
+# at each use.
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+/// A binary tree of Ints.
+type Tree =
+  | Leaf
+  | Node { left: Tree, value: Int, right: Tree }
+
+/// How many values a tree holds.
+fn size(t: Tree) -> Natural {
+  match t {
+    Leaf => 0,
+    Node { left, right, .. } => size(left) + 1 + size(right),
+  }
+}
+
+/// The sum of a tree's values.
+fn total(t: Tree) -> Int {
+  match t {
+    Leaf => 0,
+    Node { left, value, right } => total(left) + value + total(right),
+  }
+}
+
+/// A tree's size and total together.
+fn weight(t: Tree) -> Int {
+  size(t) + total(t)
+}
+
+/// Twice `n`, defined by its contract.
+fn twice(n: Int) -> Int
+  ensures it == n + n {
+  2 * n
+}
+
+/// The tree mirrored: the same size and total.
+fn flip(t: Tree) -> Tree
+  ensures size(it) == size(t) && total(it) == total(t) {
+  match t {
+    Leaf => Leaf,
+    Node { left, value, right } => Node { left: flip(right), value, right: flip(left) },
+  }
+}
+
+/// A node over a tree and itself.
+fn doubled(t: Tree, v: Int) -> Tree
+  ensures size(it) == twice(size(t)) + 1
+  ensures weight(it) == twice(weight(t)) + 1 + v {
+  Node { left: t, value: v, right: t }
+}
+
+/// Wrong: a new value changes the total.
+fn grow(t: Tree, v: Int) -> Tree
+  ensures total(it) == total(t) {
+  Node { left: t, value: v, right: Leaf }
+}
+
+fn main() {
+  print(size(flip(doubled(Leaf, 1))))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ flip                     proven (1 check)",
+  "✓ doubled                  proven (2 checks)",
+  "✗ grow                     Ensures violation (found by the solver)",
+  "postcondition of `grow` violated: ensures total(it) == total(t)",
+]
+
+# the queries hold each helper once
+[[step]]
+run = ["sh", "-c", "mkdir d && STRATA_SOLVER_DUMP=$TMP/d $STRATA --file t.strata verify --no-race --no-cache --no-write > /dev/null; grep -c 'define-fun-rec |fn:size' d/*.smt2 | grep -v ':0$' | grep -v ':1$' | wc -l | tr -d ' '; cat d/*.smt2 | wc -c | awk '{ print ($1 < 30000) ? \"small\" : \"large \" $1 }'"]
+has = ["0\nsmall"]
