@@ -5,7 +5,7 @@
 strata = ["init"]
 
 [[step]]
-strata = ["add", "$ROOT/examples/orders.strata"]
+strata = ["add", "$ROOT/tests/data/graph/orders.strata"]
 
 [[step]]
 strata = ["edit", "-m", "cancel"]
