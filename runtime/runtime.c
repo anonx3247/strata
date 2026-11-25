@@ -77,7 +77,7 @@ static _Bool checking;
 // Whether counts must go through `strata_dup` / `strata_release`: while
 // tasks run (atomic counts) or in check mode. The compiled code reads it and
 // otherwise updates counts itself (`strata.dup`, `strata.release` in the IR).
-int32_t strata_slow_counts;
+int32_t strata_slow_counts = 0;
 
 void strata_memory_threaded(_Bool on);
 
@@ -594,7 +594,7 @@ static void remove_waiter(Run *r, Waiter *w) {
 
 // Cancellations pending (tasks told to stop, runs that panicked): while it
 // is 0, compiled code doesn't look further (`cancel_point` in llvm.rs).
-int32_t strata_cancel_any;
+int32_t strata_cancel_any = 0;
 
 // The part of a run the C runtime keeps while tasks are its own: the
 // boundary its panics stop at (`Contained`) and its threads (`Run`), the
@@ -3661,7 +3661,7 @@ void strata_lib_init(void) {
 // A string a library's export returned (`derive C`, `derive Python`), freed:
 // for a host that doesn't call C's `free` itself (Python's ctypes). A
 // library exports it beside its derives' symbols.
-void strata_free(void *p) { free(p); }
+void strata_string_free(char *p) { free(p); }
 
 Str *strata_prog_name(void) {
   const char *slash = strrchr(prog_name, '/');
