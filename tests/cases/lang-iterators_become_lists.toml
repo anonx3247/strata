@@ -53,3 +53,54 @@ any_code = true
 strata = ["--file", "j.strata", "check"]
 fails = true
 has = ["`Naturals` is an iterator that may not end, so it can't become a `List`: take a part of it first (`.take(n)`)"]
+
+# a map/filter result bound to a variable (repro i2), a `List` field and a
+# `let` annotation: converted where the value is made a `List` (codegen's
+# `converted`), never passed on as the iterator
+[[step]]
+strata = ["--file", "k.strata", "edit"]
+text = '''
+type Box = { items: List[String] }
+
+fn count(xs: List[String]) -> Int { len(xs) }
+
+fn letters(s: String) -> List[String] { s.graphemes() }
+
+fn main() {
+  hs := "a bc".graphemes().filter(s -> s != " ")
+  i := 1
+  print(count(hs[i..len(hs)]))
+  print(count(hs))
+  ms := "ab".bytes().map(b -> to_string(b))
+  print(count(ms))
+  print(Box { items: "pq".graphemes() })
+  let ys: List[String] = "xyz".graphemes()
+  print(len(ys))
+  print(letters("hé"))
+}
+'''
+
+[[step]]
+strata = ["--file", "k.strata", "run"]
+stdout = "2\n3\n2\nBox { items: [\"p\", \"q\"] }\n3\n[\"h\", \"é\"]\n"
+
+# verify reads the conversion as a call of `to_list`
+[[step]]
+strata = ["--file", "v.strata", "edit"]
+text = '''
+fn count(xs: List[String]) -> Int
+  ensures it == len(xs)
+{
+  len(xs)
+}
+
+fn letters(s: String) -> Int
+  ensures it >= 0
+{
+  count(s.graphemes())
+}
+'''
+
+[[step]]
+strata = ["--file", "v.strata", "verify"]
+has = ["✓ count", "✓ letters                  proven"]
