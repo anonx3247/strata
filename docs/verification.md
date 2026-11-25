@@ -452,7 +452,17 @@ built t: 7 runtime checks left out (proven by `strata verify`), 0 kept
 - **Each check counts on its own.** A function `verify` only fuzzed still loses the checks it proved; the others stay, as do all of a function with a counterexample.
 - **A function's entry checks** (its parameters' types, its `requires`) are proven where it is called. They are left out when every call proved them: each function that refers to it proved the call, and nothing else refers to it (a contract, a type's refinement, a test, a trait's method). A single caller that doesn't prove the call keeps them, for everyone.
 - **What a proof assumed still holds.** A proof may rest on another function's `ensures`, or on code `verify` can't see (outside code, a capability); that function's checks stay unless they are proven themselves, so a broken assumption faults where it breaks.
-- **Only proofs of the code as it is.** `verify` keeps what it proved with each function's hash, with everything it depends on (`.strata/` in a package, `~/.cache/strata/scripts/` for a script, with its verdicts). `build` verifies what changed first; `run` (compiled in memory, to start fast) and `build --no-verify` use what was proven before, and a function changed since keeps all its checks.
+- **Only proofs of the code as it is.** `verify` keeps what it proved with each function's hash, with everything it depends on (`.strata/` in a package, `~/.cache/strata/scripts/` for a script, with its verdicts). `build` verifies what changed first; `build --no-verify` uses what was proven before, and a function changed since keeps all its checks.
+- **`run` doesn't wait for proofs.** A program changed since it was last verified starts at once, with every check not proven yet, while `verify` runs alongside it (a process of its own, at a lower priority). When it ends, the program compiled without the checks it proved is swapped in while it runs: each function whose code changed gets the new version, and every call after takes it (a call already running finishes in the old one). Its verdicts are kept, so the next run starts with the proven code. The notes go to stderr, one when it starts and a summary when the program ends:
+
+  ```text
+  $ strata run t.strata
+  note: verifying alongside: the program starts with every check, and the proven code is swapped in while it runs
+  ...
+  note: verified alongside (verified 2 changed: 2 proven, 0 fuzzed): 1 function swapped to its proven code while running
+  ```
+
+  A check that fails before the proof arrives still fails, as a fault; a counterexample is in the summary. By default only a run someone watches (stderr a terminal) is verified alongside, so a script reading a program's output leaves no verifier behind; `--verify-alongside` asks for it anyway, `--no-verify` never, and `--wait-for-proofs` verifies first, as `build` does. Calling through the swappable slots costs only runs with a verifier alongside; a run without one, and every built executable, calls its functions directly.
 - **`--all-checks`** compiles every check back in (`build`, `run`). The fuzzer and the cross-check always run with every check: they are how a mistake of the prover's shows.
 
 Trait methods count too: their proofs are found under `verify`'s names for them (`Money.combine`). A proven division calls the runtime's division without its check for 0. The standard library is proven, all of it (the test `std_is_proven` keeps it so), so its precompiled library leaves out the checks inside its functions; those of their arguments and `requires` stay, since the calling program proves them or not. `--all-checks` compiles std with the program, every check kept. Other checks that run in C (a string's index, `split`'s separator) stay.

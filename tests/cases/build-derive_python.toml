@@ -1,0 +1,42 @@
+# `derive Python for f` (std.ffi): `strata build --lib` makes a shared
+# library exporting `NAME_json` for each such function (its arguments and
+# result as JSON, through each type's `Json`; every failure an error
+# object, never a crash), and `NAME.py`, a typed Python module over it;
+# python3 imports it, calls it, and gets errors as `StrataError`. The
+# library exports nothing else.
+[[step]]
+save = "geo.strata"
+from = "geo.st"
+
+[[step]]
+strata = ["build", "geo.strata", "--lib"]
+has = ["built libgeo.dylib and geo.py"]
+
+[[step]]
+run = ["nm", "-gU", "libgeo.dylib"]
+has = ["T _add_json\n", "T _divide_json\n", "T _strata_string_free\n"]
+lacks = ["_strata_lib_init", "_strata_alloc", "_strata_slow_counts", "_strata_cancel_any", "geo."]
+
+# each paragraph once: the head and `Point` (taken by `middle` and
+# `Circle`) written where they first come
+[[step]]
+run = ["cat", "geo.py"]
+counts = { "class Point:" = 1, "class StrataError" = 1, "import ctypes" = 1 }
+has = [
+  "def add(a: int, b: int) -> int:\n    \"\"\"The sum of two numbers.\"\"\"\n    return _dec(\"int\", _call(\"add_json\", {\"a\": _enc(a), \"b\": _enc(b)}))\n",
+  "def repeat(x: str, n: int | None = None) -> list[str]:",
+  "@dataclass\nclass Point:\n    \"\"\"A point on the plane.\"\"\"\n    x: float\n    y: float\n",
+  "@dataclass\nclass Circle(Shape):\n    center: Point\n    r: float\n",
+  "@dataclass\nclass Square(Shape):\n    value: float\n",
+  "Level: TypeAlias = Literal[\"Quiet\", \"Loud\"]",
+  "def divide(a: int, b: int) -> int:",
+  "def hello() -> None:",
+]
+
+[[step]]
+write = "use.py"
+from = "use.py"
+
+[[step]]
+run = ["python3", "use.py"]
+stdout = "42\nPoint(x=1.0, y=2.0)\n12.0 9.0 0.0\n['ab', 'ab', 'ab'] ['c']\n3\nLoud\n{'return': 'None'} int | None\nerr | ByZero | {'type': 'ByZero'}\narguments | n: 0 does not satisfy `Count` (where it > 0) | None\narguments | a: expected an integer, got \"two\" | None\njson | at 6: 1152921504606846976 is beyond ±(2^53 - 1), the integers a JSON number holds exactly | None\narguments | _l: `Medium` is not one of Quiet, Loud | None\narguments | missing argument \"b\" | None\narguments | `add` has no parameter \"c\" | None\n{\"error\":{\"kind\":\"json\",\"message\":\"at 1: expected a key (a string)\"}}\n{\"error\":{\"kind\":\"arguments\",\"message\":\"expected an object of the arguments, got [1,2]\"}}\nNone\nhello from Strata\n"
