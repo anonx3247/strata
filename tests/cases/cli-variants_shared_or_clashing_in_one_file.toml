@@ -1,6 +1,7 @@
-# a variant is named by its module: two unions declaring one name is an
-# error (in a single file too), and a union naming an atom another declares
-# holds that one type, which the edit says
+# a variant is named by its module: two unions declaring one name with data
+# is an error (in a single file too), and a union naming an atom another
+# declares holds that one type, as if `type Aa` were declared on its own and
+# both unions held it: no warning, and the program checks and runs
 
 [[step]]
 save = "two.strata"
@@ -28,4 +29,8 @@ fn main() {
   print("hi")
 }
 '''
-has = ["warning: `Aa` in `P2` is the member `Aa` that `P1` declares: both unions hold that one type"]
+lacks = ["warning"]
+
+[[step]]
+strata = ["--file", "shared.strata", "run"]
+stdout = "hi\n"
