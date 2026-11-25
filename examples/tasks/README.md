@@ -30,7 +30,7 @@ strata ui --file examples/tasks                   # browse it
 | SQLite `running` rows and visibility timeouts | a lease: `Running { by: WorkerId, until: Instant }`; `record` and `release` by a worker that doesn't hold the lease are refused (`Err(NotYours)`, nothing changed); `expire(now)` gives back overdue tasks |
 | "entrypoints contain only wiring" | entrypoints take the queue and worker as values; see `demo` |
 | worker raises → claim released, exception re-raised | a worker can't raise. A misreport comes back as `Err(ResultsMismatch {..})` and the claim is released. |
-| SQLite tables and statuses | `MemQueue[P, E]`: a table by id plus the arrival order; what every entry obeys (attempts within the policy's budget, a pending task has one left…) is `Entry`'s refinement, proven at every write |
+| SQLite tables and statuses | `MemQueue[P, E]`: a table by id plus the arrival order (its refinement: each entry is under its task's id, and the order holds every id); what every entry obeys (attempts within the policy's budget, a pending task has one left…) is `Entry`'s refinement, proven at every write |
 | decoder dispatching on `kind` (TS) | not needed: JSON is parsed against the declared types |
 
 ## What verification found
