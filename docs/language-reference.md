@@ -176,7 +176,7 @@ trait FiniteIterator[T]: Iterator[T] {
 
 `verify` shows that a `for` loop over a `FiniteIterator` ends, as one over a list: it relies on `len` (which it doesn't check yet). Over an iterator that may be unbounded, it says the loop may not end. `fold` is only on finite iterators: on an unbounded one it would never return (`fold` needs a `FiniteIterator`: `N` is an `Iterator` but not a `FiniteIterator`).
 
-Every iterator has `map` and `filter`, which are lazy: they give another iterator, which does the work as the loop asks for elements, so they work on unbounded iterators too. Mapped or filtered, a finite iterator is still one (a filtered one's `len` counts the elements kept). A function passed to them must end, as the code it is written in must: `verify` follows a lambda's calls from the function it is written in (`it calls spin, which may not terminate`), which is what shows `fold` over a mapped and filtered finite iterator ends.
+Every iterator has `map`, `filter` and `enumerate` (`enumerate(it)` or `it.enumerate()`: each element with its index, `(i, x)`), which are lazy: they give another iterator, which does the work as the loop asks for elements, so they work on unbounded iterators too. A list's `enumerate` is the list built-in (a list). Mapped, filtered or enumerated, a finite iterator is still one (a filtered one's `len` counts the elements kept). A function passed to them must end, as the code it is written in must: `verify` follows a lambda's calls from the function it is written in (`it calls spin, which may not terminate`), which is what shows `fold` over a mapped and filtered finite iterator ends.
 
 ```rust
 type Naturals = { at: Int }   // impl Iterator[Int]: 0, 1, 2, … without end
