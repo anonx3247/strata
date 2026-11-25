@@ -1,0 +1,243 @@
+# Shared traits and laws of statements. A `shared trait` is used by many
+# workers at once: verify starts each call on a value of it from any value
+# its invariants allow (facts about its models last until the next call;
+# results keep theirs), and an implementation's method changes its outside
+# state (fields holding a capability or another shared trait) through one
+# call: a read then a write, or two writes, is a race, refused by check. A
+# law may be a block of `mut` calls ending in a Bool: proven per impl, or
+# refuted with the values and the steps.
+[[step]]
+strata = ["--file", "q.strata", "edit"]
+text = '''
+/// Task ids waiting for a worker, and those a worker took.
+shared trait Queue {
+  model pending: Set[Int]
+  model claimed: Set[Int]
+  invariant self.pending.intersection(self.claimed) == (Set[Int] {})
+
+  /// Adds `id` unless it is already waiting or taken: how many were added.
+  fn enqueue(mut self, id: Int) -> Int
+    ensures it == if old self.pending.contains(id) || old self.claimed.contains(id) {
+      0
+    } else {
+      1
+    }
+    ensures self.pending == if old self.claimed.contains(id) {
+      old self.pending
+    } else {
+      old self.pending.with(id)
+    }
+    ensures self.claimed == old self.claimed
+
+  /// Takes `id` if it is waiting.
+  fn claim(mut self, id: Int) -> Bool
+    ensures it == old self.pending.contains(id)
+    ensures self.pending == old self.pending.without(id)
+    ensures self.claimed == if it {
+      old self.claimed.with(id)
+    } else {
+      old self.claimed
+    }
+
+  /// Enqueuing twice adds once.
+  law enqueue_once(q: Self, id: Int) {
+    mut r := q
+    mut r.enqueue(id)
+    (mut r.enqueue(id)) == 0
+  }
+
+  /// A task is taken at most once.
+  law no_double_claim(q: Self, id: Int) {
+    mut r := q
+    a := mut r.claim(id)
+    b := mut r.claim(id)
+    !(a && b)
+  }
+
+  /// Wrong: a task taken before can't be enqueued again.
+  law claim_after_enqueue(q: Self, id: Int) {
+    mut r := q
+    mut r.enqueue(id)
+    mut r.claim(id)
+  }
+}
+
+/// In memory.
+type MemQueue = { waiting: Set[Int], taken: Set[Int] }
+
+impl Queue for MemQueue {
+  model pending = self.waiting
+  model claimed = self.taken
+
+  fn enqueue(mut self, id: Int) -> Int {
+    if self.waiting.contains(id) || self.taken.contains(id) {
+      0
+    } else {
+      mut self.waiting.insert(id)
+      1
+    }
+  }
+
+  fn claim(mut self, id: Int) -> Bool {
+    if self.waiting.contains(id) {
+      mut self.waiting.remove(id)
+      mut self.taken.insert(id)
+      true
+    } else {
+      false
+    }
+  }
+}
+/// Relies on the model between two calls: another worker may act between
+/// them.
+fn second_adds_nothing(mut q: Queue, id: Int) -> Int where it == 0 {
+  _ := mut q.enqueue(id)
+  mut q.enqueue(id)
+}
+
+/// Relies only on what each call's result says.
+fn added(mut q: Queue, id: Int) -> Int where it == 0 || it == 1 {
+  a := mut q.enqueue(id)
+  b := mut q.enqueue(id)
+  if a + b > 0 {
+    1
+  } else {
+    0
+  }
+}
+
+/// Uses the model after its last call: kept until the next call on it.
+fn enqueued_now(mut q: Queue, id: Int) -> Int
+  ensures q.pending.contains(id) || q.claimed.contains(id) {
+  mut q.enqueue(id)
+}
+
+/// Uses the trait's invariant alone.
+fn never_both(q: Queue, id: Int) -> Bool
+  ensures !(q.pending.contains(id) && q.claimed.contains(id)) {
+  true
+}
+test "the mock runs the model" {
+  mut q := mock Queue
+  assert (mut q.enqueue(3)) == 1
+  assert (mut q.enqueue(3)) == 0
+  assert mut q.claim(3)
+  assert !(mut q.claim(3))
+}
+'''
+
+[[step]]
+strata = ["--file", "q.strata", "view", "main"]
+has = [
+  "shared trait Queue {\n  model pending: Set[Int]\n",
+  "  law enqueue_once(q: Self, id: Int) {\n    mut r := q\n    mut r.enqueue(id)\n    mut r.enqueue(id) == 0\n  }\n",
+]
+
+[[step]]
+strata = ["--file", "q.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ MemQueue.enqueue",
+  "✓ MemQueue.claim",
+  "✓ law enqueue_once for MemQueue proven",
+  "✓ law no_double_claim for MemQueue proven",
+  "✗ law claim_after_enqueue for MemQueue Law violation (found by the solver)",
+  "law `claim_after_enqueue` does not hold for `MemQueue` with q = MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, id = 21: after mut r := q; mut r.enqueue(id); mut r.claim(id)",
+  "`q` when `enqueue` is called: `Queue` is shared, so another worker may have changed it since the last call (only the trait's invariants are known)",
+  "✓ added                    proven",
+  "✓ enqueued_now             proven",
+  "✓ never_both               proven",
+]
+lacks = ["✓ second_adds_nothing"]
+
+# relying on the model across two calls is not proven
+[[step]]
+strata = ["--file", "q.strata", "verify", "--no-race", "--require", "proven", "second_adds_nothing"]
+fails = true
+has = ["policy: `second_adds_nothing` is not proven"]
+
+[[step]]
+strata = ["--file", "q.strata", "test"]
+has = ["✓ the mock runs the model", "1 passed, 0 failed"]
+
+# an implementation's method is one step on the outside state
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+text = '''
+/// Rows of task states, in a database.
+capability trait Rows {
+  fn select(self, id: Int) -> Option[Int]
+  fn update(mut self, id: Int, state: Int)
+  /// Runs `body` on row `id` in one transaction: its result is written.
+  fn transaction(mut self, id: Int, body: (Option[Int]) -> Option[Int]) -> Option[Int]
+}
+
+/// Workers taking tasks.
+shared trait Claims {
+  fn claim(mut self, id: Int) -> Bool
+  fn state(self, id: Int) -> Option[Int]
+}
+
+/// Reads, then writes: another worker can take the task in between.
+type RacyClaims = { db: Rows }
+
+impl Claims for RacyClaims {
+  fn claim(mut self, id: Int) -> Bool {
+    match self.db.select(id) {
+      Some(0) => {
+        mut self.db.update(id, 1)
+        true
+      },
+      _ => false,
+    }
+  }
+
+  fn state(self, id: Int) -> Option[Int] = self.db.select(id)
+}
+
+/// The same in one transaction.
+type DbClaims = { db: Rows }
+
+impl Claims for DbClaims {
+  fn claim(mut self, id: Int) -> Bool {
+    before := mut self.db.transaction(
+      id,
+      s ->
+        match s {
+          Some(0) => Some(1),
+          other => other,
+        },
+    )
+    before == Some(0)
+  }
+
+  fn state(self, id: Int) -> Option[Int] {
+    a := self.db.select(id)
+    match a {
+      Some(s) => Some(s),
+      None => self.db.select(id),
+    }
+  }
+}
+
+/// Two writes.
+type TwiceClaims = { db: Rows }
+
+impl Claims for TwiceClaims {
+  fn claim(mut self, id: Int) -> Bool {
+    mut self.db.update(id, 1)
+    if id > 0 {
+      mut self.db.update(id, 2)
+    }
+    true
+  }
+
+  fn state(self, id: Int) -> Option[Int] = self.db.select(id)
+}
+'''
+fails = true
+has = [
+  "error in impl Claims for RacyClaims: `RacyClaims.claim`: another worker's call can run between `select` and `update`",
+  "error in impl Claims for TwiceClaims: `TwiceClaims.claim`: another worker's call can run between `update` and `update`",
+]
+lacks = ["DbClaims"]
