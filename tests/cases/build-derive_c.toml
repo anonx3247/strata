@@ -1,0 +1,89 @@
+# `derive C for f` (std.ffi): `strata build --lib` makes a shared library
+# exporting each such function under its own name, and its C header; a C
+# program compiled against them calls them. Types that don't cross are
+# refused at the `derive`.
+[[step]]
+save = "calc.strata"
+from = "calc.st"
+
+[[step]]
+strata = ["--file", "calc.strata", "view", "main"]
+has = ["derive C for add\n"]
+
+[[step]]
+strata = ["build", "calc.strata", "--lib"]
+has = ["built libcalc.dylib and calc.h"]
+
+[[step]]
+run = ["cat", "calc.h"]
+has = [
+  "#include <stdint.h>",
+  "/// The sum of two numbers.\nint32_t add(int32_t a, int32_t b);\n",
+  "char *greet(const char *name);",
+  "double half(double x);",
+  "bool even(int64_t n);",
+  "uint8_t next_byte(uint8_t b);",
+  "void hello(void);",
+  "int32_t size(const char *s);",
+]
+
+[[step]]
+write = "use.c"
+from = "use.c"
+
+[[step]]
+run = ["clang", "-o", "use", "use.c", "-L.", "-lcalc", "-Wl,-rpath,@executable_path"]
+
+[[step]]
+run = ["./use"]
+stdout = "42\nhello, C\n1.5\n1 0\n0\nhello from Strata\n6\n"
+
+# what doesn't cross, and what isn't a function's trait
+[[step]]
+save = "bad.strata"
+text = '''
+from std.ffi use C
+from std.json use Json
+
+type Point = { x: Int, y: Int }
+
+pub fn total(xs: List[Int]) -> Int {
+  xs.sum()
+}
+
+pub fn first[T](xs: List[T]) -> Option[T] {
+  xs.get(0)
+}
+
+pub fn twice(n: I32) -> I32 {
+  n * 2
+}
+
+derive C for total
+
+derive C for first
+
+derive C for Point
+
+derive Json for twice
+'''
+
+[[step]]
+strata = ["--file", "bad.strata", "check"]
+fails = true
+has = [
+  "`total` can't be called from C: its parameter `xs` is a `List[Int]`, which doesn't cross",
+  "`first` has type parameters",
+  "`C` can only be derived for a `Function`, and `Point` isn't one",
+  "`Json` can only be derived for a `Record` or a `Union`, and `twice` is a function",
+]
+
+# a library has something to export
+[[step]]
+save = "none.strata"
+text = "pub fn f() -> I32 {\n  1\n}\n"
+
+[[step]]
+strata = ["build", "none.strata", "--lib"]
+fails = true
+has = ["nothing to export"]

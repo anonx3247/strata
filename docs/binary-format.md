@@ -104,7 +104,7 @@ When writing, a string gets the next index the first time it is written, and eac
 ```text
 Decl        = comments:list(str)  doc:list(str)  module:str  public:bool  kind:DeclKind
 DeclKind    = 0 TypeDecl | 1 FnDecl | 2 TestDecl | 3 TraitDecl | 4 ImplDecl | 5 UseDecl | 6 ExternDecl
-            | 7 CapabilityDecl
+            | 7 CapabilityDecl | 8 DeriveFnDecl
 
 TypeDecl    = distinct:bool  name:str  params:list(str)  body:TypeBody  refinement:option(Expr)  mock:bool
 TypeBody    = 0 Alias(TypeExpr) | 1 Record(list(Field)) | 2 Sum(list(Variant))
@@ -133,10 +133,11 @@ UseItem     = name:str  alias:option(str)
 ExternDecl  = lang:Lang  item:ExternItem
 Lang        = 0 C
 CapabilityDecl = name:str  methods:list(FnDecl)
+DeriveFnDecl = trait_name:str  function:str  derived:bool  exports:list(str str)  files:list(str str)
 ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `derive Trait for function` (a lowercase name after `for`) is a `DeriveFnDecl` with `derived` set and no `exports` or `files` (what deriving makes, held only in memory: each exported symbol with its function, each file's extension with the function giving its part); its header `kind` is `8`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
 
 ### Types
 

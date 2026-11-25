@@ -289,6 +289,39 @@ Paths are relative to the package's folder, or absolute (`compiler/strata.toml` 
 
 Not yet: `main` asking for a native module's capability, structs passed by value, callbacks, buffers, and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
 
+## Exporting functions: `derive C for f`
+
+The other way: C calling Strata. A trait can be derivable over functions (`derivable(Function) trait C`), and `derive C for add` (a function's name after `for`, where a type's would be) makes `add` callable from C. `C` is std's (`std.ffi`):
+
+```rust
+from std.ffi use C
+
+/// The sum of two numbers.
+pub fn add(a: I32, b: I32) -> I32 {
+  a + b
+}
+
+derive C for add
+```
+
+`strata build --lib` builds the program as a shared library (`libNAME.dylib`; `-o` names it) exporting each such function under its own name, and writes its header beside it (`NAME.h`), each function declared after its doc:
+
+```c
+/// The sum of two numbers.
+int32_t add(int32_t a, int32_t b);
+```
+
+```sh
+strata build calc.strata --lib                      # libcalc.dylib, calc.h
+clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
+```
+
+- **What crosses** is what crosses `extern c`, the other way: the sized integers, `Float` (`double`), `Bool` (`bool`), `String` (`const char *` in, copied; `char *` out, a copy the caller frees with `free`), `()` (`void`), handles (`extern c type`, `void *`) and `Option` of one (NULL for `None`). A function with another type, or with type parameters, is refused at the `derive`, naming the parameter.
+- **The library starts its runtime when it is loaded**; the host keeps its signals and arguments. A library has no `main` (`--lib` leaves the program's out). A fault in Strata code ends the process, as in a program.
+- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is an export or a part of a file: `derived fn export() -> Self = Self` exports the function itself under its own name; `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
+
+Not yet: other languages (`derive Python`, `derive TypeScript`, `derive Rust`: typed wrappers over a C export taking JSON), static libraries, `mut` parameters, callbacks.
+
 ## Programs
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`): `derive CommandLine for Options` writes its `from_args` and `help` for that record, at compile time. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. A field whose doc starts with `-n` can also be given as `-n`; an `Option` field whose doc starts with `[name]` is an optional positional argument; a `List` field whose doc starts with its flag (`/// --rm …`) or a short name is an option given again and again (`--rm a --rm b`). **Commands** are a union that derives `CommandLine`: each member is a command (`Edit` is `edit`), its fields the command's options, its `///` doc the command's help; an options record with a field of that union reads its other fields as options before the command. `strata check` rejects a `CommandLine` record a command line can't fill.
@@ -309,7 +342,8 @@ The **standard library** is the `std/` package, written in Strata and built into
 | `std.term` | text styled for a terminal: `Paint` (`bold`, `dim`, `italic`, `underline`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`), from `console.paint(Output)`: on when the stream is a terminal, `NO_COLOR` unset and `TERM` not `dumb` (`FORCE_COLOR` forces it), else it gives text back as it is; `plain(text)` drops escape codes. `--help` headings show in bold and `error:` in red under the same rule |
 | `std.cli` | `CommandLine`: a record of options, or a union of commands, read from the arguments; `read_input(console, files, path)`: a file, or standard input for `-` |
 | `std.collections` | collections kept in order, for when a `Dict` or `Set` (hash tables, in no order) won't do: `SortedDict[K, V]` (an AVL tree by the keys' `compare` order: `get`, `insert`, `remove` in O(log n); `first`, `last`, `pop_first`, `pop_last`, `floor` / `ceiling` (the nearest key at or below / above one), `before` / `after` (strictly), `between(lo, hi)`, and `items`, `keys`, `values` in order), `SortedSet[T]` (the same for elements), and `Heap[T]`, a priority queue (a binary heap in a list: `push` and `pop` of the smallest in O(log n), `peek` in O(1); smallest by `compare`, by a key, `Heap.by(key)`, or by an order of your own, `Heap.with(order)`). `sorted_dict(pairs)`, `sorted_set(xs)`, `heap(xs)` (O(n)) make them from lists; `let d: SortedDict[String, Int] = SortedDict {}` is an empty one. They change in place through `mut` (`mut d.insert(k, v)`, `mut h.pop()`) when nothing else holds them |
-| `std.typing` | types as compile-time values, for derivable traits: `Type` (`name`, `doc`, `kind`, `args`, `fields`, `elements`, `members`, …, and `check`), `Kind`, `Field`, `Choice`; `setting(key)` reads the package's `strata.toml` while compiling, `compile_error` fails a `derive` with a message |
+| `std.typing` | types as compile-time values, for derivable traits: `Type` (`name`, `doc`, `kind`, `args`, `fields`, `elements`, `members`, …, a function's `parameters`, and `check`), `Kind`, `Field`, `Choice`; `setting(key)` reads the package's `strata.toml` while compiling, `compile_error` fails a `derive` with a message |
+| `std.ffi` | `C`: a function C code calls (`derive C for add`), exported by a library `strata build --lib` makes and declared in its header (see "Exporting functions") |
 | `std.json` | `Json`: records and sum types read from JSON and written to it (`derive Json for Signup`; `Signup.from_json(parse(text)!)`, `stringify(s.to_json()!)`), and implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Option[T]` and `Dict[String, V]`, so `fn send[T: Json](x: T)` takes them; `JsonValue`, `parse`, `stringify` |
 | `std.toml` | `Toml`: records and sum types read from TOML and written to it (`derive Toml for Config`; `Config.read_toml(text)`, `config.write_toml()`, `to_toml` / `from_toml` for `TomlValue`s), implemented for `Int`, `Float`, `Bool`, `String`, `List[T]`, `Dict[String, V]`, `Date`, `Time` and `DateTime`. TOML 1.1 read and written in Strata: `parse(text)` gives the document's root table (`List[(String, TomlValue)]`, keys in the order written) or an error saying where (`3:1: `b` is defined twice`); `TomlValue` is `Text`, `Integer`, `Number`, `Boolean`, `Moment` (a `DateTime`: optional `Date`, `Time` and `Offset`, TOML's four kinds), `Array` or `Table`; `lookup(doc, ["server", "port"])`; `stringify(doc)` writes TOML text |
 | `std.http` | `Request`, `Response`, `Method`; `ok_html`, `ok_text`, `ok_json` (a value whose type has `Json`), `not_found`, `redirect`, …; `Router` (`app.get("/users/:id", handler)`, `req.param("id")`), for `strata serve` |
