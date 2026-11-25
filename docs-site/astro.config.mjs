@@ -33,6 +33,8 @@ export default defineConfig({
       sidebar: [
         { label: 'Guide', items: [{ label: 'Overview', link: '/' }, 'language', 'verification', 'tools'] },
         { label: 'Annex', items: ['learn-strata', 'language-reference', 'verification-reference', 'tools-reference'] },
+        // std's reference, written by `strata doc` (docs/std/)
+        { label: 'Standard library', collapsed: true, items: [{ autogenerate: { directory: 'std' } }] },
         { label: 'Internals', items: ['internals', 'binary-format'] },
       ],
       lastUpdated: false,
