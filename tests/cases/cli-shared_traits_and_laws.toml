@@ -142,7 +142,10 @@ has = [
   "✓ law enqueue_once for MemQueue proven",
   "✓ law no_double_claim for MemQueue proven",
   "✗ law claim_after_enqueue for MemQueue Law violation (found by the solver)",
-  "law `claim_after_enqueue` does not hold for `MemQueue` with q = MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, id = 21: after mut r := q; mut r.enqueue(id); mut r.claim(id)",
+  # (the id is the solver's pick: one already taken, so neither call acts)
+  "law `claim_after_enqueue` does not hold for `MemQueue` with q = MemQueue { waiting: Set[Int] {}, taken: Set[Int] { ",
+  " }, id = ",
+  ": after mut r := q; mut r.enqueue(id); mut r.claim(id)",
   "`q` when `enqueue` is called: `Queue` is shared, so another worker may have changed it since the last call (only the trait's invariants are known)",
   "✓ added                    proven",
   "✓ enqueued_now             proven",
