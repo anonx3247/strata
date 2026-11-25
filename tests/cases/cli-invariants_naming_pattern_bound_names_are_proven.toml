@@ -1,0 +1,84 @@
+# An invariant may name a variable a pattern bound: the index and element
+# of `for (i, l) in enumerate(ls)`, the two of `zip(xs, ys)`, a dict's
+# key and value, a tuple taken apart. Each is one value through the pass
+# (read twice, the same), so the invariant is proven, and `verify` writes
+# such names into the invariants it finds as it writes any other
+# (`invariant j <= i - 1`, not a binding `start_j := j` before the loop).
+# `enumerate`'s index is a position of the list.
+
+[[step]]
+save = "p.strata"
+text = '''
+fn back(ls: List[Int]) -> Int {
+  mut total := 0
+  for (i, l) in enumerate(ls) {
+    mut j := i - 1
+    while j >= 0 && l > 0
+      invariant j <= i - 1 {
+      total += 1
+      j -= 1
+    }
+  }
+  total
+}
+
+fn pairs(xs: List[Int], ys: List[Int]) -> Int {
+  mut total := 0
+  for (a, b) in zip(xs, ys) {
+    mut j := a
+    while j > b
+      invariant j <= a {
+      total += 1
+      j -= 1
+    }
+  }
+  total
+}
+
+fn entries(d: Dict[String, Int]) -> Int {
+  mut total := 0
+  for (k, v) in d {
+    mut j := v
+    while j > 0
+      invariant j <= v {
+      total += 1
+      j -= 1
+    }
+  }
+  total
+}
+
+fn parts(ps: List[(Int, Int)]) -> Int {
+  mut total := 0
+  for p in ps {
+    (a, b) := p
+    mut j := a
+    while j > b
+      invariant j <= a {
+      total += 1
+      j -= 1
+    }
+  }
+  total
+}
+
+fn positions(ls: List[Int]) -> Int {
+  mut total := 0
+  for (i, l) in enumerate(ls) {
+    assert i >= 0 && i < len(ls)
+    total += l
+  }
+  total
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--no-race", "--no-cache"]
+has = [
+  "✓ back ",
+  "✓ pairs ",
+  "✓ entries ",
+  "✓ parts ",
+  "✓ positions ",
+]
+lacks = ["not proven", "unknown shape"]
