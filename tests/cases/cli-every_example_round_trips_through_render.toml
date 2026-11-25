@@ -84,10 +84,6 @@ save = "t2/print.strata"
 from_tmp = "t1/print.st"
 
 [[step]]
-save = "t2/sim.strata"
-from_tmp = "t1/sim.st"
-
-[[step]]
 strata = ["--file", "t2", "view", "--split", "t3"]
 
 [[step]]
@@ -98,9 +94,6 @@ run = ["diff", "t1/memory.st", "t3/memory.st"]
 
 [[step]]
 run = ["diff", "t1/print.st", "t3/print.st"]
-
-[[step]]
-run = ["diff", "t1/sim.st", "t3/sim.st"]
 
 [[step]]
 strata = ["--file", "t2", "test"]

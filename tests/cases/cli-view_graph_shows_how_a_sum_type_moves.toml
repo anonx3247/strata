@@ -1,10 +1,12 @@
+# (on tests/data/graph: examples/tasks and orders as they were before their
+# models, statuses kept in lists)
 # `strata view --graph T`: how the values of a sum type move between its
 # variants, read off the code and asked of the solver (compiler/graph).
 
 # a value made new is an entry; `ship`'s refinement pins what it makes;
 # `OneOrder.save` may make any move, `load` none
 [[step]]
-strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata"]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/tests/data/graph/orders.strata"]
 has = [
   "Order = Pending | Shipped | Cancelled",
   "(new)     -> Shipped    by ship (possible)",
@@ -13,7 +15,7 @@ has = [
 ]
 
 [[step]]
-strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata", "--all"]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/tests/data/graph/orders.strata", "--all"]
 has = [
   "Pending   -> Cancelled  by OneOrder.save (possible)",
   "proven impossible:",
@@ -24,7 +26,7 @@ has = [
 # a field path through a list (`MemQueue.entries[i].status`): the same
 # element before and after; `mem_release` only moves running tasks
 [[step]]
-strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks"]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/tests/data/graph/tasks"]
 has = [
   "Running   -> Pending    by mem_record (unknown), mem_release (unknown)",
   "Running   -> Exhausted  by mem_record (unknown), mem_release (unknown)",
@@ -33,15 +35,15 @@ has = [
 ]
 
 [[step]]
-strata = ["view", "--graph", "Status", "--file", "$ROOT/examples/tasks", "--all"]
+strata = ["view", "--graph", "Status", "--file", "$ROOT/tests/data/graph/tasks", "--all"]
 has = ["Pending   -> Exhausted  by mem_claim, mem_record, mem_release, statuses"]
 
 # a page with the graph drawn
 [[step]]
-strata = ["view", "--graph", "Order", "--file", "$ROOT/examples/orders.strata", "--html"]
+strata = ["view", "--graph", "Order", "--file", "$ROOT/tests/data/graph/orders.strata", "--html"]
 has = ["<!DOCTYPE html>", "<svg", ">Shipped</text>", "ship (possible)"]
 
 [[step]]
-strata = ["view", "--graph", "Shape", "--file", "$ROOT/examples/orders.strata"]
+strata = ["view", "--graph", "Shape", "--file", "$ROOT/tests/data/graph/orders.strata"]
 code = 2
 has = ["no sum type `Shape` in the program"]
