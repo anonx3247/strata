@@ -130,3 +130,26 @@ defined `sq`
 xs: List[Int] = [4, 9]
 s: String = "a ( in a string"
 """
+
+# `:save NAME`: a definition typed at the prompt written to the program
+# (its doc lines with it), checked as `strata add` checks it
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+/// Three times.
+fn triple(n: Int) -> Int {
+  n * 3
+}
+:save triple
+triple(2)
+:save nope
+"""
+fails = true
+has = ["defined `triple`", "1 definition changed, 3 in all", "6: Int", "no definition `nope` typed in this session"]
+
+[[step]]
+strata = ["--file", "p.strata", "view", "triple"]
+out = """
+/// Three times.
+fn triple(n: Int) -> Int
+"""
