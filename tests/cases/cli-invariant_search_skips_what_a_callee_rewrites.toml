@@ -4,7 +4,11 @@
 # it so, is dropped without asking the solver. `words`' loop ends a pass
 # after `word(mut r)`, so `r.at <= n`, `r.at >= 0`, ... are dropped
 # there: its search asks only whether they hold on entry (under 1k units,
-# against 9k before; `lex.lex`'s outer loop: 4M before, none now).
+# against 9k before; `lex.lex`'s outer loop: 4M before, none now). `word`
+# has a `requires`, so the call is seen through its contract: with no
+# `ensures` naming `r`, what comes back is any value too (the entry query
+# is 134 units, shown `0k`; asking whether `r.at <= n` lasts a pass would
+# add 1035, shown `1k`).
 
 [[step]]
 save = "w.strata"
@@ -37,4 +41,4 @@ fn words(text: List[String]) -> List[String] {
 
 [[step]]
 strata = ["--file", "w.strata", "verify", "--no-race", "--no-cache", "--show-searches"]
-has = ["search `words` `while r.at < n`: 1k, 0.0 s: nothing"]
+has = ["search `words` `while r.at < n`: 0k, 0.0 s: nothing"]

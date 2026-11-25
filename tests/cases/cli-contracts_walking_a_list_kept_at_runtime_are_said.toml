@@ -1,0 +1,46 @@
+# a `requires` or `ensures` that walks a list (`all`, `any`, `sum`…) and
+# stays a runtime check costs O(n) at every call: `build` says so, and
+# suggests a proof or `ghost requires` / `ghost ensures`; a ghost one isn't
+# said (it is never checked)
+
+[[step]]
+save = "walk.strata"
+text = '''
+/// How many of `xs` are below `limit`.
+fn below(xs: List[Int], limit: Int) -> Int
+  requires xs.all(x -> x != limit + 1000)
+  ensures it <= len(xs) && xs.all(x -> x * x * x >= x * x * x * (it - it + 1))
+{
+  mut n := 0
+  for x in xs {
+    if x < limit {
+      n += 1
+    }
+  }
+  n
+}
+
+/// The same, its contracts ghost.
+fn below_ghost(xs: List[Int], limit: Int) -> Int
+  ghost requires xs.all(x -> x != limit + 1000)
+  ghost ensures it <= len(xs) && xs.all(x -> x * x * x >= x * x * x * (it - it + 1))
+{
+  below(xs, limit)
+}
+
+fn main() {
+  xs := [1, 5, 9]
+  print(below(xs, 6))
+}
+'''
+
+[[step]]
+strata = ["--file", "walk.strata", "build", "-o", "walk"]
+has = [
+  "warning: in `below`, `requires xs.all((x: Int) -> x != limit + 1000)` stays a runtime check that walks a list at every call (O(n))",
+  "or write `ghost requires`",
+  "warning: in `below`, `ensures it <= len(xs) && xs.all((x: Int) -> x * x * x >= x * x * x * (it - it + 1))` isn't proven: it stays a runtime check that walks a list at every return (O(n))",
+  "or write `ghost ensures`",
+  "built walk",
+]
+lacks = ["in `below_ghost`, `"]

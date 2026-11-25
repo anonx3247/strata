@@ -115,7 +115,7 @@ Payload     = 0 None | 1 Positional(list(TypeExpr)) | 2 Record(list(Field))
 
 FnDecl      = doc:list(str)  comments:list(str)  name:str  type_params:list(str)  bounds:list(Bound)
               params:list(Param)  ret:Result  requires:list(Expr)  ensures:list(Expr)
-              terminates:bool  body:Expr  comptime:bool  derived:bool
+              flags:byte  body:Expr  comptime:bool  derived:bool
 Result      = TypeExpr | 5 names:list(str) TypeExpr     -> (next: Q, added: Int): the names, then the tuple
 Param       = name:str  ty:TypeExpr  mutable:bool  comptime:bool
 Bound       = param:str  traits:list(TypeExpr)
@@ -137,7 +137,7 @@ DeriveFnDecl = trait_name:str  function:str  derived:bool  exports:list(str str)
 ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`, `derivable(t: Record) trait …` the trait's `derivable`. `derive Trait for function` (a lowercase name after `for`) is a `DeriveFnDecl` with `derived` set and no `exports` or `files` (what deriving makes, held only in memory: each exported symbol with its function, each file's extension with the function giving its part); its header `kind` is `8`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`; its `flags` byte is the sum of `1` for `terminates` and `2` for `noalloc` (a byte that was a `bool` before `noalloc`: older files read as they are), `derivable(t: Record) trait …` the trait's `derivable`. `derive Trait for function` (a lowercase name after `for`) is a `DeriveFnDecl` with `derived` set and no `exports` or `files` (what deriving makes, held only in memory: each exported symbol with its function, each file's extension with the function giving its part); its header `kind` is `8`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
 
 ### Types
 
@@ -179,6 +179,7 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 38 Race(list(SelectArm))                                     race { e as x => … }
      | 39 SupervisedSpawn(Expr)                                     supervised spawn e
      | 40 Old(Expr)                                                 old e (in an `ensures`: e where the function started)
+     | 41 Ghost(Expr)                                               ghost requires/ensures/invariant e (verify only)
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
          | 3 Update(base:Expr, list((str, Expr)))
@@ -241,7 +242,7 @@ the definition:
    00 00 00 00 01                  no comments or doc, module "", private; a function:
    00 00 01 00 00 00               no doc, no comments, name "one", no type parameters, bounds, parameters
    00 02 00                        returns Named("Int", [])
-   00 00 00                        no requires, no ensures, not `terminates`
+   00 00 00                        no requires, no ensures, no flags (not `terminates`, not `noalloc`)
    06                              its body, left out: ()
    00 00                           not `comptime`, not derived
    00                              the bodies add no strings
