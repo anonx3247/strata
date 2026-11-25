@@ -1,27 +1,7 @@
 # std.web
 
-HTML pages, built as values.
-
-A page is a tree of `Html` values, made with one function per element and
-turned into text by `render` (or `document`, for a whole page):
-
-```rust
-from std.web use Html, div, h1, p, text, class, document
-
-fn greeting(name: String) -> Html[()] {
-  div([class("greeting")], [h1([], [text(f"Hello, {name}!")]), p([], [text("Welcome.")])])
-}
-
-print(document("Hello", [], [greeting("<Ada>")]))
-```
-
-Text is always escaped, so `<Ada>` shows as written and can't inject markup.
-Tag and attribute names are checked where they are written (`element`,
-`attr`), and an attribute can't be an inline script (`onclick`): events are `on(event, msg)` attributes,
-whose message is a value of the page's message type `M`. Messages aren't
-written into the page: each handler is numbered, the page sends back the
-number, and the runtime finds the message in the page it served
-(`dispatch`). A page with no events uses `Html[()]`.
+HTML pages built as values, one function per element, rendered by `render` or `document`.
+A page with events has a message type `M`. A page without events is an `Html[()]`.
 
 ## Types
 
@@ -32,8 +12,7 @@ type TagName = String
   where matches(it, "[a-z][a-z0-9]*(-[a-z0-9]+)*")
 ```
 
-An element's name: lowercase letters, digits and dashes (`div`,
-`my-card`).
+Lowercase letters, digits and dashes: `div`, `my-card`.
 
 ### AttrName
 
@@ -43,8 +22,7 @@ type AttrName = String
     && !matches(it, "[oO][nN].*")
 ```
 
-An attribute's name. Names starting with `on` are inline scripts, which
-pages can't contain: use `on(event, msg)` instead.
+An attribute's name. Names starting with `on` are inline scripts, which pages can't hold. Use `on(event, msg)` instead.
 
 ### EventName
 
@@ -53,7 +31,7 @@ type EventName = String
   where matches(it, "[a-z]+")
 ```
 
-The name of a DOM event, without `on`: `click`, `submit`, `input`.
+A DOM event's name without `on`: `click`, `submit`, `input`.
 
 ### Html
 
@@ -61,9 +39,9 @@ The name of a DOM event, without `on`: `click`, `submit`, `input`.
 type Html[M] = { node: Node[M] }
 ```
 
-A piece of HTML whose events carry messages of type `M`. Only this
-module's functions make one, so its names are checked once, where it is
-made (`element`, `attr`), and the type itself has nothing to check.
+HTML whose events carry messages of type `M`.
+Only this module's functions make one, so names are checked once, where it is made (`element`, `attr`).
+Text is escaped when rendered, so it can't inject markup.
 
 ### Attr
 
@@ -80,10 +58,9 @@ type KeyName = String
   where matches(it, "(ctrl\+)?(alt\+)?(meta\+)?.+")
 ```
 
-A key as `on_key` names it: what the key types (`a`, `/`, `?`) or its
-name (`Escape`, `Enter`, `ArrowLeft`), after the modifiers held, in this
-order: `ctrl+`, `alt+`, `meta+` (`meta+p` is ⌘P on a Mac). Shift is not
-named: it is in what the key types (`?`, `A`).
+A key for `on_key`: what the key types (`a`, `/`, `?`) or its name (`Escape`, `Enter`, `ArrowLeft`).
+Modifiers come first, in this order: `ctrl+`, `alt+`, `meta+`. `meta+p` is ⌘P on a Mac.
+Shift is not named. It is in what the key types (`?`, `A`).
 
 ## Functions
 
@@ -130,11 +107,9 @@ fn dispatch[M](
 ) -> Option[M]
 ```
 
-The message of handler number `id` of the page `h`: its own (`on`,
-`every`, `on_key`), or made from what the user entered: a field's
-`value`, or a form's `fields` by name. `None` if the page has no such
-handler. The runtime calls it with the page the user
-sees (the view of the current model) when a `data-handle-…` event comes.
+The message of handler number `id` of the page `h`, or `None` if there is no such handler.
+A handler's message is its own (`on`, `every`, `on_key`), or made from a field's `value` or a form's `fields`.
+The runtime calls it with the page the user sees when a `data-handle-…` event comes.
 
 ### document
 
@@ -146,8 +121,7 @@ fn document[M](
 ) -> String
 ```
 
-A whole page: the doctype, a `<head>` with the title and `head`, and a
-`<body>` holding `body`.
+A whole page: the doctype, a `<head>` with the title and `head`, and a `<body>` holding `body`.
 
 ### element
 
@@ -164,8 +138,8 @@ fn element[M](
     )
 ```
 
-Any element. Void elements (`br`, `img`, `input`, …) can't have children
-(the condition is `is_void`, written out so the prover sees it).
+Any element. Void elements (`br`, `img`, `input`, …) can't have children.
+The condition is `is_void` written out, so the prover sees it.
 
 ### text
 
@@ -389,7 +363,7 @@ fn option[M](attrs: List[Attr[M]], children: List[Html[M]]) -> Html[M]
 fn input[M](attrs: List[Attr[M]]) -> Html[M]
 ```
 
-An `<input>`: a void element, so it has attributes only.
+An `<input>`. A void element, so attributes only.
 
 ### img
 
@@ -397,7 +371,7 @@ An `<input>`: a void element, so it has attributes only.
 fn img[M](attrs: List[Attr[M]]) -> Html[M]
 ```
 
-An `<img>`: a void element, so it has attributes only.
+An `<img>`. A void element, so attributes only.
 
 ### br
 
@@ -473,7 +447,7 @@ fn style[M](css: String) -> Attr[M]
 fn input_type[M](kind: String) -> Attr[M]
 ```
 
-The `type` attribute of an `input` or a `button` (`type` is a keyword).
+The `type` attribute of an `input` or a `button`. `type` is a keyword.
 
 ### name
 
@@ -499,7 +473,7 @@ fn placeholder[M](text: String) -> Attr[M]
 fn label_for[M](input_id: String) -> Attr[M]
 ```
 
-The `for` attribute of a `label` (`for` is a keyword).
+The `for` attribute of a `label`. `for` is a keyword.
 
 ### disabled
 
@@ -525,7 +499,7 @@ fn required[M]() -> Attr[M]
 fn on[M](event: EventName, msg: M) -> Attr[M]
 ```
 
-When `event` happens on the element, send `msg` to the program.
+Sends `msg` to the program when `event` happens on the element.
 
 ### on_click
 
@@ -533,7 +507,7 @@ When `event` happens on the element, send `msg` to the program.
 fn on_click[M](msg: M) -> Attr[M]
 ```
 
-When the element is clicked, send `msg`.
+Sends `msg` when the element is clicked.
 
 ### on_submit
 
@@ -541,7 +515,7 @@ When the element is clicked, send `msg`.
 fn on_submit[M](msg: M) -> Attr[M]
 ```
 
-When the form is submitted, send `msg`.
+Sends `msg` when the form is submitted.
 
 ### on_input
 
@@ -549,9 +523,7 @@ When the form is submitted, send `msg`.
 fn on_input[M](make: (String) -> M) -> Attr[M]
 ```
 
-As the user types in the field (an `input`, a `textarea`), send the
-message `make` makes from its value: `on_input(s -> SetTitle { title: s
-})`.
+Sends `make(value)` as the user types in a field (`input`, `textarea`): `on_input(s -> SetTitle { title: s })`.
 
 ### on_change
 
@@ -559,8 +531,7 @@ message `make` makes from its value: `on_input(s -> SetTitle { title: s
 fn on_change[M](make: (String) -> M) -> Attr[M]
 ```
 
-When the field's value is changed (a `select`, a checkbox: its value is
-`"true"` or `"false"`), send the message `make` makes from it.
+Sends `make(value)` when the field's value changes (`select`, checkbox). A checkbox's value is `"true"` or `"false"`.
 
 ### on_submit_form
 
@@ -568,9 +539,8 @@ When the field's value is changed (a `select`, a checkbox: its value is
 fn on_submit_form[M](make: (Dict[String, String]) -> M) -> Attr[M]
 ```
 
-When the form is submitted, send the message `make` makes from its
-fields, by name: `on_submit_form(fields -> Add { fields })`. A checkbox
-that isn't checked is not among them.
+Sends `make(fields)` when the form is submitted, with its fields by name: `on_submit_form(fields -> Add { fields })`.
+An unchecked checkbox is not among them.
 
 ### every
 
@@ -578,11 +548,8 @@ that isn't checked is not among them.
 fn every[M](ms: Int where it >= 100, msg: M) -> Attr[M]
 ```
 
-Send `msg` every `ms` milliseconds while the element is on the page:
-`div([every(1500, Refresh)], [...])` keeps a view up to date with
-something that changes outside the program. A message isn't sent while
-the previous one is still being handled, so a slow `update` doesn't pile
-them up.
+Sends `msg` every `ms` milliseconds while the element is on the page: `div([every(1500, Refresh)], [...])`.
+A message isn't sent while the previous one is still being handled, so a slow `update` doesn't pile them up.
 
 ### on_key
 
@@ -590,11 +557,9 @@ them up.
 fn on_key[M](key: KeyName, msg: M) -> Attr[M]
 ```
 
-Send `msg` when `key` (a `KeyName`) is pressed anywhere on the page,
-while the element is on it; the browser doesn't also act on the key
-(`meta+p` doesn't print). While the user types in a field, only keys with
-`ctrl+` or `meta+`, and `Escape`, are sent. One key per element: for
-several, see `key_bindings`.
+Sends `msg` when `key` is pressed anywhere on the page while the element is on it. The browser doesn't also act on the key.
+While the user types in a field, only keys with `ctrl+` or `meta+`, and `Escape`, are sent.
+One key per element. For several, use `key_bindings`.
 
 ### key_bindings
 
@@ -602,8 +567,7 @@ several, see `key_bindings`.
 fn key_bindings[M](bindings: List[(KeyName, M)]) -> Html[M]
 ```
 
-Several keys and their messages (see `on_key`), as an element that shows
-nothing: put it anywhere in the view.
+Several keys and their messages (see `on_key`), as an element that shows nothing. Put it anywhere in the view.
 
 ### focused
 
@@ -611,9 +575,7 @@ nothing: put it anywhere in the view.
 fn focused[M]() -> Attr[M]
 ```
 
-The element takes the keyboard focus when it appears with this attribute
-(or the attribute appears on it): a view shows the search field focused
-after the message that asked for it.
+The element takes the keyboard focus when it appears with this attribute, or the attribute appears on it.
 
 ### revealed
 
@@ -621,5 +583,4 @@ after the message that asked for it.
 fn revealed[M]() -> Attr[M]
 ```
 
-The page scrolls to show the element when it appears with this attribute
-(or the attribute appears on it), as little as it needs to.
+The page scrolls as little as needed to show the element when it appears with this attribute, or the attribute appears on it.
