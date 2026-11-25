@@ -192,7 +192,7 @@ stdout = '''
     not proven: ensures it == (iter_sum([]) == 0): the solver found a possible counterexample: xs = [] (depends on the result of `iter_sum` (only its contract is known)), but running it did not fail
 ✓ twice                    proven (3 checks)
 ~ sees_twice               fuzzed: 1 cases, 0 discarded by `requires`; 0 of 1 checks proven
-    not proven: ensures it == (twice(0) == 0): the solver found a possible counterexample:  (depends on the result of `twice` (only its contract is known)), but running it did not fail
+    not proven: ensures it == (twice(0) == 0): the solver found a possible counterexample: , but running it did not fail
 '''
 
 [[step]]

@@ -1,8 +1,8 @@
 # Helpers in contracts are SMT definitions stated once per query: a
 # helper without recursion (`weight`) a `define-fun`, a recursive one over
 # a tree (`size`, `total`) a function and the `define-fun` of its body,
-# said equal at each use, a helper whose
-# `ensures it == e` defines it (`twice`) that `e`. Contracts using them are
+# said equal at each use (a small one without recursive calls, `twice`,
+# is used at each call as before). Contracts using them are
 # proven (`flip`'s by its own contract at its recursive calls), wrong ones
 # refuted, and each query stays small: the helpers' bodies are not copied
 # at each use.
