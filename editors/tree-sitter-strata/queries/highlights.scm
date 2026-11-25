@@ -115,6 +115,7 @@
 ] @keyword
 
 [
+  "ghost"
   "requires"
   "ensures"
   "terminates"

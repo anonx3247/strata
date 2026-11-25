@@ -424,4 +424,29 @@ built t: 7 runtime checks left out (proven by `strata verify`), 0 kept
 
 Trait methods count too: their proofs are found under `verify`'s names for them (`Money.combine`). A proven division calls the runtime's division without its check for 0. The standard library is proven, all of it (the test `std_is_proven` keeps it so), so its precompiled library leaves out the checks inside its functions; those of their arguments and `requires` stay, since the calling program proves them or not. `--all-checks` compiles std with the program, every check kept. Other checks that run in C (a string's index, `split`'s separator) stay.
 
+### Ghost contracts: proven, never checked
+
+A contract that isn't proven stays a runtime check, and some cost too much to keep: an invariant of a whole data structure checked at every call, a loop invariant that walks a list at every pass (which makes the loop quadratic). Write `ghost` before the clause to leave it to `verify` alone:
+
+```strata
+fn execute(mut b: Book, o: Order) -> List[Event]
+  ghost requires book_ok(b)
+  ghost ensures book_ok(b)
+  ensures len(it) >= 1
+{
+  for l in b.levels
+    ghost invariant sorted(b.levels)
+  {
+    …
+  }
+}
+```
+
+- `verify` treats a ghost clause as any other: it proves it, refutes it with a counterexample, or fuzzes it, and notes its checks `(ghost: not checked when the program runs)`. A ghost `requires` is assumed inside the function and must be shown at its calls.
+- The compiled program never checks it, proven or not. `strata build` lists the ghost clauses `verify` didn't prove (a warning; the build goes on).
+- `strata run --check-ghosts` and `strata test --check-ghosts` compile them in, to check them on real runs. The fuzzer always checks them.
+- A ghost clause stays a clause: `check` doesn't suggest moving one that constrains a single parameter into a refinement (a refinement is checked when the program runs).
+
+`strata build` also says when a written contract stays a runtime check that costs: a loop `invariant` it didn't prove (O(n) a pass when it walks a list), or a `requires` or `ensures` that walks a list (`all`, `any`, `sum`, `filter`, a comprehension), with the suggestion to prove it or make it ghost. On the order book of the benchmark, making its book-wide invariants ghost took a run of 32,000 commands from 18.1 s to 2.5 s.
+
 Every result, option and setting of `strata verify` is in the [verification reference](verification-reference.md).

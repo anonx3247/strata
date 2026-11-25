@@ -499,3 +499,55 @@ fn drain(n: Int) {
           (assignment
             (identifier)
             (integer)))))))
+
+============================================================
+Ghost contracts
+============================================================
+
+fn f(xs: List[Int]) -> Int ghost requires ok(xs) ghost ensures it >= 0 {
+  ghost := 0
+  for x in xs
+    ghost invariant ghost >= 0 {
+    ghost += x
+  }
+  ghost
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier)))))
+    (type_identifier)
+    (contract
+      (call_expression
+        (identifier)
+        (arguments
+          (identifier))))
+    (contract
+      (binary_expression
+        (identifier)
+        (integer)))
+    (block
+      (binding
+        (identifier)
+        (integer))
+      (for_statement
+        (identifier)
+        (identifier)
+        (invariant
+          (binary_expression
+            (identifier)
+            (integer)))
+        (block
+          (assignment
+            (identifier)
+            (identifier))))
+      (identifier))))
