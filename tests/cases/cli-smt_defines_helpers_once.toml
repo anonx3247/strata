@@ -1,6 +1,7 @@
 # Helpers in contracts are SMT definitions stated once per query: a
-# recursive helper over a tree (`size`, `total`) a `define-fun-rec`, a
-# helper without recursion (`weight`) a `define-fun`, a helper whose
+# helper without recursion (`weight`) a `define-fun`, a recursive one over
+# a tree (`size`, `total`) a function and the `define-fun` of its body,
+# said equal at each use, a helper whose
 # `ensures it == e` defines it (`twice`) that `e`. Contracts using them are
 # proven (`flip`'s by its own contract at its recursive calls), wrong ones
 # refuted, and each query stays small: the helpers' bodies are not copied
@@ -79,5 +80,5 @@ has = [
 
 # the queries hold each helper once
 [[step]]
-run = ["sh", "-c", "mkdir d && STRATA_SOLVER_DUMP=$TMP/d $STRATA --file t.strata verify --no-race --no-cache --no-write > /dev/null; grep -c 'define-fun-rec |fn:size' d/*.smt2 | grep -v ':0$' | grep -v ':1$' | wc -l | tr -d ' '; cat d/*.smt2 | wc -c | awk '{ print ($1 < 30000) ? \"small\" : \"large \" $1 }'"]
+run = ["sh", "-c", "mkdir d && STRATA_SOLVER_DUMP=$TMP/d $STRATA --file t.strata verify --no-race --no-cache --no-write > /dev/null; grep -c 'define-fun |def:size' d/*.smt2 | grep -v ':0$' | grep -v ':1$' | wc -l | tr -d ' '; cat d/*.smt2 | wc -c | awk '{ print ($1 < 30000) ? \"small\" : \"large \" $1 }'"]
 has = ["0\nsmall"]

@@ -17,4 +17,4 @@ fn odd() -> Odd { 1 }
 [[step]]
 strata = ["--file", "h.strata", "verify", "zero,ten,odd", "--cases", "20", "--no-race"]
 any_code = true
-has = ["✓ zero", "proven", "✗ ten", "found by the solver", "✓ odd"]
+has = ["✓ zero", "proven", "✗ ten", "found by the solver", "~ odd", "the solver found a possible counterexample"]
