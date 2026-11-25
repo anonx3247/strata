@@ -3308,6 +3308,13 @@ List *strata_list_concat(List *a, List *b, int64_t counted) {
   return l;
 }
 
+// `xs += ys` (core.list's `list_extend`; without core.rt, a new list each
+// time).
+List *strata_list_extend(List *a, List *b, int64_t counted) { return strata_list_concat(a, b, counted); }
+
+// `s += t` (core.str's `str_append`; without core.rt, a new string each time).
+Str *strata_str_append(Str *a, Str *b, _Bool mine) { return strata_concat(a, b); }
+
 List *strata_range(int64_t lo, int64_t hi) {
   int64_t n = hi > lo ? hi - lo : 0;
   List *l = strata_list_new(n);
@@ -3317,6 +3324,169 @@ List *strata_range(int64_t lo, int64_t hi) {
   return l;
 }
 #endif
+
+// ---- `--copies`: the copies of values a program makes, reported at its end ----
+//
+// Code compiled with `--copies` (`strata run`, `test` and `build`) calls
+// `strata_copied` where a value about to be changed is copied because
+// something else still holds it (and `strata_copies_push` /
+// `strata_copies_append` before an extension, which copies when its buffer
+// can't be extended in place). Each place's copies are added up (how many,
+// their bytes, the largest), and listed on standard error when the program
+// ends, the most bytes first. Code compiled without it calls none of these.
+
+typedef struct {
+  Str *site, *what, *why;
+  int64_t kind, times, bytes, most, held;
+} CopySite;
+
+static CopySite *copy_sites;
+static int64_t ncopy_sites, capcopy_sites;
+static pthread_mutex_t copies_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static _Bool str_same(Str *a, Str *b) { return a == b || (a->len == b->len && !memcmp(a->bytes, b->bytes, (size_t)a->len)); }
+
+// `n` with its thousands separated by commas.
+static void copies_count(char *out, size_t size, int64_t n) {
+  char d[32];
+  int k = snprintf(d, sizeof d, "%lld", (long long)n), j = 0;
+  for (int i = 0; i < k && j < (int)size - 2; i++) {
+    if (i > 0 && (k - i) % 3 == 0) out[j++] = ',';
+    out[j++] = d[i];
+  }
+  out[j] = 0;
+}
+
+static void copies_bytes(char *out, size_t size, int64_t n) {
+  char c[40];
+  if (n >= 10 * 1000 * 1000) copies_count(c, sizeof c, n / 1000000), snprintf(out, size, "%s MB", c);
+  else if (n >= 10 * 1000) snprintf(out, size, "%lld kB", (long long)(n / 1000));
+  else snprintf(out, size, "%lld bytes", (long long)n);
+}
+
+static int copies_order(const void *a, const void *b) {
+  const CopySite *x = a, *y = b;
+  return x->bytes < y->bytes ? 1 : x->bytes > y->bytes ? -1 : 0;
+}
+
+static void copies_report(void) {
+  fflush(stdout);
+  pthread_mutex_lock(&copies_lock);
+  if (ncopy_sites == 0) {
+    fprintf(stderr, "copies: none\n");
+    pthread_mutex_unlock(&copies_lock);
+    return;
+  }
+  qsort(copy_sites, (size_t)ncopy_sites, sizeof(CopySite), copies_order);
+  int64_t times = 0, bytes = 0;
+  for (int64_t i = 0; i < ncopy_sites; i++) times += copy_sites[i].times, bytes += copy_sites[i].bytes;
+  char t[40], b[40], m[40];
+  copies_count(t, sizeof t, times);
+  copies_bytes(b, sizeof b, bytes);
+  fprintf(stderr, "copies: %s, %s in all, at %lld place%s (the most bytes first):\n", t, b, (long long)ncopy_sites,
+          ncopy_sites == 1 ? "" : "s");
+  for (int64_t i = 0; i < ncopy_sites; i++) {
+    CopySite *c = &copy_sites[i];
+    copies_count(m, sizeof m, c->most);
+    copies_count(t, sizeof t, c->times);
+    copies_bytes(b, sizeof b, c->bytes);
+    const char *unit = c->kind == 3 ? "bytes" : c->kind == 4 ? "fields" : c->kind == 0 ? "items" : "entries";
+    fprintf(stderr, "  copied a %.*s of %s%s %s at %.*s: %s time%s, %s (", (int)c->what->len, c->what->bytes,
+            c->times > 1 ? "up to " : "", m, unit, (int)c->site->len, c->site->bytes, t, c->times == 1 ? "" : "s", b);
+    if (c->why->len) fprintf(stderr, "%.*s", (int)c->why->len, c->why->bytes);
+    else if (c->held > 1) fprintf(stderr, "shared: held %lld times", (long long)c->held);
+    else fprintf(stderr, "held once, but what holds it is shared");
+    fprintf(stderr, ")\n");
+  }
+  pthread_mutex_unlock(&copies_lock);
+}
+
+// How many hold object `p` (its count word's count bits; 0 for a constant).
+static int64_t copies_held(void *p) { return __atomic_load_n((int64_t *)p - 1, __ATOMIC_ACQUIRE) & ((INT64_C(1) << 40) - 1); }
+
+static void copies_note(int64_t kind, int64_t items, int64_t bytes, int64_t held, Str *what, Str *site, Str *why) {
+  pthread_mutex_lock(&copies_lock);
+  if (capcopy_sites == 0) atexit(copies_report);
+  CopySite *c = NULL;
+  for (int64_t i = 0; i < ncopy_sites && !c; i++)
+    if (copy_sites[i].kind == kind && str_same(copy_sites[i].site, site) && str_same(copy_sites[i].what, what) &&
+        str_same(copy_sites[i].why, why))
+      c = &copy_sites[i];
+  if (!c) {
+    if (ncopy_sites == capcopy_sites) {
+      capcopy_sites = capcopy_sites ? 2 * capcopy_sites : 16;
+      copy_sites = realloc(copy_sites, (size_t)capcopy_sites * sizeof(CopySite));
+    }
+    c = &copy_sites[ncopy_sites++];
+    *c = (CopySite){site, what, why, kind, 0, 0, 0, held};
+  }
+  c->times++;
+  c->bytes += bytes;
+  if (items > c->most) c->most = items;
+  if (held > c->held) c->held = held;
+  pthread_mutex_unlock(&copies_lock);
+}
+
+// A program compiled with `--copies` starts: "copies: none" is reported at
+// its end if it copies nothing.
+void strata_copies_start(void) {
+  pthread_mutex_lock(&copies_lock);
+  if (capcopy_sites == 0) {
+    atexit(copies_report);
+    capcopy_sites = 16;
+    copy_sites = malloc((size_t)capcopy_sites * sizeof(CopySite));
+  }
+  pthread_mutex_unlock(&copies_lock);
+}
+
+// A copy of `obj` (`kind`: 0 a list, 1 a dict or set, 3 a string, 4 a record
+// or tuple of `n` fields), a `what` (its type), at `site` (a location), `why`
+// ("": its count says), unless it is empty (nothing to copy).
+void strata_copied(int64_t kind, void *obj, int64_t n, Str *what, Str *site, Str *why) {
+  int64_t items, bytes;
+  if (kind == 0) {
+    items = ((List *)obj)->len;
+    bytes = 24 + 8 * items;
+  } else if (kind == 1) {
+    Tbl *t = obj;
+    items = t->es->len;
+    bytes = 24 + 24 + 8 * items + (t->idx->len ? 24 + 8 * t->idx->len : 0);
+  } else if (kind == 3) {
+    items = ((Str *)obj)->len;
+    bytes = 8 + items;
+  } else {
+    items = n;
+    bytes = 8 * (n + 1);
+  }
+  if (items == 0 && kind != 4) return;
+  copies_note(kind, items, bytes, copies_held(obj), what, site, why);
+}
+
+static Str *copies_text(Str **cell, const char *c) {
+  if (!*cell) *cell = str_c(c);
+  return *cell;
+}
+
+// Before `push` (`n` 1) or `xs += ys` (`n` the length of `ys`): a copy when
+// a slot of `xs`'s buffer it needs is taken already (another list made from
+// the same one grew past it, or `xs` is a slice); running out of room only
+// grows the buffer (doubling, not counted).
+void strata_copies_push(List *xs, int64_t n, Str *what, Str *site) {
+  static Str *why;
+  if (xs->len == 0 || n == 0 || xs->off + xs->len == xs->buf->used) return;
+  copies_note(0, xs->len, 24 + 8 * xs->len, copies_held(xs->buf), what, site,
+              copies_text(&why, "its buffer is used past its end: another list made from it grew, or it is a slice"));
+}
+
+// Before `s += t` (`mine`: nothing but the variable holds what holds `s`):
+// a copy when `s` can't be extended where it is because something else
+// holds it.
+void strata_copies_append(Str *s, _Bool mine, Str *site) {
+  static Str *what, *none, *outer;
+  if (s->len == 0 || (mine && copies_held(s) == 1)) return;
+  copies_note(3, s->len, 8 + s->len, copies_held(s), copies_text(&what, "String"), site,
+              mine ? copies_text(&none, "") : copies_text(&outer, "held once, but what holds it is shared"));
+}
 
 // Whether to color what goes to stream `fd`: a terminal, unless `NO_COLOR`
 // is set or `TERM` is `dumb`; `FORCE_COLOR` forces it (as std.term decides).
