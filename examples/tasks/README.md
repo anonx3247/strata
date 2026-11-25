@@ -1,8 +1,8 @@
 # tasks, in Strata
 
-A port of the [tasks](../../../tasks) reference (Python and TypeScript): backend-agnostic task queues, where producers enqueue tasks and workers claim batches of attempts and report results.
+A port of the [tasks](../../../tasks) reference library (Python and TypeScript): backend-agnostic task queues, where producers enqueue tasks and workers claim batches of attempts and report results.
 
-Three modules, one per file, which use each other only through their public contracts:
+It has three modules, one per file, which use each other only through their public contracts:
 
 | Module | What it holds |
 |---|---|
@@ -15,7 +15,6 @@ strata --file examples/tasks test                 # the reference scenarios
 strata --file examples/tasks run print.demo       # producer + worker entrypoints
 strata --file examples/tasks verify               # the queue's contracts and laws
 strata --file examples/tasks interface model       # what the other modules can use
-strata ui --file examples/tasks                   # browse it
 ```
 
 ## How the reference maps onto Strata
@@ -35,7 +34,7 @@ strata ui --file examples/tasks                   # browse it
 
 ## What verification found
 
-The first version stated `MemQueue`'s invariants in its type, including *a pending task always has an attempt left*, and model-based simulation through the real entrypoints found a counterexample in about 3 steps:
+`MemQueue`'s invariants were stated in its type, including *a pending task always has an attempt left*. Model-based simulation through the real entrypoints found a counterexample in about 3 steps:
 
 ```text
 retries = 0
@@ -43,20 +42,20 @@ Produce [t2, t0, t5]  →  Work (worker drops one result)  →  release
 ⇒ t2, t0, t5 are Pending with attempts == max_attempts
 ```
 
-The reference has the same bug in both Python and TypeScript. `_release` puts tasks back to `pending` even after their last attempt, and `_claim` only selects `attempts < max_attempts`. Such tasks stay `pending` forever: never retried, never marked `failed`. It reproduces against the real Python `SqliteTaskQueue` (`TaskPolicy(retries=0)` plus a worker that returns `[]`). The port fixes it: a task given back goes through `after_attempt`, which exhausts it on its last attempt.
+The reference has the same bug in both Python and TypeScript. `_release` puts tasks back to `pending` even after their last attempt, and `_claim` only selects `attempts < max_attempts`, so such tasks stay `pending` forever: never retried, never marked `failed`. It reproduces against the real Python `SqliteTaskQueue` with `TaskPolicy(retries=0)` and a worker that returns `[]`. The port fixes it: a released task goes through `after_attempt`, which marks it exhausted on its last attempt.
 
-Now the property is not simulated but stated once, as `Entry`'s refinement, so every backend must keep it wherever it writes an entry (a backend that releases to Pending on the last attempt doesn't check). The queue's contracts are about the component, not single calls' I/O:
+The property is stated once, as `Entry`'s refinement, so every backend must preserve it wherever it writes an entry; a backend that releases to Pending on the last attempt doesn't type-check. The queue's contracts describe the component as a whole, not the input and output of single calls:
 
-- **Each method against the model**: `claim` hands out only pending tasks, each now `Running` under `by`'s lease with one more attempt, and changes nothing else; `record` and `release` succeed exactly when `by` holds every task (and no result is reported twice), and a refused call changes nothing; `expire` gives back exactly the overdue tasks.
-- **For every method** (the trait's `ensures`): the policy never changes, no task leaves or changes, and a new entry starts Pending with no attempt.
-- **Laws** (all three proven for `MemQueue`): enqueuing again adds nothing; two claims never hand out the same task; a worker whose lease ran out and was expired can't report.
-- **`shared`**: many workers use one queue, so entrypoints can rely only on what each call returns: `run_worker`'s results are one per claimed attempt, at most a batch, each id once.
+- Each method is specified against the model. `claim` hands out only pending tasks, each now `Running` under `by`'s lease with one more attempt, and changes nothing else. `record` and `release` succeed exactly when `by` holds every task and no result is reported twice, and a refused call changes nothing. `expire` gives back exactly the overdue tasks.
+- Every method (the trait's `ensures`) keeps the policy unchanged, never removes or alters a task, and starts each new entry as Pending with no attempt.
+- Three laws, all proven for `MemQueue`: enqueuing again adds nothing, two claims never hand out the same task, and a worker whose lease expired can't report.
+- The queue is `shared`, since many workers use it, so entrypoints rely only on what each call returns: `run_worker` returns one result per claimed attempt, at most a batch, each id once.
 
-`strata --file examples/tasks verify` proves the helpers, `drain`, `run_producer`, the demo, `empty_queue`, `MemQueue.claim` and all three laws; `enqueue`, `record`, `release` and `expire` are fuzzed without a counterexample, most of their checks proven: what is left is their loops (the invariants relating the table to its value before the loop are not inferred) and `record`'s refused path (see `IDEAS.md`, "Examples over trait models: what the prover lacks").
+`strata --file examples/tasks verify` proves the helpers, `drain`, `run_producer`, the demo, `empty_queue`, `MemQueue.claim` and all three laws. `enqueue`, `record`, `release` and `expire` are fuzzed without a counterexample, with most of their checks proven. The unproven checks are in their loops, whose invariants relating the table to its value before the loop are not inferred, and in `record`'s refusal path (see "Examples over trait models: what the prover lacks" in `IDEAS.md`).
 
 ## Gaps compared with the reference
 
-- **No SQLite / SQS backend yet.** These need host bindings (calling out to existing libraries), which the language doesn't have. They would be further implementations of the `Queue` trait, held to the same contracts. Testing implementations against the trait's contract already caught `MemQueue.record` demanding more than `Queue.record` promises.
-- **No async yet.** `discover` returns a list rather than an async iterator; async and iterators will be designed as language features.
-- **Different JSON for results.** The wire format differs for `TaskResult` (`{"Failed": {...}}` instead of `"result": "failure"`); matching the reference byte for byte would need serialisation annotations.
-- **`max_workers` is unused**: workers are values of `run_worker` calls; the queue is `shared`, so verify treats every call as possibly interleaved with other workers'.
+- **No SQLite or SQS backend.** Each would be another implementation of the `Queue` trait, held to the same contracts (std.sqlite provides the SQLite bindings). Checking implementations against the trait's contract already caught `MemQueue.record` requiring more than `Queue.record` promises.
+- **`discover` returns a list**, where the reference returns an async iterator.
+- **Different JSON for results.** The wire format of `TaskResult` differs (`{"Failed": {...}}` instead of `"result": "failure"`). Matching the reference byte for byte would need serialization annotations.
+- **`max_workers` is unused.** Workers are `run_worker` calls, and since the queue is `shared`, verify treats every call as possibly interleaved with other workers'.
