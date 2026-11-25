@@ -1,0 +1,7 @@
+name = "python"
+
+# `extern python` (module `text`): the worker runs `python3` from the PATH,
+# and finds `text_utils.py` in this folder (the default; `path = ["py"]`
+# would look in ./py instead)
+[python]
+executable = "python3"

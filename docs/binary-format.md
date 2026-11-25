@@ -1,24 +1,24 @@
 # The binary format
 
-Strata code is stored as its syntax tree, not its text, in a binary format of our own: a `.strata` file is a **module file** (`main.strata`, `shop/orders.strata`), or a whole program in one **bundle** file. Text is a view of it.
+Strata code is stored as its syntax tree, in a binary format specific to Strata. A `.strata` file is either a **module file** (`main.strata`, `shop/orders.strata`) or a **bundle** holding a whole program. Text is a view of it.
 
-- **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text: a `.strata` file that holds text is refused.
+- **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text, and a `.strata` file that holds text is refused.
 - **Text comes out through `view`.** `strata view MODULE` prints a module as stored (imports first), `view --split DIR` writes one text file per module (`shop/orders.st`), and `view SELECTOR --level 0|1|2` shows definitions at a level of detail.
-- `strata pack app.strata` writes a bundle; `--file`, `run`, `ui` and every view read it like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that runs trees (`compiler/eval`).
-- `strata header core.strata` prints a module file's table of contents; `strata header core.strata --tree` prints each definition (a bundle's too) as a `compiler/ast` value, one per line, and `--text` as the printer writes it, as stored (references qualified: `view` shows them shortened).
-- In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition (a conflict is left as text; `strata resolve FILE` stores it again once fixed).
+- `strata pack app.strata` writes a bundle, which `--file`, `run` and every view read like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that evaluates trees (`compiler/eval`).
+- `strata header core.strata` prints a module file's table of contents. `--tree` prints each definition (of a bundle too) as a `compiler/ast` value, one per line. `--text` prints it as the printer writes it, as stored, with qualified references (`view` shortens them).
+- In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition. A conflict is left as text, and `strata resolve FILE` stores it again once fixed.
 
-The format is written by hand, with no serialization library, so that Strata can read and write it itself: `compiler/binary` does (in Strata, on the tree `compiler/ast`, hashes included, computed with macOS's SHA-256, CommonCrypto's `CC_SHA256`, through `compiler/c/cache.c`); every module file of the repository round-trips through it (`cli-every_example_round_trips_through_render`). This page is its specification; the two are kept in step.
+The encoder and decoder are hand-written, with no serialization library, in `compiler/binary`. They work on the tree defined in `compiler/ast`, and compute hashes with macOS's SHA-256 (CommonCrypto's `CC_SHA256`, through `compiler/c/cache.c`). Every module file in the repository round-trips through them (`cli-every_example_round_trips_through_render`). This page is the format's specification, kept in step with `compiler/binary`.
 
 Design:
 
-- **A header, like a C header file, but inside the module file.** It comes first and lists every definition: its name, kind, visibility, three hashes, the definitions it depends on and the size of its bytes. Listing a module, building the dependency graph or finding what changed reads only the header. That takes 14 µs for all of `examples/tasks`; decoding everything takes about 170 µs.
-- **Interface first, bodies after.** Each definition's bytes start with its interface: types, signatures, contracts, laws, with each body written as `()`. Its bodies follow. Checking code against a module only needs the interfaces, and a reader can stop there.
-- **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file. Its hash is the hash of those bytes. The same bytes could also be stored as one object under that hash (the hash-store idea in IDEAS.md).
-- **References by what they name.** Every reference to a definition is stored by its qualified name (`orders.Line`), however it was written (`Line` under `from orders use Line`, or `orders.Line` under `use orders`); a call to another module's function is stored as a call of that name (`orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`). A definition's own name, its variants and methods, locals, fields and method calls (found from their receiver) are stored as written, and so is a name that resolves to nothing. When code is shown, each reference is written as short as its module's `use`s allow, so text is normalised: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) decides from its own `use` lines. In `compiler/resolve`: `stored` and `written`.
-- **Exact.** Decoding gives back the very tree that was encoded: comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
-- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A module file's bytes are what strata writes for it (a header's dependency lists can go stale when another module changes outside strata, or when an edit changes what a definition it leaves alone would now depend on: an edit writes only the files it changes, and in them keeps each untouched definition's bytes and entry as stored; `strata upgrade` rewrites them all).
-- **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed what is left of the file, nesting deeper than 10,000 levels is refused, and a definition that isn't in the file's module, or isn't of the kind and visibility its header entry says, is rejected. A definition's hashes are computed when it is stored and trusted when it is read (reading doesn't hash every definition again); `binary.read_checked` also checks each definition's bytes against its hash, which catches any change inside a definition (`compiler-bad_input`).
+- **A header inside the module file.** Like a C header, it comes first and lists every definition: its name, kind, visibility, three hashes, its dependencies and its size in bytes. Listing a module, building the dependency graph or finding what changed reads only the header: 14 µs for all of `examples/tasks`, against about 170 µs to decode everything.
+- **Interface first, bodies after.** Each definition's bytes start with its interface (types, signatures, contracts, laws), with each body written as `()`. The bodies follow. Checking code against a module needs only the interfaces, so a reader can stop there.
+- **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file, and its hash is the hash of those bytes. The same bytes could be stored as one object under that hash (the hash-store idea in IDEAS.md).
+- **Qualified references.** Every reference to a definition is stored by its qualified name (`orders.Line`), however it was written (`Line` under `from orders use Line`, or `orders.Line` under `use orders`). A call to another module's function is stored as a call of that name: `orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`. A definition's own name, its variants and methods, locals, fields, method calls (resolved from their receiver), and names that resolve to nothing are stored as written. When code is shown, each reference is written as short as the module's `use`s allow, so text is normalized: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) uses its own `use` lines. The conversions are `stored` and `written` in `compiler/resolve`.
+- **Exact.** Decoding returns exactly the tree that was encoded, including comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
+- **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A header's dependency lists can go stale when another module changes outside strata, or when an edit changes what an untouched definition would now depend on, because an edit writes only the files it changes and keeps each untouched definition's bytes and entry. `strata upgrade` rewrites every file.
+- **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed the rest of the file, nesting deeper than 10,000 levels is refused, and a definition that isn't in the file's module, or doesn't match the kind and visibility in its header entry, is rejected. Hashes are computed when a definition is stored and trusted when it is read, so reading doesn't rehash. `binary.read_checked` also checks each definition's bytes against its hash, which catches any change inside a definition (`compiler-bad_input`).
 
 A file of another format version is rejected. See [Changing the format](#changing-the-format).
 
@@ -29,8 +29,8 @@ module-file = "STRATA" version:uint 0  header  definitions
 bundle      = "STRATA" version:uint 1  manifest:option(raw-string)  modules:list(raw-bytes)
 ```
 
-- the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version` (`1`: the format is not settled, so changes to it convert the files rather than bump it), then `0` for a module file or `1` for a bundle;
-- a bundle holds the package's `strata.toml`, as written (none for a script), then each module file, as its length and its bytes, in the order the modules first appear in the program.
+- A file starts with the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), the format `version`, then `0` for a module file or `1` for a bundle. The version is `1`; while the format is unsettled, changes convert the files instead of bumping it.
+- A bundle holds the package's `strata.toml` as written (none for a script), then each module file as its length and bytes, in the order the modules first appear in the program.
 
 ### The header
 
@@ -64,14 +64,15 @@ definition = interface-strings:list(raw-string)  Decl     (each body written as 
              body-strings:list(raw-string)       bodies:list(Expr)
 ```
 
-The interface part comes first: its strings, then the `Decl` with each body replaced by `()` (`Unit`, one byte). The body part follows: the strings the bodies add (their indices continue after the interface's), then the bodies. `interface_size` in the header is the size of the interface part.
+The interface part comes first: its strings, then the `Decl` with each body replaced by `()` (`Unit`, one byte). The body part follows: the strings the bodies add, with indices continuing after the interface's, then the bodies. `interface_size` in the header is the size of the interface part.
 
 The bodies, in order, are:
-- a function's body;
-- a test's body;
-- the body of each function of a capability, in order;
-- the body of each method of a trait, in order (a method without a default has `()`);
-- the body of each method of an impl, in order.
+
+- a function's body
+- a test's body
+- the body of each function of a capability, in order
+- the body of each method of a trait, in order (`()` for a method without a default)
+- the body of each method of an impl, in order
 
 Types and `use` have none. Everything else is interface: signatures, `requires` / `ensures`, laws, fields, variants, refinements.
 
@@ -135,13 +136,13 @@ ModelDef    = comments:list(str)  name:str  value:Expr
 UseDecl     = path:str  alias:option(str)  items:option(list(UseItem))     use m [as a] (no items), from m use x, y as z
 UseItem     = name:str  alias:option(str)
 ExternDecl  = lang:Lang  item:ExternItem
-Lang        = 0 C
+Lang        = 0 C | 1 Builtin | 2 Python(module:str)
 CapabilityDecl = name:str  methods:list(FnDecl)
 DeriveFnDecl = trait_name:str  function:str  derived:bool  exports:list(str str)  files:list(str str)
 ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`; its `flags` byte is the sum of `1` for `terminates` and `2` for `noalloc` (a byte that was a `bool` before `noalloc`: older files read as they are), `derivable(t: Record) trait …` the trait's `derivable`. `derive Trait for function` (a lowercase name after `for`) is a `DeriveFnDecl` with `derived` set and no `exports` or `files` (what deriving makes, held only in memory: each exported symbol with its function, each file's extension with the function giving its part); its header `kind` is `8`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`; its `flags` byte is the sum of `1` for `terminates` and `2` for `noalloc` (so a file that stored it as a `bool` reads the same), `derivable(t: Record) trait …` the trait's `derivable`. `derive Trait for function` (a lowercase name after `for`) is a `DeriveFnDecl` with `derived` set and no `exports` or `files` (what deriving makes, held only in memory: each exported symbol with its function, each file's extension with the function giving its part); its header `kind` is `8`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`; `extern python "m" fn` is an `ExternItem.Fn` with the `Lang` `Python("m")`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
 
 ### Types
 
@@ -256,11 +257,11 @@ the definition:
 
 ## Changing the format
 
-The code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Until the format is settled, `VERSION` stays `1`: there is nothing to stay compatible with. Convert the files in the same change:
+Code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Until the format is settled, `VERSION` stays `1`, and the files are converted in the same change:
 
-1. with the strata of before the change, write each file's text: `strata view main --file F > F.st` (`view --split DIR` for a package; a strata from before `view` printed modules: `render`);
-2. make the change and build;
-3. read the text back in: `strata --file F edit < F.st` for a script, `strata --file PKG/ edit MODULE < M.st` for each module of a package (the standard library first: its modules are `std.io`, …; the compiled prelude, `runtime/prelude.strata`, is module `strata.compiled`);
-4. `strata upgrade` rewrites every package and script of the repository in the current form, bringing the headers' dependency lists up to date (it prints each file it rewrites).
+1. With the strata from before the change, write each file's text: `strata view main --file F > F.st`, or `view --split DIR` for a package.
+2. Make the change and build.
+3. Read the text back in: `strata --file F edit < F.st` for a script, or `strata --file PKG/ edit MODULE < M.st` for each module of a package. Do the standard library first; its modules are `std.io`, …, and the compiled prelude, `runtime/prelude.strata`, is module `strata.compiled`.
+4. Run `strata upgrade`, which rewrites every package and script in the repository in the current form, updating the headers' dependency lists, and prints each file it rewrites.
 
-Adding a node at the end of a list of tags keeps old files readable, so it needs no conversion; adding a field to a node, or changing a node, does. Once the format is settled, the version will count changes, and the reader may accept older versions.
+Adding a node at the end of a list of tags keeps existing files readable, so it needs no conversion. Adding a field to a node, or changing a node, does. Once the format is settled, the version will count changes, and the reader may accept older versions.

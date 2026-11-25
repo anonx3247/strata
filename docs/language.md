@@ -1,10 +1,10 @@
 # The language
 
-A guide to Strata: what you need to read and write it, feature by feature. The fine print (every rule, edge case and builtin) is in the [language reference](language-reference.md), section by section as here, and [Learn Strata in Y minutes](learn-strata.md) has the language in one valid file. Strata code is highlighted as Rust, the closest match.
+This guide covers what you need to read and write Strata, one feature at a time. The [language reference](language-reference.md) has every rule, edge case and builtin, in sections that follow the same order. [Learn Strata in Y minutes](learn-strata.md) shows the whole language in one valid file. Code blocks are highlighted as Rust, the closest match.
 
 ## A taste
 
-`examples/bank.strata` is the smallest complete example. `examples/orders.strata` is the larger one excerpted below. `examples/tasks/` is a port of a real library, with a write-up of what verification found.
+`examples/bank.strata` is the smallest complete example. `examples/orders.strata` is a larger one, excerpted below. `examples/tasks/` is a port of a real library, with a write-up of what verification found in it.
 
 ```rust
 type OrderId  = String where matches(it, "ord_[a-z0-9]{6}")
@@ -49,16 +49,18 @@ test "a mocked store never breaks ship's contract" {
 
 ## Refinements: named, inline, and structural
 
-Refinements are structural: `type Quantity = Int where 1 <= it && it <= 99` is an `Int` plus a check, not a new nominal type. Any `Int` can be passed where a `Quantity` is expected, with no cast, and the check happens where the value crosses the boundary: at compile time for literals, at runtime otherwise, and under `verify`. A constraint used in one place doesn't need a name at all:
+A refinement type is a base type plus a predicate. `type Quantity = Int where 1 <= it && it <= 99` is still an `Int`, so any `Int` can be passed where a `Quantity` is expected, without a cast. The predicate is checked when a value becomes a `Quantity`: at compile time for literals, at run time for other values, and for every input by `strata verify`.
+
+A refinement used once can be written inline:
 
 ```rust
 fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }
 fn halve(n: Natural) -> Int where it >= 0 ensures it * 2 <= n { n / 2 }
 ```
 
-The prelude provides the common ones: `Natural`, `Positive`, `Negative`, `NonZero`, `Probability`, `Percentage`, `NonEmpty[T]`, `NonEmptyString`. `strata builtins` lists them with every builtin function.
+The prelude defines the common ones: `Natural`, `Positive`, `Negative`, `NonZero`, `Probability`, `Percentage`, `NonEmpty[T]` and `NonEmptyString`. `strata builtins` lists them along with every builtin function.
 
-A bare alias adds nothing, so `type Name = String` is an error. Constrain it with `where`, or make it a separate nominal type:
+An alias with no predicate adds nothing, so `type Name = String` is an error. Add a `where`, or declare a separate nominal type with `distinct`:
 
 ```rust
 distinct type UserId = String where matches(it, "u_[0-9]+")
@@ -66,19 +68,22 @@ id := UserId("u_42")      // explicit construction, checked
 id.value                     // the underlying String
 ```
 
-A `distinct` type never mixes with its base or with other distinct types (`OrderId` ≠ `UserId`), it can have trait implementations, and it serialises to JSON as its underlying value.
+A `distinct` type never mixes with its base type or with other distinct types (`OrderId` ≠ `UserId`). It can implement traits, and it serialises to JSON as its underlying value.
 
 ## Refinements and contracts: one way each
 
-A refinement says what one value is; a contract (`requires`, `ensures`) relates values. Each fact has one place:
+A refinement constrains one value. A contract (`requires`, `ensures`) relates several values. Each fact has exactly one place to be written:
 
-- a `requires` (or a conjunct of one: `a && b` is two) that names one parameter, and constants, is that parameter's refinement: `requires price >= 100` is `price: Cents where it >= 100`;
-- an `ensures` that names only `it` is the result's refinement: `ensures it >= 0` is `-> Cents where it >= 0`; one that names only an element of a tuple result (`it.1`, or a named result) is that element's: `-> (next: Q, added: Int where it >= 0)`;
-- a refinement names only `it` and constants: one that names another parameter (`k: Int where it <= n`) is a contract, `requires k <= n` (on the result, an `ensures`).
+- A `requires` that names one parameter and constants belongs in that parameter's refinement. `requires price >= 100` is written `price: Cents where it >= 100`. Each conjunct counts separately: `a && b` is two facts.
+- An `ensures` that names only `it` belongs in the result's refinement. `ensures it >= 0` is written `-> Cents where it >= 0`. If it names only one element of a tuple result (`it.1`, or a named result), it belongs on that element: `-> (next: Q, added: Int where it >= 0)`.
+- A refinement may name only `it` and constants. One that names another parameter (`k: Int where it <= n`) is a contract: `requires k <= n`, or an `ensures` when it is on the result.
 
-`strata check` (and `strata edit`, for what it wrote) warns on each one written the other way, showing the replacement, and `strata fix` makes it (`strata fix NAME` for some definitions). A `mut` parameter keeps its `requires`: a refinement holds for the variable's whole life, a `requires` only on entry. A trait's methods, and an implementation's of a trait, are left as they are: the trait sets their signatures.
+`strata check` warns about each fact written in the wrong form and shows the replacement. `strata edit` does the same for what it writes. `strata fix` applies the replacements, to every definition or to the ones named (`strata fix NAME`). Two cases are left alone:
 
-**Named results.** A function returning a tuple can name its elements, for its readers and for its `ensures`, where the names are bound to the elements (`it` is still the whole tuple). Callers destructure the tuple as before:
+- A `mut` parameter keeps its `requires`, because a refinement holds for the variable's whole life and a `requires` only on entry.
+- Trait methods and their implementations keep their form, because the trait sets their signatures.
+
+**Named results.** A function that returns a tuple can name the elements. The names are bound in its `ensures`, and `it` is still the whole tuple. Callers destructure the tuple as usual:
 
 ```rust
 pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> (next: MemQueue[P, E], added: Natural)
@@ -89,7 +94,7 @@ pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> (next: MemQ
 (q2, n) := mem_enqueue(q, tasks)
 ```
 
-**`old`: a value before the call.** A function can change its `mut` parameters (and a method `mut self`), so its `ensures` may relate what they are when it returns to what they were when it started: `old e` is `e` evaluated where the function started. In an `ensures`, a `mut` parameter's name is its value at the end:
+**`old`: a value before the call.** A function can change its `mut` parameters, and a method can change `mut self`. Its `ensures` can then relate their final values to their initial ones. In an `ensures`, a `mut` parameter's name means its value at the end, and `old e` means `e` evaluated when the function started:
 
 ```rust
 fn push_one(mut xs: List[Int], x: Int)
@@ -104,11 +109,19 @@ trait Counter {
 }
 ```
 
-`old` is a prefix keyword that binds tighter than any operator: `old a + b` is `(old a) + b`, and it takes a whole chain of fields and calls (`old q.entries.get(id)`); parentheses only group (`old (a + b)`, `old(x)` is `old x`). Its value has the type of `e`. It goes only in an `ensures`, once (`old old e` is an error), over what the function starts with: its parameters, not `it` nor a name bound inside the clause (a lambda's parameter). `old e` where `e` names no `mut` parameter is the same value before and after: `strata check` warns, and `strata fix` drops the `old`. Callers rely on the contract with the arguments' values before and after the call, as `verify` sees it (a generic function calling a trait's `mut self` method too); a broken one shows both values (`before: len(xs) = 2, after: len(xs) = 2`). Outside an `ensures`, `old` is an ordinary name (`old := x`).
+Rules for `old`:
+
+- It is a prefix keyword that binds tighter than any operator: `old a + b` is `(old a) + b`. It takes a whole chain of fields and calls (`old q.entries.get(id)`). Parentheses only group: `old (a + b)`, and `old(x)` is `old x`.
+- `old e` has the type of `e`.
+- It is allowed only in an `ensures`, at most once per expression (`old old e` is an error), and only over the function's parameters. It cannot refer to `it` or to a name bound inside the clause, such as a lambda's parameter.
+- If `e` names no `mut` parameter, `old e` equals `e`. `strata check` warns, and `strata fix` removes the `old`.
+- Outside an `ensures`, `old` is an ordinary name (`old := x`).
+
+Callers rely on the contract using the argument values before and after the call. `verify` does the same, including in a generic function that calls a trait's `mut self` method. A broken contract shows both values: `before: len(xs) = 2, after: len(xs) = 2`.
 
 ## Records and defaults
 
-A record's field can have a default, written after its type. Nothing gets a default implicitly.
+A record field can have a default, written after its type:
 
 ```rust
 type Retry = {
@@ -120,11 +133,11 @@ r := Retry { attempts: 5 }      // backoff: [100, 200], label: "retry"
 d := Retry {}
 ```
 
-A constructor that leaves out a field with a default gets the default; so does JSON input with the key missing, and a command line without the option. Nothing gets a default implicitly.
+A missing field takes its default in a constructor, in JSON input, and on a command line. Fields without a declared default have none.
 
 ### Spreading a record into a call
 
-`f(...x)` gives the fields of record `x` to the parameters of `f` with the same names; fields `f` doesn't take are left alone:
+`f(...x)` passes the fields of record `x` to the parameters of `f` that have the same names. Fields that `f` doesn't take are ignored:
 
 ```rust
 type Order = { id: Int, qty: Int, price: Int, note: String }
@@ -139,11 +152,16 @@ with_fee(...order, ...Fee { fee: 2 })
 shop.line(...order)                 // methods, and `Shop.new(...x)`, alike
 ```
 
-It is the call written out, decided when the program is checked, so it runs, compiles and is verified as that call. Positional arguments come before the spreads (they give the first parameters) or after them (the last); the spreads give the rest, each parameter from the one record that has a field of its name. A parameter no record gives, or two give, is an error, as is a record that gives none, and a `mut` parameter, which is passed explicitly (`mut x`). A value spread that isn't a variable or a field of one is computed once, before the call's other arguments.
+The spread is expanded into the written-out call when the program is checked, so it runs, compiles and verifies exactly as that call would.
+
+- Positional arguments before the spreads fill the first parameters, and positional arguments after them fill the last ones. The spreads fill the rest.
+- Each remaining parameter must come from exactly one record. A parameter that no record provides, or that two records provide, is an error. So is a record that provides nothing.
+- A `mut` parameter cannot come from a spread. Pass it explicitly (`mut x`).
+- A spread value that isn't a variable or a field of one is evaluated once, before the call's other arguments.
 
 ## Unions, variants and patterns
 
-A union holds a value of any of its members. It is a union of sets, so it normalizes: `Int | Positive` is just `Int`, and different types stay apart.
+A union holds a value of any of its member types. Unions are unions of sets, so they normalize: `Int | Positive` is just `Int`, while distinct types stay separate.
 
 ```rust
 type Square = { side: Positive }
@@ -161,9 +179,18 @@ fn describe(v: Int | String) -> String {
 }
 ```
 
-**A union declares its members or names them.** `type Shape = Circle | Square { side: Float } | Dot` uses the record `Circle` and declares `Square` (a record) and `Dot` (an atom: a type with one value). A bare name is the type of that name when one is in scope, and is declared by the union only when nothing has that name; a member written with fields (`Moved(Int)`, `Square { .. }`) is declared. The same union can be written with a bar before each member, one per line, and `type ShapeError = | Empty | TooBig { max: Int }` declares both its members. A member declared in a union is a type like any other: a function can take `e: TooBig` (and read `e.max`), or return `Result[Shape, TooBig]`, and an atom or tuple-shaped type can be declared on its own too (`type Dot`, `type Moved(Int)`), to be used in several unions. Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` stays unambiguous. A member declared in a union has its name unique in its module (another module's type of the same name is told apart by its module, as `geo.Circle`). `edit` warns when a new member is named like an existing type (`Circel` next to `Circle`).
+**A union either references its members or declares them.** In `type Shape = Circle | Square { side: Float } | Dot`, `Circle` refers to an existing record, `Square` is declared as a record, and `Dot` is declared as an atom (a type with a single value).
 
-**A member it declares can have a `///` doc comment**, written above its `|`, as a record's field can: `std.typing` gives it to derived traits (a `CommandLine` union shows it as the command's help).
+- A bare name refers to the type in scope with that name. The union declares it only when no such type exists.
+- A member written with fields (`Moved(Int)`, `Square { .. }`) is always declared.
+- The members can also be written one per line, each after a `|`. `type ShapeError = | Empty | TooBig { max: Int }` declares both members.
+- A declared member is an ordinary type. A function can take `e: TooBig` and read `e.max`, or return `Result[Shape, TooBig]`.
+- Atoms and tuple-shaped types can also be declared alone (`type Dot`, `type Moved(Int)`) to be shared by several unions.
+- Constructors still need wrapping (`Err(TooBig { max: 9 })`), so `Result[Int, Int]` is unambiguous.
+- A member's name must be unique in its module. A type with the same name in another module is distinguished by its module, as in `geo.Circle`.
+- `edit` warns when a new member's name is close to an existing type's (`Circel` next to `Circle`).
+
+**A declared member can have a `///` doc comment**, written above its `|`, like a record field. `std.typing` passes it to derived traits. For example, a union deriving `CommandLine` shows it as the command's help.
 
 ```rust
 type Command =
@@ -173,24 +200,24 @@ type Command =
   | Edit { module: Option[String] }
 ```
 
-**Only bare members flatten.** `type S2 = S | C` with `type S = A | B` is `A | B | C`; `type S3 = D(S) | E` is `D | E`: `D` is a new type holding an `S`.
+**Only bare members are flattened.** With `type S = A | B`, `type S2 = S | C` is `A | B | C`. `type S3 = D(S) | E` is `D | E`, where `D` is a new type that holds an `S`.
 
-**Patterns are sets of values**, and an arm takes what the arms above it left:
+**Patterns are sets of values.** Each arm matches what the arms above it left unmatched. A pattern can be:
 
-- a type's name: `Positive =>`, `String =>`, `List[Int] =>`, `Circle =>` (a variant, whatever its fields), or a trait (`Named =>`, values that implement it);
-- a variant or record with fields, as before: `Some(x)`, `Pending { id, .. }`;
-- a literal: `0`, `"x"`, `true`;
-- a condition on the value `it`: `where 3 <= it && it <= 5 =>`, `where len(it) > 0 =>`, `where it < 0.5 =>`;
-- alternatives: `Square | Triangle =>`, `0 | 1 | 2 =>`, `(0, x) | (x, 0) =>` (they bind the same names);
-- `_`.
+- a type name: `Positive =>`, `String =>`, `List[Int] =>`, `Circle =>` (a variant, with any fields), or a trait (`Named =>`, matching values that implement it)
+- a variant or record with fields: `Some(x)`, `Pending { id, .. }`
+- a literal: `0`, `"x"`, `true`
+- a condition on the value `it`: `where 3 <= it && it <= 5 =>`, `where len(it) > 0 =>`, `where it < 0.5 =>`
+- alternatives that bind the same names: `Square | Triangle =>`, `0 | 1 | 2 =>`, `(0, x) | (x, 0) =>`
+- `_`
 
-**Narrowing.** Inside an arm, the matched variable has the arm's type (`s` is a `Square` above), and no new name is needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. A matched field (`match t.status { Closed => t.status.why, … }`) narrows too. Assigning to a narrowed `mut` variable ends its narrowing.
+**Narrowing.** Inside an arm, the matched variable has the arm's type, so `s` above is a `Square` with no new name needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. Matching on a field narrows the field too (`match t.status { Closed => t.status.why, … }`). Assigning to a narrowed `mut` variable ends the narrowing.
 
-**Exhaustive and reachable.** The checker reports a value no arm takes (`` `where 3 <= it && it <= 5` is not covered``), and an arm the arms above already cover (`unreachable match arm `Positive``). The matched value's own refinement counts: in `fn f(n: Positive)`, `match n { 1 => …, where it > 1 => … }` is exhaustive.
+**Exhaustiveness and reachability.** The checker reports values that no arm matches (`` `where 3 <= it && it <= 5` is not covered``) and arms that earlier arms already cover (`unreachable match arm `Positive``). The matched value's refinement is taken into account: with `fn f(n: Positive)`, `match n { 1 => …, where it > 1 => … }` is exhaustive.
 
 ## Traits
 
-A trait describes what a *type* can do. The implementation is chosen by the type of the value. A type can implement any number of traits, so they form a graph rather than a hierarchy.
+A trait describes what a type can do. The implementation is chosen by the type of the value. A type can implement any number of traits, so traits form a graph rather than a hierarchy.
 
 ```rust
 trait Describe { fn describe(self) -> String  ensures len(it) > 0 }
@@ -206,15 +233,15 @@ impl[T] Combine for List[T] { ... }                      // generic impls; built
 fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (acc, x) -> acc.combine(x)) }
 ```
 
-- **Contracts** (`requires` / `ensures`) on a trait method bind every implementation.
-- **Laws** are checked by `strata verify` against every implementation: proven by the solver, which sees through the implementation's methods (when they end and can't fail), else with generated inputs. In `examples/traits.strata`, both laws are proven for `Money` and for `List[T]`, and the solver finds that averaging (`Midpoint`) is not associative.
-- **A law may be a sequence of calls** ending in what must hold: `law enqueue_once(q: Self, id: Int) { mut r := q; mut r.enqueue(id); (mut r.enqueue(id)) == 0 }` (one statement per line). A counterexample lists the values and the steps.
-- **`shared trait Queue { … }`**: many workers use one value at once (its state lives outside the program). Each method is one atomic step; callers keep no facts about its models from one call to the next, and an implementation's method changes its outside state through one call (a read then a write is a race, refused).
-- **Generic functions** are fuzzed with a type that actually implements their bounds.
+- Contracts (`requires`, `ensures`) on a trait method apply to every implementation.
+- `strata verify` checks laws against every implementation. The solver proves a law when it can see through the implementation's methods, which requires them to terminate and not fail. Otherwise the law is tested with generated inputs. In `examples/traits.strata`, both laws are proven for `Money` and for `List[T]`, and the solver finds that averaging (`Midpoint`) is not associative.
+- A law can be a sequence of calls ending in the condition that must hold, one statement per line: `law enqueue_once(q: Self, id: Int) { mut r := q; mut r.enqueue(id); (mut r.enqueue(id)) == 0 }`. A counterexample lists the values and the steps.
+- A `shared trait` (`shared trait Queue { … }`) is used by many workers at once, with its state outside the program. Each method is one atomic step. Callers keep no facts about its models from one call to the next. An implementation's method must change the outside state with a single call; a read followed by a write is a race and is rejected.
+- Generic functions are fuzzed with a type that implements their bounds.
 
-**Capabilities are traits too.** There are no separate effects: a backend (database, queue, console, clock) is a trait, and code that uses one takes an implementation as a parameter or holds it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must tie things together, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its value says `mut self` (`fn save(mut self, o: Order)`). Tests pass a `mock Db`. Iterators and tasks are language features of their own, not capabilities (see Iterators, and Tasks).
+**Capabilities are traits.** Strata has no separate effect system. A backend such as a database, queue, console or clock is a trait. Code that uses one takes an implementation as a parameter or stores it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must link several types, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its receiver takes `mut self` (`fn save(mut self, o: Order)`). Tests pass a `mock Db`. Iterators and tasks are separate language features (see Iterators and Tasks).
 
-**Mocks, for tests.** A mock is declared like a type, with `mock` in place of `type`, and implemented like any type; its implementations may leave methods out:
+**Mocks.** A mock is declared like a type, with `mock` in place of `type`, and implemented like any type. Its implementations may omit methods:
 
 ```rust
 /// An in-memory disk, for tests.
@@ -235,10 +262,10 @@ test "saving then loading" {
 }
 ```
 
-- A method left out answers as `mock Files` does: it checks the method's `requires` and gives a result within its type and `ensures`.
-- A mock is for tests only: a `test`, another mock, or an `impl` for one may name it; anything else is an error, so a mock never reaches a real run.
+- An omitted method behaves like the method of `mock Files`: it checks the method's `requires` and returns a value that satisfies its type and `ensures`.
+- Only tests can use a mock. A `test`, another mock, or an `impl` for a mock may name it. Naming it anywhere else is an error, so a mock never reaches a real run.
 
-**Capabilities given by the runtime.** A trait that reaches the outside world is marked `capability trait`; anything may implement it, mocks for tests included. The real thing is a `capability`: functions that reach the outside world, holding no data. Only the runtime makes one, for `main` or a test that asks for it by name, and its functions are called on that value, so holding it is the permission:
+**Capabilities provided by the runtime.** A trait that reaches the outside world is declared `capability trait`. Any type can implement it, mocks included. The real implementation is a `capability`: a set of functions that reach the outside world and hold no data. Only the runtime creates one, for `main` or for a test that asks for it by name. Its functions are called on that value, so holding the value is the permission:
 
 ```rust
 /// Reading the time.
@@ -267,14 +294,14 @@ test "the real clock" (sys: SystemClock) {
 }
 ```
 
-- A capability has no constructor: `SystemClock {}`, `mock SystemClock`, JSON input and `SystemClock.seconds()` are all errors. A program's signature (`main`'s parameters) lists every capability it can use.
-- `main` names the capabilities it may use and picks among them in ordinary code (an option choosing SQLite or Postgres), handing the rest of the program a capability trait value (`late(sys)`).
-- A test may ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`); one that doesn't uses mocks.
-- `verify` never runs a capability's code (it reports it as assumed), nor code that takes one; that code is proven from the capability's contracts like any other.
+- A capability has no constructor. `SystemClock {}`, `mock SystemClock`, JSON input and `SystemClock.seconds()` are all errors. `main`'s parameters therefore list every capability a program can use.
+- `main` chooses among its capabilities in ordinary code, for example an option that picks SQLite or Postgres. It passes the rest of the program a capability trait value (`late(sys)`).
+- A test can ask for capabilities the same way (`test "..." (sys: SystemClock) { ... }`). A test that doesn't uses mocks.
+- `verify` never runs a capability's code, which it reports as assumed, or code that takes a capability. It proves that code from the capability's contracts, like any other code.
 
-std's are capabilities too: `Disk` (`std.fs`, for `Files`), and `Process` and `Launcher` (`std.process`, for `Environment` and `Commands`: running other programs), which `main` names. `Console` is the one capability the environment chooses, so `main` asks for the trait: it gets the terminal under `strata run`.
+std defines its own capabilities: `Disk` (`std.fs`, implementing `Files`), and `Process` and `Launcher` (`std.process`, implementing `Environment` and `Commands` for running other programs). `main` asks for them by name. `Console` is the exception: the environment chooses its implementation, so `main` asks for the trait. Under `strata run`, it gets the terminal.
 
-**A type's own methods.** `impl Item { ... }` gives a type methods of its own, with no trait. A method with `self` is called on a value (`item.priced(42)`). One without `self` is called on the type, which makes it a constructor: `Item.new("tea")`. Only a record, sum or `distinct` type defined in the program can have them, in the module that defines it, and in a single `impl Item` block.
+**Inherent methods.** `impl Item { ... }` gives a type methods of its own, outside any trait. A method that takes `self` is called on a value (`item.priced(42)`). A method without `self` is called on the type, which makes it a constructor: `Item.new("tea")`. Only records, sums and `distinct` types defined in the program can have inherent methods. They must be in the module that defines the type, in a single `impl Item` block.
 
 ```rust
 impl Item {
@@ -284,7 +311,7 @@ impl Item {
 tea := Item.new("tea").priced(42)
 ```
 
-**Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`.
+**Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and similar functions (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so their signature must mention `Self`.
 
 ```rust
 trait Empty: Combine {
@@ -296,7 +323,7 @@ fn combine_any[T: Empty](xs: List[T]) -> T { fold(xs, T.empty(), (acc, x) -> acc
 
 ## Modules: units that meet only through contracts
 
-A **file is a module**, named after its path in the package: `shop/orders.strata` is `shop.orders`, and `main.strata` is the root module. There are no `module { }` blocks.
+Each file is a module, named after its path in the package. `shop/orders.strata` is `shop.orders`, and `main.strata` is the root module. There are no `module { }` blocks.
 
 ```rust
 // orders.strata
@@ -311,10 +338,14 @@ use std.json as j                     // under another name: `j.parse(s)`
 pub fn invoice(o: Order) -> Cents { ... }
 ```
 
-- **Every other module comes in through a `use`**, std's included: `use m` binds the module to its last name (`use shop.orders` gives `orders.ship(x)`), `use m as a` to `a`, and `from m use x, y as z` brings names in unqualified (a type with its constructors, a trait with its methods). A name written in full (`std.json.parse`) still needs a `use` of its module (`use std` covers `std.json` too); without one it is an error saying which `use` to add. Only the prelude (`Option`, `Result`, `Int`, `print`, …) needs none. A long `from` list is printed filled to the line width.
-
-- A module is used **only through its public contract**: `pub` types, function signatures, `requires`/`ensures`, trait laws. Anything else is private, and using it from another module is an error ("`secret` is private to module `a`").
-- `strata interface orders` prints that contract, with a hash. Editing a private definition, or a function body without touching its signature, is reported as "implementation only": nothing outside the module can be affected. Changing a `pub` signature or type says so ("module core: its public contract changed").
+- Every other module, std's included, must be imported with `use`. Only the prelude (`Option`, `Result`, `Int`, `print`, …) needs no import.
+  - `use m` binds the module to its last name: `use shop.orders` gives `orders.ship(x)`.
+  - `use m as a` binds it to `a`.
+  - `from m use x, y as z` imports names unqualified. A type comes with its constructors, and a trait with its methods.
+  - A fully qualified name (`std.json.parse`) still needs a `use` of its module. `use std` covers `std.json` too. Without the `use`, the error says which one to add.
+  - A long `from` list is printed wrapped to the line width.
+- Other modules see only a module's public contract: `pub` types, function signatures, `requires` and `ensures`, and trait laws. Everything else is private, and using it from another module is an error ("`secret` is private to module `a`").
+- `strata interface orders` prints the public contract with its hash. Editing a private definition, or a function body without changing its signature, is reported as "implementation only", meaning nothing outside the module is affected. Changing a `pub` signature or type is reported too ("module core: its public contract changed").
 
 ## Mutation: immutable by default, mutable when you say so
 
@@ -328,7 +359,16 @@ fn restock(mut line: Line, extra: Int) { line.qty += extra }   // changes the ca
 restock(mut line, 5)                                           // and the call says so
 ```
 
-Procedural code is normal Strata: `loop { … }` repeats until `break`, and `continue` skips to the next iteration. A loop can state what stays true from pass to pass, between its header and its body: `while i < n` then `invariant 2 * total == i * (i + 1)` on the next line. It is checked at the loop's head when the program runs, and `strata verify` proves it (see [verification](verification.md#loops)); `assumed invariant` (and `assumed requires`, `assumed ensures`) leaves a clause to `verify` alone: trusted, never checked when the program runs ([assumed contracts](verification.md#assumed-contracts-trusted-never-checked)); most loops need none, as `verify` infers simple ones. A `while` or `loop` can also say why it ends, the same way: `decreases n - i`, or `decreases (left, size)` for measures compared in order (one goes down, or it stays and the next does); a recursive function says it beside `requires` (`decreases (m, n)`). It is proven by `verify` and checked when the program runs where it isn't (see [termination](verification-reference.md)); `verify` finds most measures on its own. Method chains can be split across lines:
+Strata supports procedural code. `while` and `for` loop as usual, `loop { … }` repeats until `break`, and `continue` skips to the next iteration.
+
+**Loop annotations.** Between a loop's header and its body, a loop can state:
+
+- An invariant, which holds on every pass: `while i < n` followed by `invariant 2 * total == i * (i + 1)` on the next line. It is checked at the head of the loop at run time, and `strata verify` proves it (see [verification](verification.md#loops)). Most loops need none, because `verify` infers simple invariants.
+- A termination measure: `decreases n - i`, or `decreases (left, size)` for measures compared in order (the first decreases, or it stays the same and the next one decreases). A recursive function writes its measure next to `requires` (`decreases (m, n)`). `verify` proves the measure, and finds most measures without one being written. Where it can't prove it, the measure is checked at run time (see [termination](verification-reference.md)).
+
+`assumed invariant`, `assumed requires` and `assumed ensures` mark a clause as trusted: `verify` assumes it, and it is never checked at run time ([assumed contracts](verification.md#assumed-contracts-trusted-never-checked)).
+
+Method chains can be split across lines:
 
 ```rust
 best := scores
@@ -338,15 +378,29 @@ best := scores
   .take(3)
 ```
 
-**Bindings.** `:=` names a new value and infers its type: `n := 0`, `(w, k) := pair()`. With a type, the colon is already there, so the sign is `=`: `let x: Int = 5`. A mutable variable is `mut x := 0` or `mut x: Int = 0`. A plain `=` changes an existing variable or field (`x = e`, `line.qty = …`), and `+=`, `-=`, `*=`, `/=`, `%=` are short for `x = x + e` and so on (and are how such an assignment is printed). A function that returns `()` leaves out `-> ()`: `fn log(s: String) { … }`. A call's parentheses are written against the name: `f(x)` is a call, while `f (x)` is `f` followed by `(x)`.
+**Bindings.**
 
-Variables are immutable unless declared `mut`. `while` and `for` loops are available. Mutation is always *visible*:
-- a function that changes an argument declares it `mut`, and the caller passes a mutable variable marked `mut` at the call (`restock(mut line, 5)`), which is updated when the call returns. The marker is required there, and an error anywhere else;
-- a method that changes its receiver takes `mut self`, and the call is marked the same way: `mut queue.claim(2)` (as Hylo writes `&x.append(1)`). The mark is required for such a method, and an error on any other. It marks the first call on the place after it: `mut queue.claim(2).len()` changes `queue` through `claim`, and is written `(mut queue.claim(2)).len()`. As an argument, the marked call is put in parentheses, `f((mut queue.pop()), x)`, to tell it from `f(mut queue)`, which passes `queue` to a `mut` parameter.
+- `:=` binds a new name and infers its type: `n := 0`, `(w, k) := pair()`.
+- With an explicit type, the colon is already present, so the sign is `=`: `let x: Int = 5`.
+- A mutable variable is `mut x := 0` or `mut x: Int = 0`.
+- `=` alone assigns to an existing variable or field (`x = e`, `line.qty = …`). `+=`, `-=`, `*=`, `/=` and `%=` are shorthand for `x = x + e` and so on, and the printer uses them for such assignments.
+- A function that returns `()` omits `-> ()`: `fn log(s: String) { … }`.
+- A call's parentheses touch the name: `f(x)` is a call, while `f (x)` is `f` followed by `(x)`.
 
-There are no shared references, so nothing changes behind your back: `ys := xs` is a copy, and changing `xs` afterwards leaves `ys` as it was (the same holds for passing a value or storing it in a field). There is no `copy` or `clone` to call; the copying is the compiler's business (compiled code shares the value and copies it only when one side changes it while the other still holds it: see [values and copying](#values-and-copying) for what that costs). A declared type holds for the variable's whole life: every assignment is checked against it.
+Variables are immutable unless declared `mut`, and every mutation is visible at the call site:
 
-**Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list is sliced with a range: `xs[1..3]`, `xs[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python. One element is `xs[i]`: `i` must be in range, which is checked when the code runs and proven by `verify`; `get(xs, i)` gives an `Option` instead. An element of a `mut` list is assigned the same way, `xs[i] = v` (and `xs[i] += 1`, `grid[r][c] = v`, `s.items[i] = v`, `s.items[i].qty = 3`): values never change, so it means `xs = set_at(xs, i, v)`, `xs` with element `i` replaced (a copy held elsewhere keeps the old one), with the same condition on `i`. It is O(1): the compiled code changes the list in place when nothing else holds it. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
+- A function that changes an argument declares the parameter `mut`. The caller passes a mutable variable and marks it `mut` at the call (`restock(mut line, 5)`). The variable is updated when the call returns. The marker is required there and is an error anywhere else.
+- A method that changes its receiver takes `mut self`, and the call is marked the same way: `mut queue.claim(2)`. This is similar to Hylo's `&x.append(1)`. The marker is required for such a method and is an error on any other. It applies to the first call after the place, so `mut queue.claim(2).len()` changes `queue` through `claim` and is printed `(mut queue.claim(2)).len()`. When the marked call is an argument, it is parenthesized, `f((mut queue.pop()), x)`, to distinguish it from `f(mut queue)`, which passes `queue` to a `mut` parameter.
+
+There are no shared references, so nothing changes behind your back. `ys := xs` makes a copy, and changing `xs` afterwards leaves `ys` unchanged. Passing a value or storing it in a field behaves the same way. There is no `copy` or `clone`. Compiled code shares the value and copies it only when one holder changes it while another still holds it (see [values and copying](#values-and-copying) for the cost). A variable's declared type holds for its whole life, and every assignment is checked against it.
+
+**Ranges, slices and comprehensions.**
+
+- `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`. A range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`).
+- A range slices a list: `xs[1..3]`, `xs[..3]`, `xs[2..]`, `xs[..=i]`. Slices are clamped to the list's length, as in Python.
+- `xs[i]` is one element. `i` must be in range: this is checked at run time and proven by `verify`. `get(xs, i)` returns an `Option` instead.
+- An element of a `mut` list is assigned with the same syntax: `xs[i] = v`, `xs[i] += 1`, `grid[r][c] = v`, `s.items[i] = v`, `s.items[i].qty = 3`. Since values never change, `xs[i] = v` means `xs = set_at(xs, i, v)`, with the same condition on `i`. A copy held elsewhere keeps the old element. The assignment is O(1): compiled code updates the list in place when nothing else holds it.
+- A comprehension builds a list from one or more others, with an optional `where` filter written as in a refinement:
 
 ```rust
 [x * x for x in xs where x > 0]
@@ -356,54 +410,65 @@ Dict { w: len(w) for w in words }
 Set { x % 3 for x in xs }
 ```
 
-Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early. A lambda of several parameters where a function of one tuple of as many elements is expected takes the tuple apart: `pairs.filter((k, v) -> v > 0)`, `xs.enumerate().map((i, x) -> i * x)` bind the elements, with the tuple's types (written without parameter types; a lambda passed where a function of two arguments is expected, as `fold`'s, stays one of two arguments). A parameter, a lambda's or a function's, can also be a pattern that always matches (a tuple, a record pattern, nested, `_`), with or without a type: `pairs.map(((a, b)) -> a + b)`, `fold(m, 0, (acc, (k, v)) -> acc + v)`, `((a, b): (Int, Int)) -> a * b`, `fn dist((x, y): (Int, Int)) -> Int`, `(Seg { from: Pt { x, y }, to }) -> …`. It means taking the argument and binding it with the pattern, as `:=` does; a pattern that may not match (a variant, a literal) is refused: take the value and `match` on it.
+**Lambdas** use an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`. Parameter types are optional (`(s: String) -> s + "!"`). A refined parameter type, such as `(n: Positive) -> …`, is checked on every call, as in a named function. A longer body is a block (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
+
+A lambda with several parameters, passed where a function of one tuple is expected, destructures the tuple: `pairs.filter((k, v) -> v > 0)` and `xs.enumerate().map((i, x) -> i * x)` bind the elements with the tuple's types. This applies only when the parameters have no written types. A lambda passed where a two-argument function is expected, as in `fold`, keeps two arguments.
+
+Any parameter, of a lambda or a function, can be an irrefutable pattern: a tuple, a record pattern, nested patterns or `_`, with or without a type. Examples: `pairs.map(((a, b)) -> a + b)`, `fold(m, 0, (acc, (k, v)) -> acc + v)`, `((a, b): (Int, Int)) -> a * b`, `fn dist((x, y): (Int, Int)) -> Int`, `(Seg { from: Pt { x, y }, to }) -> …`. The argument is bound to the pattern as `:=` would bind it. A refutable pattern, such as a variant or a literal, is rejected; take the value and `match` on it instead.
+
 ### Unused values and variables
 
-Values never change, so a statement whose value is dropped almost always means a mistake: `xs + [1]` on its own line makes a new list and throws it away. An expression statement whose value isn't `()` is an error (`the value of `xs + [1]` is not used: use it, or discard it with `_ := …``), and a value dropped on purpose is written `_ := e`. That covers a call kept only for what it does through a capability when it also returns something, an `if` or `match` statement whose arms give values (discard the arms' values, or the whole), and `x + 1`; a `mut` method call returning `()` (`mut q.claim(2)`), a `spawn` (its task belongs to the `scope`) and a `return`/`break` are fine.
+Values never change, so a statement whose value is dropped is almost always a mistake: `xs + [1]` on its own line builds a new list and discards it. An expression statement whose value isn't `()` is an error (`the value of `xs + [1]` is not used: use it, or discard it with `_ := …``). To drop a value on purpose, write `_ := e`. This applies to:
 
-A `Result` discarded with `_ := e` is allowed (the program may not care whether it failed), but its error is lost, so it is always a warning, from `check`, `run`, `build` and `verify` (`warning: in `main`: `_ := parse_age("")` throws away a `Result`: an error from it is ignored`). Handle it with `match`, pass it on, or keep the warning as a reminder; no other value discarded with `_ :=` is warned about.
+- a call made only for its effect through a capability that also returns a value
+- an `if` or `match` statement whose arms produce values (discard the arms' values, or the whole statement)
+- an expression such as `x + 1`
 
-A variable never read (a parameter, `x := e`, `mut x := e`, a binding of a pattern, a lambda's parameter) is a warning, not an error, since code may be partway written: one line each from `check`, `run`, `build` (when it verifies) and `edit`, naming the function. A name starting with `_` (`_x`, `_`) says the value is unused on purpose; an `impl` method's parameters, which its trait or type dictates, are not warned about. A variable whose value has no effect (a literal, a variable, a lambda, a field, a tuple or list of them) and that nothing reads isn't compiled at all.
+A `mut` method call that returns `()` (`mut q.claim(2)`), a `spawn` (its task belongs to the `scope`), and `return` or `break` are allowed as statements.
 
-Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early. A lambda of several parameters where a function of one tuple of as many elements is expected takes the tuple apart: `pairs.filter((k, v) -> v > 0)`, `xs.enumerate().map((i, x) -> i * x)` bind the elements, with the tuple's types (written without parameter types; a lambda passed where a function of two arguments is expected, as `fold`'s, stays one of two arguments).
+Discarding a `Result` with `_ := e` is allowed, since the program may not care whether the operation failed. The error is lost, so `check`, `run`, `build` and `verify` always warn (`warning: in `main`: `_ := parse_age("")` throws away a `Result`: an error from it is ignored`). Handle it with `match`, propagate it, or leave the warning as a reminder. Discarding any other kind of value with `_ :=` produces no warning.
+
+A variable that is never read produces a warning, since code may be half-written. This covers parameters, `x := e`, `mut x := e`, pattern bindings and lambda parameters. `check`, `run`, `build` (when it verifies) and `edit` print one line per variable, naming the function. A name starting with `_` (`_x`, `_`) marks the value as unused on purpose. The parameters of `impl` methods are exempt, since the trait or type dictates them. An unread variable whose value has no effect (a literal, a variable, a lambda, a field, or a tuple or list of these) is not compiled at all.
 
 ## Values and copying
 
-Values never change: `ys := xs + [x]` is a new list, and `xs` is as it was; a variable declared `mut` changes, by assignment or by a `mut` method (`mut d.insert(k, v)`), and a copy held elsewhere keeps the old value. What makes that cheap is the rule compiled code follows: **an update of a value held by one thing only is made in place; a value something else still holds is copied first.** The copy is then held by one thing only, so the updates after it are in place again: sharing a value costs at most one copy per update that follows a share, never a copy per update.
+Values never change. `ys := xs + [x]` is a new list, and `xs` is unchanged. A `mut` variable changes by assignment or through a `mut` method (`mut d.insert(k, v)`), and a copy held elsewhere keeps the old value.
 
-An update is in place (when nothing else holds the value) in these forms:
+Compiled code makes this cheap with one rule: **a value held by one owner is updated in place, and a value with other holders is copied first.** After the copy, the new value has one owner, so the following updates are in place again. Sharing a value costs at most one copy for the updates that follow it, never one copy per update.
 
-- `mut d.insert(k, v)`, `mut d.remove(k)` on a dict or a set, where `d` is a variable or a field at any depth (`mut s.d.insert(k, v)`, `mut b.bids.words.remove(k)`): O(1) each, on average.
+These updates happen in place when nothing else holds the value:
+
+- `mut d.insert(k, v)` and `mut d.remove(k)` on a dict or set, where `d` is a variable or a field at any depth (`mut s.d.insert(k, v)`, `mut b.bids.words.remove(k)`): O(1) average.
 - `xs[i] = v` (`xs = set_at(xs, i, v)`) on a list: O(1).
-- `x.f = v` and `x.a.b = v`: a field of a record or tuple, at any depth (not of a `distinct` record or one with a refinement of its own, which is checked on the new record).
-- `mut xs.push(e)`, `mut xs.pop()`, `xs += ys`, `xs = xs + ys`, `xs = xs + [e]` on a list: O(1) per element added, on average, **even when `xs` is shared**: the list's buffer is extended past its end when no other list made from it has used those slots, and copied otherwise (with room for as much again, so a list grown over and over is copied O(log n) times).
-- `s += t`, `s = s + t` on a string: in place when the string is held by `s` only (and the records on the way to it, for a field), else a copy, with room to grow.
-- A record's or a container's elements of a refined type (`Dict[Int, Word]`): an update checks what it adds (`insert`'s key and value, `push`'s element), not every element again.
+- `x.f = v` and `x.a.b = v`: a record or tuple field at any depth. The exception is a `distinct` record, or a record with its own refinement, where the check runs on the new record.
+- `mut xs.push(e)`, `mut xs.pop()`, `xs += ys`, `xs = xs + ys`, `xs = xs + [e]` on a list: O(1) average per element added, **even when `xs` is shared**. The list's buffer is extended past its end if no other list built from it has used those slots, and copied otherwise. A copy reserves room for as many elements again, so a list grown repeatedly is copied O(log n) times.
+- `s += t` and `s = s + t` on a string: in place when only `s` holds the string (and, for a field, only one owner holds each record on the path to it). Otherwise the string is copied, with room to grow.
+- Containers and records with refined element types (`Dict[Int, Word]`): an update checks only what it adds (`insert`'s key and value, `push`'s element), not every element.
 
-Any other expression makes a new value and leaves its operands as they were: `ys := xs + [x]` copies `xs` (it is still `xs`'s), and so do `xs.sorted()` and `xs.reversed()`. Change the place itself (`mut xs.push(x)`, `mut xs.sort()`) to update it in place.
+Every other expression builds a new value and leaves its operands unchanged. `ys := xs + [x]` copies `xs`, which keeps its own value, and so do `xs.sorted()` and `xs.reversed()`. To update in place, change the place itself: `mut xs.push(x)`, `mut xs.sort()`.
 
-What holds a value (so that changing it through one of them copies it):
+A value is held by each of the following, and changing it through one of them copies it:
 
-- each variable, field, and container element it is stored in: `ys := xs` holds it twice, and the next `mut xs.insert(…)` copies (once);
-- a `mut` parameter is the caller's variable, by reference: `fn add(mut s: State)` changing `s.d` changes the caller's value in place, as does a `mut self` method (`mut c.add(1)`). A field given to a `mut` parameter, `bump(mut b.bids)`, is lent to the call: in place when the records on its path are held once and no other argument of the call reads `b`;
-- a value read out of a container is held by the container too: `mut inner := get(outer, k) ?? Dict {}` then `mut inner.insert(k2, v)` copies the inner dict every time (each step's copy is as big as the inner dict). Take it out first: `mut outer.remove(k)` after reading it, then change `inner` and put it back (`mut outer.insert(k, inner)`) (a list read out is fine to `push` to: see above);
-- a `for` loop holds what it runs over until it ends: changing the container inside the loop copies it once;
-- a closure holds what it captures, for as long as it exists;
-- a function's (not `mut`) parameter is still the caller's value: `mut e := d` then `mut e.insert(…)` copies `d` once;
-- a value sent to a task or a channel is held by the sender too while it still uses it.
+- Each variable, field and container element it is stored in. After `ys := xs` the value has two holders, so the next `mut xs.insert(…)` copies it once.
+- A `mut` parameter, which is the caller's variable passed by reference. `fn add(mut s: State)` changing `s.d` changes the caller's value in place, and so does a `mut self` method (`mut c.add(1)`). A field passed to a `mut` parameter, as in `bump(mut b.bids)`, is lent to the call. It is updated in place when each record on its path has one owner and no other argument of the call reads `b`.
+- The container a value was read from. After `mut inner := get(outer, k) ?? Dict {}`, every `mut inner.insert(k2, v)` copies the whole inner dict. Remove it first with `mut outer.remove(k)`, change `inner`, then put it back with `mut outer.insert(k, inner)`. A list read out of a container is the exception: pushing to it is cheap (see above).
+- A `for` loop, which holds what it iterates over until it ends. Changing the container inside the loop copies it once.
+- A closure, which holds what it captures for as long as the closure exists.
+- A function's non-`mut` parameter, which is still the caller's value. `mut e := d` followed by `mut e.insert(…)` copies `d` once.
+- A sender, which still holds a value it sent to a task or channel while it keeps using it.
 
-`strata run --copies` (and `strata test --copies`, `strata build --copies`) reports each copy made to change a value, when the program ends: per place in the code, how many, how big, and why (on standard error, the most bytes first):
+`strata run --copies` (also `strata test --copies` and `strata build --copies`) reports, when the program ends, each copy made to change a value. Copies are grouped by place in the code, with their count, size and reason, on standard error, largest first:
 
 ```
 copies: 2 copies, 14 kB, at 1 place (the most bytes first):
   copied a Dict of up to 400 entries at app.kept@31f7e4cc/body/4/body/0/value: 2 times, 14 kB (shared: held 2 times)
 ```
 
-The place is a location, as `strata find` and `strata refs` print them: `strata view app.kept@31f7e4cc/body/4/body/0/value` shows it. With nothing copied it says `copies: none`. Without `--copies` the compiled code is the same as ever (nothing is counted).
+The place is a location in the format printed by `strata find` and `strata refs`, so `strata view app.kept@31f7e4cc/body/4/body/0/value` shows it. When nothing was copied, the report is `copies: none`. Without `--copies`, the compiled code is unchanged and counts nothing.
 
 ## Errors: `Result`, `Option`, `!`, `?`, `except` and `or`
 
-A function that can fail returns a `Result` (or an `Option` for "maybe absent"). Each has its own pair of operators: `!` and `except` for a `Result`, `?` and `or` for an `Option`.
+A function that can fail returns a `Result`, or an `Option` when the value may simply be absent. Each has a pair of operators: `!` and `except` for `Result`, `?` and `or` for `Option`.
 
 ```rust
 fn transfer(from: Account, to: Account, amount: Cents) -> Result[(Account, Account), WithdrawError] {
@@ -419,16 +484,16 @@ n := parse(s) !! 0                                       // a Result: its value,
 n := parse(s) except e { return describe_error(e) }      // ... or a block, with the error by name
 ```
 
-- `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
+- `e!` evaluates to the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, a variant of it, or a member of its union. There are no conversion functions.
 - `e?` does the same for an `Option`: the `Some` value, or return `None`.
-- `e except { fallback }` handles a failed `Result` here: the `Ok` value, or else the block. `except err { ... }` names the error. The fallback must produce the same type, or leave with `return` (or, in a loop, `break` / `continue`: `x := opt or { continue }`): a block that ends in one never gives a value, so the binding gets the value's type.
-- `e or { fallback }` does the same for an `Option`: the `Some` value, or else the block (`None` has nothing to name).
-- `e !! value` and `e ?? value` are the short forms, for a fallback that is a single value on one line; such a fallback is always written that way. They bind tighter than comparisons and looser than arithmetic (`n ?? 0 + 1` is `n ?? (0 + 1)`, `n ?? 0 == 1` is `(n ?? 0) == 1`), and chain: `a ?? b ?? 0`.
-- They chain: `load(path)!.lines()`, `find(xs, p)?.name`.
+- `e except { fallback }` handles a failed `Result` in place: the `Ok` value, or else the block. `except err { ... }` binds the error. The fallback must produce the same type or leave with `return` (or `break` or `continue` in a loop: `x := opt or { continue }`). A block that always leaves produces no value, so the binding gets the `Ok` type.
+- `e or { fallback }` does the same for an `Option`. There is no error to bind.
+- `e !! value` and `e ?? value` are the short forms, for a fallback that is a single value on one line, and the printer always uses them for such fallbacks. They bind tighter than comparisons and looser than arithmetic: `n ?? 0 + 1` is `n ?? (0 + 1)`, and `n ?? 0 == 1` is `(n ?? 0) == 1`. They chain: `a ?? b ?? 0`.
+- `!` and `?` chain too: `load(path)!.lines()`, `find(xs, p)?.name`.
 
 ## Tasks: `scope`, `spawn` and `await`
 
-Work runs in parallel in tasks. A `scope` starts them and ends only once every task in it has finished:
+Tasks run work in parallel. A `scope` starts them, and it ends only when every task in it has finished:
 
 ```rust
 fn fetch_both(net: Net) -> (Page, Page) {
@@ -442,17 +507,17 @@ fn fetch_both(net: Net) -> (Page, Page) {
 squares := scope { await [spawn x * x for x in xs] }
 ```
 
-- `spawn e` runs the expression `e` (all of it, as `return e` takes all of it) in a new task, and gives a handle, `Task[T]`. It must be inside a `scope`.
-- `await h` waits for the task and gives its result; `await (a, b)` gives a tuple of results, `await hs` a list. It takes what follows it like `-` does, so `(await hs).len()` needs the parentheses.
-- There is no `async` function: any function can be called in a task, and a call that waits (a read, a long computation) is a plain call. Nothing about a function says whether tasks run it.
+- `spawn e` runs the whole expression `e` in a new task and returns a handle of type `Task[T]`. Like `return e`, it takes everything after it. It must be inside a `scope`.
+- `await h` waits for the task and returns its result. `await (a, b)` returns a tuple of results, and `await hs` a list. `await` binds like unary `-`, so `(await hs).len()` needs the parentheses.
+- There are no `async` functions. Any function can run in a task, and a call that waits (a read, a long computation) is an ordinary call. Nothing in a function's signature says whether tasks run it.
 
-Tasks share nothing that can change, so the result doesn't depend on timing: `scope { a := spawn f(); b := spawn g(); await (a, b) }` is `(f(), g())`, and `verify` reasons about it as such. What a task uses from around it is a copy at `spawn` time, as in a lambda: it can't change outer variables (`spawn { n += 1 }` is an error), and `return`, `!` and `?` can't leave it (handle the error in the task, or make it the task's result).
+Tasks share no mutable state, so results don't depend on timing. `scope { a := spawn f(); b := spawn g(); await (a, b) }` equals `(f(), g())`, and `verify` treats it that way. A task captures what it uses as a copy at `spawn` time, like a lambda. It can't change outer variables (`spawn { n += 1 }` is an error), and `return`, `!` and `?` can't leave it. Handle errors inside the task, or make them its result.
 
-A fault in a task ends the program, as anywhere else (see [supervised tasks](#supervised-tasks) for the exception), and a deadlock, every task waiting with none able to go on, is reported as a panic instead of hanging.
+A fault in a task ends the program, as anywhere else. [Supervised tasks](#supervised-tasks) are the exception. A deadlock, where every task waits and none can proceed, is reported as a panic instead of hanging.
 
 ### Channels and `select`
 
-Tasks pass values to each other through channels. `channel(n)` gives a channel's two ends, with room for `n` values waiting; `channel()` has none, so a `send` waits until a receiver takes the value. The type of what goes through is inferred from its use.
+Tasks pass values to each other through channels. `channel(n)` returns the two ends of a channel with a buffer of `n` values. `channel()` has no buffer, so each `send` waits until a receiver takes the value. The element type is inferred from use.
 
 ```rust
 fn squares(jobs: List[Int]) -> Int {
@@ -478,10 +543,10 @@ fn squares(jobs: List[Int]) -> Int {
 }
 ```
 
-- `tx.send(v)` moves `v` into the channel, waiting while it is full. `rx.recv()` gives `Some(v)`, or `None` once the channel has ended and is empty; `for v in rx` takes every value, then stops.
-- **Closing is explicit, once per task.** Each task holding the sender calls `tx.close()` when it is done sending; the channel ends when all of them have.
+- `tx.send(v)` moves `v` into the channel, waiting while the buffer is full. `rx.recv()` returns `Some(v)`, or `None` once the channel has ended and is empty. `for v in rx` takes every value, then stops.
+- Closing is explicit, once per task. Each task holding the sender calls `tx.close()` when it has finished sending. The channel ends when all of them have closed it.
 
-`select` waits on several operations and does the first one that can happen, and only that one:
+`select` waits on several operations and performs only the first one that becomes possible:
 
 ```rust
 loop {
@@ -498,11 +563,11 @@ loop {
 }
 ```
 
-An arm is `rx.recv()` (its `as` name is an `Option`), `tx.send(v)` (nothing to name) or `await h` (the task's result). An arm that doesn't happen has done nothing: a value it would have sent isn't sent, and a task it awaits keeps running. A `recv` on a channel that has ended is always ready (with `None`), so a loop over several channels stops looking at one once it ends. When several arms can happen, which one does is not fixed.
+An arm is `rx.recv()` (its `as` name is an `Option`), `tx.send(v)` (nothing to name) or `await h` (the task's result). An arm that is not chosen has no effect: its value is not sent, and the task it awaits keeps running. A `recv` on an ended channel is always ready and yields `None`, so a loop over several channels can tell when each one ends. When several arms are ready, which one runs is unspecified.
 
 ### `race`
 
-`race` has the same arms as `select`, but each arm's left side is any expression, run as a task of its own. The first to finish runs its arm, with its result as the `as` name; the others are cancelled:
+`race` has the same arms as `select`, but the left side of each arm is any expression, run as its own task. The first to finish runs its arm with its result bound to the `as` name, and the others are cancelled:
 
 ```rust
 fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
@@ -513,11 +578,11 @@ fn first_answer(mirrors: Receiver[Page], local: Cache, key: String) -> Page {
 }
 ```
 
-A cancelled task stops at its next wait (a `recv`, a `send`, an `await`, a `sleep`, …), however deep in calls it is, and leaves as `return` would.
+A cancelled task stops at its next wait (a `recv`, `send`, `await`, `sleep`, …), however deep in the call stack, and unwinds as `return` would.
 
 ### Supervised tasks
 
-A panic ends the program, wherever it happens. A task started with `supervised spawn` is the exception: its panic ends only that task (and the tasks it started), and awaiting it gives a `Result[T, Panic]` instead of a `T`. The failure is handled where the task is awaited, with what handles any `Result`:
+A panic ends the program, wherever it happens. A task started with `supervised spawn` is the exception. Its panic ends only that task and the tasks it started, and awaiting it returns a `Result[T, Panic]` instead of a `T`. The failure is handled where the task is awaited, like any `Result`:
 
 ```rust
 fn page(net: Net, url: String) -> Page {
@@ -531,11 +596,16 @@ fn page(net: Net, url: String) -> Page {
 }
 ```
 
-- `Panic` is `{ kind: String, message: String, stack: String }`: the kind (`Runtime`, `Requires`, `Refinement`, …), the message, and the call stack from `main` through each `spawn`.
+`Panic` is `{ kind: String, message: String, stack: String }`. `kind` is `Runtime`, `Requires`, `Refinement`, and so on. `stack` is the call stack from `main` through each `spawn`.
 
 ### Time: `Clock`
 
-Time comes from outside the program, so it goes through a capability (`std.time`): `main` or a test asks for the `SystemClock` and passes it on (as a `Clock`). `clock.now()` is an `Instant` (monotonic: only the time between two means something, `elapsed(a, b)`), and `clock.sleep(d)` waits for a `Duration` (`nanos`, `micros`, `ms`, `seconds`; `.value` is nanoseconds). Sleeping is a wait like a `recv`: a cancelled task stops sleeping at once. So a `race` makes a timeout:
+Time comes from outside the program, so it is a capability (`std.time`). `main` or a test asks for the `SystemClock` and passes it on as a `Clock`.
+
+- `clock.now()` returns an `Instant`. Instants are monotonic, so only the difference between two is meaningful: `elapsed(a, b)`.
+- `clock.sleep(d)` waits for a `Duration`, made with `nanos`, `micros`, `ms` or `seconds`. `.value` is in nanoseconds.
+
+Sleeping is a wait, like `recv`, so a cancelled task stops sleeping immediately. A `race` therefore makes a timeout:
 
 ```rust
 fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
@@ -546,7 +616,7 @@ fn fetch_or_give_up(clock: SystemClock, net: Net, url: String) -> Option[Page] {
 }
 ```
 
-A test of timeouts asks for a `VirtualClock`, a capability like `SystemClock`: each test (and the program, for `main`) has its own virtual time, at 0 when it starts and shared by its tasks, and it moves by itself: once every task is waiting and one of them waits for this clock (a `sleep`, an `after` timer), its time jumps to the nearest such deadline. A timeout then happens at once, and exactly:
+A test of timeouts asks for a `VirtualClock`, a capability like `SystemClock`. Each test, and the program for `main`, has its own virtual time. It starts at 0 and is shared by the test's tasks. It advances by itself: once every task is waiting and at least one waits on this clock (a `sleep` or an `after` timer), the time jumps to the nearest deadline. A timeout then fires immediately and at the exact time:
 
 ```rust
 /// Waits for a question; none ever comes.
@@ -568,23 +638,27 @@ test "gives up after 30 seconds" (clock: VirtualClock) {
 
 ## Built-in types
 
-Every program has these without a `use`:
+Every program has these types without a `use`:
 
 | Type | Notes |
 |---|---|
-| `Int`, `Float`, `Bool`, `String` | `Int` never overflows: a machine integer while it fits, a big integer when it doesn't (like Python). `Float` is never NaN or infinite. There is no implicit Int/Float mixing (`float(n)`, `round(x)`). Integer `/` and `%` are Euclidean: the remainder is never negative (`-7 / 2 == -4`, `-7 % 3 == 2`, `7 % -3 == 1`); for C's truncation, divide the magnitudes and put the sign back (`-(7 / 2) == -3`). `parse_int` takes an optional sign, `+` or `-` (`parse_int("+5") == Some(5)`): check the first character when only digits are wanted. Strings are UTF-8, and ordered (`<`, `<=`, `>`, `>=`, `compare`, `sort`) by their code points, which is UTF-8's byte order |
-| `I8` … `I64`, `U8` … `U64` | sized integers, for code that needs a fixed width: their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`) |
-| `()` | the unit type: "no meaningful value", Python's `None` as a *type* |
+| `Int`, `Float`, `Bool`, `String` | `Int` is arbitrary-precision, like Python's: a machine integer while it fits, a big integer when it doesn't. `Float` is never NaN or infinite. Ints and Floats never mix implicitly (`float(n)`, `round(x)`). Integer `/` and `%` are Euclidean, so the remainder is never negative: `-7 / 2 == -4`, `-7 % 3 == 2`, `7 % -3 == 1`. For C's truncating division, divide the magnitudes and restore the sign (`-(7 / 2) == -3`). `parse_int` accepts an optional `+` or `-` sign (`parse_int("+5") == Some(5)`), so check the first character when only digits are allowed. Strings are UTF-8, ordered (`<`, `<=`, `>`, `>=`, `compare`, `sort`) by code point, which matches UTF-8 byte order |
+| `I8` … `I64`, `U8` … `U64` | fixed-width integers. Their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`) |
+| `()` | the unit type, for "no meaningful value". It plays the role of Python's `None` as a type |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
-| `Result[T, E]` | `Ok(x)` or `Err(e)`: an operation that may fail |
+| `Result[T, E]` | `Ok(x)` or `Err(e)`: the outcome of an operation that may fail |
 | `List[T]` | an ordered sequence, `[1, 2, 3]` |
-| `(A, B, …)` | tuples, `(word, 3)`, destructured with `(w, n) := …`, accessed with `t.0` |
-| `Dict[K, V]` | `Dict { "a": 1, "b": 2 }`, `get`, `insert`, `remove`, `keys`, `values`, `items` |
-| `Set[T]` | `Set { 1, 2 }`, `insert`, `union`, `intersection`, `difference` |
+| `(A, B, …)` | tuples, `(word, 3)`, destructured with `(w, n) := …` and accessed with `t.0` |
+| `Dict[K, V]` | a hash map, `Dict { "a": 1, "b": 2 }`, with `get`, `insert`, `remove`, `keys`, `values`, `items` |
+| `Set[T]` | a hash set, `Set { 1, 2 }`, with `insert`, `union`, `intersection`, `difference` |
 
-All values are immutable (`insert` returns a new dict). `+` adds numbers and joins strings and lists. A string's unit is always named: `s.bytes()`, `s.code_points()` or `s.graphemes()`. **f-strings** interpolate any expression, with Python's format specs: `f"{name} has {len(xs)} items"`, `{price:.2}`, `{n:>5}`. Every value can be shown: `debug(x)` writes it as code, and `to_string(x)` (what `print` and f-strings use) is a string's text and anything else's `debug`; a type changes either with an `impl` of `Debug` or `Display`. `strata builtins` lists every builtin function with its signature.
+All values are immutable: `insert` returns a new dict. `+` adds numbers and concatenates strings and lists. String operations always name their unit: `s.bytes()`, `s.code_points()` or `s.graphemes()`.
 
-**Iterators.** Besides lists, sets and dicts, a `for` loop runs over any value whose type implements the prelude's `Iterator`: `next` gives the elements one at a time, then `None`.
+**f-strings** interpolate any expression, with Python's format specs: `f"{name} has {len(xs)} items"`, `{price:.2}`, `{n:>5}`.
+
+Every value can be printed. `debug(x)` writes it as code. `to_string(x)`, which `print` and f-strings use, returns a string's text unchanged and anything else's `debug` form. A type overrides either with an `impl` of `Debug` or `Display`. `strata builtins` lists every builtin function with its signature.
+
+**Iterators.** A `for` loop runs over lists, sets and dicts, and over any value whose type implements the prelude's `Iterator`. `next` returns the elements one at a time, then `None`.
 
 ```rust
 trait Iterator[T] {
@@ -603,18 +677,19 @@ c := Countdown { n: 3 }
 for i in c { print(i) }            // 3, 2, 1
 ```
 
-Every iterator has `map`, `filter` and `enumerate` (each element with its index, `(i, x)`), which are lazy. One that ends implements `FiniteIterator` too, and `verify` shows that a `for` loop over it ends. `xs.iter()` gives one over a list, a set or a dict, and a string's units are iterators.
+Every iterator has lazy `map`, `filter` and `enumerate` (which pairs each element with its index, `(i, x)`). An iterator that always ends implements `FiniteIterator` too, and `verify` then proves that a `for` loop over it terminates. `xs.iter()` iterates over a list, set or dict, and a string's units are iterators.
 
-A finite iterator becomes a list where a `List` is expected and where it is shown, as if `to_list(...)` were written: passed for a `List` parameter (`count(s.graphemes())`), compared with a list (`s.graphemes() == ["a", "b"]`), printed, interpolated or given to `to_string` (`print(s.graphemes()[1..3])` prints `["b", "c"]`). An iterator that may not end can't become a list: that is an error, saying to take a part of it first (`.take(n)`). Each conversion walks the iterator once, O(n).
+A finite iterator is converted to a list, as if `to_list(...)` were written, wherever a `List` is expected or the value is displayed. That includes passing it as a `List` argument (`count(s.graphemes())`), comparing it with a list (`s.graphemes() == ["a", "b"]`), printing it, interpolating it, and passing it to `to_string` (`print(s.graphemes()[1..3])` prints `["b", "c"]`). Each conversion walks the iterator once, in O(n). An iterator that may not end can't be converted; the error suggests taking a prefix first (`.take(n)`).
 
 ## Programs and the standard library
 
-A program's entry point is `main`. It asks for what it needs by type, and `strata run` passes it in: its command-line options, and the capabilities it uses.
+A program's entry point is `main`. It declares what it needs by type, and `strata run` provides it: the command-line options and the capabilities it uses.
 
 ```rust
 from std.cli use CommandLine
 
 /// Greet people by name.
+derive CommandLine for
 type Options = {
   /// Shout the greeting.
   loud: Bool = false,
@@ -623,8 +698,6 @@ type Options = {
   /// Who to greet (the world if nobody).
   names: List[String] = [],
 }
-
-derive CommandLine for Options
 
 fn main(opts: Options) {
   who := if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
@@ -641,24 +714,34 @@ strata run examples/wc -- --only words README.md
 cat README.md | strata run examples/wc
 ```
 
-**`print(x)`** is always available, with no `use`. It writes `x` (as `to_string` shows it) and a newline wherever the code runs: to the terminal under `strata run`, into the test's own buffer under `strata test` (shown only if the test fails), and nowhere under `verify`. It is a convenience; code whose output a test should check, or that a caller should control, takes a `Console`.
+**`print(x)`** is always available without a `use`. It writes `x`, formatted by `to_string`, followed by a newline. Under `strata run` the output goes to the terminal. Under `strata test` it goes to the test's own buffer, shown only if the test fails. Under `verify` it is discarded. Code whose output a test should check, or that a caller should control, takes a `Console` instead.
 
-**Command-line options** are a record that derives `CommandLine` (`std.cli`): each field is read from the arguments by its type (a `Bool` is a flag, a `List[T]` the remaining arguments, a field with a default an option), every refinement is checked, and `--help` is built from the `///` doc comments. A union that derives `CommandLine` is a set of commands (`Edit` is `edit`), each with its own options.
+**Command-line options** are a record that derives `CommandLine` (`std.cli`). Each field is parsed from the arguments according to its type: a `Bool` is a flag, a `List[T]` takes the remaining arguments, and a field with a default is an option. Every refinement is checked, and `--help` is generated from the `///` doc comments. A union that derives `CommandLine` defines subcommands (`Edit` becomes `edit`), each with its own options.
 
-`main` can also ask for `Console` and capabilities (`Disk`, `Process`, the program's own), in any order, and passes them on where a trait (`Files`, `Environment`) is wanted, so tests can pass stand-ins. It returns `()`, an `ExitCode`, or a `Result` of either: an `Err` is written to standard error and the exit code is 1.
+`main` can also take a `Console` and capabilities (`Disk`, `Process`, or the program's own), in any order. It passes them on where a trait (`Files`, `Environment`) is expected, so tests can substitute their own implementations. `main` returns `()`, an `ExitCode`, or a `Result` of either. An `Err` is written to standard error and the exit code is 1.
 
-The **standard library** is the `std/` package, written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It has the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`), SQLite databases (`std.sqlite`), command lines (`std.cli`), sorted dictionaries and sets and a priority queue (`std.collections`), JSON and TOML (`std.json`, `std.toml`), HTTP and HTML as values (`std.http`, `std.web`), and regular expressions and Unicode (`std.regex`, `std.unicode`). Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
+The **standard library** is the `std/` package. It is written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It covers:
 
-**JSON**: a type that derives `Json` is read from JSON and written to it, every refinement checked:
+- the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`)
+- SQLite databases (`std.sqlite`), and records stored as tables (`std.orm`, `derive Table`)
+- command lines (`std.cli`)
+- sorted dictionaries and sets and a priority queue (`std.collections`)
+- JSON and TOML (`std.json`, `std.toml`)
+- HTTP and HTML as values (`std.http`, `std.web`)
+- regular expressions and Unicode (`std.regex`, `std.unicode`)
+
+Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
+
+**JSON.** A type that derives `Json` can be read from and written to JSON, with every refinement checked:
 
 ```rust
 from std.json use Json, parse, stringify
 
+derive Json for
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
-derive Json for Signup
 
 signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
 
-**C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c).
+**Foreign functions.** C functions are declared with `extern c fn`: a signature with contracts and no body (see the [reference](language-reference.md#foreign-functions-extern-c)). Python functions are declared with `extern python "module" fn`. Their values cross the boundary as JSON (`Json`), and every call returns a `Result[T, PythonError]` (see the [reference](language-reference.md#foreign-functions-extern-python)).
