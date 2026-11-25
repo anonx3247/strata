@@ -363,6 +363,39 @@ Paths are relative to the package's folder, or absolute (`compiler/strata.toml` 
 
 Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
 
+## Exporting functions: `derive C for f`
+
+The other way: C calling Strata. A trait can be derivable over functions (`derivable(Function) trait C`), and `derive C for add` (a function's name after `for`, where a type's would be) makes `add` callable from C. `C` is std's (`std.ffi`):
+
+```rust
+from std.ffi use C
+
+/// The sum of two numbers.
+pub fn add(a: I32, b: I32) -> I32 {
+  a + b
+}
+
+derive C for add
+```
+
+`strata build --lib` builds the program as a shared library (`libNAME.dylib`; `-o` names it) exporting each such function under its own name, and writes its header beside it (`NAME.h`), each function declared after its doc:
+
+```c
+/// The sum of two numbers.
+int32_t add(int32_t a, int32_t b);
+```
+
+```sh
+strata build calc.strata --lib                      # libcalc.dylib, calc.h
+clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
+```
+
+- **What crosses** is what crosses `extern c`, the other way: the sized integers, `Float` (`double`), `Bool` (`bool`), `String` (`const char *` in, copied; `char *` out, a copy the caller frees with `free`), `()` (`void`), handles (`extern c type`, `void *`) and `Option` of one (NULL for `None`). A function with another type, or with type parameters, is refused at the `derive`, naming the parameter.
+- **The library starts its runtime when it is loaded**; the host keeps its signals and arguments. A library has no `main` (`--lib` leaves the program's out). A fault in Strata code ends the process, as in a program.
+- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is an export or a part of a file: `derived fn export() -> Self = Self` exports the function itself under its own name; `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
+
+Not yet: other languages (`derive Python`, `derive TypeScript`, `derive Rust`: typed wrappers over a C export taking JSON), static libraries, `mut` parameters, callbacks.
+
 ## Programs
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`): `derive CommandLine for Options` writes its `from_args` and `help` for that record, at compile time. Each field is read from the arguments by its type: a `Bool` is a flag (`--loud`), an `Option[T]` an option with a value (`--times 3` or `--times=3`), a `List[T]` the remaining positional arguments, and any other field a required positional argument, in field order, or an option (`--times 3`) when it has a default. A field left out takes its default. `T` is an `Int`, `Float`, `String`, a refinement of one, or a choice (a type whose variants carry nothing: `type Count = | Lines | Words` is `lines` or `words`). Names take dashes (`dry_run` is `--dry-run`), `--` ends the options, every refinement is checked (`--times: 0 does not satisfy …`), and a mistake exits with code 2. `--help` is built from the record's and fields' `///` doc comments. A field whose doc starts with `-n` can also be given as `-n`; an `Option` field whose doc starts with `[name]` is an optional positional argument; a `List` field whose doc starts with its flag (`/// --rm …`) or a short name is an option given again and again (`--rm a --rm b`). **Commands** are a union that derives `CommandLine`: each member is a command (`Edit` is `edit`), its fields the command's options, its `///` doc the command's help; an options record with a field of that union reads its other fields as options before the command. `strata check` rejects a `CommandLine` record a command line can't fill.
@@ -378,6 +411,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.cli](std/cli.md) | Command-line options, read into a record; commands, into a union. |
 | [std.code](std/code.md) | A codebase as Strata's tools see it: its definitions, each rendered as text with what it uses and what uses it, the checker's findings, the verifier's cached results and the package's log. |
 | [std.collections](std/collections.md) | A dictionary and a set kept in their keys' order, and a priority queue. |
+| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
 | [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
 | [std.io](std/io.md) | The console: text in and out. |

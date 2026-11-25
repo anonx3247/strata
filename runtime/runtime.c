@@ -3641,6 +3641,23 @@ void strata_init(int32_t argc, char **argv) {
   if (m && !registered) registered = 1, atexit(memory_stats);
 }
 
+// A library's start (`strata build --lib`), when it is loaded, before the
+// host calls what it exports: the runtime set up as for a program, but the
+// host keeps its signals, and there are no arguments.
+void strata_lib_init(void) {
+  CALLS.runs = 0;
+  RS->rng = 7;
+  const char *m = getenv("STRATA_MEMORY");
+  checking = m && !strcmp(m, "check");
+#ifdef STRATA_CORE_RT
+  strata_memory_start(checking);
+#else
+  allocated = freed = 0;
+  nmade = 0;
+#endif
+  set_threaded(THREADED);
+}
+
 Str *strata_prog_name(void) {
   const char *slash = strrchr(prog_name, '/');
   return str_c(slash ? slash + 1 : prog_name);
