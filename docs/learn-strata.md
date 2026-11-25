@@ -1,10 +1,10 @@
 # Learn Strata in Y minutes
 
-Strata is an experimental language for working with agents: constraints live in the types, contracts are proven by an SMT solver (or fuzzed when they can't be), unfinished code is a typed hole, and side effects are capabilities passed as parameters. Its syntax is close to Rust's, with Python's integers and f-strings.
+Strata is an experimental language for working with agents. Types carry constraints, an SMT solver proves contracts (or a fuzzer tests the ones it can't), unfinished code is a typed hole, and side effects are capabilities passed as parameters. The syntax is close to Rust's, with Python's integers and f-strings.
 
-This page is meant to be read in one go, by a person or an agent, before writing Strata. The code below is a single valid program, exactly as `strata view` prints it: a test stores it, checks it and runs its tests, so it can't drift from the language. To try it, save it as text in `learn.st`, store it with `strata --file learn.strata edit < learn.st`, then run `strata --file learn.strata verify`.
+This page is meant to be read in one go, by a person or an agent, before writing Strata. The code below is a single valid program, exactly as `strata view` prints it. A test stores it, checks it and runs its tests, so it stays in sync with the language. To try it, save it as text in `learn.st`, store it with `strata --file learn.strata edit < learn.st`, then run `strata --file learn.strata verify`.
 
-For more depth: [the language](language.md), [verification](verification.md), [tools](tools.md).
+More detail: [the language](language.md), [verification](verification.md), [tools](tools.md).
 
 ```rust
 // A comment belongs to what follows it; /// doc comments describe the next
@@ -613,27 +613,27 @@ test "a mocked capability" {
 
 ## Rules that catch newcomers
 
-- **Never write a `.strata` file yourself.** It is a binary module file: the syntax tree. Code goes in as text through an edit (`strata edit`, `strata add`, or `strata --file F edit < text` outside a package), which parses it, checks it and stores the tree; it comes out as text through `strata view`. How you lay the text out doesn't matter: it is printed back in one canonical style, the one the code above is in.
-- **Every name a union's member introduces is a type**, so it must be unique in its module: no other member, type or trait of that module may share it. Another module's type of the same name is told apart by its module (`geo.Circle`). A bare name in a union is an existing type when there is one (`type Shape = Circle | Dot` uses `Circle` and declares `Dot`).
-- **In one module, a function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }`), since `x.describe()` could mean either. Across modules it can: `x.describe()` is the method, `describe(x)` the function.
-- **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`…): write `xs.map(x -> len(x))`. Ordinary functions can: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
-- **`type Name = String` is an error**: a bare alias adds nothing. Add a `where`, or say `distinct type`. So is a union naming a set its module (or the prelude) names already: `type Answer = Some(Int) | None` is `Option[Int]`.
-- **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, `line.line_total()` is `line_total(line)`.
-- **`mut` is visible on both sides**: `fn f(mut x: T)` and the call `f(mut x)`; `fn save(mut self, …)` and the call `mut db.save(o)` (required there, an error anywhere else). Only a `mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument needs exactly the parameter's type. As an argument, a marked call takes parentheses: `f((mut q.pop()), x)`.
-- **Lists, dicts and sets change through `mut` methods**: `mut xs.push(x)`, `mut d.insert(k, v)`, `mut xs.sort()` (in place); `xs.push(x)` without the mark is an error, and a new value is an expression: `xs + [x]`, `xs.sorted()`.
-- **A declared type holds forever**: `mut x: Positive = 1` then `x = 0` is an error (at compile time for literals, at run time otherwise).
-- **Matches are exhaustive and every arm must be reachable.** Conditions comparing `it` with constants are decided exactly; anything else (`matches(it, …)`, a call) needs a `_` arm.
-- **`Result` and `Option` each have their own operators**: `!`, `except`, `!!` for a `Result`; `?`, `or`, `??` for an `Option`. Using one on the other type is an error. A single-value fallback is always written short (`x ?? 0`, not `x or { 0 }`); `??` and `!!` bind looser than arithmetic and tighter than comparisons.
-- **No implicit conversions**: `Int` and `Float` don't mix, and there is no conversion between error types (`!` passes an error up only when it already fits the function's error type: the same type, one of its variants, or a member of its union).
-- **Comments attach to what follows them.** A comment where nothing follows (after a block's last statement, inside an argument list) is an error, not silently dropped.
-- **Empty literals need a type when nothing says it**: `let xs: List[Money] = []`, `Dict[String, Int] {}`.
-- **Indexing is checked**: `xs[i]` faults when `i` is out of range, and `verify` tries to prove it isn't. There are no negative indices (`xs[len(xs) - 1]`); use `get(xs, i)` for an `Option`.
-- **`print(x)` is for convenience.** Code whose output matters takes a `Console` (`std.io`), so tests can record it.
-- Not in the language (yet): shared references, exceptions, null, implicit effects, generators, `async` functions (tasks need none), macros, inheritance.
+- **Never write a `.strata` file yourself.** It is a binary module file holding the syntax tree. Code goes in as text through an edit (`strata edit`, `strata add`, or `strata --file F edit < text` outside a package), which parses, checks and stores it, and comes out as text through `strata view`. Layout doesn't matter: code is printed back in one canonical style, the style of the code above.
+- **Every name a union member introduces is a type**, so it must be unique in its module: no other member, type or trait in the module may share it. A type with the same name in another module is distinguished by its module (`geo.Circle`). A bare name in a union refers to an existing type if there is one: `type Shape = Circle | Dot` uses `Circle` and declares `Dot`.
+- **Within a module, a function can't share a name with a trait method** (`fn describe` next to `trait Describe { fn describe … }`), since `x.describe()` could mean either. Across modules it can: `x.describe()` is the method, and `describe(x)` is the function.
+- **Overloaded builtins can't be passed by name** (`len`, `get`, `contains`, `sum`, …). Write `xs.map(x -> len(x))`. Ordinary functions can be: `lines.map(line_total)`. Methods whose meaning depends on the receiver also need a lambda: `xs.map(x -> x.describe())`.
+- **`type Name = String` is an error**, because an alias with no predicate adds nothing. Add a `where`, or use `distinct type`. A union that names a set already named in its module or the prelude is also an error: `type Answer = Some(Int) | None` is `Option[Int]`.
+- **Any function can be called as a method** on its first argument: `xs.filter(p)` is `filter(xs, p)`, and `line.line_total()` is `line_total(line)`.
+- **`mut` appears on both sides**: `fn f(mut x: T)` and the call `f(mut x)`, or `fn save(mut self, …)` and the call `mut db.save(o)`. The marker is required there and an error anywhere else. Only a `mut` variable, a `mut` parameter or a field of one can be changed, and a `mut` argument must have exactly the parameter's type. A marked call used as an argument needs parentheses: `f((mut q.pop()), x)`.
+- **Lists, dicts and sets change through `mut` methods**, in place: `mut xs.push(x)`, `mut d.insert(k, v)`, `mut xs.sort()`. `xs.push(x)` without the marker is an error. A new value is an expression: `xs + [x]`, `xs.sorted()`.
+- **A declared type holds for the variable's whole life**: `mut x: Positive = 1` followed by `x = 0` is an error, at compile time for literals and at run time otherwise.
+- **Matches are exhaustive, and every arm must be reachable.** Conditions comparing `it` with constants are decided exactly. Any other condition (`matches(it, …)`, a call) needs a `_` arm.
+- **`Result` and `Option` have separate operators**: `!`, `except` and `!!` for `Result`, and `?`, `or` and `??` for `Option`. Using one on the other type is an error. A single-value fallback is always written in the short form (`x ?? 0`, not `x or { 0 }`). `??` and `!!` bind looser than arithmetic and tighter than comparisons.
+- **There are no implicit conversions.** `Int` and `Float` don't mix, and error types don't convert. `!` passes an error up only when it already fits the function's error type: the same type, one of its variants, or a member of its union.
+- **Comments attach to what follows them.** A comment with nothing after it (after a block's last statement, inside an argument list) is an error. Comments are never silently dropped.
+- **Empty literals need a type when the context doesn't give one**: `let xs: List[Money] = []`, `Dict[String, Int] {}`.
+- **Indexing is checked.** `xs[i]` faults when `i` is out of range, and `verify` tries to prove it is in range. There are no negative indices; write `xs[len(xs) - 1]`. Use `get(xs, i)` for an `Option`.
+- **`print(x)` is a convenience.** Code whose output matters takes a `Console` (`std.io`), so tests can record it.
+- Not in the language: shared references, exceptions, null, implicit effects, generators, `async` functions (tasks don't need them), macros, inheritance.
 
 ## Modules and packages
 
-A file is a module, named after its path in the package (`shop/orders.strata` is `shop.orders`; `main.strata` is the root module). A folder with a `strata.toml` is a package (`strata init`); a lone `.strata` file is a script. Definitions are private unless `pub`, and modules meet only through their public contract (`pub` types, signatures, contracts, laws).
+A file is a module, named after its path in the package: `shop/orders.strata` is `shop.orders`, and `main.strata` is the root module. A folder with a `strata.toml` is a package (`strata init`), and a lone `.strata` file is a script. Definitions are private unless marked `pub`, and modules see each other only through their public contract: `pub` types, signatures, contracts and laws.
 
 ```rust
 // shop/orders.strata
@@ -649,7 +649,7 @@ from shop.orders use Order, ship      // or `use shop.orders`, then `orders.ship
 
 ## Programs
 
-`main` asks for what it needs by type and `strata run` passes it in: a command-line options record, `Console` (`std.io`, chosen by the environment), and capabilities it names: `Disk` (`std.fs`, a `Files`), `Process` (`std.process`, an `Environment`), `Codebase` (`std.code`, a `Code`: the codebase itself, as the tools see it), or the program's own. It returns `()`, an `ExitCode`, or a `Result` of either (an `Err` exits with 1).
+`main` declares what it needs by type, and `strata run` provides it: a command-line options record, a `Console` (`std.io`, chosen by the environment), and the capabilities it names, such as `Disk` (`std.fs`, a `Files`), `Process` (`std.process`, an `Environment`), `Codebase` (`std.code`, a `Code`: the codebase itself as the tools see it), or the program's own. It returns `()`, an `ExitCode`, or a `Result` of either; an `Err` exits with 1.
 
 ```rust
 from std.cli use CommandLine
@@ -676,13 +676,13 @@ fn main(opts: Options, mut console: Console) {
 }
 ```
 
-Tests pass stand-ins instead of the real capabilities: `recorder(input)` / `printed(r)` for a `Console`, `mem_files([(path, text)])` for `Files`, `fake_environment(args, vars)`, or `mock Trait`. Only `main` (under `strata run`, or as a built executable) and a test that names a capability reach the real terminal, disk or network.
+Tests pass substitutes instead of the real capabilities: `recorder(input)` and `printed(r)` for a `Console`, `mem_files([(path, text)])` for `Files`, `fake_environment(args, vars)`, or `mock Trait`. Only `main` (under `strata run`, or as a built executable) and a test that names a capability reach the real terminal, disk or network.
 
-The standard library is written in Strata and needs no dependency: `std.io`, `std.fs`, `std.process`, `std.cli`, `std.http` (requests and responses) and `std.web` (HTML as values). See `examples/hello` and `wc`. `strata builtins` lists every builtin with its signature.
+The standard library is written in Strata and needs no dependency declaration: `std.io`, `std.fs`, `std.process`, `std.cli`, `std.http` (requests and responses) and `std.web` (HTML as values). See `examples/hello` and `examples/wc`. `strata builtins` lists every builtin with its signature.
 
 ## The tools
 
-Every command works on the package around the current folder, or on a file or folder with `--file PATH`. Code is stored as binary `.strata` module files, so you read it through the views and change it through edits; `strata view --split DIR` writes a package out as `.st` text files, for reading only.
+Every command works on the package around the current folder, or on a file or folder given with `--file PATH`. Code is stored as binary `.strata` module files, so you read it through views and change it through edits. `strata view --split DIR` writes a package out as `.st` text files, for reading only.
 
 ```sh
 strata check                  # types, exhaustiveness, refinements of literals. Run it after every edit
@@ -696,9 +696,9 @@ strata build [PATH] -o OUT    # native executable through LLVM
 strata builtins               # every builtin and prelude type
 ```
 
-`verify` gives each function one result: `✓` proven, `~` fuzzed (some checks unproven, no failure found; each says why), `✗` failed (with a counterexample that was run to confirm it), `○` incomplete (a hole), `≈` assumed. Proven doesn't imply it terminates: that is reported on its own line.
+`verify` gives each function one result: `✓` proven, `~` fuzzed (some checks unproven, no failure found, each with a reason), `✗` failed (with a counterexample that was run to confirm it), `○` incomplete (a hole), or `≈` assumed. Termination is reported on a separate line, since a proven function may still not terminate.
 
-**Reading and editing a package.** Code is stored as one canonical file per module, but the tools work on definitions:
+**Reading and editing a package.** Code is stored as one canonical file per module, and the tools work on definitions:
 
 ```sh
 strata view --level 0                 # a map: one line per definition, deps, holes, status
@@ -715,8 +715,8 @@ strata move NAME MODULE               # to another module, imports follow
 strata log / strata diff              # the change history, as structural diffs
 ```
 
-An `edit` that breaks code elsewhere turns each broken use into a hole (`?pending_1`, …) and opens a pending change: fill them with more `edit`s, then `strata done` (or `strata abort`). In a git repository every recorded change is also a commit.
+An `edit` that breaks code elsewhere turns each broken use into a hole (`?pending_1`, …) and opens a pending change. Fill the holes with more `edit`s, then run `strata done`, or `strata abort` to undo. In a git repository, every recorded change is also a commit.
 
-Code is stored only in binary form, and a saved file is checked, so there is nothing to re-check before pushing; `strata upgrade` rewrites every file in the current form after a change to the format. `strata setup-git` makes `git diff` show `.strata` files as text and merge them definition by definition. `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if everything checks.
+Code is stored only in binary form and every saved file is checked, so there is nothing to re-check before pushing. `strata upgrade` rewrites every file in the current form after a format change. `strata setup-git` makes `git diff` show `.strata` files as text and merges them definition by definition. `strata sync` merges `main` into the branch definition by definition, applies the other side's renames, and commits only if everything checks.
 
-**A good loop for an agent:** read with `view --level 1` and `holes`; write definitions; `check`; `test`; `verify` the functions you touched, and when one fails, read the counterexample, then fix the code or strengthen the contract (`requires`, a refinement) until it is proven.
+**A good loop for an agent:** read with `view --level 1` and `holes`, write definitions, then run `check`, `test`, and `verify` on the functions you touched. When one fails, read the counterexample, then fix the code or strengthen the contract (`requires`, a refinement) until it is proven.
