@@ -140,3 +140,23 @@ has = ["- bad                      skipped: running it crashed (SIGSEGV)"]
 [[step]]
 run = ["sh", "-c", "perl -e 'alarm 120; exec @ARGV' \"$STRATA\" --file crash.strata build -o crash && ./crash"]
 has = ["1"]
+
+# #448's root: a generic callee's result is shaped at the call's types
+# (`Option[Small]`, not `Option[T]`), when its arguments tell them
+[[step]]
+save = "generic.strata"
+text = '''
+type Small = Int where 0 <= it && it <= 10
+
+fn keep[T](o: Option[T]) -> Option[T] {
+  o
+}
+
+fn h(o: Option[Small]) -> Option[Small] {
+  keep(o)
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file generic.strata verify --no-cache"]
+has = ["✓ h                        proven (1 check)"]

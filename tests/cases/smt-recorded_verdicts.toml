@@ -345,7 +345,7 @@ stdout = '''
     precondition of `halve` violated: requires n % 2 == 0 (with n = -621) (stack: halves -> halve)
 ✓ pick                     proven (nothing to check)
 ~ pick_pos                 fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
-    not proven: result of `pick_pos`: Pos: the solver found a possible counterexample: a = 1, b = 1 (depends on values of the generic type `T` are not known), but running it did not fail
+    not proven: result of `pick_pos`: Pos: the solver found a possible counterexample: a = 1, b = 1 (depends on the result of `pick` (only its contract is known)), but running it did not fail
 ✓ doubled                  proven (3 checks)
 ✓ quadruple                proven (2 checks)
 ✗ wrong_quadruple          Ensures violation (found by the solver)
