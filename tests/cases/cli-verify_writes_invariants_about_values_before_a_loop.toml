@@ -1,0 +1,53 @@
+# A loop's invariants found by search may speak of a variable's value
+# before the loop (shown `at₀`). `verify` writes them with no new syntax:
+# as the expression the variable was set to just before the loop, when the
+# loop and the statements since leave that expression's variables unchanged
+# (`mut at := from`: `invariant at >= from`); else with a binding it makes
+# just before the loop (`start_at := at`: `invariant at >= start_at`),
+# named apart from the function's names (`start_at` is taken in
+# `quoted_after`: `start_at_2`). The next run proves them without
+# searching. (Each loop's search takes about 6M units with Z3 4.x, over the
+# 2M of `found_by_search`.)
+
+[[step]]
+save = "q.strata"
+from = "q.st"
+
+[[step]]
+strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache"]
+has = [
+  "✓ quoted_end ",
+  '''edited quoted_end: added `invariant at <= n`, `invariant at <= byte_len(src)`, `invariant at >= from`, `invariant at >= 0` to `while at < n && char_at(src, at) != "\""` (found by search in ''',
+  "✓ quoted_after ",
+  '''`invariant at >= start_at_2`''',
+  '''to `while at < n && char_at(src, at) != "\""` and `start_at_2 := at` before it (found by search in ''',
+]
+
+[[step]]
+strata = ["--file", "q.strata", "view", "main"]
+has = [
+  '''  mut at := from
+  mut s := ""
+  mut col := 0
+  while at < n && char_at(src, at) != "\""
+    invariant at <= n
+    invariant at <= byte_len(src)
+    invariant at >= from
+    invariant at >= 0 {''',
+  '''  mut start_at := 0
+  start_at_2 := at
+  while at < n && char_at(src, at) != "\""''',
+  "    invariant at >= start_at_2",
+]
+
+# verified again: the written invariants proven, nothing searched for and
+# nothing more written
+[[step]]
+strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache", "--checks"]
+has = [
+  "✓ quoted_end ",
+  '''proven:  invariant `at >= from` after a pass of `while at < n && char_at(src, at) != "\""`''',
+  "✓ quoted_after ",
+  '''proven:  invariant `at >= start_at_2` after a pass of `while at < n && char_at(src, at) != "\""`''',
+]
+lacks = ["edited", "note:"]
