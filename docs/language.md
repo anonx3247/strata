@@ -286,7 +286,7 @@ Variables are immutable unless declared `mut`. `while` and `for` loops are avail
 - a function that changes an argument declares it `mut`, and the caller passes a mutable variable marked `mut` at the call (`restock(mut line, 5)`), which is updated when the call returns. The marker is required there, and an error anywhere else;
 - a method that changes its receiver takes `mut self`, and the call is marked the same way: `mut queue.claim(2)` (as Hylo writes `&x.append(1)`). The mark is required for such a method, and an error on any other. It marks the first call on the place after it: `mut queue.claim(2).len()` changes `queue` through `claim`, and is written `(mut queue.claim(2)).len()`. As an argument, the marked call is put in parentheses, `f((mut queue.pop()), x)`, to tell it from `f(mut queue)`, which passes `queue` to a `mut` parameter.
 
-There are no shared references, so nothing changes behind your back: `ys := xs` is a copy, and changing `xs` afterwards leaves `ys` as it was (the same holds for passing a value or storing it in a field). There is no `copy` or `clone` to call; the copying is the compiler's business (compiled code shares the value and copies it only when one side changes it while the other still holds it). A declared type holds for the variable's whole life: every assignment is checked against it.
+There are no shared references, so nothing changes behind your back: `ys := xs` is a copy, and changing `xs` afterwards leaves `ys` as it was (the same holds for passing a value or storing it in a field). There is no `copy` or `clone` to call; the copying is the compiler's business (compiled code shares the value and copies it only when one side changes it while the other still holds it: see [values and copying](#values-and-copying) for what that costs). A declared type holds for the variable's whole life: every assignment is checked against it.
 
 **Ranges, slices and comprehensions.** `0..n` is the integers from `0` to `n - 1`, and `1..=n` includes `n`; a range is a `List[Int]` (`for i in 0..n { … }`, `(0..n).map(…)`). A list is sliced with a range: `xs[1..3]`, `xs[..3]`, `xs[2..]`, `xs[..=i]`, clamped to its length as in Python. One element is `xs[i]`: `i` must be in range, which is checked when the code runs and proven by `verify`; `get(xs, i)` gives an `Option` instead. An element of a `mut` list is assigned the same way, `xs[i] = v` (and `xs[i] += 1`, `grid[r][c] = v`, `s.items[i] = v`, `s.items[i].qty = 3`): values never change, so it means `xs = set_at(xs, i, v)`, `xs` with element `i` replaced (a copy held elsewhere keeps the old one), with the same condition on `i`. It is O(1): the compiled code changes the list in place when nothing else holds it. A comprehension builds a list from one or more others, with a `where` to keep only some elements, as in a refinement:
 
@@ -299,6 +299,40 @@ Set { x % 3 for x in xs }
 ```
 
 Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early.
+
+## Values and copying
+
+Values never change: `insert(d, k, v)` is a new dict, and `d` is as it was. What makes that cheap is the rule compiled code follows: **an update of a value held by one thing only is made in place; a value something else still holds is copied first.** The copy is then held by one thing only, so the updates after it are in place again: sharing a value costs at most one copy per update that follows a share, never a copy per update.
+
+An update is in place (when nothing else holds the value) in these forms:
+
+- `d = insert(d, k, v)`, `d = remove(d, k)` on a dict or a set, where `d` is a variable or a field at any depth (`s.d`, `b.bids.words`): O(1) each, on average. So is `insert`/`remove` on a temporary, as in `insert(insert(d, 1, 1), 2, 2)` (the inner result is held by nothing else).
+- `xs[i] = v` (`xs = set_at(xs, i, v)`) on a list: O(1).
+- `x.f = v` and `x.a.b = v`: a field of a record or tuple, at any depth (not of a `distinct` record or one with a refinement of its own, which is checked on the new record).
+- `xs = push(xs, e)`, `xs += ys`, `xs = xs + ys` on a list: O(1) per element added, on average, **even when `xs` is shared**: the list's buffer is extended past its end when no other list made from it has used those slots, and copied otherwise (with room for as much again, so a list grown over and over is copied O(log n) times).
+- `s += t`, `s = s + t` on a string: in place when the string is held by `s` only (and the records on the way to it, for a field), else a copy, with room to grow.
+- A record's or a container's elements of a refined type (`Dict[Int, Word]`): an update checks what it adds (`insert`'s key and value, `push`'s element), not every element again.
+
+Any other expression makes a new value and leaves its operands as they were: `ys := insert(xs, …)` copies `xs` (it is still `xs`'s), and so does `xs + [x]` assigned to anything but `xs`. Write the update back to the place it reads.
+
+What holds a value (so that changing it through one of them copies it):
+
+- each variable, field, and container element it is stored in: `ys := xs` holds it twice, and the next `xs = insert(xs, …)` copies (once);
+- a `mut` parameter is the caller's variable, by reference: `fn add(mut s: State)` changing `s.d` changes the caller's value in place, as does a `mut self` method (`mut c.add(1)`). A field given to a `mut` parameter, `bump(mut b.bids)`, is lent to the call: in place when the records on its path are held once and no other argument of the call reads `b`;
+- a value read out of a container is held by the container too: `insert(get(outer, k) ?? Dict {}, k2, v)` copies the inner dict every time (each step's copy is as big as the inner dict). Take it out first: `mut inner := get(outer, k) ?? Dict {}`, `outer = remove(outer, k)`, then change `inner` and put it back (a list read out is fine to `push` to: see above);
+- a `for` loop holds what it runs over until it ends: changing the container inside the loop copies it once;
+- a closure holds what it captures, for as long as it exists;
+- a function's (not `mut`) parameter is still the caller's value: `mut e := d` then `e = insert(e, …)` copies `d` once;
+- a value sent to a task or a channel is held by the sender too while it still uses it.
+
+`strata run --copies` (and `strata test --copies`, `strata build --copies`) reports each copy made to change a value, when the program ends: per place in the code, how many, how big, and why (on standard error, the most bytes first):
+
+```
+copies: 2 copies, 14 kB, at 1 place (the most bytes first):
+  copied a Dict of up to 400 entries at app.kept@31f7e4cc/body/4/body/0/value: 2 times, 14 kB (shared: held 2 times)
+```
+
+The place is a location, as `strata find` and `strata refs` print them: `strata view app.kept@31f7e4cc/body/4/body/0/value` shows it. With nothing copied it says `copies: none`. Without `--copies` the compiled code is the same as ever (nothing is counted).
 
 ## Errors: `Result`, `Option`, `!`, `?`, `except` and `or`
 

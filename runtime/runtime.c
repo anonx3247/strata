@@ -2841,10 +2841,14 @@ static List *append(List *l, int64_t x) {
 // A `Dict[K, V]` or a `Set[A]` is a hash table: a block { tag 0, entries,
 // index } laid out as the tuple `(List[E], List[Int])` the generated code
 // takes it for (so it is held, dropped and copied as one), E a dict's
-// `(K, V)` pairs or a set's elements. The entries are kept in the order
-// they came in, a removal closing the gap, so `for`, `len`, `items` and
-// showing one are the entries list's; that order is the table's, not the
-// language's (nothing should assume one). The index is open addressing
+// `(K, V)` pairs or a set's elements. A new entry goes after the others
+// and a removal moves the last entry into the gap (so a removal is O(1)),
+// so `for`, `len`, `items` and showing one are the entries list's; that
+// order is the table's, not the language's (nothing should assume one),
+// and the same whether a table was changed in place or copied. A table
+// copied to be changed (`insert`, `remove` on a table held elsewhere) is
+// the new table's alone (its entries, index and their buffers held once),
+// so the changes after it are in place. The index is open addressing
 // with linear probing over a power of two of slots, at most half of them
 // used: a used slot holds `tag << 32 | (entry + 1)`, the tag 30 bits of the
 // key's hash (most other keys of the slot are told apart without comparing
@@ -2958,6 +2962,40 @@ static int64_t tbl_search(int64_t *d, int64_t n, List *idx, int64_t k, TblHash h
   }
 }
 
+// A copy of an index, its own (none stays none).
+static List *tbl_index_copy(List *idx) {
+  if (idx->len == 0) return NO_LIST;
+  List *l = tbl_slots(idx->len);
+  memcpy(l->buf->data, tbl_data(idx), (size_t)idx->len * 8);
+  return l;
+}
+
+// The slot of `s` (`cap` of them) that holds entry `e`, whose key's mixed
+// hash is `m`.
+static uint64_t tbl_slot_of(int64_t *s, int64_t cap, uint64_t m, int64_t e) {
+  uint64_t i = m & (uint64_t)(cap - 1);
+  while ((s[i] & 0xFFFFFFFF) != e + 1) i = (i + 1) & (uint64_t)(cap - 1);
+  return i;
+}
+
+// Slot `i` emptied, the slots after it in its run moved back where a search
+// still finds them (linear probing's deletion, no tombstones); `d` the
+// entries, for their keys' home slots.
+static void tbl_unplace(int64_t *s, int64_t cap, uint64_t i, int64_t *d, TblHash h, int64_t dict) {
+  uint64_t mask = (uint64_t)(cap - 1), j = i;
+  for (;;) {
+    j = (j + 1) & mask;
+    if (!s[j]) break;
+    uint64_t home = tbl_mix(h(tbl_key(d[(s[j] & 0xFFFFFFFF) - 1], dict))) & mask;
+    // (s[j] may move to i when its home isn't cyclically in (i, j])
+    if (i < j ? home <= i || home > j : home <= i && home > j) {
+      s[i] = s[j];
+      i = j;
+    }
+  }
+  s[i] = 0;
+}
+
 static Tbl *tbl_new(List *es, List *idx) {
   Tbl *t = strata_alloc(sizeof(Tbl));
   *t = (Tbl){0, es, idx};
@@ -3046,11 +3084,16 @@ Tbl *strata_tbl_insert(Tbl *t, int64_t x, TblHash h, TblCmp c, int64_t dict, int
     es->buf->data[e] = x;
     es->buf->used = es->len = n;
     tbl_hold(es->buf->data, n, kind);
-    strata_dup(t->idx);
-    return tbl_new(es, t->idx);
+    return tbl_new(es, tbl_index_copy(t->idx));
   }
+  // (a copy of the entries with room to grow, not `t`'s buffer extended:
+  // the new table is then its own, changed in place from now on)
   tbl_hold(&x, 1, kind);
-  List *es = strata_list_push(t->es, x, kind), *idx;
+  List *es = strata_list_new(2 * (n + 1)), *idx;
+  memcpy(es->buf->data, d, (size_t)n * 8);
+  es->buf->data[n] = x;
+  es->buf->used = es->len = n + 1;
+  tbl_hold(es->buf->data, n, kind);
   if (n + 1 <= TBL_SMALL) idx = NO_LIST;
   else if (t->idx->len == 0 || 2 * (n + 1) > t->idx->len) idx = tbl_index(tbl_data(es), n + 1, h, dict);
   else {
@@ -3062,7 +3105,8 @@ Tbl *strata_tbl_insert(Tbl *t, int64_t x, TblHash h, TblCmp c, int64_t dict, int
   return tbl_new(es, idx);
 }
 
-// `remove`: the entry of key `k` taken out (the others in order).
+// `remove`: the entry of key `k` taken out, the last one in its place (as
+// `strata_tbl_remove_at` does in place).
 Tbl *strata_tbl_remove(Tbl *t, int64_t k, TblHash h, TblCmp c, int64_t dict, int64_t kind) {
   int64_t n = t->es->len, *d = tbl_data(t->es);
   int64_t e = tbl_search(d, n, t->idx, k, h, c, dict);
@@ -3072,8 +3116,8 @@ Tbl *strata_tbl_remove(Tbl *t, int64_t k, TblHash h, TblCmp c, int64_t dict, int
   }
   if (n == 1) return strata_tbl_empty();
   List *es = strata_list_new(n - 1);
-  memcpy(es->buf->data, d, (size_t)e * 8);
-  memcpy(es->buf->data + e, d + e + 1, (size_t)(n - e - 1) * 8);
+  memcpy(es->buf->data, d, (size_t)(n - 1) * 8);
+  if (e < n - 1) es->buf->data[e] = d[n - 1];
   es->buf->used = es->len = n - 1;
   tbl_hold(es->buf->data, n - 1, kind);
   return tbl_new(es, tbl_index(es->buf->data, n - 1, h, dict));
@@ -3132,25 +3176,30 @@ void strata_tbl_add(Tbl *t, int64_t x, TblHash h, int64_t dict) {
   } else tbl_place(tbl_data(idx), idx->len, tbl_mix(h(tbl_key(x, dict))), n);
 }
 
-// In an owned table: entry `e` taken out (those after it moved down), and
+// In an owned table: entry `e` taken out, the last entry moved into its
+// place (O(1): its slot emptied, the last entry's slot renumbered), and
 // returned for the caller to drop.
 int64_t strata_tbl_remove_at(Tbl *t, int64_t e, TblHash h, int64_t dict) {
   List *es = t->es;
   Buf *b = es->buf;
-  int64_t old = b->data[e];
-  memmove(b->data + e, b->data + e + 1, (size_t)(b->used - e - 1) * 8);
+  int64_t last = es->len - 1, old = b->data[e];
+  List *idx = t->idx;
+  if (idx->len != 0) {
+    if (last <= TBL_SMALL) {
+      t->idx = NO_LIST;
+      tbl_free_index(idx);
+    } else {
+      int64_t cap = idx->len, *s = tbl_data(idx);
+      tbl_unplace(s, cap, tbl_slot_of(s, cap, tbl_mix(h(tbl_key(old, dict))), e), b->data, h, dict);
+      if (e != last) {
+        uint64_t j = tbl_slot_of(s, cap, tbl_mix(h(tbl_key(b->data[last], dict))), last);
+        s[j] = (s[j] & ~(int64_t)0xFFFFFFFF) | (e + 1);
+      }
+    }
+  }
+  b->data[e] = b->data[last];
   b->used--;
   es->len--;
-  List *idx = t->idx;
-  if (idx->len == 0) return old;
-  if (es->len <= TBL_SMALL) {
-    t->idx = NO_LIST;
-    tbl_free_index(idx);
-  } else {
-    memset(idx->buf->data, 0, (size_t)idx->len * 8);
-    for (int64_t i = 0; i < es->len; i++)
-      tbl_place(idx->buf->data, idx->len, tbl_mix(h(tbl_key(b->data[i], dict))), i);
-  }
   return old;
 }
 
@@ -3259,6 +3308,13 @@ List *strata_list_concat(List *a, List *b, int64_t counted) {
   return l;
 }
 
+// `xs += ys` (core.list's `list_extend`; without core.rt, a new list each
+// time).
+List *strata_list_extend(List *a, List *b, int64_t counted) { return strata_list_concat(a, b, counted); }
+
+// `s += t` (core.str's `str_append`; without core.rt, a new string each time).
+Str *strata_str_append(Str *a, Str *b, _Bool mine) { return strata_concat(a, b); }
+
 // `set_at` on a list something else holds too: a copy of `xs`, its other
 // elements held once more, element `i` replaced by `x` (handed over).
 List *strata_list_set(List *xs, int64_t i, int64_t x, int64_t counted) {
@@ -3282,6 +3338,176 @@ List *strata_range(int64_t lo, int64_t hi) {
   return l;
 }
 #endif
+
+// ---- `--copies`: the copies of values a program makes, reported at its end ----
+//
+// Code compiled with `--copies` (`strata run`, `test` and `build`) calls
+// `strata_copied` where a value about to be changed is copied because
+// something else still holds it (and `strata_copies_push` /
+// `strata_copies_append` before an extension, which copies when its buffer
+// can't be extended in place). Each place's copies are added up (how many,
+// their bytes, the largest), and listed on standard error when the program
+// ends, the most bytes first. Code compiled without it calls none of these.
+
+typedef struct {
+  Str *site, *what, *why;
+  int64_t kind, times, bytes, most, held;
+} CopySite;
+
+static CopySite *copy_sites;
+static int64_t ncopy_sites, capcopy_sites;
+static pthread_mutex_t copies_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static _Bool str_same(Str *a, Str *b) { return a == b || (a->len == b->len && !memcmp(a->bytes, b->bytes, (size_t)a->len)); }
+
+// `n` with its thousands separated by commas.
+static void copies_count(char *out, size_t size, int64_t n) {
+  char d[32];
+  int k = snprintf(d, sizeof d, "%lld", (long long)n), j = 0;
+  for (int i = 0; i < k && j < (int)size - 2; i++) {
+    if (i > 0 && (k - i) % 3 == 0) out[j++] = ',';
+    out[j++] = d[i];
+  }
+  out[j] = 0;
+}
+
+static void copies_bytes(char *out, size_t size, int64_t n) {
+  char c[40];
+  if (n >= 10 * 1000 * 1000) copies_count(c, sizeof c, n / 1000000), snprintf(out, size, "%s MB", c);
+  else if (n >= 10 * 1000) copies_count(c, sizeof c, n / 1000), snprintf(out, size, "%s kB", c);
+  else copies_count(c, sizeof c, n), snprintf(out, size, "%s bytes", c);
+}
+
+static int copies_order(const void *a, const void *b) {
+  const CopySite *x = a, *y = b;
+  return x->bytes < y->bytes ? 1 : x->bytes > y->bytes ? -1 : 0;
+}
+
+static void copies_report(void) {
+  fflush(stdout);
+  pthread_mutex_lock(&copies_lock);
+  if (ncopy_sites == 0) {
+    fprintf(stderr, "copies: none\n");
+    pthread_mutex_unlock(&copies_lock);
+    return;
+  }
+  qsort(copy_sites, (size_t)ncopy_sites, sizeof(CopySite), copies_order);
+  int64_t times = 0, bytes = 0;
+  for (int64_t i = 0; i < ncopy_sites; i++) times += copy_sites[i].times, bytes += copy_sites[i].bytes;
+  char t[40], b[40], m[40];
+  copies_count(t, sizeof t, times);
+  copies_bytes(b, sizeof b, bytes);
+  fprintf(stderr, "copies: %s cop%s, %s, at %lld place%s (the most bytes first):\n", t, times == 1 ? "y" : "ies", b,
+          (long long)ncopy_sites, ncopy_sites == 1 ? "" : "s");
+  for (int64_t i = 0; i < ncopy_sites; i++) {
+    CopySite *c = &copy_sites[i];
+    copies_count(m, sizeof m, c->most);
+    copies_count(t, sizeof t, c->times);
+    copies_bytes(b, sizeof b, c->bytes);
+    const char *unit = c->kind == 3 ? "byte" : c->kind == 4 ? "field" : c->kind == 0 ? "item" : "entr";
+    const char *plural = c->most == 1 ? (c->kind == 1 ? "y" : "") : (c->kind == 1 ? "ies" : "s");
+    fprintf(stderr, "  copied a %.*s of %s%s %s%s at %.*s: %s time%s, %s (", (int)c->what->len, c->what->bytes,
+            c->times > 1 && c->most > 1 ? "up to " : "", m, unit, plural, (int)c->site->len, c->site->bytes, t,
+            c->times == 1 ? "" : "s", b);
+    if (c->why->len) fprintf(stderr, "%.*s", (int)c->why->len, c->why->bytes);
+    else if (c->held > 1) fprintf(stderr, "shared: held %lld times", (long long)c->held);
+    else fprintf(stderr, "held once, but what holds it is shared");
+    fprintf(stderr, ")\n");
+  }
+  pthread_mutex_unlock(&copies_lock);
+}
+
+// How many hold object `p` (its count word's count bits; 0 for a constant).
+static int64_t copies_held(void *p) { return __atomic_load_n((int64_t *)p - 1, __ATOMIC_ACQUIRE) & ((INT64_C(1) << 40) - 1); }
+
+static void copies_note(int64_t kind, int64_t items, int64_t bytes, int64_t held, Str *what, Str *site, Str *why) {
+  pthread_mutex_lock(&copies_lock);
+  if (capcopy_sites == 0) atexit(copies_report);
+  CopySite *c = NULL;
+  for (int64_t i = 0; i < ncopy_sites && !c; i++)
+    if (copy_sites[i].kind == kind && str_same(copy_sites[i].site, site) && str_same(copy_sites[i].what, what) &&
+        str_same(copy_sites[i].why, why))
+      c = &copy_sites[i];
+  if (!c) {
+    if (ncopy_sites == capcopy_sites) {
+      capcopy_sites = capcopy_sites ? 2 * capcopy_sites : 16;
+      copy_sites = realloc(copy_sites, (size_t)capcopy_sites * sizeof(CopySite));
+    }
+    c = &copy_sites[ncopy_sites++];
+    *c = (CopySite){site, what, why, kind, 0, 0, 0, held};
+  }
+  c->times++;
+  c->bytes += bytes;
+  if (items > c->most) c->most = items;
+  if (held > c->held) c->held = held;
+  pthread_mutex_unlock(&copies_lock);
+}
+
+static Str *copies_text(Str **cell, const char *c) {
+  if (!*cell) *cell = str_c(c);
+  return *cell;
+}
+
+// A program compiled with `--copies` starts: "copies: none" is reported at
+// its end if it copies nothing.
+void strata_copies_start(void) {
+  pthread_mutex_lock(&copies_lock);
+  if (capcopy_sites == 0) {
+    atexit(copies_report);
+    capcopy_sites = 16;
+    copy_sites = malloc((size_t)capcopy_sites * sizeof(CopySite));
+  }
+  pthread_mutex_unlock(&copies_lock);
+}
+
+// A copy of `obj` (`kind`: 0 a list, 1 a dict or set, 3 a string, 4 a record
+// or tuple of `n` fields), a `what` (its type), at `site` (a location), `why`
+// ("": its count says), unless it is empty or a constant.
+void strata_copied(int64_t kind, void *obj, int64_t n, Str *what, Str *site, Str *why) {
+  int64_t items, bytes;
+  if (kind == 0) {
+    items = ((List *)obj)->len;
+    bytes = 24 + 8 * items;
+  } else if (kind == 1) {
+    Tbl *t = obj;
+    items = t->es->len;
+    bytes = 24 + 24 + 8 * items + (t->idx->len ? 24 + 8 * t->idx->len : 0);
+  } else if (kind == 3) {
+    items = ((Str *)obj)->len;
+    bytes = 8 + items;
+  } else {
+    items = n;
+    bytes = 8 * (n + 1);
+  }
+  int64_t held = copies_held(obj);
+  // (a constant, `Dict { 1: 2 }`, is made by its first change: not a copy)
+  if ((items == 0 && kind != 4) || held == 0) return;
+  static Str *iterated;
+  if (kind == 1 && held == 1 && why->len == 0 && copies_held(((Tbl *)obj)->es) > 1)
+    why = copies_text(&iterated, "its entries are held elsewhere too: a `for` over it, or a list taken from it");
+  copies_note(kind, items, bytes, held, what, site, why);
+}
+
+// Before `push` (`n` 1) or `xs += ys` (`n` the length of `ys`): a copy when
+// a slot of `xs`'s buffer it needs is taken already (another list made from
+// the same one grew past it, or `xs` is a slice); running out of room only
+// grows the buffer (doubling, not counted).
+void strata_copies_push(List *xs, int64_t n, Str *what, Str *site) {
+  static Str *why;
+  if (xs->len == 0 || n == 0 || xs->off + xs->len == xs->buf->used) return;
+  copies_note(0, xs->len, 24 + 8 * xs->len, copies_held(xs->buf), what, site,
+              copies_text(&why, "its buffer is used past its end: another list made from it grew, or it is a slice"));
+}
+
+// Before `s += t` (`mine`: nothing but the variable holds what holds `s`):
+// a copy when `s` can't be extended where it is because something else
+// holds it.
+void strata_copies_append(Str *s, _Bool mine, Str *site) {
+  static Str *what, *none, *outer;
+  if (s->len == 0 || (mine && copies_held(s) == 1)) return;
+  copies_note(3, s->len, 8 + s->len, copies_held(s), copies_text(&what, "String"), site,
+              mine ? copies_text(&none, "") : copies_text(&outer, "held once, but what holds it is shared"));
+}
 
 // Whether to color what goes to stream `fd`: a terminal, unless `NO_COLOR`
 // is set or `TERM` is `dumb`; `FORCE_COLOR` forces it (as std.term decides).
