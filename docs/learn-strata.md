@@ -656,6 +656,7 @@ from std.cli use CommandLine
 from std.io use Console
 
 /// Greet people by name.
+derive CommandLine for                             // --help comes from the /// comments
 type Options = {
   /// Shout the greeting.
   loud: Bool = false,                              // a flag: --loud
@@ -665,8 +666,6 @@ type Options = {
   names: List[String] = [],                        // the positional arguments
 }
 
-derive CommandLine for Options                     // --help comes from the /// comments
-
 fn main(opts: Options, mut console: Console) {
   for name in opts.names {
     for _ in 0..opts.times {
@@ -675,6 +674,8 @@ fn main(opts: Options, mut console: Console) {
   }
 }
 ```
+
+A `derive` is written on its declaration, after the docs and before `pub`. `derive CommandLine, Json for` above a `type` derives both traits for it, and `derive C, Python for` above a `fn` exports it to C and Python (`std.ffi`). This is the same as a separate `derive CommandLine for Options` line. The separate form is still needed for a derive with hand-written methods (`derive Json for Options { ... }`), for a type in another module, and for `derive C for module`. `strata view` shows each derive without a block on its declaration.
 
 Tests pass substitutes instead of the real capabilities: `recorder(input)` and `printed(r)` for a `Console`, `mem_files([(path, text)])` for `Files`, `fake_environment(args, vars)`, or `mock Trait`. Only `main` (under `strata run`, or as a built executable) and a test that names a capability reach the real terminal, disk or network.
 

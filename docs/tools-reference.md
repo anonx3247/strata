@@ -19,6 +19,8 @@ A change to a body alone can't break anything else, so only that body is checked
 
 **Warnings.** An edit prints warnings about what it wrote, on stderr, as `strata check` does for everything: a contract that should be a refinement, or a refinement that should be a contract (`compiler/lint`). `strata fix [NAME]...` applies the change each warning shows and logs it like an edit. With `--file F`, it writes a script or folder outside any log, as `edit --file` does.
 
+**Derives written on a declaration.** A declaration given in an edit brings its `derive A, B for` line. A stored derive that `view` would show on that line (no block of methods, for a type or function in the same module, not `for module`) is removed if the line no longer names its trait, with `warning: removed derive std.toml.Toml for Point (no longer on its derive line)`. A declaration given with no derive line loses all such derives, matching what `view` would show. The removal is a change like `--rm`'s: it is listed, logged in `strata log`, and shown by the diffs. A declaration the edit doesn't give keeps its derives. Derives with a block, derives for other modules' declarations, and `for module` derives are removed only by `--rm`. `strata view NAME` and the editor opened on a selection (`strata edit Point`) show a declaration with its derive line, so editing a definition as `view` shows it never loses its derives.
+
 ## How it is stored
 
 **Code.** Code is stored as its syntax tree, in binary. Each `.strata` file is a module file, in Strata's own format, specified in [binary-format.md](binary-format.md).

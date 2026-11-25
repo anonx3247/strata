@@ -1,0 +1,78 @@
+# `check` types a method a trait provides (one with a body the type's `impl`
+# doesn't write, as `to_json` of a type deriving `Json`): its `Result` is not
+# a `JsonValue` (`stringify(p.to_json())` passed `check` before and crashed
+# at run time inside `std.json.stringify`)
+
+[[step]]
+save = "a.strata"
+text = '''
+from std.json use Json, stringify
+
+type P = { name: String, age: Int }
+
+derive Json for P
+
+trait Counted {
+  fn count(self) -> Result[Int, String] {
+    Ok(1)
+  }
+}
+
+impl Counted for P {}
+
+fn twice(n: Int) -> Int {
+  n * 2
+}
+
+fn counted(p: P) -> Int {
+  twice(p.count())
+}
+
+fn main() {
+  p := P { name: "a", age: 3 }
+  print(stringify(p.to_json()))
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "check"]
+fails = true
+has = [
+  "error in main: call to `std.json.stringify`, argument 1: expected `std.json.JsonValue`, found `Result[std.json.JsonValue, String]`: handle its error (`!`, `!!`, `match`)",
+  "error in counted: call to `twice`, argument 1: expected `Int`, found `Result[Int, String]`: handle its error (`!`, `!!`, `match`)",
+]
+
+[[step]]
+save = "b.strata"
+text = '''
+from std.json use Json, Null, stringify
+
+type P = { name: String, age: Int }
+
+derive Json for P
+
+trait Counted {
+  fn count(self) -> Result[Int, String] {
+    Ok(1)
+  }
+}
+
+impl Counted for P {}
+
+fn twice(n: Int) -> Int {
+  n * 2
+}
+
+fn main() {
+  p := P { name: "a", age: 3 }
+  print(stringify(p.to_json() !! Null))
+  print(twice(p.count() !! 0))
+}
+'''
+
+[[step]]
+strata = ["run", "b.strata"]
+stdout = '''
+{"type":"P","name":"a","age":3}
+2
+'''

@@ -689,6 +689,7 @@ A program's entry point is `main`. It declares what it needs by type, and `strat
 from std.cli use CommandLine
 
 /// Greet people by name.
+derive CommandLine for
 type Options = {
   /// Shout the greeting.
   loud: Bool = false,
@@ -697,8 +698,6 @@ type Options = {
   /// Who to greet (the world if nobody).
   names: List[String] = [],
 }
-
-derive CommandLine for Options
 
 fn main(opts: Options) {
   who := if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
@@ -724,7 +723,7 @@ cat README.md | strata run examples/wc
 The **standard library** is the `std/` package. It is written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It covers:
 
 - the console, files, time and processes (`std.io`, `std.fs`, `std.time`, `std.process`)
-- SQLite databases (`std.sqlite`)
+- SQLite databases (`std.sqlite`), and records stored as tables (`std.orm`, `derive Table`)
 - command lines (`std.cli`)
 - sorted dictionaries and sets and a priority queue (`std.collections`)
 - JSON and TOML (`std.json`, `std.toml`)
@@ -738,8 +737,8 @@ Each module has a [reference page](std/README.md), generated from its doc commen
 ```rust
 from std.json use Json, parse, stringify
 
+derive Json for
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
-derive Json for Signup
 
 signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}

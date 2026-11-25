@@ -1,0 +1,138 @@
+# std.orm: `derive Table` makes a table of a record (columns, the key, a
+# key of another table, refinements as CHECKs, defaults), inserts (the row
+# id read back as the key), updates, deletes, gets by key and runs typed
+# queries (`Todo.done.eq(false)`, `and`, `order_by`, `limit`, `count`,
+# `delete`); a row breaking a refinement SQL can't state is `BadRow`, not a
+# fault. Built (every object freed) and run; the example `todos_db` runs,
+# tests and verifies. What can't be a table is an error at the `derive`, a
+# query of the wrong type an error of the checker.
+
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+strata = ["build", "main.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/std_orm.out"
+
+[[step]]
+strata = ["run", "main.strata"]
+golden = "tests/data/build/expected/std_orm.out"
+
+# the example
+[[step]]
+strata = ["--file", "$ROOT/examples/todos_db.strata", "test"]
+has = ["✓ finishing a to-do", "✓ the table refuses what the record refuses", "2 passed, 0 failed"]
+
+[[step]]
+strata = ["run", "--file", "$ROOT/examples/todos_db.strata"]
+stdout = '''
+Ok(true)
+Ok(false)
+[ ] buy milk (priority 1, due day 3)
+[ ] fix the bike (priority 4, due day 10)
+due by day 5: ["buy milk"]
+Err(Constraint { message: "CHECK constraint failed: (\"title\" <> '') AND (length(CAST(\"title\" AS BLOB)) <= 80)" })
+Err(Constraint { message: "FOREIGN KEY constraint failed" })
+done: 1
+Ok(1)
+left: 2
+'''
+
+[[step]]
+strata = ["--file", "$ROOT/examples/todos_db.strata", "verify"]
+lacks = ["✗"]
+
+# what can't be a table
+[[step]]
+strata = ["--file", "no_key.strata", "edit"]
+text = '''
+from std.orm use Table
+
+type Note = { text: String }
+
+derive Table for Note
+'''
+fails = true
+has = ["can't be a table without a key: give it a field named `id`"]
+
+[[step]]
+strata = ["--file", "list_field.strata", "edit"]
+text = '''
+from std.orm use Table
+
+type Note = { id: Int, tags: List[String] }
+
+derive Table for Note
+'''
+fails = true
+has = ["`List[String]` can't be a column"]
+
+[[step]]
+strata = ["--file", "double_option.strata", "edit"]
+text = '''
+from std.orm use Table
+
+type Note = { id: Int, x: Option[Option[Int]] }
+
+derive Table for Note
+'''
+fails = true
+has = ["`None` and `Some(None)` would both be NULL"]
+
+# a query is checked against the field's type, and the field against the record
+[[step]]
+strata = ["--file", "wrong_type.strata", "edit"]
+text = '''
+from std.orm use Table, Compare
+
+type Note = { id: Int, done: Bool }
+
+derive Table for Note
+
+fn main() {
+  print(Note.done.eq("yes"))
+}
+'''
+fails = true
+has = ["expected `Bool`, found `String`"]
+
+[[step]]
+strata = ["--file", "no_field.strata", "edit"]
+text = '''
+from std.orm use Table, Compare
+
+type Note = { id: Int, done: Bool }
+
+derive Table for Note
+
+fn main() {
+  print(Note.title.eq("x"))
+}
+'''
+fails = true
+has = ["type `Note` has no field `title`"]
+
+[[step]]
+strata = ["--file", "other_table.strata", "edit"]
+text = '''
+from std.orm use Table, Compare, Rows
+
+type Note = { id: Int, done: Bool }
+
+derive Table for Note
+
+type Tag = { id: Int, name: String }
+
+derive Table for Tag
+
+fn main() {
+  print(Note.filter(Tag.name.eq("x")).limit("all"))
+}
+'''
+fails = true
+has = ["expected `std.orm.Cond[Note]`, found `std.orm.Cond[Tag]`", "call to `limit`, argument 2: expected `Int`, found `String`"]
