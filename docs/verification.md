@@ -199,14 +199,26 @@ fn triangle(n: Natural) -> Natural {
 - After a `for`, the variables it changed have arbitrary values of their types.
 - A pass ends at the end of the body or at a `continue`, and what must hold after a pass is checked at each.
 
-A `while` loop terminates when a bound derived from its condition decreases on every pass. A property that must hold after a loop usually needs a loop invariant, a fact true at the head of the loop every time. The verifier infers invariants from these candidates:
+A `while` loop terminates when a bound derived from its condition decreases on every pass. A property that must hold after a loop usually needs a loop invariant, a fact true at the head of the loop every time.
+
+**Invariants derived from the code.** The verifier first reads invariants off the loop's code, as a compiler finds induction variables. They hold by construction, so they are assumed without a search. `x₀` is `x`'s value on entry:
+
+- An integer that every pass changes by the same amount on every path, including at a `continue` (`i += 1`, `j -= 2`), is an induction variable. Two of them keep a linear relation, such as `i - j == i₀ - j₀` or `2 * i - j == 2 * i₀ - j₀`.
+- An integer that every assignment in the loop only increases keeps `x >= x₀`, through branches and inner loops. The amount can be a literal or a length (`len`, `byte_len`). It is the other way round for one that only decreases.
+- With `while i < n`, where the loop doesn't change `n` and `i` goes up by at most 1 a pass, `i <= n` holds if it holds on entry. One question to the solver checks that. If the answer is no, `i <= n || i == i₀` holds anyway. `<=`, `>`, `>=` and `!=` are handled the same way.
+- A variable given only literals (or itself) is one of them or its value on entry. One given only values of at least `l` (literals, lengths, itself plus a non-negative amount) keeps `x >= l` if that holds on entry, and the same goes for an upper bound.
+- A list, dict or set that the loop only pushes to or inserts into doesn't get shorter (`len(xs) >= len(xs₀)`). One that it only pops or removes from doesn't get longer.
+
+A variable that the loop doesn't change keeps its value without any invariant. A place passed `mut`, assigned a value of another form, or named again by a binding inside the loop gets none of these facts. Neither does a sized integer, since sized integers wrap. The same facts hold at the head of a `for` and a `loop`.
+
+**A search, only where a check needs it.** When a check made after the start of a loop isn't proven with the derived invariants, `verify` runs that function again with a search for more invariants. Such a check can be an index, an `ensures`, an overflow, a written `invariant` or a termination bound. The search uses these candidates:
 
 - the condition's comparisons made non-strict (`i < n` gives `i <= n`, which still holds after the last pass)
 - the function's `ensures`, about the variable it returns
 - its `requires`
-- each integer the loop changes, compared with its value on entry (`x₀`), with 0, with the integer parameters, and with the other integers the loop changes
+- each integer the loop changes, compared with its value on entry, with 0, with the integer parameters, and with the other integers the loop changes
 
-Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates and the condition hold, and candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass, so they are assumed at the head. Facts already given by the declared types are omitted. `--checks` lists the invariants found:
+At first only the candidates that name a variable of the failing checks or of the loop's condition are tried. All of them are tried only if a check still fails. Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates, the derived invariants and the condition hold. Candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass, so they are assumed at the head. Facts already given by the declared types are omitted. `--checks` lists the invariants, derived and found:
 
 ```rust
 fn isqrt(n: Natural) -> Natural
