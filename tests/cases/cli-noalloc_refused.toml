@@ -1,0 +1,85 @@
+# a `noalloc` function that allocates: each kind of allocation refused, with
+# what allocates and where; a call of a function or method that isn't
+# `noalloc`; an update that happens in place only when nothing else holds
+# the value counts
+
+[[step]]
+save = "t.strata"
+text = '''
+type Point = { x: I64, y: I64 }
+
+type Bag = { n: I64 }
+
+impl Bag {
+  fn len(self) -> I64 {
+    self.n
+  }
+}
+
+fn helper(n: I64) -> I64 {
+  n
+}
+
+fn made(p: Point, n: Int, s: String, ss: Set[Int]) -> I64
+  noalloc {
+  _ := [n, n]
+  _ := (n, n)
+  _ := Point { x: p.x, y: 1.to_i64() }
+  _ := f"{s}!"
+  _ := s + s
+  _ := n + 1
+  _ := (k: I64) -> k
+  _ := Some(p)
+  for _ in ss {
+    ()
+  }
+  _ := range(0, 3)
+  p.x
+}
+
+fn updated(xs: List[I64], p: Point, grid: List[List[I64]]) -> I64
+  noalloc {
+  mut zs := xs
+  zs[0] = 1.to_i64()
+  mut zs.push(2.to_i64())
+  mut r := p
+  r.x = 3.to_i64()
+  mut g := grid
+  g[0][1] = 2.to_i64()
+  r.x
+}
+
+fn called(b: Bag, s: String, f: (I64) -> I64) -> I64
+  noalloc {
+  print(s)
+  _ := b.len()
+  _ := to_upper(s)
+  helper(f(b.n))
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "t.strata", "check"]
+code = 1
+has = [
+  "error in made: `made` is `noalloc` but allocates: a list made at run time (`[n, n]`)",
+  "error in made: `made` is `noalloc` but allocates: a tuple made at run time (`(n, n)`)",
+  "error in made: `made` is `noalloc` but allocates: `Point` made at run time (`Point { x: p.x, y: 1.to_i64() }`)",
+  "error in made: `made` is `noalloc` but allocates: a string put together (`f\"{s}!\"`)",
+  "error in made: `made` is `noalloc` but allocates: `+` on `String` (a new one)",
+  "error in made: `made` is `noalloc` but allocates: `+` on `Int` (a big integer past 2^62): compute with a machine integer (`I64`)",
+  "error in made: `made` is `noalloc` but allocates: a closure (`(k: I64) -> k`)",
+  "error in made: `made` is `noalloc` but allocates: `Some` made at run time (`Some(p)`)",
+  "error in made: `made` is `noalloc` but allocates: a `for` over a `Set[Int]` (made into a list, or an iterator's `next` called): run over a list or `range(a, b)`",
+  "error in made: `made` is `noalloc` but allocates: a call to `range`, a built-in that may allocate (`range(0, 3)`)",
+  "error in updated: `updated` is `noalloc` but allocates: an element replaced (in place only when nothing else holds the list, which is known only when it runs; else in a copy) (`zs[0] = 1.to_i64()`)",
+  "error in updated: `updated` is `noalloc` but allocates: `push` (it changes the collection in place only when nothing else holds it and it has room; else in a new one) (`zs.push(2.to_i64())`)",
+  "error in updated: `updated` is `noalloc` but allocates: a field replaced (in place only when nothing else holds the value, which is known only when it runs; else in a copy) (`r.x = 3.to_i64()`)",
+  "error in updated: `updated` is `noalloc` but allocates: an element replaced (in place only when nothing else holds the list, which is known only when it runs; else in a copy) (`g[…] = …`)",
+  "error in called: `called` is `noalloc` but allocates: a call to `print`, a built-in that may allocate (`print(s)`)",
+  "error in called: `called` is `noalloc` but allocates: a call to `Bag.len`, which isn't `noalloc`",
+  "error in called: `called` is `noalloc` but allocates: a call to `to_upper`, a built-in that may allocate (`to_upper(s)`)",
+  "error in called: `called` is `noalloc` but allocates: a call to `helper`, which isn't `noalloc` (`helper(f(b.n))`)",
+  "error in called: `called` is `noalloc` but allocates: a call to a function value, which may allocate (`f(b.n)`)",
+]

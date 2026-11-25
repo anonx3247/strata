@@ -1,0 +1,21 @@
+# `noalloc` functions that allocate nothing: accepted, shown as written,
+# built and run (every object freed)
+
+[[step]]
+save = "noalloc.strata"
+from = "noalloc.st"
+
+[[step]]
+strata = ["--file", "noalloc.strata", "view", "main"]
+has = ["fn area(self) -> Float\n    noalloc\n", "fn manhattan(self) -> I64\n    noalloc {", "fn total(xs: List[I64]) -> I64\n  noalloc {"]
+
+[[step]]
+strata = ["--file", "noalloc.strata", "check"]
+
+[[step]]
+strata = ["build", "noalloc.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "4\n6\n5\n7\ntrue\n7.0\n"
