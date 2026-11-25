@@ -84,6 +84,9 @@ type Type = {
   /// function type (`derive C for add`: `Self` is `add`, its `name` and
   /// `doc` its own).
   parameters: List[Field] = [],
+  /// What an alias or a `distinct` type stands for (`type Count = Int where
+  /// it > 0`: `Int where it > 0`), when it is one: its `name` is its own.
+  base: Option[Type] = None,
 }
 ```
 

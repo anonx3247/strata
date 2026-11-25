@@ -6,3 +6,11 @@
 # Only `core` may declare `builtin` definitions.
 name = "core"
 auto_commit = false
+
+# Modules whose every function is `noalloc` (checked: it allocates nothing,
+# and calls only `noalloc` functions), as if each were marked: the runtime
+# written in Strata (core.rt, the allocator, and the topic modules it uses,
+# compiled together into the runtime, never with a program) and core.mem,
+# the raw memory they are built on (its `builtin` functions: the compiler's
+# promise).
+noalloc = ["rt", "str", "int", "list", "fmt", "float", "gen", "fault", "run", "mem"]

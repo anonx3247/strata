@@ -103,6 +103,21 @@ law enqueue_once(q: Self, id: Int) {
 
 The type is always named, so which implementation runs is always clear. A generic function that calls such a method is given its type arguments when it runs: each call passes the concrete type the checker inferred (or forwards the caller's own type parameter). So the type must be known at each call: `combine_any([])` alone is an error (annotate: `let xs: List[Money] = []`), and such a function can't be passed as a value (`map(combine_any)`): use a lambda. A trait-typed parameter (`xs: List[Empty]`) has no name to call `.empty()` on: write the type parameter when you need it.
 
+**Writing a `derive`.** `derive A, B for` written between a declaration's `///` docs and the declaration (`pub`, then `fn` or `type`) derives each trait for it:
+
+```rust
+/// A greeting for `name`.
+derive C, Python for
+pub fn greet(name: String) -> String {
+  f"Hello, {name}!"
+}
+
+derive CommandLine, Json for
+type Options = { count: Int, loud: Bool, name: String = "world" }
+```
+
+It is only a way of writing: each trait's derive is stored as its own definition (`derive CommandLine for Options`, `derive Json for Options`), exactly as the separate form `derive Json for Options` gives it, and `derive A, B for T` (a type, a function or `module`) gives one per trait too. `strata view`, the text `strata edit` opens and `strata doc` show a derive on its declaration when it has no block of methods written by hand, no type parameters or trait arguments, no comments of its own, and derives for a declaration of the same module shown with it; all of a declaration's such derives in one line, in their order in the module. The others (`derive Json for Point { ... }`, a type of another module, `derive C for module`) stay lines of their own, and a block needs a single trait. An edit replaces and adds derives by name like any definition and never deletes: leaving a trait out of the line keeps its derive (`strata edit --rm 'derive std.json.Json for Options'` removes it).
+
 ## Modules
 
 - **A file is a module.** In a folder, each `.strata` file (a binary module file) is a module named after its path (`shop/orders.strata` → `shop.orders`, `main.strata` → the root module). `view MODULE` prints one module as text, and `view --split DIR` writes the codebase's text out one `.st` file per module. A view that spans several modules (`view a,b`) labels each group with a `// ── module m` comment. In the database, definitions are stored under qualified names, so `orders.Line` and `billing.Line` can coexist. `edit m` targets a module, and `view module:m` shows one.
@@ -165,6 +180,8 @@ What counts as allocating, in its body and its contracts (a contract is checked 
 Reading is free: fields, elements (`xs[i]`, which faults when out of range: a fault ends the program or the task, so it isn't counted), `match`, comparisons, `if`, `while`, `for`, `return`, string literals, constants. Faults and failed contract checks are not counted either. Values the code generator puts on the stack (a constructor that doesn't leave its block, an argument the callee doesn't keep) still count: where it does so depends on the whole program, so `noalloc` doesn't rely on it.
 
 An `extern c fn` can be marked `noalloc`: like `terminates`, that is the C code's promise, not checked.
+
+**A whole module** is declared `noalloc` in its package's `strata.toml`: `noalloc = ["fast", "mem"]` lists modules as the package names them (a module covers the modules below it; `main` is the root module, `*` every one). Each function of those modules (functions, `impl`, trait and capability methods, `extern` ones) is then `noalloc` without being marked, and so is one added later. A function there that allocates is an error of `check`, `edit` and `verify`, naming the function and what allocates, as for a marked one. Calls into those modules, from anywhere, are calls to `noalloc` functions. A name in the list that is no module of the package is an error. core's runtime modules (core.rt, the allocator, and the modules it uses) and core.mem are declared this way in core's own `strata.toml`.
 
 ## Errors
 
@@ -363,7 +380,40 @@ Paths are relative to the package's folder, or absolute (`compiler/strata.toml` 
 
 - **A native module's capability** is asked for like any other: `main` and tests name it (`fn main(sqlite: Sqlite)`), its functions get it as `self` (`sqlite.open(path)`), and the program is linked with the package's `[native]` libraries. std's own are the system's: std.sqlite calls macOS's libsqlite3, which `strata build` links into the executables that use it (against a stub, `compiler/c/libsqlite3.tbd`, so no SDK is needed) and `strata run` / `strata test` load for the JIT. std's precompiled library leaves out what reaches C, so a program that doesn't use it doesn't link it.
 
-Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages (`extern python`, `extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+Not yet: a dependency's `[native]` C linked into the programs using it, structs passed by value, callbacks, buffers (so no blobs in std.sqlite), and other languages but Python (`extern ts`, `extern rust`, with values crossing as `Json`; see IDEAS.md).
+
+## Foreign functions: `extern python`
+
+A Python function is declared with `extern python "MODULE" fn`, the Python module it is in, then a signature with contracts and no body. Values cross as JSON, through the derived `Json` trait (std.json), so its parameters and result are types with a JSON form: `Int`, `Float`, `Bool`, `String`, `List`, `Option`, `Dict[String, V]`, records and unions that derive `Json`, aliases of those. `examples/python` calls `text_utils.py`, beside its strata.toml:
+
+```rust
+from std.python use PythonError
+
+/// A post summed up (Python builds the `Card` as a dict).
+extern python "text_utils" fn summary(post: Post) -> Result[Card, PythonError]
+
+/// Text tools, in Python.
+pub capability TextTools {
+  fn card(post: Post) -> Result[Card, PythonError] {
+    summary(post)
+  }
+}
+```
+
+```toml
+# strata.toml (both optional)
+[python]
+executable = "python3"   # the Python to run (default: python3 on the PATH)
+path = ["py"]            # where its modules are, relative to the package (default: the package's folder)
+```
+
+- **A call is a `Result`.** The result is written `Result[T, PythonError]` (std.python): a Python exception (`Raised`, with its type's name, message and traceback; an import that fails too), a worker that can't start or ends while answering (`WorkerFailed`), a result that isn't a `T` (a set, a `NaN`, an integer beyond 2^53, a missing field, a broken refinement: `BadReply`), an argument with no JSON form (an integer beyond 2^53: `NotEncodable`) are values, never faults. `Result[(), PythonError]` takes whatever the function returns.
+- **How it crosses.** The arguments are written with `to_json` and passed positionally (a record is a dict with its fields and `"type"`); what the function returns is read with `T.from_json`, its refinements checked. So Pydantic models or TypedDicts on the Python side match the derived JSON (see std.json).
+- **One worker per run.** The first call starts `python3 -c DRIVER` (the driver is the runtime's), kept for the rest of the run, which imports the modules and answers one JSON line per call. Calls from several tasks take turns on it. What the Python code prints goes to standard error. A worker that ends fails the call it was answering, and the next call starts a new one. The modules' folders are fixed when the program is compiled (absolute paths), so a built executable finds them wherever it runs.
+- **Only its module's capabilities call it.** `extern python` functions are never `pub`, and only the capabilities of their module call them (not its other functions, not its tests): code that reaches Python takes the capability, which `main` and tests ask for.
+- **`verify` never runs Python.** An `extern python` function is assumed (`≈`), its contracts checked when it runs: `requires` before the call, `ensures` after it.
+
+Not yet: Python objects kept on the Python side (handles), keyword arguments, a Python function named apart from its Strata name, a pool of workers, embedding libpython, `async` functions.
 
 ## Exporting functions: `derive C for f`
 
@@ -394,9 +444,21 @@ clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
 
 - **What crosses** is what crosses `extern c`, the other way: the sized integers, `Float` (`double`), `Bool` (`bool`), `String` (`const char *` in, copied; `char *` out, a copy the caller frees with `free`), `()` (`void`), handles (`extern c type`, `void *`) and `Option` of one (NULL for `None`). A function with another type, or with type parameters, is refused at the `derive`, naming the parameter.
 - **The library starts its runtime when it is loaded**; the host keeps its signals and arguments. A library has no `main` (`--lib` leaves the program's out). A fault in Strata code ends the process, as in a program.
-- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is an export or a part of a file: `derived fn export() -> Self = Self` exports the function itself under its own name; `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
+- **A library exports only what its `derive`s export** (and `strata_string_free`, below): the program's other functions, std's and the runtime's are hidden, so two Strata libraries live in one process.
+- **`derive C for module`** derives `C` for every `pub fn` of the module; one that can't cross is reported, not left out.
+- **What a derive over a function makes is top-level**: a function has no type to hang an `impl` on. Each `derived fn` of the trait is told by its shape alone (never a marker): `derived fn export() -> Self = Self` exports the function itself under its own name; a `derived fn` with parameters (`derived fn json(args: String) -> String { .. }`) is a wrapper of the function, exported as `NAME_METHOD` (`add_json`), its body calling the function with `Self.call(p -> e)` / `Self.try_call(p -> e)` (`e` gives each argument, `p` its parameter, a `Field`); `derived fn h() -> String { comptime ... }` gives, while compiling, the function's part of the file `NAME.h` (`Self` is the function, a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`). A file is its parts in order, each paragraph (up to a blank line) once. So `C` is written in Strata, like `Json` (see IDEAS.md, "Derives on functions").
 
-Not yet: other languages (`derive Python`, `derive TypeScript`, `derive Rust`: typed wrappers over a C export taking JSON), static libraries, `mut` parameters, callbacks.
+### `derive Python for f`
+
+`derive Python for add` (`std.ffi`) exports `char *add_json(const char *args)`: the arguments as a JSON object by name, each read with its type's `Json` (refinements checked; an `Option` left out is `None`), the answer `{"ok": RESULT}` or `{"error": {"kind", "message", "value"}}`, never a crash (`kind`: `json`, `arguments`, `result`, or `err` for the function's own `Err`, its value in `value`); the caller frees it with `strata_string_free`. `strata build --lib` writes `NAME.py` beside the library: a typed Python module loading it with `ctypes`, a function per derived one, a dataclass per record (and a class per union, a subclass per variant), errors raised as `StrataError`:
+
+```python
+import geo                        # geo.py and libgeo.dylib, side by side
+geo.middle(geo.Point(0.0, 0.0), geo.Point(2.0, 4.0))   # Point(x=1.0, y=2.0)
+geo.divide(1, 0)                  # raises StrataError("err", "ByZero", {"type": "ByZero"})
+```
+
+Not yet: `derive TypeScript` / `Rust` (the same `NAME_json` export, other files), static libraries, `mut` parameters, callbacks.
 
 ## Programs
 
@@ -413,7 +475,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.cli](std/cli.md) | Command-line options, read into a record; commands, into a union. |
 | [std.code](std/code.md) | A codebase as Strata's tools see it: its definitions, each rendered as text with what it uses and what uses it, the checker's findings, the verifier's cached results and the package's log. |
 | [std.collections](std/collections.md) | A dictionary and a set kept in their keys' order, and a priority queue. |
-| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`. |
+| [std.ffi](std/ffi.md) | Strata functions called from other languages: `derive C for f`, `derive Python for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
 | [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
 | [std.io](std/io.md) | The console: text in and out. |

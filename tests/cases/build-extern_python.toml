@@ -1,0 +1,182 @@
+# extern python: a package's module declares Python functions (worker.py,
+# beside strata.toml) and turns them into the `Worker` capability, which
+# `main` and a test ask for. Values cross as JSON (a record through `derive
+# Json`); every failure is a `PythonError` value: an exception, a result
+# with no JSON form (NaN) or beyond 2^53, one that isn't the declared type
+# or breaks its refinement, an argument beyond 2^53, the worker ending (the
+# next call starts a new one), no Python at all. Calls from 20 tasks take
+# turns on the one worker. Under `strata run` and built (every object
+# freed); `verify` takes the Python functions as assumed and runs none.
+# The declarations' rules are checked. Skipped without python3.
+
+[[step]]
+write = "p/strata.toml"
+text = 'name = "p"'
+needs = "python3"
+
+[[step]]
+write = "p/worker.py"
+from = "worker.py"
+
+[[step]]
+module = "m"
+into = "$TMP/p/"
+from = "m.st"
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+from = "main.st"
+
+[[step]]
+strata = ["--file", "p", "view", "m"]
+has = ['extern python "worker" fn inc(x: Int) -> Result[Int, PythonError]']
+
+[[step]]
+strata = ["run"]
+dir = "p"
+stdout = '''
+Ok(42)
+Ok(Plain { x: 3 })
+Err(BadReply { message: "the result has no JSON form: Out of range float values are not JSON compliant: nan" })
+Err(BadReply { message: "the result can't be read: at 7: 1152921504606846976 is beyond ±(2^53 - 1), the integers a JSON number holds exactly" })
+Err(BadReply { message: "x: expected an integer, got \"not a number\"" })
+Err(BadReply { message: "-5 does not satisfy `Natural` (where it >= 0)" })
+Ok(())
+true
+true
+true
+Err(NotEncodable { message: "an argument of `huge`: 10000000000000000 is beyond ±(2^53 - 1), the integers a JSON number holds exactly" })
+Err(WorkerFailed { message: "the Python worker ended (exit code 3)" })
+Ok(2)
+[Ok(1), Ok(2), Ok(3), Ok(4), Ok(5), Ok(6), Ok(7), Ok(8), Ok(9), Ok(10), Ok(11), Ok(12), Ok(13), Ok(14), Ok(15), Ok(16), Ok(17), Ok(18), Ok(19), Ok(20)]
+'''
+
+# (what Python prints goes to standard error)
+[[step]]
+strata = ["run"]
+dir = "p"
+has = ["printed by Python"]
+
+[[step]]
+strata = ["build", "-o", "prog"]
+dir = "p"
+
+[[step]]
+run = ["./p/prog"]
+memory = true
+has = ["Ok(Plain { x: 3 })", "Err(WorkerFailed { message: \"the Python worker ended (exit code 3)\" })", "Ok(19), Ok(20)]"]
+
+[[step]]
+strata = ["test"]
+dir = "p"
+has = ["✓ a test asks for the capability", "1 passed, 0 failed"]
+
+[[step]]
+strata = ["verify"]
+dir = "p"
+has = ["≈ m.inc", "`inc` is a Python function (`extern python`): its contracts are checked when it runs"]
+lacks = ["✗", "skipped", "incomplete"]
+
+# no Python: the worker can't start, a value too
+[[step]]
+write = "q/strata.toml"
+text = '''
+name = "q"
+
+[python]
+executable = "no-such-python-for-strata"
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/q/"
+text = '''
+from std.python use PythonError
+
+extern python "anything" fn f(x: Int) -> Result[Int, PythonError]
+
+capability Py {
+  fn f(x: Int) -> Result[Int, PythonError] {
+    f(x)
+  }
+}
+
+fn main(py: Py) {
+  print(py.f(1))
+}
+'''
+
+[[step]]
+strata = ["run"]
+dir = "q"
+stdout = "Err(WorkerFailed { message: \"can't start `no-such-python-for-strata`: No such file or directory\" })\n"
+
+# the rules on declarations
+[[step]]
+write = "r/strata.toml"
+text = 'name = "r"'
+
+[[step]]
+module = "m"
+into = "$TMP/r/"
+text = '''
+from std.python use PythonError
+
+type Plain = { x: Int }
+
+pub extern python "mod" fn a(x: Int) -> Result[Int, PythonError]
+
+extern python "mod" fn b(p: Plain) -> Result[Int, PythonError]
+
+extern python "mod" fn c(f: (Int) -> Int) -> Result[Int, PythonError]
+
+extern python "mod" fn d(x: Int) -> Int
+
+extern python "mod" fn e(x: Int) -> Result[List[Plain], PythonError]
+
+extern python "mod" fn t(x: (Int, Int)) -> Result[(), PythonError]
+
+fn helper() -> Result[Int, PythonError] {
+  _ := t((1, 2))!
+  a(1)
+}
+'''
+
+[[step]]
+strata = ["check"]
+dir = "r"
+fails = true
+has = [
+  "error in m.a: `extern python` definitions are never `pub`",
+  "error in m.b: `extern python fn b`, parameter `p`: `Plain` has no JSON form, so it can't cross to Python: derive `Json` for it (`derive Json for Plain`, std.json)",
+  "error in m.c: `extern python fn c`, parameter `f`: a function (`(Int) -> Int`) doesn't cross to Python",
+  "error in m.d: `extern python fn d`: its result is `Result[T, PythonError]`",
+  "error in m.e: `extern python fn e`, result: `Plain` has no JSON form",
+  "error in m.t: `extern python fn t`, parameter `x`: a tuple (`(Int, Int)`) doesn't cross to Python",
+  "error in m.helper: calls `extern python fn a`, which only this module's capabilities can call",
+  "error in m.helper: calls `extern python fn t`, which only this module's capabilities can call",
+]
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+extern python fn f(x: Int) -> Int
+'''
+fails = true
+has = ["`extern python` needs the Python module the function is in: `extern python \"text_utils\" fn ...`"]
+
+# the example
+[[step]]
+strata = ["run", "--file", "$ROOT/examples/python"]
+stdout = '''
+hello-world-strata-calls-python
+the: 2, cat: 1
+typed-json-at-the-boundary: 11 words, "Values cross as JSON through", tags ["json", "python"]
+Ok(1965)
+ValueError: no year in 'no year here'
+'''
+
+[[step]]
+strata = ["--file", "$ROOT/examples/python", "test"]
+has = ["✓ a slug, from Python", "1 passed, 0 failed"]

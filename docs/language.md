@@ -361,6 +361,8 @@ Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7
 
 Values never change, so a statement whose value is dropped almost always means a mistake: `xs + [1]` on its own line makes a new list and throws it away. An expression statement whose value isn't `()` is an error (`the value of `xs + [1]` is not used: use it, or discard it with `_ := …``), and a value dropped on purpose is written `_ := e`. That covers a call kept only for what it does through a capability when it also returns something, an `if` or `match` statement whose arms give values (discard the arms' values, or the whole), and `x + 1`; a `mut` method call returning `()` (`mut q.claim(2)`), a `spawn` (its task belongs to the `scope`) and a `return`/`break` are fine.
 
+A `Result` discarded with `_ := e` is allowed (the program may not care whether it failed), but its error is lost, so it is always a warning, from `check`, `run`, `build` and `verify` (`warning: in `main`: `_ := parse_age("")` throws away a `Result`: an error from it is ignored`). Handle it with `match`, pass it on, or keep the warning as a reminder; no other value discarded with `_ :=` is warned about.
+
 A variable never read (a parameter, `x := e`, `mut x := e`, a binding of a pattern, a lambda's parameter) is a warning, not an error, since code may be partway written: one line each from `check`, `run`, `build` (when it verifies) and `edit`, naming the function. A name starting with `_` (`_x`, `_`) says the value is unused on purpose; an `impl` method's parameters, which its trait or type dictates, are not warned about. A variable whose value has no effect (a literal, a variable, a lambda, a field, a tuple or list of them) and that nothing reads isn't compiled at all.
 
 Lambdas are written with an arrow: `x -> x + 1`, `(acc, x) -> acc + x`, `() -> 7`, with optional parameter types (`(s: String) -> s + "!"`; a refined one, such as `(n: Positive) -> …`, is checked on every call, like a named function's) and a block for a longer body (`x -> { ... }`). `return e` leaves the enclosing function or lambda early. A lambda of several parameters where a function of one tuple of as many elements is expected takes the tuple apart: `pairs.filter((k, v) -> v > 0)`, `xs.enumerate().map((i, x) -> i * x)` bind the elements, with the tuple's types (written without parameter types; a lambda passed where a function of two arguments is expected, as `fold`'s, stays one of two arguments).
@@ -613,6 +615,7 @@ A program's entry point is `main`. It asks for what it needs by type, and `strat
 from std.cli use CommandLine
 
 /// Greet people by name.
+derive CommandLine for
 type Options = {
   /// Shout the greeting.
   loud: Bool = false,
@@ -621,8 +624,6 @@ type Options = {
   /// Who to greet (the world if nobody).
   names: List[String] = [],
 }
-
-derive CommandLine for Options
 
 fn main(opts: Options) {
   who := if len(opts.names) == 0 { "world" } else { join(opts.names, " and ") }
@@ -652,11 +653,11 @@ The **standard library** is the `std/` package, written in Strata and built into
 ```rust
 from std.json use Json, parse, stringify
 
+derive Json for
 type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, nickname: Option[String] }
-derive Json for Signup
 
 signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
 
-**C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c).
+**C functions** are declared with `extern c fn`, a signature with contracts and no body; see the [reference](language-reference.md#foreign-functions-extern-c). **Python functions** with `extern python "module" fn`, their values crossing as JSON (`Json`) and every call a `Result[T, PythonError]`; see the [reference](language-reference.md#foreign-functions-extern-python).

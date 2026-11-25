@@ -1,6 +1,7 @@
 # cli.rs: derive_syntax_round_trips: derived traits and `comptime`: stored and printed exactly
 
-# stored as written; it doesn't check (`Point` and `Pair` aren't records), as the edit says
+# stored as written (a derive with no block shown on the type it derives
+# for); it doesn't check (`Point` and `Pair` aren't records), as the edit says
 [[step]]
 strata = ["--file", "d.strata", "edit"]
 text = '''
@@ -66,9 +67,8 @@ derive Named for Point {
   }
 }
 
+derive Named for
 type Pair = { a: Int, b: Int }
-
-derive Named for Pair
 
 fn derive(derive: Int) -> Int {
   derive + 1
@@ -77,6 +77,15 @@ fn derive(derive: Int) -> Int {
 
 [[step]]
 strata = ["--file", "d.strata", "view", "main"]
+out_file = "d.st"
+
+# the derive written on `Pair` reads back as the same derive definition
+[[step]]
+run = ["sh", "-c", "$STRATA --file e.strata edit < d.st"]
+fails = true
+
+[[step]]
+strata = ["--file", "e.strata", "view", "main"]
 out_file = "d.st"
 
 # `derive` stays an ordinary name: the function `derive` checks

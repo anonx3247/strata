@@ -14,7 +14,15 @@
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <spawn.h>
+#include <stdatomic.h>
 #include <stdint.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -160,6 +168,14 @@ static void optimized(LLVMModuleRef mod) {
 // The IR text as a module, in a context of its own (c/ir.c): 0, else 1
 // and why.
 int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
+// (the same, untimed: callable from another thread)
+int32_t ir_module(const char *ir, size_t len, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
+
+// Whether `strata run` compiles the program swappable (`swappable_module`):
+// a verifier runs alongside it (`jit_alongside`).
+static int swappable;
+static void swappable_module(LLVMModuleRef mod);
+static LLVMOrcLLJITRef run_jit;
 
 static int failed(LLVMErrorRef e, const char *what) {
   char *m = LLVMGetErrorMessage(e);
@@ -186,6 +202,7 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
   }
   LLVMOrcLLJITRef jit;
   toolchain_frame_pointers(mod);
+  if (swappable) swappable_module(mod);
   timings_begin("LLVM: optimize");
   optimized(mod);
   timings_end("LLVM: optimize");
@@ -198,8 +215,11 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
   LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(mod, tsc);
   e = LLVMOrcLLJITAddLLVMIRModule(jit, LLVMOrcLLJITGetMainJITDylib(jit), tsm);
   if (e) return failed(e, "can't add the program"), NULL;
+  run_jit = jit;
   return jit;
 }
+
+static void alongside_begin(void);
 
 // Run the IR's `main` with these arguments (the program's name first, each
 // after a newline): its exit code, or 70 when the
@@ -216,6 +236,8 @@ int32_t jit_run_main(const char *ir, const char *args) {
   // (the program's own time isn't the compiler's: the times are written
   // before it runs)
   timings_report();
+  // (a verifier running alongside: its proven code swapped in when it ends)
+  alongside_begin();
   int (*entry)(int, char **) = (int (*)(int, char **))(uintptr_t)addr;
   // the program's name and arguments, separated by newlines
   char *copy = strdup(args);
@@ -515,3 +537,460 @@ int32_t jit_repl_set_word(int64_t i, int64_t w) {
   repl_words[i] = w;
   return 0;
 }
+
+// ---- verifying alongside a run, then swapping in the proven code ----
+//
+// `strata run` on a program whose verdicts aren't cached starts it at once,
+// compiled with all its runtime checks, while a verifier (`strata
+// verify-alongside`, a process of its own, `jit_alongside`) verifies it and
+// compiles it again without the checks it proved. The program is compiled
+// swappable (`swappable_module`): each of its own functions that can change
+// (`strata:NAME`, `main` aside) is called through a stub that jumps to
+// where its slot (`NAME.slot`) points, at first its checked body
+// (`NAME.checked`). When the verifier ends, its module is added to the JIT
+// (`swap_in`): each function whose code differs is compiled under a new
+// name (`NAME.proven.N`) and its slot pointed at it, with one atomic store,
+// so a call already running the checked body finishes in it and every call
+// after (from any task) takes the proven one. Only runs with a verifier
+// alongside are compiled this way: a run without one, and every `strata
+// build` executable, calls its functions directly.
+
+extern char **environ;
+
+// What the main module defines (functions, globals), by name: what the
+// verifier's module refers to rather than defines again.
+typedef struct {
+  char **names;
+  int count, cap;
+} Names;
+
+static void names_add(Names *n, const char *s) {
+  if (n->count == n->cap) {
+    n->cap = n->cap ? n->cap * 2 : 256;
+    n->names = realloc(n->names, sizeof(char *) * n->cap);
+  }
+  n->names[n->count++] = strdup(s);
+}
+
+static int names_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+static void names_sort(Names *n) { qsort(n->names, n->count, sizeof(char *), names_cmp); }
+
+static int names_index(const Names *n, const char *s) {
+  char **at = n->count ? bsearch(&s, n->names, n->count, sizeof(char *), names_cmp) : NULL;
+  return at ? (int)(at - n->names) : -1;
+}
+
+static Names defined;
+// The swappable functions, sorted, and each one's code as first compiled
+// (printed: a function the verifier's module has the same is left alone).
+static Names swappable_names;
+static char **swappable_code;
+
+static pid_t verifier;
+static char *alongside_dir;
+static int alongside_notes;
+static pthread_t watcher;
+// (held while the proven code is swapped in: the process doesn't end in
+// the middle of it, and nothing is swapped in once it is ending)
+static pthread_mutex_t swap_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t swap_done = PTHREAD_COND_INITIALIZER;
+static int ending, verified, swapped, swaps;
+static char *verifier_said;
+
+static int is_local(LLVMLinkage l) { return l == LLVMPrivateLinkage || l == LLVMInternalLinkage; }
+
+static int starts(const char *s, const char *prefix) { return !strncmp(s, prefix, strlen(prefix)); }
+
+static const char *name_of(LLVMValueRef v) {
+  size_t n;
+  return LLVMGetValueName2(v, &n);
+}
+
+// Whether `f` is one of the program's own functions that a proof can
+// change: `strata:NAME` (not `main`, whose frame lasts the whole run),
+// defined here, without attributes a stub's tail call would have to
+// repeat.
+static int can_swap(LLVMValueRef f) {
+  if (LLVMIsDeclaration(f) || is_local(LLVMGetLinkage(f))) return 0;
+  const char *name = name_of(f);
+  if (!starts(name, "strata:") || !strcmp(name, "strata:main")) return 0;
+  if (LLVMIsFunctionVarArg(LLVMGlobalGetValueType(f))) return 0;
+  unsigned n = LLVMCountParams(f);
+  if (LLVMGetAttributeCountAtIndex(f, LLVMAttributeReturnIndex)) return 0;
+  for (unsigned i = 1; i <= n; i++)
+    if (LLVMGetAttributeCountAtIndex(f, i)) return 0;
+  return 1;
+}
+
+// `f` (named `name`) as a stub: its body renamed `NAME.checked`, a slot
+// `NAME.slot` holding its address, and `NAME` loading the slot and jumping
+// there (a tail call: the stub leaves no frame).
+static void stub(LLVMModuleRef mod, LLVMValueRef f, const char *name) {
+  LLVMContextRef ctx = LLVMGetModuleContext(mod);
+  LLVMTypeRef ty = LLVMGlobalGetValueType(f);
+  size_t len = strlen(name);
+  char *other = malloc(len + 16);
+  snprintf(other, len + 16, "%s.checked", name);
+  LLVMSetValueName2(f, other, strlen(other));
+  LLVMValueRef s = LLVMAddFunction(mod, name, ty);
+  LLVMSetFunctionCallConv(s, LLVMGetFunctionCallConv(f));
+  LLVMReplaceAllUsesWith(f, s);
+  LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+  snprintf(other, len + 16, "%s.slot", name);
+  LLVMValueRef slot = LLVMAddGlobal(mod, ptr, other);
+  LLVMSetInitializer(slot, f);
+  LLVMSetAlignment(slot, 8);
+  free(other);
+  LLVMBuilderRef b = LLVMCreateBuilderInContext(ctx);
+  LLVMPositionBuilderAtEnd(b, LLVMAppendBasicBlockInContext(ctx, s, "entry"));
+  // (atomic, so that a call reads either body's address whole; monotonic:
+  // the new body was compiled and its memory made executable before its
+  // address was stored, and an acquire wouldn't order fetching its
+  // instructions anyway)
+  LLVMValueRef at = LLVMBuildLoad2(b, ptr, slot, "at");
+  LLVMSetOrdering(at, LLVMAtomicOrderingMonotonic);
+  LLVMSetAlignment(at, 8);
+  unsigned n = LLVMCountParams(s);
+  LLVMValueRef *args = malloc(sizeof(LLVMValueRef) * (n ? n : 1));
+  for (unsigned i = 0; i < n; i++) args[i] = LLVMGetParam(s, i);
+  LLVMValueRef call = LLVMBuildCall2(b, ty, at, args, n, "");
+  LLVMSetInstructionCallConv(call, LLVMGetFunctionCallConv(f));
+  LLVMSetTailCallKind(call, LLVMTailCallKindMustTail);
+  if (LLVMGetTypeKind(LLVMGetReturnType(ty)) == LLVMVoidTypeKind)
+    LLVMBuildRetVoid(b);
+  else
+    LLVMBuildRet(b, call);
+  LLVMDisposeBuilder(b);
+  free(args);
+}
+
+// The program's module made swappable (before it is optimized): its own
+// functions called through slots (`stub`), and every global it defines
+// visible (`static`s, constants, tables), so that the verifier's module
+// uses these rather than copies of its own.
+static void swappable_module(LLVMModuleRef mod) {
+  for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) {
+    if (LLVMIsDeclaration(g) || starts(name_of(g), "llvm.")) continue;
+    if (is_local(LLVMGetLinkage(g))) {
+      LLVMSetLinkage(g, LLVMExternalLinkage);
+      LLVMSetVisibility(g, LLVMHiddenVisibility);
+    }
+    names_add(&defined, name_of(g));
+  }
+  int count = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) {
+    if (LLVMIsDeclaration(f) || is_local(LLVMGetLinkage(f))) continue;
+    names_add(&defined, name_of(f));
+    if (can_swap(f)) count++;
+  }
+  LLVMValueRef *fs = malloc(sizeof(LLVMValueRef) * (count ? count : 1));
+  int k = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f))
+    if (can_swap(f)) fs[k++] = f;
+  for (int i = 0; i < count; i++) names_add(&swappable_names, name_of(fs[i]));
+  names_sort(&swappable_names);
+  swappable_code = calloc(count ? count : 1, sizeof(char *));
+  for (int i = 0; i < count; i++) {
+    char *name = strdup(name_of(fs[i]));
+    swappable_code[names_index(&swappable_names, name)] = LLVMPrintValueToString(fs[i]);
+    stub(mod, fs[i], name);
+    free(name);
+  }
+  free(fs);
+  names_sort(&defined);
+}
+
+// `v` (a function or a global of `mod`) as a declaration of the same name:
+// the definition the main module has is the one used.
+static void declared(LLVMModuleRef mod, LLVMValueRef v, int function) {
+  char *name = strdup(name_of(v));
+  LLVMSetValueName2(v, "", 0);
+  LLVMTypeRef ty = LLVMGlobalGetValueType(v);
+  LLVMValueRef d;
+  if (function) {
+    d = LLVMAddFunction(mod, name, ty);
+    LLVMSetFunctionCallConv(d, LLVMGetFunctionCallConv(v));
+  } else {
+    d = LLVMAddGlobal(mod, ty, name);
+    LLVMSetThreadLocal(d, LLVMIsThreadLocal(v));
+    LLVMSetGlobalConstant(d, LLVMIsGlobalConstant(v));
+  }
+  LLVMReplaceAllUsesWith(v, d);
+  if (function)
+    LLVMDeleteFunction(v);
+  else
+    LLVMDeleteGlobal(v);
+  free(name);
+}
+
+// The verifier's module (the program compiled without the checks it
+// proved) added to the running program: each swappable function whose code
+// changed compiled as `NAME.proven.N` and its slot pointed at it; what
+// else it defines is the main module's (declared), or its own (local).
+// How many functions were swapped; -1 when it couldn't be (said in `why`).
+static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
+  LLVMContextRef ctx;
+  LLVMModuleRef mod;
+  char *msg = NULL;
+  if (ir_module(ir, len, &ctx, &mod, &msg)) {
+    snprintf(why, why_len, "LLVM rejected it: %s", msg ? msg : "");
+    LLVMDisposeMessage(msg);
+    return -1;
+  }
+  int generation = ++swaps;
+  // (each function's code read before any is renamed or declared)
+  int count = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) count++;
+  LLVMValueRef *fs = malloc(sizeof(LLVMValueRef) * (count ? count : 1));
+  char **changed = calloc(count ? count : 1, sizeof(char *));
+  int k = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) fs[k++] = f;
+  for (int i = 0; i < count; i++) {
+    LLVMValueRef f = fs[i];
+    if (LLVMIsDeclaration(f) || is_local(LLVMGetLinkage(f))) continue;
+    int at = names_index(&swappable_names, name_of(f));
+    if (at >= 0) {
+      char *code = LLVMPrintValueToString(f);
+      if (strcmp(code, swappable_code[at])) changed[i] = strdup(name_of(f));      LLVMDisposeMessage(code);
+    }
+  }
+  int n = 0;
+  for (int i = 0; i < count; i++) {
+    LLVMValueRef f = fs[i];
+    if (LLVMIsDeclaration(f) || is_local(LLVMGetLinkage(f))) continue;
+    if (changed[i]) {
+      char name[1024];
+      snprintf(name, sizeof name, "%s.proven.%d", changed[i], generation);
+      LLVMSetValueName2(f, name, strlen(name));
+      n++;
+    } else if (names_index(&defined, name_of(f)) >= 0) {
+      declared(mod, f, 1);
+    } else {
+      LLVMSetLinkage(f, LLVMInternalLinkage);
+    }
+  }
+  free(fs);
+  // the globals: the main module's, except its own new ones
+  int gcount = 0;
+  for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) gcount++;
+  LLVMValueRef *gs = malloc(sizeof(LLVMValueRef) * (gcount ? gcount : 1));
+  k = 0;
+  for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) gs[k++] = g;
+  for (int i = 0; i < gcount; i++) {
+    LLVMValueRef g = gs[i];
+    if (starts(name_of(g), "llvm.")) {
+      // (constructors already ran)
+      LLVMDeleteGlobal(g);
+    } else if (LLVMIsDeclaration(g)) {
+      continue;
+    } else if (names_index(&defined, name_of(g)) >= 0) {
+      declared(mod, g, 0);
+    } else {
+      LLVMSetLinkage(g, LLVMInternalLinkage);
+    }
+  }
+  free(gs);
+  if (n == 0) {
+    for (int i = 0; i < count; i++) free(changed[i]);
+    free(changed);
+    LLVMDisposeModule(mod);
+    LLVMContextDispose(ctx);
+    return 0;
+  }
+  toolchain_frame_pointers(mod);
+  optimized(mod);
+  LLVMOrcThreadSafeContextRef tsc = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(ctx);
+  LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(mod, tsc);
+  LLVMErrorRef e = LLVMOrcLLJITAddLLVMIRModule(run_jit, LLVMOrcLLJITGetMainJITDylib(run_jit), tsm);
+  int result = n;
+  if (e) {
+    char *m = LLVMGetErrorMessage(e);
+    snprintf(why, why_len, "the JIT can't add it: %s", m);
+    LLVMDisposeErrorMessage(m);
+    result = -1;
+  }
+  // (every new body compiled first, then each slot pointed at its own)
+  LLVMOrcExecutorAddress *bodies = calloc(count ? count : 1, sizeof(LLVMOrcExecutorAddress));
+  LLVMOrcExecutorAddress *slots = calloc(count ? count : 1, sizeof(LLVMOrcExecutorAddress));
+  for (int i = 0; i < count && result >= 0; i++) {
+    if (!changed[i]) continue;
+    char name[1024];
+    snprintf(name, sizeof name, "%s.proven.%d", changed[i], generation);
+    e = LLVMOrcLLJITLookup(run_jit, &bodies[i], name);
+    if (!e) {
+      snprintf(name, sizeof name, "%s.slot", changed[i]);
+      e = LLVMOrcLLJITLookup(run_jit, &slots[i], name);
+    }
+    if (e) {
+      char *m = LLVMGetErrorMessage(e);
+      snprintf(why, why_len, "the JIT can't compile it: %s", m);
+      LLVMDisposeErrorMessage(m);
+      result = -1;
+    }
+  }
+  for (int i = 0; i < count && result >= 0; i++)
+    if (changed[i])
+      atomic_store_explicit((_Atomic(uintptr_t) *)(uintptr_t)slots[i], (uintptr_t)bodies[i], memory_order_release);
+  free(bodies);
+  free(slots);
+  for (int i = 0; i < count; i++) free(changed[i]);
+  free(changed);
+  return result;
+}
+
+static char *read_file(const char *path, size_t *len) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  size_t cap = 1 << 16, n = 0;
+  char *buf = malloc(cap + 1);
+  size_t got;
+  while ((got = fread(buf + n, 1, cap - n, f)) > 0) {
+    n += got;
+    if (n == cap) buf = realloc(buf, (cap *= 2) + 1);
+  }
+  fclose(f);
+  buf[n] = 0;
+  if (len) *len = n;
+  return buf;
+}
+
+static char *in_dir(const char *file) {
+  size_t n = strlen(alongside_dir) + strlen(file) + 2;
+  char *p = malloc(n);
+  snprintf(p, n, "%s/%s", alongside_dir, file);
+  return p;
+}
+
+// The verifier's folder removed (the files it leaves there).
+static void remove_dir(void) {
+  const char *files[] = {"log", "started.txt", "proofs.txt", "proven.ll", "proven.ll.tmp"};
+  for (size_t i = 0; i < sizeof files / sizeof *files; i++) {
+    char *p = in_dir(files[i]);
+    unlink(p);
+    free(p);
+  }
+  rmdir(alongside_dir);
+}
+
+// The verifier waited for, then its proven code swapped in.
+static void *watch(void *unused) {
+  (void)unused;
+  int status;
+  while (waitpid(verifier, &status, 0) < 0 && errno == EINTR) {
+  }
+  char *log = in_dir("log");
+  char *said = read_file(log, NULL);
+  free(log);
+  char *ir_path = in_dir("proven.ll");
+  size_t len = 0;
+  char *ir = read_file(ir_path, &len);
+  free(ir_path);
+  pthread_mutex_lock(&swap_lock);
+  verifier_said = said;
+  if (!ending && ir) {
+    char why[512] = "";
+    swapped = swap_in(ir, len, why, sizeof why);
+    if (swapped < 0 && alongside_notes) fprintf(stderr, "note: the proven code couldn't be swapped in: %s\n", why);
+  }
+  verified = 1;
+  pthread_cond_broadcast(&swap_done);
+  pthread_mutex_unlock(&swap_lock);
+  free(ir);
+  remove_dir();
+  return NULL;
+}
+
+// When the program ends: how verifying alongside went, on stderr (with
+// notes), one summary after everything the program wrote.
+static void alongside_end(void) {
+  pthread_mutex_lock(&swap_lock);
+  ending = 1;
+  if (alongside_notes) {
+    fflush(stdout);
+    if (!verified) {
+      fprintf(stderr, "note: still verifying in the background: the next run leaves out the checks it proves\n");
+    } else {
+      // (verify's own line: `verified N changed: ...`, or nothing new)
+      char *said = verifier_said ? verifier_said : "";
+      size_t n = strlen(said);
+      while (n && (said[n - 1] == '\n' || said[n - 1] == ' ')) said[--n] = 0;
+      if (swapped > 0)
+        fprintf(stderr, "note: verified alongside (%s): %d function%s swapped to %s proven code while running\n",
+                n ? said : "nothing new", swapped, swapped == 1 ? "" : "s", swapped == 1 ? "its" : "their");
+      else
+        fprintf(stderr, "note: verified alongside (%s)\n", n ? said : "nothing new");
+    }
+    fflush(stderr);
+  }
+  pthread_mutex_unlock(&swap_lock);
+}
+
+// Start the verifier: `argv` (newline-separated: this executable,
+// `verify-alongside`, ...), its output to `dir`/log, its standard input
+// empty, no other descriptor of this process's inherited (it may outlive
+// the program, and must not hold its pipes open). The program is then
+// compiled swappable. `notes`: the summary when the program ends. 0 when
+// started, else 1.
+int32_t jit_alongside(const char *argv, const char *dir, int32_t notes) {
+  char *copy = strdup(argv);
+  char *args[64];
+  int n = 0;
+  for (char *p = copy, *at = copy; n < 63; p++) {
+    if (*p == '\n' || *p == 0) {
+      int end = *p == 0;
+      *p = 0;
+      args[n++] = at;
+      at = p + 1;
+      if (end) break;
+    }
+  }
+  args[n] = NULL;
+  alongside_dir = strdup(dir);
+  char *log = in_dir("log");
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_addopen(&fa, 1, log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  posix_spawn_file_actions_adddup2(&fa, 1, 2);
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+#endif
+  int failed_to = posix_spawn(&verifier, args[0], &fa, &attr, args, environ);
+  posix_spawn_file_actions_destroy(&fa);
+  posix_spawnattr_destroy(&attr);
+  free(log);
+  free(copy);
+  if (failed_to) {
+    verifier = 0;
+    return 1;
+  }
+  swappable = 1;
+  alongside_notes = notes != 0;
+  return 0;
+}
+
+// When the program is about to start (compiled): the verifier watched, and
+// the summary registered for its end. With STRATA_SWAP_WAIT=start (for
+// tests), the program starts only once the proven code is in.
+static void alongside_begin(void) {
+  if (!verifier) return;
+  atexit(alongside_end);
+  if (pthread_create(&watcher, NULL, watch, NULL)) return;
+  const char *wait = getenv("STRATA_SWAP_WAIT");
+  if (wait && !strcmp(wait, "start")) {
+    pthread_mutex_lock(&swap_lock);
+    while (!verified) pthread_cond_wait(&swap_done, &swap_lock);
+    pthread_mutex_unlock(&swap_lock);
+  }
+}
+
+// The verifier's side: its priority lowered, so that the program it
+// verifies alongside runs as fast as it can.
+int32_t jit_lower_priority(void) { return setpriority(PRIO_PROCESS, 0, 10); }
+
+// Whether the process `pid` that started this one still waits for it (this
+// process wasn't handed to another parent).
+int32_t jit_parent_alive(int64_t pid) { return getppid() == (pid_t)pid ? 1 : 0; }
