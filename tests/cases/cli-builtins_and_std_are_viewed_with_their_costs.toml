@@ -7,8 +7,8 @@
 [[step]]
 strata = ["view", "Dict"]
 has = [
-  "/// Values by key, in no promised order (a hash table)",
-  "/// Cost: `get` and `contains` O(1) on average; `mut d.insert(k, v)` O(1)",
+  "/// `Dict { \"a\": 1 }`: a hash table of values by key, in no promised order.",
+  "/// Cost: `get`, `contains` O(1) on average. `insert`, `remove` O(1)",
   "builtin type Dict[K, V]\n",
 ]
 
@@ -19,8 +19,8 @@ has = [
   "builtin fn insert[K, V](mut d: Dict[K, V], k: K, v: V)\n",
   "builtin fn insert[A](mut s: Set[A], x: A)\n",
   "builtin fn insert[A](mut xs: List[A], i: Int, x: A)\n",
-  "/// Sets key `k` to `v` (added, or its value replaced): `mut d.insert(k, v)`.",
-  "/// Cost: O(1) amortized, in place when nothing else holds `s`; O(n) when",
+  "/// `mut d.insert(k, v)`: adds `k`, or replaces its value.",
+  "/// Cost: O(1) amortized, in place when nothing else holds `s`. Else O(n) to",
 ]
 counts = { "builtin fn len" = 0 }
 

@@ -1,8 +1,7 @@
-// The JIT the compiler written in Strata runs programs with (plan item C20):
-// LLVM's LLJIT through its C API. The IR is compiler/codegen's; what it
-// declares is found in the libraries loaded first (`jit_load`), then in this
-// process, the compiler's own executable, which runtime.c is linked into
-// (the runtime's `strata_*` functions).
+// The JIT the compiler runs programs with: LLVM's LLJIT through its C API.
+// The IR is codegen's. What it declares is found in the libraries loaded
+// first (`jit_load`), then in this process, the compiler's own executable,
+// which runtime.c is linked into (the runtime's `strata_*` functions).
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Error.h>
@@ -28,10 +27,10 @@
 #include <string.h>
 
 // The libraries `jit_load` loaded (std's precompiled code, a package's C),
-// in order. The JIT finds a symbol in them before it looks in this process:
-// the compiler's executable has its own copies of std's functions (it is a
-// Strata program too, compiled by Rust's code generator, whose values are
-// laid out differently), and those must not stand in for the library's.
+// in order. The JIT finds a symbol in them before it looks in this process.
+// The compiler's executable is a Strata program too, with its own copies of
+// std's functions, built from its own std, and those must not stand in for
+// the library's.
 static char *loaded_libs[64];
 static int loaded_count;
 
@@ -52,11 +51,12 @@ static LLVMErrorRef add_generators(LLVMOrcLLJITRef jit) {
   return NULL;
 }
 
-// How programs and tests are compiled (`jit_set_opt`): -1 as LLVM's JIT
-// does by default (its code generator at -O2, no IR passes: what `verify`'s
-// fuzzing and compile-time code get), 0 unoptimized (`strata run` and
-// `strata test`, as Rust's driver: several times faster to compile), 2 as
-// clang -O2 would (`--release`: the IR passes too).
+// How programs and tests are compiled (`jit_set_opt`):
+// -1: LLVM's JIT default, its code generator at -O2 and no IR passes, for
+//     `verify`'s fuzzing and compile-time code.
+//  0: unoptimized, for `strata run` and `strata test`: several times faster
+//     to compile.
+//  2: as clang -O2, IR passes included, for `--release`.
 static int jit_opt = -1;
 
 int32_t jit_set_opt(int32_t level) {
@@ -71,9 +71,9 @@ int32_t timings_end(const char *name);
 int32_t timings_report(void);
 
 // Whether code is compiled for profiling (`--profile`, or STRATA_PROFILE
-// set and not `0`): every function keeps its frame pointer
+// set and not `0`). Every function then keeps its frame pointer
 // ("frame-pointer"="all"), so that a sampling profiler (macOS's `sample`)
-// walks through Strata's frames. Off by default: the code is as without it.
+// walks through Strata's frames. Off by default.
 static int profiling = -1;
 
 int32_t toolchain_profiling(void) {
@@ -104,16 +104,18 @@ void toolchain_frame_pointers(LLVMModuleRef mod) {
   }
 }
 
-// Instruction selection by SelectionDAG, and FastISel at -O0, not the
-// GlobalISel LLVM 23 turns on for every AArch64 target machine: at -O0 half
-// the time for compiler/'s code (4.5 s -> 2.5 s), code as good. Set on each
-// target machine (c/toolchain.c's objects too), never as a process-wide
-// option: `-global-isel=0` held only for the first module a process
-// compiled, and GlobalISel leaves state behind, so an object compiled
-// after the JIT (compile-time values, for the host's CPU) differed from the
-// same IR compiled alone (an `optnone` function aligned to 64 bytes instead
-// of 4): a build's bytes depended on whether its compile-time values were
-// cached (IDEAS.md, reproducible builds).
+// Instruction selection by SelectionDAG, and FastISel at -O0, instead of
+// the GlobalISel LLVM 23 turns on for every AArch64 target machine. At -O0
+// it takes half the time for compiler/'s code (4.5 s -> 2.5 s), with code
+// as good.
+//
+// It is set on each target machine (c/toolchain.c's objects too), never as
+// a process-wide option. `-global-isel=0` holds only for the first module a
+// process compiles, and GlobalISel leaves state behind: an object compiled
+// after the JIT (compile-time values, for the host's CPU) would differ from
+// the same IR compiled alone (an `optnone` function aligned to 64 bytes
+// instead of 4). A build's bytes would then depend on whether its
+// compile-time values were cached.
 void toolchain_selection(LLVMTargetMachineRef tm) { LLVMSetTargetMachineGlobalISel(tm, 0); }
 
 // A JIT's builder for `jit_opt`: the host's CPU and features, at its level
@@ -221,9 +223,8 @@ static LLVMOrcLLJITRef compiled(const char *ir) {
 
 static void alongside_begin(void);
 
-// Run the IR's `main` with these arguments (the program's name first, each
-// after a newline): its exit code, or 70 when the
-// JIT can't run it.
+// Runs the IR's `main` with these arguments (the program's name first, each
+// after a newline). Gives its exit code, or 70 when the JIT can't run it.
 int32_t jit_run_main(const char *ir, const char *args) {
   LLVMOrcLLJITRef jit = compiled(ir);
   if (!jit) return 70;
@@ -277,12 +278,12 @@ typedef struct {
 // is also linked where there is no runtime)
 static void *runtime_fn(const char *name) { return dlsym(RTLD_DEFAULT, name); }
 
-// Run `strata.call.0`: what the call printed, then its result on a line of
-// its own (0); or the
-// fault on stderr (1), with its call stack below the probe `probe`; the
-// refinement of an argument of `fun` broken on entry is invalid input (2,
-// the message on stderr after `error: invalid input: `); 70 when the JIT
-// can't run it.
+// Runs `strata.call.0`. Gives:
+// 0: the call ended. What it printed, then its result on a line of its own.
+// 1: a fault, on stderr, with its call stack below the probe `probe`.
+// 2: invalid input, the refinement of an argument of `fun` broken on entry.
+//    The message is on stderr after `error: invalid input: `.
+// 70: the JIT can't run it.
 static int32_t run_call(const char *ir, const char *probe, const char *fun) {
   LLVMOrcLLJITRef jit = compiled(ir);
   if (!jit) return 70;
@@ -348,8 +349,8 @@ int32_t jit_run_call(const char *ir, const char *probe, const char *fun) {
   exit(code);
 }
 
-// Load a shared library into this process for the JIT to find its symbols
-// (std's precompiled code): 0 when loaded, else 1 (after saying why).
+// Loads a shared library into this process for the JIT to find its symbols
+// (std's precompiled code): 0 when loaded, else 1 after saying why.
 int32_t jit_load(const char *path) {
   if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) {
     if (loaded_count < 64) loaded_libs[loaded_count++] = strdup(path);
@@ -373,8 +374,8 @@ static LLVMOrcLLJITRef fuzz_jits[4096];
 static int fuzz_count;
 static char *fuzz_error;
 
-// Compile the drivers' IR: its handle (0 and up), else -1 (`jit_fuzz_error`
-// says why).
+// Compiles the drivers' IR: its handle (0 and up), else -1, and
+// `jit_fuzz_error` says why.
 int32_t jit_fuzz_load(const char *ir) {
   free(fuzz_error);
   fuzz_error = NULL;
@@ -463,7 +464,7 @@ const char *jit_fuzz_args(void) { return runtime_text("strata_fuzz_args"); }
 // printed is kept (`jit_test_printed`), and the fault read with
 // `jit_fault_kind`, `jit_fault_message` and `jit_fault_stack`.
 
-// Run test `i` of module `m`: 0 when it passed, 1 when a fault ended it,
+// Runs test `i` of module `m`: 0 when it passed, 1 when a fault ended it,
 // -1 when there is no such test.
 int32_t jit_test_case(int32_t m, int64_t i) {
   if (m < 0 || m >= fuzz_count) return -1;
@@ -492,7 +493,7 @@ const char *jit_test_printed(void) { return runtime_text("strata_test_printed");
 // call as a fuzz case runs: within a step budget, a fault caught. The value
 // stays in this process for the compiler to read (core.values' `Raw`).
 
-// Call `strata.call.i` of module `m`: 0 when it ended (its value's address
+// Calls `strata.call.i` of module `m`: 0 when it ended (its value's address
 // in `jit_kept`), 1 when a fault ended it (`jit_fault_message`), -1 when
 // there is no such call.
 int32_t jit_call_case(int32_t m, int64_t i, int64_t budget) {
@@ -926,7 +927,7 @@ static void alongside_end(void) {
   pthread_mutex_unlock(&swap_lock);
 }
 
-// Start the verifier: `argv` (newline-separated: this executable,
+// Starts the verifier: `argv` (newline-separated: this executable,
 // `verify-alongside`, ...), its output to `dir`/log, its standard input
 // empty, no other descriptor of this process's inherited (it may outlive
 // the program, and must not hold its pipes open). The program is then
