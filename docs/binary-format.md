@@ -203,6 +203,8 @@ Stmt    = 0 Let(Pattern, option(TypeExpr), Expr)   1 Var(name:str, option(TypeEx
         | 6 Break   7 Continue   8 Expr(Expr)   9 Assert(Expr)   10 Comment(list(str))
         | 11 ComptimeFor(Pattern, Expr, body:Expr)          comptime for v in Self.members { … }
         | 12 Invariant(Expr)                                 a loop's `invariant e`, first in its body
+        | 13 Decreases(Expr)                                 a loop's `decreases e`, first in its body (with
+                                                             its invariants); a function's, its body's first
 
 Pattern = 0 Wild   1 Bind(str)   2 Int(int)   3 Str(str)   4 Bool(bool)
         | 5 Ctor(name:str, CtorPat)
