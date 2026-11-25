@@ -71,8 +71,43 @@ nope + 1
 mut ys := [1]
 ys = ys + [[1, 2][5]]
 ys
-disk.read("x")
+process.var("HOME")
 :frobnicate
 """
 fails = true
-has = ["unknown variable `nope`", "index 5 out of range (length 2)", "[1]: List[Int]", "unknown variable `disk`", "unknown command `:frobnicate`"]
+has = ["unknown variable `nope`", "index 5 out of range (length 2)", "[1]: List[Int]", "the REPL gives no `process`: `strata repl --allow process` gives the real one", "unknown command `:frobnicate`"]
+
+# the REPL's own capabilities: an in-memory folder for `disk`, `read_line`
+# reading the REPL's next input; the real files only with `--allow files`
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+mut disk.write("a.txt", "hi")
+disk.read("a.txt")
+disk.exists("p.strata")
+name := console.read_line()
+Ada
+name
+"""
+out = """
+Ok(()): Result[(), std.fs.FsError]
+Ok("hi"): Result[String, std.fs.FsError]
+false: Bool
+name: Option[String] = Some("Ada")
+Some("Ada"): Option[String]
+"""
+
+[[step]]
+strata = ["--file", "p.strata", "repl", "--allow", "files"]
+text = """
+disk.exists("p.strata")
+"""
+out = """
+true: Bool
+"""
+
+[[step]]
+strata = ["--file", "p.strata", "repl", "--allow", "net"]
+text = ""
+code = 2
+has = ["`--allow` takes `files` or `process` (comma-separated), not `net`"]
