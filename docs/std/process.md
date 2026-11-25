@@ -1,16 +1,7 @@
 # std.process
 
-The running program: its arguments, its environment
-variables and its exit code, and the other programs it runs.
-
-`main` says what it needs, and the runtime passes it in:
-
-```rust
-fn main(mut console: Console, process: Process) -> ExitCode { ... }
-```
-
-`main` may return `()` (exit code 0), an `ExitCode`, or a `Result` of
-either: an `Err` is written to standard error and the exit code is 1.
+std.process: the running program's arguments, environment and exit code, and the programs it runs.
+`main` may return `()` (exit code 0), an `ExitCode`, or a `Result` of either. An `Err` is written to standard error and exits with 1.
 
 ## Types
 
@@ -21,7 +12,7 @@ type ExitCode = Int
   where 0 <= it && it <= 255
 ```
 
-A process exit code: 0 for success, anything else for failure.
+A process exit code from 0 to 255. 0 is success.
 
 ### Process
 
@@ -54,9 +45,8 @@ type RunMode =
   | Tracing
 ```
 
-How the program is being run. `main` (or a test) may ask for it only when
-strata.toml says `mode = true` under `[run]`: by default a program can't
-tell, so it behaves the same wherever it runs.
+How the program is being run.
+`main` or a test may ask for it only when strata.toml sets `mode = true` under `[run]`. Otherwise a program behaves the same wherever it runs.
 
 ### Finished
 
@@ -64,9 +54,8 @@ tell, so it behaves the same wherever it runs.
 type Finished = { code: Int, out: String, err: String }
 ```
 
-What a program that ran to its end left: its exit code (128 + the signal
-for one killed by a signal), and what it wrote to standard output and to
-standard error.
+A finished program's exit code and output.
+A program killed by a signal has code 128 + the signal.
 
 ### Launcher
 
@@ -74,21 +63,17 @@ standard error.
 capability Launcher {}
 ```
 
-The real system's programs. Only the runtime makes one, for `main` (or a
-test that names it).
+The real system's programs. Only the runtime makes one, for `main` or a test that names it.
 
 ### RunOptions
 
 ```rust
 type RunOptions = {
-  /// What it reads on its standard input (`""`: nothing).
+  /// Its standard input. `""` is none.
   input: String = "",
-  /// Environment variables set for it (`("GIT_DIR", "x")`), on top of this
-  /// program's own.
+  /// Environment variables set on top of this program's own, such as `("GIT_DIR", "x")`.
   env: List[(String, String)] = [],
-  /// It uses this program's terminal: its standard input, output and error
-  /// (an editor, or output shown as it comes). `Finished` then holds only the
-  /// exit code.
+  /// Gives it this program's terminal, for an editor or output shown as it comes. `Finished` then holds only the exit code.
   terminal: Bool = false,
 }
 ```
@@ -105,22 +90,22 @@ capability trait Environment {
   fn args(self) -> List[String]
   /// The value of an environment variable, if it is set.
   fn var(self, name: String) -> Option[String]
-  /// The folder the program runs in (its current folder), absolute.
+  /// The current folder, absolute.
   fn current_dir(self) -> String
 }
 ```
 
-What the program was started with: the real process, or a stand-in for it.
+What the program was started with: the real process or a stand-in.
 
 ### Commands
 
 ```rust
 capability trait Commands {
-  /// Runs `program` (looked up in `PATH` unless it holds a `/`) with `args`,
-  /// never through a shell, in the folder `dir` (`""`: the current one), with
-  /// nothing on its standard input, and waits for it to finish. `Err` when it
-  /// can't be started (no such program, or no such folder); a program that
-  /// starts and fails is `Ok`, with its exit code.
+  /// Runs `program` with `args` in the folder `dir` and waits for it.
+  /// - `program` is looked up in `PATH` unless it holds a `/`. No shell is involved.
+  /// - `dir` is `""` for the current folder.
+  /// - Its standard input is empty.
+  /// - `Err` when it can't be started: no such program or folder. A program that starts and fails is `Ok` with its exit code.
   fn run(
     mut self,
     program: String,
@@ -131,8 +116,7 @@ capability trait Commands {
       Ok(f) => 0 <= f.code,
       Err(_) => true,
     }
-  /// `run`, with its standard input, environment and terminal as `options`
-  /// say.
+  /// `run`, with standard input, environment and terminal set by `options`.
   fn run_with(
     mut self,
     program: String,
@@ -147,9 +131,7 @@ capability trait Commands {
 }
 ```
 
-Starting other programs: the real system (`Launcher`), or a stand-in in a
-test (`mock Commands`, or a mock type that answers the calls a test
-expects).
+Starts other programs: `Launcher` for the real system, or a mock in a test.
 
 ## Functions
 

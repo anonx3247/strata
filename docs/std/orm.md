@@ -1,51 +1,6 @@
 # std.orm
 
-Records as SQLite tables: `derive Table for Todo` gives the
-table's schema, its rows written and read back as `Todo`s, and typed
-queries over its fields.
-
-```rust
-distinct type TodoId = Int
-
-type Todo = {
-  id: TodoId = TodoId(0),
-  title: String where it != "",
-  priority: Int where 1 <= it && it <= 5,
-  done: Bool = false,
-}
-
-derive Table for Todo
-
-fn main(sqlite: Sqlite) -> Result[(), SqlError] {
-  mut db := sqlite.memory()!
-  Todo.schema().create(mut db)!
-  t := (Todo { title: "write docs", priority: 2 }).insert(mut db)!
-  open := Todo.filter(Todo.done.eq(false))
-    .order_by(Todo.priority)
-    .all(db)!
-  ..
-}
-```
-
-The table is named after the type in snake case (`TodoItem`:
-`todo_item`), a column per field: `Int` and `Bool` (0 or 1) are
-`INTEGER`, `Float` is `REAL`, `String` is `TEXT`, an `Option` is the
-same column without `NOT NULL`, a `distinct` type is what it is made of.
-The field named `id` is the key (`PRIMARY KEY`): an integer one is
-SQLite's row id, given to each row `insert` adds; a `distinct` field
-of a type named `<Table>Id` (`project: ProjectId`) is a key of that
-table (`REFERENCES project (id)`). A refinement is a `CHECK` where SQL
-can say it (comparisons of `it`, `byte_len(it)`, `it.field` for the
-record's own, literals, `&&`, `||`, `!`; of conditions joined by
-`&&`, those it can), a literal default is a `DEFAULT`, and every row
-read back is checked again in Strata, so a row breaking a refinement
-SQL couldn't state is an error value
-(`BadRow`), never a fault.
-
-Queries are values: `Todo.title` is a `KeyPath[Todo, String]`, so
-`Todo.title.eq("x")` (a `Cond[Todo]`) is checked against the field's
-type, and runs with the value as a parameter (`"title" IS ?`), never as
-SQL text.
+std.orm: records as SQLite tables. `derive Table for Todo` gives the table's schema, its rows written and read back as `Todo`s, and typed queries over its fields.
 
 ## Types
 
@@ -56,16 +11,15 @@ type Column = {
   name: String,
   /// `INTEGER`, `REAL` or `TEXT`.
   sql_type: String,
-  /// Whether it may be NULL (an `Option` field).
+  /// Whether it may be NULL: an `Option` field.
   nullable: Bool,
-  /// Whether it is the table's key (the field `id`).
+  /// Whether it is the table's key, the field `id`.
   key: Bool,
-  /// The table whose key its values are (`REFERENCES`).
+  /// The table whose keys its values are (`REFERENCES`).
   references: Option[String],
-  /// Its field's refinement, as written (`it != ""`).
+  /// Its field's refinement as written: `it != ""`.
   condition: Option[String],
-  /// Its field's default, as written (`false`): its `DEFAULT` when it is a
-  /// literal.
+  /// Its field's default as written: `false`. It is the `DEFAULT` when it is a literal.
   default: Option[String] = None,
 }
 ```
@@ -82,8 +36,7 @@ type Schema[R] = {
 }
 ```
 
-A table of records `R`: its name, its columns and the record's own
-refinement (`it.start <= it.end`), as written. `Todo.schema()`.
+A table of records `R`: its name, its columns and the record's own refinement as written (`it.start <= it.end`). Made by `Todo.schema()`.
 
 ### Cond
 
@@ -91,23 +44,22 @@ refinement (`it.start <= it.end`), as written. `Todo.schema()`.
 type Cond[R] = { sql: String, params: List[SqlValue] }
 ```
 
-A condition on rows of the table of `R` (`Todo.done.eq(false)`): SQL
-with `?` parameters and their values, in order.
+A condition on rows of the table of `R`, such as `Todo.done.eq(false)`: SQL with `?` parameters, and their values in order.
+Values are always passed as parameters, never as SQL text.
 
 ### Query
 
 ```rust
 type Query[R] = {
   cond: Option[Cond[R]],
-  /// `"column" ASC` / `"column" DESC`, the first first.
+  /// `"column" ASC` or `"column" DESC`, the first given first.
   order: List[String],
   limit: Option[Int],
 }
 ```
 
-A query on the table of `R`: the rows meeting a condition, in an order,
-at most so many. Made with `Todo.query()` or `Todo.filter(c)`, run with
-`all`, `first`, `count` or `delete`.
+A query on the table of `R`: the rows meeting a condition, in an order, at most so many.
+Made with `Todo.query()` or `Todo.filter(c)`. Run with `all`, `first`, `count` or `delete`.
 
 ## Methods
 
@@ -117,8 +69,7 @@ at most so many. Made with `Todo.query()` or `Todo.filter(c)`, run with
 fn sql(self) -> String
 ```
 
-`CREATE TABLE IF NOT EXISTS ...`: a `CHECK` for each refinement SQL
-can say.
+`CREATE TABLE IF NOT EXISTS ...`, with a `CHECK` for each refinement SQL can say.
 
 ### Schema.create
 
@@ -126,8 +77,7 @@ can say.
 fn create(self, mut db: Database) -> Result[(), SqlError]
 ```
 
-Make the table if it is missing (and have SQLite check `REFERENCES`
-on this connection).
+Creates the table if it is missing, and turns on SQLite's `REFERENCES` checks on this connection.
 
 ### Cond.and
 
@@ -159,7 +109,7 @@ Rows not meeting it.
 fn filter(self, c: Cond[R]) -> Query[R]
 ```
 
-Only the rows meeting `c` too.
+Narrows to rows that also meet `c`.
 
 ### Query.order_by
 
@@ -167,8 +117,7 @@ Only the rows meeting `c` too.
 fn order_by[T](self, col: KeyPath[R, T]) -> Query[R]
 ```
 
-Ordered by the column `col`, smallest first (after the orders given
-before).
+Orders by `col`, smallest first, after the orders given before.
 
 ### Query.order_by_desc
 
@@ -176,7 +125,7 @@ before).
 fn order_by_desc[T](self, col: KeyPath[R, T]) -> Query[R]
 ```
 
-Ordered by the column `col`, largest first.
+Orders by `col`, largest first.
 
 ### Query.limit
 
@@ -192,8 +141,7 @@ At most `n` rows.
 fn clauses(self) -> (String, List[SqlValue])
 ```
 
-What follows `FROM table`: the condition, the order and the limit,
-with their parameters.
+What follows `FROM table`: the condition, the order and the limit, with their parameters.
 
 ## Traits
 
@@ -216,9 +164,8 @@ trait Compare[R, T] {
 }
 ```
 
-Comparing a column with a value of its field's type: `Todo.done.eq(false)`.
-`eq` and `ne` match `None` too (SQL's `IS`); an order with `None` holds
-for no row.
+Compares a column with a value of its field's type: `Todo.done.eq(false)`, where `Todo.done` is a `KeyPath[Todo, Bool]`.
+`eq` and `ne` match `None` too (SQL's `IS`). An order with `None` holds for no row.
 
 ### Rows
 
@@ -230,47 +177,51 @@ trait Rows[R] {
   fn first(self, db: Database) -> Result[Option[R], SqlError]
   /// How many rows it selects.
   fn count(self, db: Database) -> Result[Int, SqlError]
-  /// Delete the rows it selects: how many.
+  /// Deletes the rows it selects. Returns how many.
   fn delete(self, mut db: Database) -> Result[Int, SqlError]
 }
 ```
 
-Running queries: the rows they select, as records.
+Runs a query, giving its rows as records.
 
 ### Table
 
 ```rust
 derivable(Record) trait Table {
-  /// The table: its name (the type's, in snake case), its columns (a
-  /// field's each, in order) and the record's own refinement.
+  /// The table: its name, a column per field in order, and the record's own refinement.
   derived fn schema() -> Schema[Self]
-  /// Its values, a column's each, in order.
+  /// Its values, one per column, in order.
   derived fn values(self) -> List[SqlValue]
-  /// The record a row holds (its columns in field order), every
-  /// refinement checked: a row breaking one is `BadRow`.
+  /// The record a row holds, columns in field order, every refinement checked. A row breaking one is `BadRow`.
   derived fn from_row(r: Row) -> Result[Self, SqlError]
-  /// The record with the key SQLite gave it (an integer key; others are
-  /// kept).
+  /// The record with the key SQLite gave it. A key that isn't an integer is kept.
   derived fn with_key(self, id: Int) -> Self
-  /// Add the record as a new row: the record as kept, with the key SQLite
-  /// gave it when the key is an integer (the `id` given is then left out).
+  /// Adds the record as a new row and returns it as kept.
+  /// An integer key is the one SQLite gives, and the `id` given is ignored.
   fn insert(self, mut db: Database) -> Result[Self, SqlError]
-  /// Write the record over the row with its key: whether there was one.
+  /// Writes the record over the row with its key. Returns whether there was one.
   fn update(self, mut db: Database) -> Result[Bool, SqlError]
-  /// Delete the row with the record's key: whether there was one.
+  /// Deletes the row with the record's key. Returns whether there was one.
   fn delete(self, mut db: Database) -> Result[Bool, SqlError]
   /// The row whose key is `key`, if there is one.
   fn get[K: Sql](db: Database, key: K) -> Result[Option[Self], SqlError]
   /// Every row, in the order SQLite keeps them.
   fn all(db: Database) -> Result[List[Self], SqlError]
-  /// A query of every row, to narrow (`filter`), order and limit.
+  /// A query of every row, to narrow with `filter`, order and limit.
   fn query() -> Query[Self]
   /// A query of the rows meeting `c`.
   fn filter(c: Cond[Self]) -> Query[Self]
 }
 ```
 
-A record kept as a row of a table (see above): `derive Table for Todo`.
+A record kept as a row of a table: `derive Table for Todo`.
+
+- The table is named after the type in snake case: `todo_item` for `TodoItem`.
+- Each field is a column. `Int` and `Bool` (0 or 1) are `INTEGER`, `Float` is `REAL`, `String` is `TEXT`. An `Option` drops `NOT NULL`. A `distinct` type is what it is made of.
+- The field `id` is the `PRIMARY KEY`. An integer key is SQLite's row id, given to each row `insert` adds.
+- A `distinct` field whose type is named `<Table>Id` (`project: ProjectId`) is a key of that table: `REFERENCES project (id)`.
+- A refinement is a `CHECK` where SQL can say it, and a literal default is a `DEFAULT`.
+- Every row read back is checked again in Strata. A row breaking a refinement SQL couldn't state is a `BadRow` error.
 
 ## Implementations
 

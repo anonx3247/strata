@@ -1,34 +1,7 @@
 # std.time
 
-The clock: the time now, waiting, and timers in `select`.
-
-Time comes from outside the program, so it goes through a capability:
-`main` (or a test) asks for the `SystemClock` and passes it on as a
-`Clock`:
-
-```rust
-fn main(clock: SystemClock) {
-  start := clock.now()
-  clock.sleep(ms(10))
-  print(elapsed(start, clock.now()).value >= 10000000)
-}
-```
-
-A test that times things asks for a `VirtualClock` instead: its own time,
-at 0, which jumps to the nearest deadline once every task waits, so a
-timeout happens at once and exactly:
-
-```rust
-test "gives up" (clock: VirtualClock) {
-  clock.sleep(seconds(30))  // returns at once; clock.now() is then 30 s
-}
-```
-
-A test that needs a time that doesn't move writes its own mock of `Clock`.
-
-Waiting is a wait like a `recv`: a cancelled task (a `race`'s loser) stops
-sleeping at once. In a `select` (and so in a `race`), `clock.after(d) => …`
-is an arm that happens once `d` has passed since the `select` began.
+std.time: the clock, waiting, and timers in `select`.
+`main` asks for a `SystemClock`. A test asks for a `VirtualClock`, whose timeouts happen at once.
 
 ## Types
 
@@ -38,7 +11,7 @@ is an arm that happens once `d` has passed since the `select` began.
 distinct type Duration = Int
 ```
 
-A length of time, in nanoseconds.
+Nanoseconds.
 
 ### Instant
 
@@ -46,8 +19,7 @@ A length of time, in nanoseconds.
 distinct type Instant = Int
 ```
 
-A point in time, counted from the clock's own start: only the time
-between two instants means something (it is not the date).
+Nanoseconds since the clock's own start. Only the difference of two instants means something.
 
 ### SystemClock
 
@@ -55,8 +27,7 @@ between two instants means something (it is not the date).
 capability SystemClock {}
 ```
 
-The system's monotonic clock. Only the runtime makes one, for `main` and
-tests.
+The system's monotonic clock. Only the runtime makes one, for `main` and tests.
 
 ### VirtualClock
 
@@ -64,12 +35,10 @@ tests.
 capability VirtualClock {}
 ```
 
-A clock whose time moves by itself, for tests: each run (the program,
-or each test) has its own, at 0 when it starts, shared by its tasks. When
-every task of the run is waiting and one of them waits for this clock (a
-sleep, an `after` timer), its time jumps to the nearest such deadline: a
-test of timeouts runs at once, exactly. A test (or `main`) asks for it by
-name: `test "times out" (clock: VirtualClock) { … }`.
+A clock for tests whose time jumps instead of passing.
+Each run (the program, or each test) has its own, at 0 at the start, shared by its tasks.
+When every task of the run waits and one waits on this clock, its time jumps to the nearest deadline.
+A test asks for it by name: `test "times out" (clock: VirtualClock) { … }`.
 
 ## Traits
 
@@ -77,18 +46,18 @@ name: `test "times out" (clock: VirtualClock) { … }`.
 
 ```rust
 capability trait Clock {
-  /// The time now; it never goes back.
+  /// Never goes back.
   fn now(self) -> Instant
-  /// Wait until `d` has passed (at once for a duration of 0 or less). A
-  /// cancelled task stops waiting at once.
+  /// Returns at once for a duration of 0 or less. A cancelled task stops waiting at once.
   fn sleep(self, d: Duration)
-  /// The calendar time: how long since 1970-01-01 00:00 UTC (the wall
-  /// clock, which may go back when it is set; a stand-in's is its own time).
+  /// Wall-clock time since 1970-01-01 00:00 UTC. It may go back when the system clock is set.
+  /// A clock without a calendar gives its own time.
   fn since_epoch(self) -> Duration
 }
 ```
 
-The time, and waiting for it to pass: the system's clock, or a stand-in.
+A source of time: `SystemClock`, `VirtualClock` or a mock.
+In a `select`, `clock.after(d) => …` is an arm that fires once `d` has passed since the `select` began.
 
 ## Functions
 

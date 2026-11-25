@@ -1,33 +1,7 @@
 # std.collections
 
-A dictionary and a set kept in their keys' order, and
-a priority queue.
-
-`Dict` and `Set` are hash tables: the fastest way to find a key, but in no
-order. Use these when the order matters:
-
-- `SortedDict[K, V]`: keys kept sorted by their order (`compare`, the one
-  `sort` sorts by). Find, add and remove in O(log n), like a `Dict`'s
-  O(1) but slower by that factor; and also the smallest and largest keys
-  (`first`, `last`), the nearest key at or below one (`floor`), at or
-  above it (`ceiling`), strictly below or above (`before`, `after`), and
-  the entries between two keys (`between`), each in O(log n) (plus the
-  entries given back). Iterating (`items`, `keys`, `values`) is in order.
-- `SortedSet[T]`: the same for a set of values.
-- `Heap[T]`: a priority queue, a binary heap in a `List`: add in O(log n),
-  take the smallest in O(log n), look at it in O(1). Smallest by the
-  values' order, by a key (`Heap.by(key)`), or by a comparison of your own
-  (`Heap.with(order)`): a largest-first heap is `Heap.with((a, b) ->
-  compare(b, a))`.
-
-Use a `Dict` or `Set` when nothing needs the order (they are faster), and
-`sort` once when the order is needed only at the end.
-
-These are values like any other: `mut d.insert(k, v)` changes `d` alone,
-in place when nothing else holds it (else what it changes is copied: for
-a `SortedDict`, the O(log n) nodes on the way to the key; for a `Heap`,
-its list). Two `SortedDict`s with the same entries can be built in
-different shapes, so compare their `items()`, not the values themselves.
+std.collections: ordered dictionaries and sets (AVL trees), and a priority queue (a binary heap).
+Use `Dict` or `Set`, which are hash tables, when the order doesn't matter: they are faster.
 
 ## Types
 
@@ -39,8 +13,7 @@ type Tree[K, V] =
   | Node { key: K, value: V, left: Tree[K, V], right: Tree[K, V], height: Int }
 ```
 
-An AVL tree of entries by key: a node's two subtrees differ in height by
-at most one, so a path from the root has at most 1.44 log2(n) nodes.
+An AVL tree of entries by key. A node's two subtrees differ in height by at most one, so a path from the root has at most 1.44 log2(n) nodes.
 
 ### SortedDict
 
@@ -48,9 +21,12 @@ at most one, so a path from the root has at most 1.44 log2(n) nodes.
 type SortedDict[K, V] = { root: Tree[K, V] = Leaf, size: Int = 0 }
 ```
 
-A dictionary whose keys are kept in their order (`compare`'s):
-`let d: SortedDict[String, Int] = SortedDict {}` is an empty one, and
-`sorted_dict(pairs)` one of the pairs.
+Ordered dictionary: an AVL tree keyed by `compare`.
+
+- get, insert, remove, first, last, floor, ceiling: O(log n). Iterates in key order.
+- `SortedDict {}` is empty. `sorted_dict(pairs)` builds one from pairs.
+- A change is in place when nothing else holds the dictionary. Otherwise it copies the O(log n) nodes on the path to the key.
+- Two dictionaries with the same entries can differ in shape. Compare their `items()`.
 
 ### SortedSet
 
@@ -58,9 +34,9 @@ A dictionary whose keys are kept in their order (`compare`'s):
 type SortedSet[T] = { root: Tree[T, ()] = Leaf, size: Int = 0 }
 ```
 
-A set whose elements are kept in their order (`compare`'s):
-`let s: SortedSet[Int] = SortedSet {}` is an empty one, and
-`sorted_set(xs)` one of the elements of a list.
+Ordered set: an AVL tree keyed by `compare`.
+contains, insert, remove: O(log n). Iterates in order.
+`SortedSet {}` is empty. `sorted_set(xs)` builds one from a list.
 
 ### Heap
 
@@ -68,9 +44,10 @@ A set whose elements are kept in their order (`compare`'s):
 type Heap[T] = { items: List[T] = [], order: Option[(T, T) -> Int] = None }
 ```
 
-A priority queue: the smallest element first, by `order` (-1, 0 or 1,
-as `compare` gives) or else by `compare`. `let h: Heap[Int] = Heap {}`
-is an empty one, `heap(xs)` one of the elements of a list.
+Priority queue: a binary heap in a `List`, smallest first.
+push, pop: O(log n). peek: O(1).
+Ordered by `order` (-1, 0 or 1, as `compare` gives), else by `compare`.
+`Heap {}` is empty. `heap(xs)` builds one from a list. A change copies the list when something else holds it.
 
 ## Methods
 

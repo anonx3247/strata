@@ -1,10 +1,6 @@
 # std.fs
 
-Files and folders.
-
-The file system is a capability: a program gets the real disk only by
-asking for it in `main` (`fn main(disk: Disk)`), and passes it on where
-`Files` is wanted. Tests pass a `MemFiles` instead.
+std.fs: files and folders. `main` asks for the `Disk`. Tests pass a `MemFiles`.
 
 ## Types
 
@@ -36,8 +32,7 @@ The real file system. Only the runtime makes one, for `main`.
 type MemFiles = { files: Dict[String, String] }
 ```
 
-Files kept in memory, for tests: each path maps to its contents. Folders
-are implied by the paths of the files in them.
+Files kept in memory for tests, by path. Folders are implied by the files' paths.
 
 ## Traits
 
@@ -45,24 +40,23 @@ are implied by the paths of the files in them.
 
 ```rust
 capability trait Files {
-  /// The whole file as text (UTF-8).
+  /// The whole file as UTF-8 text.
   fn read(self, path: String) -> Result[String, FsError]
   /// The whole file as bytes, each an `Int` from 0 to 255.
   fn read_bytes(self, path: String) -> Result[List[Int], FsError]
-  /// Replace the file's contents with `text`, creating the file if needed.
+  /// Replaces the file's contents, creating the file if needed.
   fn write(mut self, path: String, text: String) -> Result[(), FsError]
-  /// Add `text` at the end of the file, creating the file if needed.
+  /// Adds `text` at the end of the file, creating the file if needed.
   fn append(mut self, path: String, text: String) -> Result[(), FsError]
   /// Whether a file or folder exists at `path`.
   fn exists(self, path: String) -> Bool
-  /// The names of the entries of a folder, sorted.
+  /// The entry names of a folder, sorted.
   fn list(self, path: String) -> Result[List[String], FsError]
-  /// Create a folder and any missing parents.
+  /// Creates a folder and any missing parents.
   fn make_dir(mut self, path: String) -> Result[(), FsError]
-  /// Remove a file, or an empty folder.
+  /// Removes a file or an empty folder.
   fn remove(mut self, path: String) -> Result[(), FsError]
-  /// Replace the file's contents with `bytes` (each an `Int` from 0 to 255),
-  /// creating the file if needed.
+  /// Replaces the file's contents with `bytes`, each from 0 to 255, creating the file if needed.
   fn write_bytes(
     mut self,
     path: String,
@@ -70,17 +64,17 @@ capability trait Files {
   ) -> Result[(), FsError]
   /// Whether `path` is a folder.
   fn is_dir(self, path: String) -> Bool
-  /// Move a file to `to` (replacing what is there).
+  /// Moves a file to `to`, replacing what is there.
   fn rename(mut self, path: String, to: String) -> Result[(), FsError]
-  /// Remove a file, or a folder and everything in it.
+  /// Removes a file, or a folder and everything in it.
   fn remove_all(mut self, path: String) -> Result[(), FsError]
-  /// The path from the root of the file system, `..` and links resolved;
-  /// `NotFound` if nothing is there (a stand-in's paths are already whole).
+  /// The path from the file system's root, with `..` and links resolved. `NotFound` if nothing is there.
+  /// A stand-in's paths are already absolute.
   fn absolute(self, path: String) -> Result[String, FsError]
 }
 ```
 
-Reading and writing files: the disk, or a stand-in for it.
+Reads and writes files: the `Disk`, a `MemFiles`, or a mock.
 
 ## Functions
 
@@ -90,7 +84,7 @@ Reading and writing files: the disk, or a stand-in for it.
 fn mem_files(files: List[(String, String)]) -> MemFiles
 ```
 
-An in-memory file system holding `files` (path, contents).
+An in-memory file system holding `files` as (path, contents) pairs.
 
 ## Implementations
 

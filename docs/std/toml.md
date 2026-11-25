@@ -1,69 +1,7 @@
 # std.toml
 
-TOML text (version 1.1, https://toml.io/en/v1.1.0) read into
-values and written from them, and records and sum types read from TOML
-and written to it.
-
-Derive `Toml` for a record or a sum type:
-
-```rust
-type Config = {
-  name: String where it != "",
-  port: Int where 0 < it && it < 65536 = 8080,
-  owner: Option[String],
-  tags: List[String] = [],
-}
-
-derive Toml for Config
-
-from std.toml use Toml
-config := Config.read_toml(disk.read("app.toml")!)!  // checks every refinement
-text := config.write_toml()!
-```
-
-The TOML is what a person writes in a configuration file:
-
-- a record is a table of its fields. A field left out takes its
-  default, and an `Option` field is left out for `None` (TOML has no
-  null, so `Option` is only for fields);
-- a union: its member's value. A member that is a record, an atom or
-  tuple-shaped is a table whose `type` names it, with its fields
-  (`{ type = "Circle", r = 2 }`); one positional field is `value`. An
-  atom may also be the bare string (`"Dot"`), and a union whose members
-  all carry nothing (`type Level = Quiet | Loud`) is just the string.
-  Reading, any other member is the first the TOML fits;
-- `Int` an integer (64 bits: writing a larger one is an error), `Float`
-  a float (an integer too, reading), `Bool`, `String`, `List[T]` an
-  array, a tuple an array of its values, `Dict[String, V]` a table, a
-  `distinct` type its underlying value, `Date`, `Time` and `DateTime`
-  TOML's dates and times;
-- members whose TOML overlaps (`Int | Float`, two lists, two members
-  named alike) are an error at the `derive`.
-
-Keys a record doesn't have are ignored, unless the package says
-`unknown_keys = "error"` under `[toml]` in its `strata.toml`;
-`from_toml_with(v, Reject)` / `from_toml_with(v, Ignore)` choose for one
-call. The methods are named for TOML (`to_toml`, `from_toml`), so a type
-may derive `Json` too.
-
-Reading TOML text into values:
-
-```rust
-from std.toml use parse, lookup, Text
-doc := parse(disk.read("strata.toml")!)!
-name := match lookup(doc, ["package", "name"]) {
-  Some(Text(s)) => s,
-  _ => "unnamed",
-}
-```
-
-A document is its root table: its keys and values, in the order written
-(a table's keys are unique). Every rule of TOML 1.1 is checked, and a
-document that breaks one is an `Err` saying where (`line:column: ...`):
-keys and tables defined twice, tables extended once closed (inline tables,
-tables of dotted keys reopened by a `[header]`), integers beyond 64 bits,
-dates that don't exist (`2023-02-29`), control characters, ...
-One difference: a Strata `Float` is finite, so `inf` and `nan` are errors.
+std.toml: TOML 1.1 text (https://toml.io/en/v1.1.0) read into values and written from them, and `derive Toml` for records and sum types.
+`parse` checks every rule of TOML 1.1. Not supported: `inf` and `nan`, since a Strata `Float` is finite.
 
 ## Types
 
@@ -96,7 +34,7 @@ A date: `1979-05-27`.
 type Time = { hour: Int, minute: Int, second: Int, nanosecond: Int }
 ```
 
-A time of day: `07:32:00.999` (seconds may be left out: `07:32`).
+A time of day: `07:32:00.999`. Seconds may be left out: `07:32`.
 
 ### Offset
 
@@ -118,8 +56,7 @@ type DateTime = {
 }
 ```
 
-TOML's four kinds of date and time: an offset date-time (all three), a
-local date-time (no offset), a local date, a local time.
+TOML's four kinds of date and time: an offset date-time has all three parts, a local date-time no offset, a local date only the date, a local time only the time.
 
 ## Traits
 
@@ -129,13 +66,11 @@ local date-time (no offset), a local date, a local time.
 derivable(Record | Union) trait Toml {
   /// The value as TOML.
   fn to_toml(self) -> Result[TomlValue, String]
-  /// The value as a TOML document, which is a table: a record's.
+  /// The value as a TOML document. Only a table, such as a record's, is one.
   fn write_toml(self) -> Result[String, String]
-  /// The value as TOML; `path` says where it is, for messages (`""` at the
-  /// top).
+  /// `path` says where the value is, for messages. `""` at the top.
   derived fn to_toml_at(self, path: String) -> Result[TomlValue, String]
-  /// A value read from TOML, every refinement checked; `path` says where it
-  /// is, for messages (`""` at the top).
+  /// Every refinement checked. `path` says where the value is, for messages. `""` at the top.
   derived fn from_toml_at(
     v: TomlValue,
     path: String,
@@ -143,14 +78,25 @@ derivable(Record | Union) trait Toml {
   ) -> Result[Self, String]
   /// A value read from TOML, every refinement checked.
   fn from_toml(v: TomlValue) -> Result[Self, String]
-  /// `from_toml`, with what to do with keys a record doesn't have given.
+  /// `from_toml`, with what to do with keys a record doesn't have.
   fn from_toml_with(v: TomlValue, keys: UnknownKeys) -> Result[Self, String]
-  /// A value read from a TOML document (`Config.read_toml(text)`).
+  /// A value read from a TOML document: `Config.read_toml(text)`.
   fn read_toml(text: String) -> Result[Self, String]
 }
 ```
 
-A record or a sum type read from TOML and written to it (see above).
+A record or a sum type read from TOML and written to it. The TOML is what a person writes in a configuration file:
+
+- A record is a table of its fields. A field left out takes its default. An `Option` field is left out for `None`, since TOML has no null, so `Option` is only for fields.
+- A union member that is a record, an atom or tuple-shaped is a table whose `type` names it, with its fields: `{ type = "Circle", r = 2 }`. One positional field is `value`.
+- An atom may also be the bare string `"Dot"`. A union whose members are all atoms is just the string.
+- Any other member is read as the first one the TOML fits.
+- `Int` is a 64-bit integer, and writing a larger one is an error. `Float` is a float, or an integer when reading.
+- `List[T]` and tuples are arrays. `Dict[String, V]` is a table. A `distinct` type is its underlying value. `Date`, `Time` and `DateTime` are TOML's dates and times.
+- Keys a record doesn't have are ignored, unless `unknown_keys = "error"` is set under `[toml]`. `from_toml_with` chooses for one call.
+- Members whose TOML overlaps (`Int | Float`, two lists, two members named alike) are an error at the `derive`.
+
+The methods are named for TOML, so a type may derive `Json` too.
 
 ## Functions
 
@@ -171,7 +117,8 @@ The value at a path of keys in a table: `lookup(doc, ["server", "port"])`.
 fn parse(text: String) -> Result[List[(String, TomlValue)], String]
 ```
 
-TOML text read as its root table.
+Parses TOML text into its root table, keys in the order written.
+A document that breaks a rule is an `Err` saying where (`line:column: ...`): keys and tables defined twice, tables extended once closed, integers beyond 64 bits, dates that don't exist (`2023-02-29`), control characters.
 
 ### stringify
 
@@ -179,9 +126,9 @@ TOML text read as its root table.
 fn stringify(table: List[(String, TomlValue)]) -> String
 ```
 
-A table as a TOML document: its values first, then a `[header]` section
-for each table in it, and a `[[header]]` for each table of each array of
-tables. A table inside an array of other values is written inline.
+A table as a TOML document.
+Its values come first, then a `[header]` section for each table in it, and a `[[header]]` for each table of each array of tables.
+A table inside an array of other values is written inline.
 
 ### quote
 

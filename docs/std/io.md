@@ -1,12 +1,7 @@
 # std.io
 
-The console: text in and out.
-
-The console is a capability. A program gets it only by asking for it in
-`main` (`fn main(mut console: Console)`), and passes it on to the code that
-needs it. It is the one capability the environment chooses: the terminal
-under `strata run`, the test's own output in a test. Tests may pass a
-`Recorder` instead.
+std.io: the console, text in and out.
+`main` asks for a `Console`. The terminal runs it under `strata run`, the test's output in a test.
 
 ## Types
 
@@ -24,9 +19,8 @@ The process's own terminal. Only the runtime makes one, for `main`.
 type Recorder = { input: List[String], out: String, err: List[String] }
 ```
 
-A console for tests. It reads its input from `input`, line by line, and
-keeps what is written: `out` is standard output as written, `err` the
-lines written to standard error.
+A console for tests. It reads `input` line by line.
+`out` is standard output as written. `err` holds the lines written to standard error.
 
 ### ReplConsole
 
@@ -34,10 +28,8 @@ lines written to standard error.
 capability ReplConsole {}
 ```
 
-The console `strata repl` gives the code typed at its prompt: what it
-writes is shown with the line's result (standard output and standard
-error, in the order written), and `read_line` reads the REPL's next
-input. Only `strata repl` makes one.
+The console of code typed at `strata repl`. Only `strata repl` makes one.
+Its output, standard error included in order, is shown with the line's result. `read_line` reads the REPL's next input.
 
 ## Traits
 
@@ -45,28 +37,24 @@ input. Only `strata repl` makes one.
 
 ```rust
 capability trait Console {
-  /// Write `text` and a newline to standard output.
+  /// Writes `text` and a newline to standard output.
   fn print(mut self, text: String)
-  /// Write `text` to standard output, without a newline.
+  /// Writes `text` to standard output, without a newline.
   fn write(mut self, text: String)
-  /// Write `text` and a newline to standard error.
+  /// Writes `text` and a newline to standard error.
   fn eprint(mut self, text: String)
-  /// The next line of standard input, without its line ending; `None` at the
-  /// end of the input.
+  /// The next line of standard input without its line ending. `None` at the end of the input.
   fn read_line(mut self) -> Option[String]
-  /// The rest of standard input, whole: what `read_line` hasn't taken (a
-  /// stand-in gives its lines, each with a newline).
+  /// The rest of standard input. A recorder gives its lines, each with a newline.
   fn read_all(mut self) -> String
-  /// Whether standard input is a terminal (a person typing), not a pipe or a
-  /// file; a stand-in's is not.
+  /// Whether standard input is a terminal rather than a pipe or a file. False for a stand-in.
   fn interactive(self) -> Bool
-  /// A paint for `stream` (std.term): on when it is a terminal that shows
-  /// colors; a stand-in's is off.
+  /// A paint for `stream` (std.term), on when it is a terminal that shows colors. Off for a stand-in.
   fn paint(self, stream: Stream) -> Paint
 }
 ```
 
-Text output and input: the terminal, or a stand-in for it.
+Text output and input: the terminal, a `Recorder`, or a mock.
 
 ## Functions
 
@@ -76,7 +64,7 @@ Text output and input: the terminal, or a stand-in for it.
 fn recorder(input: List[String]) -> Recorder
 ```
 
-A recorder that will read `input`, line by line.
+A recorder that reads `input` line by line.
 
 ### printed
 
@@ -84,7 +72,7 @@ A recorder that will read `input`, line by line.
 fn printed(r: Recorder) -> List[String]
 ```
 
-The lines a recorder's standard output holds.
+The lines of a recorder's standard output.
 
 ## Implementations
 

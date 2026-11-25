@@ -1,10 +1,7 @@
 # std.memory
 
-Memory, for programs that must be fast: arenas. Each function here is
-what it says (`f()`); the compiler also runs `f` with what it makes in an
-arena: allocated together (no free list), never freed one by one nor
-walked when dropped, all freed at once. Objects in an arena are counted
-as any other, so one held once is still changed in place.
+std.memory: arenas, for programs that allocate much and keep little.
+An arena allocates objects together, with no free list, and frees them all at once.
 
 ## Functions
 
@@ -14,13 +11,10 @@ as any other, so one held once is still changed in place.
 fn arena[A](f: () -> A) -> A
 ```
 
-`f()`, with what it makes in an arena freed when it returns: its result
-is copied out first (what the arena made of it; what it holds from
-before is shared). For work that makes much and keeps little: a
-compiler checking one function. The result can't hold a function, a
-trait value, a task or a channel's end. An arena is one thread's (a
-task's work can have its own); one open when its thread starts a task
-is kept (never freed), as the task may hold what it made.
+Runs `f` with its allocations in an arena, freed when it returns.
+The result is copied out of the arena first. What it holds from before `f` is shared.
+The result can't hold a function, a trait value, a task or a channel's end.
+An arena belongs to one thread. A task started while it is open keeps it alive to the program's end.
 
 ### arena_kept
 
@@ -28,7 +22,5 @@ is kept (never freed), as the task may hold what it made.
 fn arena_kept[A](f: () -> A) -> A
 ```
 
-`f()`, with what it makes in an arena never freed: its result, and all
-`f` made, lives until the program ends, never freed nor walked when
-dropped. For what a program keeps to its end anyway: a compiler's
-decoded modules.
+Runs `f` with its allocations in an arena that is never freed.
+Nothing it made is freed or walked when dropped. For data a program keeps to its end.
