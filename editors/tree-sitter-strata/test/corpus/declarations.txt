@@ -415,3 +415,87 @@ test "reads" (mut files: Files) { files.read("a")! }
           (arguments
             (string
               (string_content))))))))
+
+============================================================
+Old, decreases and named results
+============================================================
+
+fn bump(mut n: Int) ensures n == old n + 1 {
+  n += 1
+}
+fn split(q: Q) -> (next: Q, added: Int) decreases q.size = (q, 0)
+fn drain(n: Int) {
+  mut i := 0
+  while i < n
+    invariant i <= n
+    decreases n - i {
+    i += 1
+  }
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (contract
+      (binary_expression
+        (identifier)
+        (binary_expression
+          (old_expression
+            (identifier))
+          (integer))))
+    (block
+      (assignment
+        (identifier)
+        (integer))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (named_results
+      (named_result
+        (identifier)
+        (type_identifier))
+      (named_result
+        (identifier)
+        (type_identifier)))
+    (contract
+      (field_expression
+        (identifier)
+        (field_identifier)))
+    (tuple_expression
+      (identifier)
+      (integer)))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (block
+      (variable_declaration
+        (identifier)
+        (integer))
+      (while_statement
+        (binary_expression
+          (identifier)
+          (identifier))
+        (invariant
+          (binary_expression
+            (identifier)
+            (identifier)))
+        (decreases
+          (binary_expression
+            (identifier)
+            (identifier)))
+        (block
+          (assignment
+            (identifier)
+            (integer)))))))

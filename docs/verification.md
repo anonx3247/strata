@@ -38,6 +38,40 @@ A refinement is assumed of a parameter on entry and checked of each argument at 
 
 Named results (`-> (q: Natural, r: Natural)`) are the tuple's elements in `ensures`: `verify` reads `q` as `it.0` and `r` as `it.1`, and a broken `ensures` is reported with them so (`ensures it.0 * b + it.1 == a`).
 
+## Values before and after: `old`
+
+A `mut` parameter (or `mut self`) changes, so an `ensures` about it relates two values: in the clause, its name is its value when the function returns, and `old e` is `e` where the function started ([the language](language.md#refinements-and-contracts-one-way-each)). `verify` keeps the parameters' values from the start and proves the clause at every way out; at a call, it takes the callee's `ensures` with the arguments' values before the call for `old`, and the values the callee leaves for the rest, so callers build on it:
+
+```rust
+fn bump(mut n: Int)
+  ensures n == old n + 1 {
+  n += 1
+}
+
+fn bump_twice(mut n: Int)
+  ensures n == old n + 2 {
+  bump(mut n)
+  bump(mut n)
+}
+
+fn push_positive(mut xs: List[Int], x: Int)
+  ensures len(xs) == old len(xs) + 1 {
+  if x > 0 {
+    xs += [x]
+  }
+}
+```
+
+```
+✓ bump                     proven (1 check)
+✓ bump_twice               proven (1 check)
+✗ push_positive            Ensures violation (found by the solver)
+    input:   [], 0
+    postcondition of `push_positive` violated: ensures len(xs) == old len(xs) + 1 (before: len(xs) = 0, after: len(xs) = 0) (stack: push_positive)
+```
+
+A trait method's contract works the same way: with `fn incr(mut self) ensures self.total() == old self.total() + 1` in a trait `Counter`, a generic `fn incr_twice[C: Counter](mut c: C) ensures c.total() == old c.total() + 2` calling `mut c.incr()` twice is proven (a method only known by its contract gives the same result on the same values). When an `ensures` with `old` stays a run-time check, the program takes each `old e` on entry and keeps it until the check, which shows both values; holding the value makes an update in place of it copy, so it is done only for a check `verify` didn't prove.
+
 ## Recursion and termination
 
 ```rust

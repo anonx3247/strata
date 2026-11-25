@@ -118,6 +118,8 @@
   "requires"
   "ensures"
   "terminates"
+  "decreases"
+  "old"
 ] @keyword.directive
 
 [

@@ -215,7 +215,7 @@ module.exports = grammar({
         field('name', $.identifier),
         optional(field('type_parameters', $.type_parameters)),
         field('parameters', $.parameters),
-        optional(seq('->', field('return_type', $._type))),
+        optional(seq('->', field('return_type', choice($._type, $.named_results)))),
         repeat($.contract),
       ),
 
@@ -227,7 +227,15 @@ module.exports = grammar({
         'terminates',
         seq('requires', $._expression),
         seq('ensures', $._expression),
+        seq('decreases', $._expression),
       ),
+
+    // `-> (next: Queue, added: Int)`: the result's elements, named
+    named_results: ($) =>
+      seq('(', commaSep1($.named_result), ')'),
+
+    named_result: ($) =>
+      seq(field('name', $.identifier), ':', field('type', $._type)),
 
     // `[T: Ord + Hash, U]`
     type_parameters: ($) => seq('[', commaSep($.type_parameter), ']'),
@@ -482,14 +490,19 @@ module.exports = grammar({
 
     invariant: ($) => seq('invariant', $._expression),
 
+    // `decreases n - i`, `decreases (a, b)`: why a loop ends
+    decreases: ($) => seq('decreases', $._expression),
+
+    _loop_clause: ($) => choice($.invariant, $.decreases),
+
     loop_statement: ($) =>
-      seq('loop', repeat($.invariant), field('body', $.block)),
+      seq('loop', repeat($._loop_clause), field('body', $.block)),
 
     while_statement: ($) =>
       seq(
         'while',
         field('condition', $._expression),
-        repeat($.invariant),
+        repeat($._loop_clause),
         field('body', $.block),
       ),
 
@@ -499,7 +512,7 @@ module.exports = grammar({
         field('pattern', $._pattern),
         'in',
         field('iterable', $._expression),
-        repeat($.invariant),
+        repeat($._loop_clause),
         field('body', $.block),
       ),
 
@@ -526,6 +539,7 @@ module.exports = grammar({
         $.spawn_expression,
         $.await_expression,
         $.comptime_expression,
+        $.old_expression,
         $.mut_expression,
         $.try_expression,
         $.except_expression,
@@ -667,6 +681,9 @@ module.exports = grammar({
 
     comptime_expression: ($) =>
       prec(PREC.unary, seq('comptime', $._expression)),
+
+    // `old len(xs)`: in an `ensures`, the value where the function started
+    old_expression: ($) => prec(PREC.unary, seq('old', $._expression)),
 
     // `f(mut x)`, `mut q.claim(2)`
     mut_expression: ($) => prec(PREC.unary, seq('mut', $._expression)),
