@@ -14,6 +14,12 @@ stdout = "; core.rt "
 strata = ["build-core"]
 out_file = "rt.ll"
 
+# core's tests: core.mem's run; the runtime modules' (core.rt …) compile
+# only into the runtime, so they are left out, and said so
 [[step]]
 strata = ["--file", "$ROOT/core", "test"]
-has = ["✓ core.rt: an object held once is unique"]
+has = [
+  "✓ core.mem: a block holds the words and bytes stored in it",
+  "tests of core's runtime modules not run",
+]
+lacks = ["✓ core.rt:"]

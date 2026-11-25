@@ -1,0 +1,37 @@
+# `check` finds a call with the wrong number of arguments, and an unknown
+# name, in a test block and in an `impl`'s methods as it does in a function
+# (they were looked at by the type checker only, which leaves both to the
+# checks without types, run on functions alone)
+
+[[step]]
+save = "a.strata"
+text = '''
+type Pt = { x: Int }
+
+fn f(x: Int) -> Int {
+  x + 1
+}
+
+impl Pt {
+  fn get(self) -> Int {
+    f(self.x, 2) + nowhere(1)
+  }
+}
+
+test "arity" {
+  assert f(1, 2) == 2
+  assert f() == 1
+  assert missing(1) == 1
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "check"]
+fails = true
+has = [
+  "error in test \"arity\": call to `f`: expects 1 arguments, got 2",
+  "error in test \"arity\": call to `f`: expects 1 arguments, got 0",
+  "error in test \"arity\": unknown variable `missing`",
+  "error in impl Pt: call to `f`: expects 1 arguments, got 2",
+  "error in impl Pt: unknown variable `nowhere`",
+]

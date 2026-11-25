@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <fts.h>
+#include <signal.h>
 #ifdef __APPLE__
 #include <CommonCrypto/CommonDigest.h>
 #include <mach-o/dyld.h>
@@ -293,6 +296,35 @@ const char *cache_self_hash(void) {
 
 // This process's id (the run's scratch folders are named by it).
 int64_t cache_pid(void) { return (int64_t)getpid(); }
+
+// Whether the process `pid` is running (another user's too), for `strata
+// cache clean`: a scratch folder named by a running process's id is in use.
+int32_t cache_pid_running(int64_t pid) {
+  if (pid <= 0) return 0;
+  return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+// The bytes the files and folders under `path` take on disk, as du counts
+// them (their blocks; links not followed, other file systems not entered);
+// 0 when nothing is there. For `strata cache`.
+int64_t cache_tree_bytes(const char *path) {
+  char *paths[] = {(char *)path, NULL};
+  FTS *f = fts_open(paths, FTS_PHYSICAL | FTS_NOCHDIR | FTS_XDEV, NULL);
+  if (!f) return 0;
+  int64_t total = 0;
+  FTSENT *e;
+  while ((e = fts_read(f))) {
+    switch (e->fts_info) {
+    case FTS_F: case FTS_D: case FTS_SL: case FTS_SLNONE: case FTS_DEFAULT:
+      total += (int64_t)e->fts_statp->st_blocks * 512;
+      break;
+    default:
+      break;
+    }
+  }
+  fts_close(f);
+  return total;
+}
 
 // The hash of the sources this executable was built from: `strata build`
 // defines `strata_build_sources` in the program's IR (compiler/main's
