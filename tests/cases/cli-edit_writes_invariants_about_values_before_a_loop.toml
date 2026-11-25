@@ -1,28 +1,22 @@
 # A loop's invariants found by search may speak of a variable's value
-# before the loop (shown `at₀`). `verify` writes them with no new syntax:
+# before the loop (shown `at₀`). `edit` writes them with no new syntax:
 # as the expression the variable was set to just before the loop, when the
 # loop and the statements since leave that expression's variables unchanged
 # (`mut at := from`: `invariant at >= from`); else with a binding it makes
 # just before the loop (`start_at := at`: `invariant at >= start_at`),
 # named apart from the function's names (`start_at` is taken in
-# `quoted_after`: `start_at_2`). The next run proves them without
-# searching. (`at` steps through `next`, a call, so nothing about it is
-# derived from the code: the `ensures` fails without a search. Each loop's
-# search takes about 6M units with Z3 4.x, over the 2M of
-# `found_by_search`.)
+# `quoted_after`: `start_at_2`). Of what the search finds, only what the
+# checks need is written (`at <= n` and `at >= 0` aren't). `verify` then
+# proves them, searching nothing. (`at` steps through `next`, a call, so
+# nothing about it is derived from the code: the `ensures` fail without a
+# search.)
 
 [[step]]
-save = "q.strata"
+strata = ["--file", "q.strata", "edit"]
 from = "q.st"
-
-[[step]]
-strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache"]
 has = [
-  "✓ quoted_end ",
-  '''edited quoted_end: added `invariant at <= n`, `invariant at <= byte_len(src)`, `invariant at >= from`, `invariant at >= 0` to `while at < n && char_at(src, at) != "\""` (found by search in ''',
-  "✓ quoted_after ",
-  '''`invariant at >= start_at_2`''',
-  '''to `while at < n && char_at(src, at) != "\""` and `start_at_2 := at` before it (found by search in ''',
+  '''warning: in `quoted_end`: added `invariant at <= byte_len(src)`, `invariant at >= from` to `while at < n && char_at(src, at) != "\""` (found by search)''',
+  '''warning: in `quoted_after`: added `invariant at <= byte_len(src)`, `invariant at >= start_at_2` to `while at < n && char_at(src, at) != "\""` and `start_at_2 := at` before it (found by search)''',
 ]
 
 [[step]]
@@ -32,17 +26,17 @@ has = [
   mut s := ""
   mut col := 0
   while at < n && char_at(src, at) != "\""
-    invariant at <= n
     invariant at <= byte_len(src)
-    invariant at >= from
-    invariant at >= 0 {''',
-  '''  mut start_at := 0
+    invariant at >= from {''',
+  '''    s = "wide"
+  }
   start_at_2 := at
-  while at < n && char_at(src, at) != "\""''',
-  "    invariant at >= start_at_2",
+  while at < n && char_at(src, at) != "\""
+    invariant at <= byte_len(src)
+    invariant at >= start_at_2 {''',
 ]
 
-# verified again: the written invariants proven, nothing searched for and
+# verified: the written invariants proven, nothing searched for and
 # nothing more written
 [[step]]
 strata = ["--file", "q.strata", "verify", "--no-race", "--no-cache", "--checks"]
@@ -52,4 +46,4 @@ has = [
   "✓ quoted_after ",
   '''proven:  invariant `at >= start_at_2` after a pass of `while at < n && char_at(src, at) != "\""`''',
 ]
-lacks = ["edited", "note:"]
+lacks = ["added", "note:"]

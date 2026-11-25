@@ -11,7 +11,7 @@
 
 [[step]]
 strata = ["--file", "t.strata", "edit"]
-has = ["warning: in `needs_search`: added `invariant best <= n` to `while i < n` (found by search)"]
+has = ["warning: in `needs_search`: added `invariant i >= best` to `while i < n` (found by search)"]
 lacks = ["in `count_up`: added", "in `two_vars`: added", "in `grows`: added", "in `flag`: added", "in `pushes`: added", "in `down`: added", "in `after_for`: added", "in `first_over`: added"]
 text = '''
 fn count_up(n: Natural) -> Natural
@@ -137,7 +137,7 @@ has = [
   "✓ first_over ",
   "invariant of `loop`: i >= i₀ (derived)",
   "✓ needs_search ",
-  "proven:  invariant `best <= n` after a pass of `while i < n`",
+  "proven:  invariant `i >= best` after a pass of `while i < n`",
 ]
 lacks = ["search `", "searches:", "(inferred)"]
 
