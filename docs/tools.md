@@ -342,6 +342,7 @@ A folder with a `strata.toml` is a **package**. Its `.strata` files are its modu
 ```toml
 name = "tasks"                         # `strata init` uses the folder's name; it stays when the folder moves (a worktree, a rename)
 exports = ["core", "memory.MemQueue"]  # optional: modules or definitions other packages can use; default every `pub`
+noalloc = ["memory"]                   # optional: modules whose every function is `noalloc`, checked (and the modules below; `main`: the root module)
 
 [deps]                                 # other packages, by path or git URL (read by the compiler in Strata, `compiler/deps`)
 json = { path = "../json" }
