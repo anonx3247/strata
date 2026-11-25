@@ -1,0 +1,58 @@
+# strata repl, its input piped: values kept between lines, definitions of
+# the session's own, the REPL's console, faults reported and the session kept
+[[step]]
+save = "p.strata"
+text = """
+fn double(x: Int) -> Int {
+  x * 2
+}
+
+type Point = { x: Int, y: Int }
+"""
+
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+1 + 2
+x := double(5)
+mut xs := [1, 2]
+xs = xs + [x]
+xs
+p := Point { x: 1, y: 2 }
+:type p.x
+fn triple(n: Int) -> Int { n * 3 }
+triple(x)
+fn triple(n: Int) -> Int { n * 30 }
+triple(x)
+mut console.print(f"x is {x}")
+x
+:view double
+"""
+out = """
+3: Int
+x: Int = 10
+xs: List[Int] = [1, 2]
+[1, 2, 10]: List[Int]
+p: Point = Point { x: 1, y: 2 }
+Int
+defined `triple`
+30: Int
+defined `triple`
+300: Int
+x is 10
+10: Int
+fn double(x: Int) -> Int {
+  x * 2
+}
+"""
+
+[[step]]
+strata = ["--file", "p.strata", "repl"]
+text = """
+nope + 1
+[1, 2][5]
+disk.read("x")
+:frobnicate
+"""
+fails = true
+has = ["unknown variable `nope`", "index 5 out of range (length 2)", "unknown variable `disk`", "unknown command `:frobnicate`"]

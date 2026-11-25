@@ -1,0 +1,101 @@
+# a lambda's or a function's parameter can be an irrefutable pattern (a
+# tuple, a record pattern, nested, `_`), with or without a type: the
+# argument taken apart as `:=` would; shown as written, checked, run,
+# compiled and proven; a pattern that may not match is refused
+
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+type Pt = { x: Int, y: Int }
+
+type Seg = { from: Pt, to: Pt }
+
+fn sums(ps: List[(Int, Int)]) -> List[Int] {
+  ps.map(((a, b)) -> a + b)
+}
+
+fn total(pairs: List[(String, Int)]) -> Int {
+  fold(pairs, 0, (acc, (_, v)) -> acc + v)
+}
+
+fn lengths(segs: List[Seg]) -> List[Int] {
+  segs.map((Seg { from: Pt { x, y }, to: Pt { x: x2, y: y2 } }) -> x2 - x + (y2 - y))
+}
+
+fn dist((x, y): (Int, Int)) -> Int
+  ensures it >= 0
+{
+  ax := if x < 0 {
+    0 - x
+  } else {
+    x
+  }
+  ay := if y < 0 {
+    0 - y
+  } else {
+    y
+  }
+  ax + ay
+}
+
+fn main() {
+  mul := ((a, b): (Int, Int)) -> a * b
+  print(f"{sums([(1, 2), (3, 4)])}")
+  print(f"{total([("a", 1), ("b", 2)])}")
+  print(f"{mul((6, 7))}")
+  print(f"{lengths([Seg { from: Pt { x: 0, y: 0 }, to: Pt { x: 3, y: 4 } }])}")
+  print(f"{[((1, 2), 3)].map((((a, _), c)) -> a + c)}")
+  print(f"{dist((3, -4))}")
+  print(f"{[(1, 2), (3, 4)].map((a, b) -> a * b)}")
+}
+'''
+
+# shown as written
+[[step]]
+strata = ["--file", "t.strata", "view", "main"]
+has = [
+  "ps.map(((a, b)) -> a + b)",
+  "fold(pairs, 0, (acc, (_, v)) -> acc + v)",
+  "(Seg { from: Pt { x, y }, to: Pt { x: x2, y: y2 } }) ->",
+  "fn dist((x, y): (Int, Int)) -> Int",
+  "mul := ((a, b): (Int, Int)) -> a * b",
+  "(((a, _), c)) -> a + c",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+stdout = "[3, 7]\n3\n42\n[7]\n[4]\n7\n[2, 12]\n"
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "t"]
+
+[[step]]
+run = ["./t"]
+stdout = "[3, 7]\n3\n42\n[7]\n[4]\n7\n[2, 12]\n"
+
+# the prover sees the names bound
+[[step]]
+strata = ["--file", "t.strata", "verify", "dist"]
+has = ["dist", "proven"]
+
+# their types are the parameter's (written, or the expected function's)
+[[step]]
+strata = ["--file", "w.strata", "edit"]
+text = '''
+fn wrong(ps: List[(String, Int)]) -> List[Int] {
+  ps.map(((s, n)) -> s + n)
+}
+'''
+fails = true
+has = ["`+` operands: expected `String`, found `Int`"]
+
+# a pattern that may not match is refused: `match` on the value instead
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+text = '''
+fn firsts(xs: List[Option[Int]]) -> List[Int] {
+  xs.map((Some(x)) -> x)
+}
+'''
+fails = true
+has = ["a parameter's pattern must always match, and the variant `Some` may not"]
