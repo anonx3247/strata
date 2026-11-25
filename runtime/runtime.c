@@ -3360,8 +3360,8 @@ static void copies_count(char *out, size_t size, int64_t n) {
 static void copies_bytes(char *out, size_t size, int64_t n) {
   char c[40];
   if (n >= 10 * 1000 * 1000) copies_count(c, sizeof c, n / 1000000), snprintf(out, size, "%s MB", c);
-  else if (n >= 10 * 1000) snprintf(out, size, "%lld kB", (long long)(n / 1000));
-  else snprintf(out, size, "%lld bytes", (long long)n);
+  else if (n >= 10 * 1000) copies_count(c, sizeof c, n / 1000), snprintf(out, size, "%s kB", c);
+  else copies_count(c, sizeof c, n), snprintf(out, size, "%s bytes", c);
 }
 
 static int copies_order(const void *a, const void *b) {
@@ -3383,16 +3383,18 @@ static void copies_report(void) {
   char t[40], b[40], m[40];
   copies_count(t, sizeof t, times);
   copies_bytes(b, sizeof b, bytes);
-  fprintf(stderr, "copies: %s, %s in all, at %lld place%s (the most bytes first):\n", t, b, (long long)ncopy_sites,
-          ncopy_sites == 1 ? "" : "s");
+  fprintf(stderr, "copies: %s cop%s, %s, at %lld place%s (the most bytes first):\n", t, times == 1 ? "y" : "ies", b,
+          (long long)ncopy_sites, ncopy_sites == 1 ? "" : "s");
   for (int64_t i = 0; i < ncopy_sites; i++) {
     CopySite *c = &copy_sites[i];
     copies_count(m, sizeof m, c->most);
     copies_count(t, sizeof t, c->times);
     copies_bytes(b, sizeof b, c->bytes);
-    const char *unit = c->kind == 3 ? "bytes" : c->kind == 4 ? "fields" : c->kind == 0 ? "items" : "entries";
-    fprintf(stderr, "  copied a %.*s of %s%s %s at %.*s: %s time%s, %s (", (int)c->what->len, c->what->bytes,
-            c->times > 1 ? "up to " : "", m, unit, (int)c->site->len, c->site->bytes, t, c->times == 1 ? "" : "s", b);
+    const char *unit = c->kind == 3 ? "byte" : c->kind == 4 ? "field" : c->kind == 0 ? "item" : "entr";
+    const char *plural = c->most == 1 ? (c->kind == 1 ? "y" : "") : (c->kind == 1 ? "ies" : "s");
+    fprintf(stderr, "  copied a %.*s of %s%s %s%s at %.*s: %s time%s, %s (", (int)c->what->len, c->what->bytes,
+            c->times > 1 && c->most > 1 ? "up to " : "", m, unit, plural, (int)c->site->len, c->site->bytes, t,
+            c->times == 1 ? "" : "s", b);
     if (c->why->len) fprintf(stderr, "%.*s", (int)c->why->len, c->why->bytes);
     else if (c->held > 1) fprintf(stderr, "shared: held %lld times", (long long)c->held);
     else fprintf(stderr, "held once, but what holds it is shared");
@@ -3427,6 +3429,11 @@ static void copies_note(int64_t kind, int64_t items, int64_t bytes, int64_t held
   pthread_mutex_unlock(&copies_lock);
 }
 
+static Str *copies_text(Str **cell, const char *c) {
+  if (!*cell) *cell = str_c(c);
+  return *cell;
+}
+
 // A program compiled with `--copies` starts: "copies: none" is reported at
 // its end if it copies nothing.
 void strata_copies_start(void) {
@@ -3441,7 +3448,7 @@ void strata_copies_start(void) {
 
 // A copy of `obj` (`kind`: 0 a list, 1 a dict or set, 3 a string, 4 a record
 // or tuple of `n` fields), a `what` (its type), at `site` (a location), `why`
-// ("": its count says), unless it is empty (nothing to copy).
+// ("": its count says), unless it is empty or a constant.
 void strata_copied(int64_t kind, void *obj, int64_t n, Str *what, Str *site, Str *why) {
   int64_t items, bytes;
   if (kind == 0) {
@@ -3458,13 +3465,13 @@ void strata_copied(int64_t kind, void *obj, int64_t n, Str *what, Str *site, Str
     items = n;
     bytes = 8 * (n + 1);
   }
-  if (items == 0 && kind != 4) return;
-  copies_note(kind, items, bytes, copies_held(obj), what, site, why);
-}
-
-static Str *copies_text(Str **cell, const char *c) {
-  if (!*cell) *cell = str_c(c);
-  return *cell;
+  int64_t held = copies_held(obj);
+  // (a constant, `Dict { 1: 2 }`, is made by its first change: not a copy)
+  if ((items == 0 && kind != 4) || held == 0) return;
+  static Str *iterated;
+  if (kind == 1 && held == 1 && why->len == 0 && copies_held(((Tbl *)obj)->es) > 1)
+    why = copies_text(&iterated, "its entries are held elsewhere too: a `for` over it, or a list taken from it");
+  copies_note(kind, items, bytes, held, what, site, why);
 }
 
 // Before `push` (`n` 1) or `xs += ys` (`n` the length of `ys`): a copy when
