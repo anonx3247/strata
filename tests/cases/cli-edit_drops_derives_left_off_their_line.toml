@@ -1,0 +1,140 @@
+# An edit that gives a declaration gives its derive line: a stored derive
+# written on that declaration (no block, same module) whose trait is no longer
+# on its `derive A, B for` line (or the line left out) is removed, with a
+# warning, as a change in the log. A declaration not in the edit keeps its
+# derives, as do derives with a block and `for module` ones; `view NAME` shows
+# a declaration with its line, so editing what it shows keeps them.
+
+[[step]]
+run = ["mkdir", "pkg"]
+
+[[step]]
+strata = ["init"]
+dir = "pkg"
+
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "pkg"
+text = '''
+from std.ffi use C
+from std.json use Json, JsonValue
+from std.toml use Toml
+
+derive Json, Toml for
+type Point = { x: Int, y: Int }
+
+type Box = { w: Int }
+
+derive Json for Box {
+  fn to_json(self) -> Result[JsonValue, String] {
+    Ok(Null)
+  }
+}
+
+derive Toml, Json for
+type Size = { w: Int }
+
+derive C for module
+'''
+has = ["added"]
+
+# a declaration viewed alone comes with its line, and edited back changes
+# nothing
+[[step]]
+strata = ["view", "Point"]
+dir = "pkg"
+out = "derive Json, Toml for\ntype Point = { x: Int, y: Int }\n"
+
+[[step]]
+run = ["sh", "-c", "$STRATA view Point > ../point.st && $STRATA edit --no-commit < ../point.st"]
+dir = "pkg"
+has = ["no changes"]
+lacks = ["warning"]
+
+# one trait of several left off the line: its derive removed, with a warning
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "pkg"
+text = '''
+derive Json for
+type Point = { x: Int, y: Int }
+'''
+has = [
+  "derive std.toml.Toml for Point removed",
+  "warning: removed derive std.toml.Toml for Point (no longer on its derive line)",
+]
+
+[[step]]
+strata = ["view", "main.*", "--level", "0"]
+dir = "pkg"
+has = ["impl   derive std.json.Json for Point", "derive derive std.ffi.C for module"]
+lacks = ["Toml for Point"]
+
+# a logged change, as `--rm`'s
+[[step]]
+strata = ["log"]
+dir = "pkg"
+has = ["-            derive std.toml.Toml for Point"]
+
+# a declaration given with no line drops its attached derives; a derive with
+# a block stays
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "pkg"
+text = '''
+type Box = { w: Int }
+
+type Size = { w: Int }
+'''
+has = [
+  "warning: removed derive std.toml.Toml for Size (no longer on its derive line)",
+  "warning: removed derive std.json.Json for Size (no longer on its derive line)",
+]
+lacks = ["for Box"]
+
+[[step]]
+strata = ["view", "main.*", "--level", "0"]
+dir = "pkg"
+has = ["impl   derive std.json.Json for Box", "impl   derive std.json.Json for Point"]
+lacks = ["for Size"]
+
+# a declaration not in the edit keeps its derives
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "pkg"
+text = '''
+fn origin() -> Point {
+  Point { x: 0, y: 0 }
+}
+'''
+lacks = ["warning"]
+
+[[step]]
+strata = ["view", "Point"]
+dir = "pkg"
+out = "derive Json for\ntype Point = { x: Int, y: Int }\n"
+
+# the editor, opened on a declaration, shows its line; a trait taken off it
+# goes
+[[step]]
+write = "ed/editor.sh"
+text = '''
+#!/bin/sh
+cp "$1" '$TMP/ed/seen.st'
+printf 'type Point = { x: Int, y: Int }\n' > "$1"
+'''
+
+[[step]]
+strata = ["edit", "Point", "--editor", "--no-commit"]
+dir = "pkg"
+env = { "EDITOR" = "sh '$TMP/ed/editor.sh'" }
+has = ["derive std.json.Json for Point removed"]
+
+[[step]]
+run = ["cat", "ed/seen.st"]
+stdout = "derive Json for\ntype Point = { x: Int, y: Int }\n"
+
+[[step]]
+strata = ["view", "main.*", "--level", "0"]
+dir = "pkg"
+lacks = ["for Point"]
