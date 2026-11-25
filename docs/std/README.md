@@ -7,6 +7,7 @@ The modules of `std`, each with its types, traits and functions: their signature
 | [std.cli](cli.md) | Command-line options, read into a record; commands, into a union. |
 | [std.code](code.md) | A codebase as Strata's tools see it: its definitions, each rendered as text with what it uses and what uses it, the checker's findings, the verifier's cached results and the package's log. |
 | [std.collections](collections.md) | A dictionary and a set kept in their keys' order, and a priority queue. |
+| [std.ffi](ffi.md) | Strata functions called from other languages. |
 | [std.fs](fs.md) | Files and folders. |
 | [std.http](http.md) | Requests, responses and routes, for `strata serve`. |
 | [std.io](io.md) | The console: text in and out. |
