@@ -95,6 +95,10 @@ libs = [
   "lld",
   "c++",
   "z",
+  # (std.sqlite's: a seed older than std.sqlite compiles it into std's
+  # library, which the compiler links; one since leaves it out, and the
+  # linker drops the library unused)
+  "sqlite3",
 ]
 include_dirs = ["/opt/homebrew/opt/llvm/include"]
 lib_dirs = ["/opt/homebrew/opt/llvm/lib", "../target/lld"]
