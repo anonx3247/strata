@@ -1,0 +1,36 @@
+# `enumerate` of any iterator, lazy (core.iter's `Enumerated`), as
+# `enumerate(it)` and `it.enumerate()`; a list's stays the list built-in
+
+[[step]]
+strata = ["--file", "e.strata", "edit"]
+text = '''
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+fn main() {
+  for (i, x) in enumerate([10, 20]) {
+    print(f"{i} {x}")
+  }
+  for (i, b) in enumerate("ab".bytes()) {
+    print(f"{i} {b}")
+  }
+  e := "xyz".bytes().enumerate()
+  print(f"len {e.len()}")
+  print(f"{"ab".bytes().enumerate().map(p -> p.0 + p.1).to_list()}")
+  // lazy: an unbounded iterator enumerated, then taken
+  firsts := Naturals { at: 5 }.enumerate().take(2)
+  for (i, n) in firsts {
+    print(f"{i}: {n}")
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "e.strata", "run"]
+stdout = "0 10\n1 20\n0 97\n1 98\nlen 3\n[97, 99]\n0: 5\n1: 6\n"
