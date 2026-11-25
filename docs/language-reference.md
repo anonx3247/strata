@@ -164,6 +164,8 @@ Reading is free: fields, elements (`xs[i]`, which faults when out of range: a fa
 
 An `extern c fn` can be marked `noalloc`: like `terminates`, that is the C code's promise, not checked.
 
+**A whole module** is declared `noalloc` in its package's `strata.toml`: `noalloc = ["fast", "mem"]` lists modules as the package names them (a module covers the modules below it; `main` is the root module, `*` every one). Each function of those modules (functions, `impl`, trait and capability methods, `extern` ones) is then `noalloc` without being marked, and so is one added later. A function there that allocates is an error of `check`, `edit` and `verify`, naming the function and what allocates, as for a marked one. Calls into those modules, from anywhere, are calls to `noalloc` functions. A name in the list that is no module of the package is an error. core's runtime modules (core.rt, the allocator, and the modules it uses) and core.mem are declared this way in core's own `strata.toml`.
+
 ## Errors
 
 - Each works on its own type only: `except` / `!!` on an `Option`, or `or` / `??` on a `Result`, is an error. So a `Result[Option[T], E]` reads one way: `(load(k) !! None) ?? default` handles the error, then the missing value.
