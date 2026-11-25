@@ -72,6 +72,15 @@ fn push_positive(mut xs: List[Int], x: Int)
 
 A trait method's contract works the same way: with `fn incr(mut self) ensures self.total() == old self.total() + 1` in a trait `Counter`, a generic `fn incr_twice[C: Counter](mut c: C) ensures c.total() == old c.total() + 2` calling `mut c.incr()` twice is proven (a method only known by its contract gives the same result on the same values). When an `ensures` with `old` stays a run-time check, the program takes each `old e` on entry and keeps it until the check, which shows both values; holding the value makes an update in place of it copy, so it is done only for a check `verify` didn't prove.
 
+## Trait models
+
+A trait's `model` ([the reference](language-reference.md#traits)) is what its contracts are about; each implementation's `model name = e` says what it is for that type. `verify` proves two things apart:
+
+- **each implementation** meets the trait's contracts, with the model replaced by its abstraction: `MemDb.save` is proven to make `self.all` equal to `old self.all.with(id, o)`; an implementation keeping only the last order saved (`model orders = match self.last { Some((k, o)) => Dict { k: o }, None => Dict {} }`) is refuted with a counterexample (an order already there, a second one saved: before, two entries; after, one);
+- **code over the trait** reasons only through the model: a model is an unknown value of its type, a function of the trait value it is read from (the same value gives the same model, wherever it came from: the branches of an `if` joined, `old db` when nothing changed it), constrained by the invariants and the methods' contracts. `fn ship(mut db: Db, id: Int) -> Result[(), String]` that looks the order up and saves it as shipped is proven to ensure `match old db.orders.get(id) { Some(o) => it is Ok && db.orders == (old db.orders).with(id, Order { ..o, shipped: true }), None => it is Err && db.orders == old db.orders }`.
+
+A trait's `invariant` is a refinement of every implementing type's model: a value of the trait's type carries it as its type's refinement (what a function taking `db: Db` knows, what a `mut` argument's new value is assumed to satisfy), each implementation's methods assume it of `self` (and other `Self` parameters) and must keep it in a `mut self` method and establish it in a result of type `Self`. A trait's `ensures` is proven in each `mut self` method. Contracts naming a model are assumed (`(ghost: not checked when the program runs)`): computing an abstraction at run time is what the implementation is there to avoid.
+
 ## Recursion and termination
 
 ```rust

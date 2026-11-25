@@ -52,6 +52,31 @@ This holds whichever modules the traits come from: with `Console` (`std.io`) and
 
 **`Self` or the trait as a parameter**: `fn bigger(self, other: Self)` takes a value of the receiver's own type, `fn bigger(self, other: Shape)` any implementation. On a trait value (a `Shape`, of any implementation) a method taking `Self` can only be given the value itself or what its `Self`-returning methods make (`s.bigger(s.scaled(2))`); `xs[0].bigger(xs[1])` is an error, since `xs[1]` may be another implementation.
 
+**Models: what a trait's state means.** A trait may declare abstract state, `model name: Type`, one per line before its methods, and each implementation says what it is from its own state, `model name = e` (an expression over `self`). Contracts name a model as a field of a value of the trait (`self.orders`, `db.orders` for `db: Db` or `db: D` with `D: Db`), `old` included; code never reads one (it reads the state through the trait's methods). `invariant e` in a trait (over `self`) is a refinement of every implementing type's model, `Self where e`: every value of the trait carries it, so each method of `self` (and any `Self` parameter) knows it, a `mut self` method must keep it, and a method returning `Self` must establish it; a function taking `db: Db` knows it too. `ensures e` in a trait (with `old`) is met by every `mut self` method. There is no trait-level `requires`.
+
+```strata
+trait Db {
+  model orders: Dict[Int, Order]
+  invariant !self.orders.contains(0)
+
+  fn save(mut self, id: Int, o: Order)
+    ensures self.orders == old self.orders.with(id, o)
+  fn lookup(self, id: Int) -> Option[Order]
+    ensures it == self.orders.get(id)
+}
+
+impl Db for MemDb {
+  model orders = self.all
+
+  fn save(mut self, id: Int, o: Order) {
+    mut self.all.insert(id, o)
+  }
+  ...
+}
+```
+
+`d.with(k, v)` and `d.without(k)` (a dict; `s.with(x)`, `s.without(x)` for a set) are new values, for contracts. `verify` proves each implementation's methods against the trait's contracts with the model read through its `model` definition, and code taking the trait through the model alone ([verification](verification.md#trait-models)). A contract that names a model is assumed by default: proven by `verify`, not checked when the program runs (it would compute the model each time); `run`/`test --check-ghosts` checks it. An `impl` must give every model of its trait (a mock type's may leave them out), and no other. `mock Db` of a trait with models runs the model: it holds the models (each starts empty: `{}`, `[]`, `0`, `""`, `false`, `None`), a method whose `ensures` say what a `mut self` method makes of a model (`self.orders == e`) and what it returns (`it == e`) does that, and any other method gives a generated result satisfying its contract, as every mock does. So `mock Db` is an in-memory reference implementation for tests.
+
 **Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function. In a generic impl's methods they can be called on the impl's own type parameters too: `impl[T: Zero] Zero for List[T] { fn zero() -> Self { [T.zero()] } }`, or `fn padded(self, n: Int) -> Self { .. push(out, T.zero()) .. }` in `impl[T: Zero] Pad for List[T]`. Types are passed whole when the code runs: the type a method is called on (`List[Int]`), or the static type of the value it is called on, says what `T` is. (Only a value held as a trait type, `d: Describe`, doesn't carry its whole type.) A refined alias stays itself in a type argument: in `read[List[Port]]`, `T` is `Port`, whose methods are `Int`'s; so does one with type parameters (`type Many[T] = List[T] where len(it) >= 2`; `Many[Int]` has `List`'s methods) and a refinement written as a type argument (`List[Int where it % 2 == 0]`, shown as written in messages). **`T.check(x)`**, on any type (a type parameter: the type it is when the code runs), is `Ok(())` when `x` meets the type's refinements, else `Err` saying what it breaks: `Port.check(0)` is `Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")`.
 
 The type is always named, so which implementation runs is always clear. A generic function that calls such a method is given its type arguments when it runs: each call passes the concrete type the checker inferred (or forwards the caller's own type parameter). So the type must be known at each call: `combine_any([])` alone is an error (annotate: `let xs: List[Money] = []`), and such a function can't be passed as a value (`map(combine_any)`): use a lambda. A trait-typed parameter (`xs: List[Empty]`) has no name to call `.empty()` on: write the type parameter when you need it.
