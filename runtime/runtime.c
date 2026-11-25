@@ -3658,6 +3658,11 @@ void strata_lib_init(void) {
   set_threaded(THREADED);
 }
 
+// A string a library's export returned (`derive C`, `derive Python`), freed:
+// for a host that doesn't call C's `free` itself (Python's ctypes). A
+// library exports it beside its derives' symbols.
+void strata_free(void *p) { free(p); }
+
 Str *strata_prog_name(void) {
   const char *slash = strrchr(prog_name, '/');
   return str_c(slash ? slash + 1 : prog_name);
