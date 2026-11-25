@@ -4034,6 +4034,10 @@
     "named": true
   },
   {
+    "type": "shared",
+    "named": false
+  },
+  {
     "type": "spawn",
     "named": false
   },

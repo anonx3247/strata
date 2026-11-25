@@ -270,12 +270,16 @@ module.exports = grammar({
     self: (_) => 'self',
 
     // `trait Show { fn show(self) -> String }`, `capability trait Db { … }`,
-    // `derivable(Record) trait Json requires … { … }`
+    // `shared trait Queue { … }`, `derivable(Record) trait Json requires … { … }`
     trait_declaration: ($) =>
       seq(
         optional($.visibility_modifier),
         optional(
-          choice('capability', seq('derivable', '(', field('kind', $._type), ')')),
+          choice(
+            'capability',
+            'shared',
+            seq('derivable', '(', field('kind', $._type), ')'),
+          ),
         ),
         'trait',
         field('name', $.type_identifier),
@@ -313,14 +317,14 @@ module.exports = grammar({
     model_definition: ($) =>
       seq('model', field('name', $.identifier), '=', field('value', $._expression)),
 
-    // `law reflexive(a: Self): a == a`
+    // `law reflexive(a: Self): a == a`, or a block of calls ending in what
+    // must hold: `law once(q: Self) { mut r := q … }`
     law_declaration: ($) =>
       seq(
         'law',
         field('name', $.identifier),
         field('parameters', $.parameters),
-        ':',
-        field('body', $._expression),
+        choice(seq(':', field('body', $._expression)), field('body', $.block)),
       ),
 
     // `impl Show for Point { … }`, `impl Point { … }`, `impl[T] Show for List[T]`
