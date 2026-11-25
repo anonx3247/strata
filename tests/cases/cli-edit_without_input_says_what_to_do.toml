@@ -1,0 +1,137 @@
+# `strata edit` with nothing to read (nothing piped in, standard input a
+# terminal or an open, silent one, as an agent's shell may leave it) opens
+# no editor unless asked (`--editor`) or someone is at the terminal: it says
+# what to do and fails. `--rm` takes a short name when it names one
+# definition (in MODULE first, a test also by its title), never waits for
+# what isn't piped in, and refuses a name that picks none or several, or
+# that the edit also gives.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "shop.strata"
+text = '''
+pub fn double(x: Int) -> Int {
+  x * 2
+}
+
+fn tidy() -> Int {
+  1
+}
+
+fn sweep() -> Int {
+  1
+}
+
+test "doubles" {
+  assert double(2) == 4
+}
+'''
+
+[[step]]
+save = "stock.strata"
+text = '''
+fn tidy() -> Int {
+  2
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+fn main() {
+  ()
+}
+
+test "doubles" {
+  assert 2 * 2 == 4
+}
+'''
+
+# nothing piped in: what to do, not an editor
+[[step]]
+run = ["sh", "-c", "EDITOR=false VISUAL=false \"$STRATA\" edit shop < /dev/null"]
+code = 2
+has = ["nothing to edit: pipe the definitions in", "--editor"]
+
+[[step]]
+run = ["sh", "-c", "printf '\\n\\n' | EDITOR=false VISUAL=false \"$STRATA\" edit"]
+code = 2
+has = ["nothing to edit"]
+
+# standard input a socket held open, nothing written (as an agent's shell may
+# leave it): no wait
+[[step]]
+run = ["perl", "-MSocket", "-e", "socketpair(my $r, my $w, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die; if (!fork()) { open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null'); sleep 20; exit } open(STDIN, '<&', $r) or die; $ENV{EDITOR} = 'false'; exec('$STRATA', 'edit', '--rm', 'sweep')"]
+has = ["shop.sweep", "removed"]
+
+[[step]]
+strata = ["view", "shop"]
+lacks = ["sweep"]
+
+# a short name picking two definitions, none, or one the edit also gives
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" edit --rm tidy < /dev/null"]
+fails = true
+has = ["`tidy` names 2 definitions", "`shop.tidy`", "`stock.tidy`"]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" edit --rm nothing_here < /dev/null"]
+fails = true
+has = ["no definition `nothing_here` to remove"]
+
+[[step]]
+run = ["sh", "-c", "printf 'fn tidy() -> Int {\\n  3\\n}\\n' | \"$STRATA\" edit stock --rm tidy"]
+fails = true
+has = ["`stock.tidy` is both given and removed"]
+
+# in MODULE first: `stock`'s, and the test of `shop` by its title
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" edit stock --rm tidy < /dev/null"]
+has = ["stock.tidy", "removed"]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" edit shop --rm doubles < /dev/null"]
+has = ["shop.test \"doubles\"", "removed"]
+
+[[step]]
+strata = ["view", "shop"]
+has = ["fn tidy"]
+lacks = ["test"]
+
+[[step]]
+strata = ["view", "main"]
+has = ["test \"doubles\""]
+
+# the root module's test, by its title
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" edit --rm doubles < /dev/null"]
+has = ["removed"]
+
+[[step]]
+strata = ["view", "main"]
+lacks = ["test"]
+
+# a script: the same
+[[step]]
+save = "s.strata"
+text = '''
+fn one() -> Int {
+  1
+}
+
+test "ones" {
+  assert one() == 1
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file s.strata edit < /dev/null"]
+code = 2
+has = ["nothing to edit: pipe the definitions in (`strata --file F edit < defs.st`)"]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file s.strata edit --rm ones < /dev/null && \"$STRATA\" --file s.strata view main"]
+lacks = ["test"]
+has = ["fn one"]

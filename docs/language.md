@@ -320,7 +320,7 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 
 - `e!` takes the `Ok` value of a `Result`, or returns its `Err` from the function. The error must fit the function's error type: the same type, or a variant of it, or a member of a union (there is no conversion function).
 - `e?` does the same for an `Option`: the `Some` value, or return `None`.
-- `e except { fallback }` handles a failed `Result` here: the `Ok` value, or else the block. `except err { ... }` names the error. The fallback must produce the same type, or leave with `return`.
+- `e except { fallback }` handles a failed `Result` here: the `Ok` value, or else the block. `except err { ... }` names the error. The fallback must produce the same type, or leave with `return` (or, in a loop, `break` / `continue`: `x := opt or { continue }`): a block that ends in one never gives a value, so the binding gets the value's type.
 - `e or { fallback }` does the same for an `Option`: the `Some` value, or else the block (`None` has nothing to name).
 - `e !! value` and `e ?? value` are the short forms, for a fallback that is a single value on one line; such a fallback is always written that way. They bind tighter than comparisons and looser than arithmetic (`n ?? 0 + 1` is `n ?? (0 + 1)`, `n ?? 0 == 1` is `(n ?? 0) == 1`), and chain: `a ?? b ?? 0`.
 - They chain: `load(path)!.lines()`, `find(xs, p)?.name`.

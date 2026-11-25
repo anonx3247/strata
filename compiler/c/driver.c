@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -29,6 +31,27 @@ int32_t driver_setenv(const char *name, const char *value) { return setenv(name,
 
 // This process's id.
 int64_t driver_pid(void) { return (int64_t)getpid(); }
+
+// Whether stream `fd` (0, 1 or 2) is a terminal: 1, else 0. Standard
+// output piped away (an agent's run) means no one is at the terminal to
+// use an editor `strata edit` would open.
+int32_t driver_terminal(int32_t fd) { return isatty(fd) ? 1 : 0; }
+
+// Whether standard input gives nothing to read: 1 when it is a terminal,
+// or neither a file, a pipe nor /dev/null (a socket or a device, as an
+// agent's shell may leave there, open and silent) and has nothing to read
+// within 100 ms; else 0 (reading it ends, or gives something).
+int32_t driver_stdin_idle(void) {
+  struct stat st;
+  if (fstat(0, &st) != 0) return 1;
+  if (S_ISREG(st.st_mode) || S_ISFIFO(st.st_mode)) return 0;
+  if (isatty(0)) return 1;
+  struct stat null_st;
+  if (stat("/dev/null", &null_st) == 0 && S_ISCHR(st.st_mode) && st.st_rdev == null_st.st_rdev) return 0;
+  struct pollfd p = {.fd = 0, .events = POLLIN};
+  int n = poll(&p, 1, 100);
+  return n > 0 && (p.revents & (POLLIN | POLLHUP)) && !(p.revents & POLLNVAL) ? 0 : 1;
+}
 
 // Whether compiler/codegen's output `ir` has a line starting with `error`
 // (`codegen_errors`): 1, else 0. In C: the program's IR is tens of
