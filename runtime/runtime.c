@@ -1527,7 +1527,7 @@ Channel *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
   if (cap < 0 && soft_fault(4, str_c("a channel's buffer can't be negative"))) return NULL;
   Channel *c = strata_alloc(sizeof(Channel));
   memset(c, 0, sizeof *c);
-  *count_of(c) = 2;
+  *count_of(c) += 1;  // (keeping what else the count word holds: an arena's tag, an epoch)
   c->cap = cap;
   c->drop = drop;
   c->senders = 1;

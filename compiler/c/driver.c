@@ -216,9 +216,10 @@ int64_t text_hash(const char *s) {
   return (int64_t)(h >> 4);
 }
 
-// While `on`, objects shared while tasks run are kept for good (core.rt's
-// strata_memory_keep_shared): the compiler's workers all read the same
-// tables, whose counts would otherwise change atomically from every core.
+// While `on`, objects made before then that are shared while tasks run are
+// kept for good (core.rt's strata_memory_keep_shared): the compiler's
+// workers all read the same tables, whose counts would otherwise change
+// atomically from every core. What the workers make is counted as usual.
 void strata_memory_keep_shared(_Bool on);
 int32_t driver_keep_shared(int32_t on) {
   strata_memory_keep_shared(on != 0);
