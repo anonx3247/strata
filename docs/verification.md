@@ -81,6 +81,26 @@ A trait's `model` ([the reference](language-reference.md#traits)) is what its co
 
 A trait's `invariant` is a refinement of every implementing type's model: a value of the trait's type carries it as its type's refinement (what a function taking `db: Db` knows, what a `mut` argument's new value is assumed to satisfy), each implementation's methods assume it of `self` (and other `Self` parameters) and must keep it in a `mut self` method and establish it in a result of type `Self`. A trait's `ensures` is proven in each `mut self` method. Contracts naming a model are assumed contracts (`(assumed: not checked when the program runs)`; one `verify` neither proves nor refutes makes its function assumed, `≈`): computing an abstraction at run time is what the implementation is there to avoid.
 
+## Laws of statements and shared traits
+
+A law may be a sequence of calls ending in what must hold ([the reference](language-reference.md#traits)). `verify` checks it for each implementation as a function whose body is the law and whose result must be `true`, its `Self` parameters assumed to meet the trait's invariants; the calls go through the implementation's methods. In `tests/cases/cli-shared_traits_and_laws`, a queue of task ids (`model pending: Set[Int]`, `model claimed: Set[Int]`) proves `enqueue_once` (enqueuing twice adds once) and `no_double_claim` (claiming twice succeeds at most once) for its in-memory implementation, and refutes `claim_after_enqueue` with the values and the steps:
+
+```text
+✗ law claim_after_enqueue for MemQueue Law violation (found by the solver)
+    input:   MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, 21
+    law `claim_after_enqueue` does not hold for `MemQueue` with q = MemQueue { waiting: Set[Int] {}, taken: Set[Int] { 21 } }, id = 21: after mut r := q; mut r.enqueue(id); mut r.claim(id)
+```
+
+Proven laws are not facts for callers: code over the trait sees only its contracts and invariants.
+
+The queue is a `shared trait`: many workers use one value. Its invariants hold under every interleaving, since each method is one atomic step that keeps them from any state where they hold. For code calling it, each call on a shared value starts from a model that is any value the invariants allow (the receiver is replaced, as if another worker had just acted), so:
+
+- `fn added(mut q: Queue, id: Int) -> Int where it == 0 || it == 1`, which only uses the results of two `enqueue`s, is proven;
+- `fn enqueued_now(mut q: Queue, id: Int) -> Int ensures q.pending.contains(id) || q.claimed.contains(id)` is proven: what the last call ensures lasts until the next call on `q`;
+- `fn second_adds_nothing(mut q: Queue, id: Int) -> Int where it == 0`, two `enqueue`s relying on the first one's effect, is not proven, and the reason says why: "`q` when `enqueue` is called: `Queue` is shared, so another worker may have changed it since the last call (only the trait's invariants are known)".
+
+Inside an implementation, a call on its own field (`self.db`) is not replaced: the method is one step, which `check` enforces (one call that changes the outside state per path; see [the reference](language-reference.md#traits)). A value of a type implementing the trait (`MemQueue`) is not shared: its code runs alone.
+
 ## Recursion and termination
 
 ```rust

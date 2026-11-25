@@ -635,3 +635,68 @@ impl Stock for Shelf {
               (identifier)
               (field_identifier))
             (integer)))))))
+
+============================================================
+Shared traits and laws of statements
+============================================================
+
+shared trait Queue {
+  model pending: Set[Int]
+  fn add(mut self, id: Int) -> Int
+  law once(q: Self, id: Int) {
+    mut r := q
+    mut r.add(id)
+    mut r.add(id) == 0
+  }
+}
+
+------------------------------------------------------------
+
+(source_file
+  (trait_declaration
+    (type_identifier)
+    (trait_body
+      (model_declaration
+        (identifier)
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (type_identifier))))
+      (function_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (self))
+          (parameter
+            (identifier)
+            (type_identifier)))
+        (type_identifier))
+      (law_declaration
+        (identifier)
+        (parameters
+          (parameter
+            (identifier)
+            (type_identifier))
+          (parameter
+            (identifier)
+            (type_identifier)))
+        (block
+          (variable_declaration
+            (identifier)
+            (identifier))
+          (mut_expression
+            (call_expression
+              (field_expression
+                (identifier)
+                (field_identifier))
+              (arguments
+                (identifier))))
+          (binary_expression
+            (mut_expression
+              (call_expression
+                (field_expression
+                  (identifier)
+                  (field_identifier))
+                (arguments
+                  (identifier))))
+            (integer)))))))
