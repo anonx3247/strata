@@ -80,6 +80,10 @@ type Type = {
   /// A function type's parameters and result.
   params: List[Type],
   result: Option[Type],
+  /// A function's parameters, by name, when it is a function rather than a
+  /// function type (`derive C for add`: `Self` is `add`, its `name` and
+  /// `doc` its own).
+  parameters: List[Field] = [],
 }
 ```
 
@@ -125,7 +129,7 @@ type Field = {
 }
 ```
 
-A field of a record.
+A field of a record, or a parameter of a function (`default` is then `None`).
 
 ### Choice
 
