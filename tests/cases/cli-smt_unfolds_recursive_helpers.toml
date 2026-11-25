@@ -1,6 +1,7 @@
 # Recursive helpers in contracts: a function that calls only itself,
 # finishes and can't otherwise fail (`count`, `has` over a tree) is an SMT
-# function whose defining equation is unfolded at each use (two levels),
+# function, its body defined once per query and said equal to it at each
+# use (two levels),
 # so contracts using it are proven (`insert`'s by its own contract at the
 # recursive calls); a wrong one is refuted
 [[step]]

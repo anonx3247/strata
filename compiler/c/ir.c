@@ -1,16 +1,15 @@
-// compiler/codegen's IR into LLVM through its C API (LLVMAddFunction,
-// LLVMBuild*...), without LLVM's own reader of IR text (LLParser): codegen
-// writes a small, regular part of the language, one instruction a line,
-// which this reads in one pass over each function and builds directly, the
-// values left unnamed (the context discards names). Several times faster
-// than LLParser on compiler/'s 58 MB (it lexes and checks the whole
-// language, names every value and keeps tables of them).
+// A reader of codegen's IR text that builds the module through LLVM's C API
+// (LLVMAddFunction, LLVMBuild*...) instead of LLVM's own reader (LLParser).
+// Codegen writes a small, regular part of the language, one instruction a
+// line. This reads it in one pass over each function and builds it
+// directly, with values unnamed (the context discards names). It is several
+// times faster than LLParser on compiler/'s 58 MB, since LLParser lexes and
+// checks the whole language, names every value and keeps tables of them.
 //
-// What this doesn't know (a construct codegen has never written) makes it
-// give up, and the caller (`toolchain_module`) reads the text with LLParser
-// instead, as before: the result is the same module either way.
-// STRATA_IR_CHECK=1 builds both and compares them printed (with the values
-// named, as LLParser names them), to test this reader.
+// On a construct it doesn't know, this gives up, and the caller
+// (`toolchain_module`) reads the text with LLParser instead. The module is
+// the same either way. STRATA_IR_CHECK=1 builds both and compares them
+// printed, with the values named as LLParser names them.
 
 #include <llvm-c/Core.h>
 #include <llvm-c/IRReader.h>
@@ -249,12 +248,12 @@ static LLVMTypeRef type(R *r) {
 
 static LLVMValueRef value(R *r, LLVMTypeRef t);
 
-// A value of type `t` that is no constant (a function's parameter, in a
-// module of its own): what an instruction is built with in place of a
-// constant operand, then given the constant, so that LLVM's builder, which
-// folds an instruction of constants into a constant, builds it as written,
-// as LLParser does (`shl i64 0, 1` stays an instruction): the module is the
-// same whichever reads the text.
+// A value of type `t` that is not a constant: a function's parameter, in a
+// module of its own. An instruction is built with it in place of a constant
+// operand, which is then set to the constant. LLVM's builder folds an
+// instruction of constants into a constant; this way the instruction stays
+// as written, as LLParser keeps it (`shl i64 0, 1` stays an instruction),
+// and the module is the same whichever reads the text.
 static LLVMValueRef hole(R *r, LLVMTypeRef t) {
   for (int i = 0; i < r->nholes; i++)
     if (r->hole_types[i] == t) return r->hole_values[i];
@@ -1213,11 +1212,10 @@ static int checking(void) {
   return c && *c && strcmp(c, "0") != 0;
 }
 
-// compiler/codegen's IR text as a module in a new context of its own (both
-// in `*ctx` and `*mod`): 0, else 1 with why LLVM rejected it in `*msg` (an
-// LLVM message, LLVMDisposeMessage it). Read by this file's reader, or by
-// LLVM's when it can't (STRATA_DEBUG says why); with STRATA_IR_CHECK, by
-// both, compared.
+// Codegen's IR text as a module in a new context of its own (`*ctx`,
+// `*mod`): 0, else 1 with why LLVM rejected it in `*msg` (free it with
+// LLVMDisposeMessage). Read by this file's reader, or by LLVM's when it
+// can't (STRATA_DEBUG says why). With STRATA_IR_CHECK, by both, compared.
 int32_t ir_module(const char *ir, size_t len, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg);
 int32_t toolchain_module(const char *ir, LLVMContextRef *ctx, LLVMModuleRef *mod, char **msg) {
   timings_begin("LLVM: parse IR");
