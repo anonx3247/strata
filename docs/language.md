@@ -23,8 +23,8 @@ trait Db {
   fn save(mut self, o: Order)        // `mut self`: saving changes the store
 }
 
-fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
-  ensures match it { Ok(o) => o is Shipped, Err(_) => true }
+fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString)
+  -> Result[Order, ShipError] where match it { Ok(o) => o is Shipped, Err(_) => true }
 {
   order := db.load(id) or { return Err(NotFound) }
   match order {
@@ -38,7 +38,6 @@ fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, Ship
 }
 
 fn refund(o: Order) -> Cents
-  ensures it >= 0
   = ?refund_policy          // a typed hole: callers still check
 
 test "a mocked store never breaks ship's contract" {
@@ -54,7 +53,7 @@ Refinements are structural: `type Quantity = Int where 1 <= it && it <= 99` is a
 
 ```rust
 fn pick(level: Int where 5 <= it && it <= 13) -> Positive { level - 4 }
-fn halve(n: Natural) -> Int where it >= 0 && it * 2 <= n { n / 2 }   // results may mention parameters
+fn halve(n: Natural) -> Int where it >= 0 ensures it * 2 <= n { n / 2 }
 ```
 
 The prelude provides the common ones: `Natural`, `Positive`, `Negative`, `NonZero`, `Probability`, `Percentage`, `NonEmpty[T]`, `NonEmptyString`. `strata builtins` lists them with every builtin function.
@@ -68,6 +67,27 @@ id.value                     // the underlying String
 ```
 
 A `distinct` type never mixes with its base or with other distinct types (`OrderId` ≠ `UserId`), it can have trait implementations, and it serialises to JSON as its underlying value.
+
+## Refinements and contracts: one way each
+
+A refinement says what one value is; a contract (`requires`, `ensures`) relates values. Each fact has one place:
+
+- a `requires` (or a conjunct of one: `a && b` is two) that names one parameter, and constants, is that parameter's refinement: `requires price >= 100` is `price: Cents where it >= 100`;
+- an `ensures` that names only `it` is the result's refinement: `ensures it >= 0` is `-> Cents where it >= 0`; one that names only an element of a tuple result (`it.1`, or a named result) is that element's: `-> (next: Q, added: Int where it >= 0)`;
+- a refinement names only `it` and constants: one that names another parameter (`k: Int where it <= n`) is a contract, `requires k <= n` (on the result, an `ensures`).
+
+`strata check` (and `strata edit`, for what it wrote) warns on each one written the other way, showing the replacement, and `strata fix` makes it (`strata fix NAME` for some definitions). A `mut` parameter keeps its `requires`: a refinement holds for the variable's whole life, a `requires` only on entry. A trait's methods, and an implementation's of a trait, are left as they are: the trait sets their signatures.
+
+**Named results.** A function returning a tuple can name its elements, for its readers and for its `ensures`, where the names are bound to the elements (`it` is still the whole tuple). Callers destructure the tuple as before:
+
+```rust
+pub fn mem_enqueue[P, E](q: MemQueue[P, E], tasks: List[Task[P]]) -> (next: MemQueue[P, E], added: Natural)
+  ensures added <= len(tasks)
+  ensures len(next.entries) == len(q.entries) + added
+{ ... }
+
+(q2, n) := mem_enqueue(q, tasks)
+```
 
 ## Records and defaults
 

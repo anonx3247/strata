@@ -77,6 +77,13 @@ $ strata rename A.tag label B.tag label   # several renames in one step (here, a
 renamed A.tag → A.label, B.tag → B.label
 updated 1 definition that refers to them: tag_of
 
+$ strata check                            # warnings don't fail it; `strata fix` makes their changes
+warning: in `pay`, `requires price >= 100` only constrains `price`: that is a refinement of its type, `price: Cents where it >= 100` (`strata fix` makes the change)
+ok: 12 definitions check (0 open holes)
+
+$ strata fix                              # every warning's change, as one logged step (`strata fix pay`: one definition)
+fixed: in `pay`, `requires price >= 100` only constrains `price`: that is a refinement of its type, `price: Cents where it >= 100`
+
 $ strata move charge billing              # to another module (file): references and imports follow
 moved orders.charge from orders to billing (billing.strata)
 updated 1 definition that refers to it: test "charges"

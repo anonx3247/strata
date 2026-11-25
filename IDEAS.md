@@ -65,6 +65,10 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
   To decide: what an agent sees while the slow pass runs, and whether `edit` waits for the fast pass.
 - **Strata IDE**: the viewer as a standalone desktop app (Tauri; the backend is already Rust), speaking ACP (Agent Client Protocol) so agents such as Claude Code or Codex run inside it, with a Strata MCP server giving them structural tools (slices, check, edit, rename). The viewer would show live where each agent is working (log entries tagged with the agent's session). Idea stage. (The browser viewer now runs agents over ACP and shows where they work: "Viewer as a workspace"; no MCP server: it reads `strata` commands from the agent's shell tool.)
 
+### Open questions for the user
+
+- **Contract shapes (step 1 of the high-level contracts plan): the defaults picked** (2026-11-25, branch `contract-shapes`; each can change). (1) A non-`mut` `self` is a parameter like the others: `requires self.v > 0` becomes `self: Self where it.v > 0` (only `mut self` and `mut` parameters are left alone). (2) A trait's methods and an implementation's of a trait are left alone: the trait sets their signatures (a trait-level form comes with trait invariants). (3) An `ensures` naming only one element of a tuple result (`it.1`, or a named result) becomes that element's refinement (`-> (next: Q, added: Int where it >= 0)`); one relating the elements stays an `ensures` (no whole-tuple refinement, which named results couldn't write). (4) Named results need two or more (`-> (q: Int)` is an error: give the type), and a result can't be named as a parameter or `it`. (5) `verify` and run-time failures show a named result as `it.0` (desugar substitutes it), not by its name. (6) A refinement that repeats its type's (`-> Cents where it >= 0`) isn't flagged. (7) Found on the way, not fixed: the checker doesn't type an `ensures` clause beyond its shape (`ensures n == "x"` on an `Int` passes `check`).
+
 ## Ideas
 
 ### Language
@@ -420,6 +424,14 @@ Questions to settle:
 - **Viewer**: two levels (interface/source), the code view sliced around the selection, a type map as a separate view, and no Flow view.
 
 ## Decisions
+
+### Contracts relate values, refinements say what one value is; named results (decided with the user 2026-11-25: step 1 of the high-level contracts plan; built, branch `contract-shapes`)
+
+The plan (with the user, 2026-11-25): contracts that describe what components mean and how they compose, not low-level I/O facts: `old e` for `ensures` on `mut` parameters, trait models and trait-level invariants / `ensures`, in-place collection methods with `old` contracts and a warning on a dropped result, state graphs generated from `verify` and `--trace` rather than declared. Its first step bans two ways of saying one thing:
+
+- a `requires` conjunct naming one parameter (and constants) is that parameter's refinement (`requires price >= 100` → `price: Cents where it >= 100`); an `ensures` conjunct naming only `it` is the result's (`-> Cents where it >= 0`), one naming only an element of a tuple result that element's; a refinement naming another parameter is a contract (`k: Int where it <= n` → `requires k <= n`; on the result, `ensures`). `mut` parameters keep their `requires` (a refinement holds for the variable's whole life). These are warnings, not errors (user's call): `strata check` prints them (stderr, exit 0) and `strata edit` for what it wrote, each showing the replacement.
+- **`strata fix [NAME]...`** makes the changes (`compiler/lint`: a rule takes a definition and gives its warnings and the definition fixed, so later rules, such as in-place collection methods and dropped results, add theirs there), as one step checked and logged as `rename` is (`--file F`: a script or folder, as `edit --file` writes it). std, compiler/ and the examples were rewritten with it (std's verdicts unchanged: proven).
+- **Named results**: `-> (next: MemQueue[P, E], added: Natural)` names a tuple result's elements, for readers and for `ensures`, where they are bound to the elements (`it` is still the tuple; desugar reads `next` as `it.0`, so the checker, `verify` and codegen need nothing else). Callers destructure as before. Stored as `FnDecl.results`, written in the binary format as tag 5 and the names before the result's type, so files without them read as before and nothing was re-encoded.
 
 ### Verification: automatic theorem prover (SMT), with layered results
 - Use an SMT solver (Z3 or cvc5) as the main verifier. Contracts (refinements, `requires` / `ensures`, trait laws) become proof obligations.
