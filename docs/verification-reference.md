@@ -197,15 +197,14 @@ no_recursion = ["core"]  # no recursion at all, even recursion that terminates
 - the closure hash of its definition, covering everything it depends on, read from the module files' headers
 - the number of cases and of cross-checked cases, and the seed
 - the solver's name and version
-- std's hashes
-
-The `strata` binary itself is not in the key, so verdicts survive rebuilds of the compiler.
+- std's, core's and the prelude's hashes
+- the `strata` binary (its SHA-256), so a rebuilt compiler checks again
 
 A changed definition is checked again, along with what depends on it, and nothing else is. A cached verdict is printed like a fresh one, followed by `(cached)`, and `--require` and `[verify]` apply to it the same way. `--no-cache` checks everything again and stores the new verdicts.
 
 A verdict where the solver gave up is cached, because the solver's resource limit is deterministic and it would give up again. Each query asks the solver why it gave up. A verdict where the solver timed out (the 20-second backstop, which a busy machine may hit), gave no answer, or gave no reason is not cached.
 
-**Proofs.** A proof is also stored by what it relies on (`verify-strata/proofs/`): the check's own code, the interface (signature and contract) of each callee seen only through its contract, the code of each callee seen through, and everything else it reaches through code. The number of cases is not part of the key. When a callee's body changes but its contract doesn't, its callers' proofs are kept and only their cross-checks run again, since the cross-check runs the callees. `--proofs FILE` stores the record elsewhere. A definition not verified in a run keeps its record while its code is unchanged. `compiler proofs FILE` prints the current proofs, in the form `codegen --proofs` reads, including the entry checks every caller proved (`entry F argument P`, `entry F requires I`). Those are the checks that `build` and `run` leave out.
+**Proofs.** A proof is also stored by what it relies on (`verify-strata/proofs/`): the check's own code, the interface (signature and contract) of each callee seen only through its contract, the code of each callee seen through, and everything else it reaches through code. The number of cases is not part of the key. When a callee's body changes but its contract doesn't, its callers' proofs are kept and only their cross-checks run again, since the cross-check runs the callees. `--proofs FILE` stores the record elsewhere. `build` verifies into a record of its own, started empty, and keeps it as the program's record afterwards: what it leaves out is what verifying these sources proves, never what earlier runs (a selection, other settings) left in the record. A definition not verified in a run keeps its record while its code is unchanged. `compiler proofs FILE` prints the current proofs, in the form `codegen --proofs` reads, including the entry checks every caller proved (`entry F argument P`, `entry F requires I`). Those are the checks that `build` and `run` leave out.
 
 **Loop findings.** Termination's findings for each function's loops are stored the same way (`verify-strata/loops/`). That includes std's own functions (a loop's bound, a recursion's measure), keyed by the code involved. Functions generated from std for a program (`std.json.encode_as.for.Signup.4`) belong to the program and are analysed every time.
 

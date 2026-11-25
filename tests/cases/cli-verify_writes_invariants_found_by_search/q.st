@@ -16,7 +16,7 @@ fn quoted_end(src: String, from: Natural, limit: Int, tab: Int) -> Int
   n := byte_len(src)
   mut s := ""
   mut col := 0
-  while lx.at < n && char_at(lx, lx.at) != "\"" {
+  while lx.at < n && char_at(lx, lx.at) != "\"" && col >= 0 {
     ch := char_at(lx, lx.at)
     if ch == "\\" && lx.at + 1 < n {
       lx.at += 1

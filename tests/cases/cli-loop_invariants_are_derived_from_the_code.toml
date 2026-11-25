@@ -1,0 +1,190 @@
+# A loop's invariants are first derived from its code, with no search
+# (`--show-searches`: 0k for each loop): induction variables and their
+# linear relations (`two_vars`), places only going up (`grows`, with a
+# branch and a length), bounds from the condition (`count_up`'s `i <= n`;
+# `down`'s `k >= 0` under `k != 0`), places given only literals (`flag`),
+# lists only pushed to (`pushes`), and the same at the head of a `for` and
+# a `loop` (`after_for`, `first_over`). The search runs only where a check
+# still fails, lazily: `needs_search`'s `ensures` names `best`, which jumps
+# to `i`, so it is searched for, and found.
+
+[[step]]
+save = "t.strata"
+text = '''
+fn count_up(n: Natural) -> Natural
+  ensures it == n {
+  mut i := 0
+  while i < n {
+    i += 1
+  }
+  i
+}
+
+fn two_vars(n: Natural) -> Int
+  ensures it == 2 * n {
+  mut i := 0
+  mut j := 0
+  while i < n {
+    i += 1
+    j += 2
+  }
+  j
+}
+
+fn grows(n: Natural) -> Int
+  ensures it >= 5 {
+  mut x := 5
+  mut k := 0
+  while k < n {
+    if k % 2 == 0 {
+      x += 3
+    } else {
+      x += byte_len("ab")
+    }
+    k += 1
+  }
+  x
+}
+
+fn flag(xs: List[Int]) -> Int
+  ensures it == 0 || it == 1 {
+  mut found := 0
+  for x in xs {
+    if x > 3 {
+      found = 1
+    }
+  }
+  found
+}
+
+fn pushes(n: Natural) -> List[Int]
+  ensures len(it) >= 1 {
+  mut out := [0]
+  mut i := 0
+  while i < n {
+    mut out.push(i)
+    i += 1
+  }
+  out
+}
+
+fn down(n: Natural) -> Int
+  ensures it == 0 {
+  mut k: Int = n
+  while k != 0 {
+    k -= 1
+  }
+  k
+}
+
+fn after_for(xs: List[Int]) -> Int {
+  mut c := 0
+  for x in xs {
+    if x > 0 {
+      c += 1
+    }
+  }
+  assert c >= 0
+  c
+}
+
+fn first_over(n: Natural) -> Int {
+  mut i := 0
+  loop {
+    i += 1
+    if i > n {
+      break
+    }
+  }
+  assert i >= 1
+  i
+}
+
+fn needs_search(n: Natural) -> Int
+  ensures it <= n {
+  mut i := 0
+  mut best := 0
+  while i < n {
+    if i > best {
+      best = i
+    }
+    i += 1
+  }
+  best
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--checks", "--no-race", "--no-cache", "--no-write", "--show-searches"]
+has = [
+  "✓ count_up ",
+  "invariant of `while i < n`: i <= n (derived)",
+  "✓ two_vars ",
+  "invariant of `while i < n`: 2 * i - j == 2 * i₀ - j₀ (derived)",
+  "✓ grows ",
+  "invariant of `while k < n`: x >= x₀ (derived)",
+  "✓ flag ",
+  "found == found₀ || found == 1 (derived)",
+  "✓ pushes ",
+  "invariant of `while i < n`: len(out) >= len(out₀) (derived)",
+  "✓ down ",
+  "invariant of `while k != 0`: k >= 0 (derived)",
+  "✓ after_for ",
+  "invariant of `for x in xs`: c >= c₀ (derived)",
+  "✓ first_over ",
+  "invariant of `loop`: i >= i₀ (derived)",
+  "✓ needs_search ",
+  "invariant of `while i < n`: it <= n (it = best) (inferred)",
+  "search `count_up` `while i < n`: 0k, 0.0 s: nothing",
+  "search `two_vars` `while i < n`: 0k, 0.0 s: nothing",
+  "search `grows` `while k < n`: 0k, 0.0 s: nothing",
+  "search `pushes` `while i < n`: 0k, 0.0 s: nothing",
+  "search `down` `while k != 0`: 0k, 0.0 s: nothing",
+  "search `needs_search` `while i < n`: ",
+  ": it <= n (it = best), ",
+]
+
+# nothing wrong is derived: a sized integer wraps (`wraps`), a `break` in
+# the middle of a pass leaves a state no invariant describes (`half_pass`),
+# two at a time can jump past the bound (`by_two`)
+[[step]]
+save = "w.strata"
+text = '''
+fn wraps(n: Natural) -> U8
+  ensures it >= 250 {
+  mut x: U8 = 250
+  mut k := 0
+  while k < n {
+    x += 1
+    k += 1
+  }
+  x
+}
+
+fn half_pass(xs: List[Int]) -> Int {
+  mut c := 0
+  for v in xs {
+    c -= 1
+    if v > 0 {
+      break
+    }
+    c += 2
+  }
+  assert c >= 0
+  c
+}
+
+fn by_two(n: Natural) -> Int
+  ensures it <= n {
+  mut i := 0
+  while i < n {
+    i += 2
+  }
+  i
+}
+'''
+
+[[step]]
+strata = ["--file", "w.strata", "verify", "--no-race", "--no-cache", "--no-write"]
+fails = true
+has = ["✗ wraps ", "✗ half_pass ", "✗ by_two "]

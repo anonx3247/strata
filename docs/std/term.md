@@ -1,19 +1,7 @@
 # std.term
 
-Text styled for a terminal: bold, dim, colors.
-
-Ask the console for a `Paint` for the stream you write to, then style
-text with it:
-
-```rust
-paint := console.paint(Output)
-mut console.print(paint.bold(paint.red("error:")) + " no such file")
-```
-
-A paint is on only when the stream is a terminal (not a pipe or a file),
-`NO_COLOR` isn't set and `TERM` isn't `dumb` (`FORCE_COLOR` turns it on
-anyway); off, it gives the text back as it is. A test's `Recorder` gives
-a paint that is off, and `paint(true)` one that is on.
+Text styled for a terminal with ANSI escape codes.
+A paint from `console.paint(stream)` is on only for a terminal. Off, it returns text unchanged.
 
 ## Types
 
@@ -25,7 +13,7 @@ type Stream =
   | Errors
 ```
 
-Where text goes: standard output or standard error.
+Standard output or standard error.
 
 ### Paint
 
@@ -33,7 +21,7 @@ Where text goes: standard output or standard error.
 type Paint = { on: Bool }
 ```
 
-Styles text with terminal escape codes, when `on`.
+Styles text with ANSI escape codes when `on`.
 
 ## Methods
 
@@ -124,8 +112,8 @@ fn colors_for(
 ) -> Bool
 ```
 
-Whether a paint for `stream` is on, from the environment: a terminal,
-`NO_COLOR` unset, `TERM` not `dumb`; or `FORCE_COLOR` set.
+Whether to color a stream. On when `FORCE_COLOR` is set.
+Otherwise on for a terminal with `NO_COLOR` unset and `TERM` not `dumb`.
 
 ### styled
 
@@ -133,8 +121,7 @@ Whether a paint for `stream` is on, from the environment: a terminal,
 fn styled(p: Paint, code: String, text: String) -> String
 ```
 
-`text` between the escape code `code` (`1` bold, `31` red, …) and the
-reset, or `text` when the paint is off.
+`text` wrapped in the escape code `code` (`1` bold, `31` red, …) and a reset. Unchanged when the paint is off.
 
 ### plain
 
@@ -142,5 +129,4 @@ reset, or `text` when the paint is off.
 fn plain(text: String) -> String
 ```
 
-The text without its escape codes (`ESC [ … letter`): what a terminal
-shows, to measure or compare it.
+`text` without its escape codes (`ESC [ … letter`), as a terminal shows it.

@@ -1,8 +1,9 @@
 # cli.rs: proven_checks_are_left_out_of_builds: `build` verifies what changed
 # since it was last verified, then leaves out the runtime checks proven;
 # `--all-checks` keeps them all; an unproven caller keeps the callee's;
-# `--no-verify` uses only proofs of the code as it is. (A check left in shows
-# as its message in the executable.)
+# `--no-verify` keeps every check, whatever earlier runs proved (a build's
+# bytes don't depend on the cache). (A check left in shows as its message in
+# the executable.)
 [[step]]
 save = "t.strata"
 text = '''
@@ -63,6 +64,17 @@ strata = ["--file", "t.strata", "run"]
 env = { STRATA_CACHE = "$TMP/cache" }
 has = ["55", "4"]
 
+# proven, but not verified by this build: every check stays
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "unverified", "--no-verify"]
+env = { STRATA_CACHE = "$TMP/cache" }
+
+[[step]]
+run = ["grep", "-qF", "postcondition of `triangle`", "unverified"]
+
+[[step]]
+run = ["grep", "-qF", "precondition of `first`", "unverified"]
+
 # a caller that doesn't prove the call keeps the callee's entry check
 [[step]]
 strata = ["--file", "t.strata", "edit"]
@@ -106,8 +118,7 @@ run = ["grep", "-qF", "precondition of `first`", "mixed"]
 run = ["grep", "-qF", "postcondition of `triangle`", "mixed"]
 code = 1
 
-# changed code: its old proofs don't count (--no-verify), and a build
-# verifies it again
+# changed code: a build verifies it again
 [[step]]
 strata = ["--file", "t.strata", "edit"]
 env = { STRATA_CACHE = "$TMP/cache" }
