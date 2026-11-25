@@ -6,6 +6,8 @@ The fine print of [the language](language.md): each section adds the rules and d
 
 A default is checked where the type is defined: it must have the field's type, and a literal must satisfy the field's refinement (`n: Positive = 0` is an error). It sees no variables, not even the other fields, and it is evaluated each time it is used. Generated values (mocks, fuzzing) still generate every field.
 
+**Key paths: a field named on its type.** `Todo.title`, a field of a record type written after the type's name, is a value: a `KeyPath[Todo, String]` (core's `type KeyPath[R, T] = { name: String, get: (R) -> T }`), the field's name and how to read it (`(Todo.title.get)(t)` is `t.title`). Its types come from the field's, so code taking one is checked against the record: `std.orm`'s queries (`Todo.done.eq(false)` needs a `Bool`, and gives a condition on `Todo`s only). A field the record doesn't have is an error (`type `Todo` has no field `x``). It is written out when the program is checked (`desugar.key_paths`: `KeyPath { name: "title", get: ($r: Todo) -> $r.title }`), so `view` shows `Todo.title` and nothing after the checker sees it. Not yet: a generic record's (`Pair.first`), paths through several fields (`Todo.owner.name`), and assigning through one.
+
 **Spreading a record into a call.** `f(a, ...x, ...y, b)` is the call written out by parameter name, when the program is checked: positional arguments written before the spreads give the first parameters, those after them the last, and each parameter between is the field of its name of the one record spread that has it (`x.qty`); other fields are left alone. Everything after the checker (the compiler, `verify`, the runtime checks) sees the ordinary call, and `view` shows it as written. It works for a function called by name, a method on a value (`r.m(...x)`, `mut r.m(...x)`; a trait value's or a type parameter's method through its trait), and a method called on a type (`Shop.new(...x)`, `self` included in its parameters). Errors, each naming the call: a parameter no record has a field for (parameters have no defaults), one two records both have (`is given by both ...x and ...y`: spread one of them, or pass that parameter positionally), a `mut` parameter left to a spread (a spread only reads: pass `mut v` positionally), a value that isn't a record (`...5`), a record that gives no parameter, a positional argument between spreads, more positional arguments than parameters, a function that is a variable (its parameters have no names) or a built-in, and a spread anywhere but such a call (a contract, a constructor: `Pt(...p)` is a parse error, `Pt { ..p, x: 1 }` is the record update). The value spread is read once: one that isn't a variable or a field of one (`...make()`) is bound first, before the call's other arguments, as is a receiver that isn't one. In the tree it is `Spread(Expr)`, a call's argument.
 
 ## Unions, variants and patterns
@@ -100,6 +102,21 @@ law enqueue_once(q: Self, id: Int) {
 **Trait methods without `self`** are called on a type, never on a value: `Money.empty()`, `T.empty()` in a generic function, `Self.empty()` in a trait's default methods and laws. They are constructors and the like (`fn empty() -> Self`, `fn parse(s: String) -> Result[Self, ParseError]`), so the signature must mention `Self`: one that doesn't couldn't pick an implementation, and should be a plain function. In a generic impl's methods they can be called on the impl's own type parameters too: `impl[T: Zero] Zero for List[T] { fn zero() -> Self { [T.zero()] } }`, or `fn padded(self, n: Int) -> Self { .. push(out, T.zero()) .. }` in `impl[T: Zero] Pad for List[T]`. Types are passed whole when the code runs: the type a method is called on (`List[Int]`), or the static type of the value it is called on, says what `T` is. (Only a value held as a trait type, `d: Describe`, doesn't carry its whole type.) A refined alias stays itself in a type argument: in `read[List[Port]]`, `T` is `Port`, whose methods are `Int`'s; so does one with type parameters (`type Many[T] = List[T] where len(it) >= 2`; `Many[Int]` has `List`'s methods) and a refinement written as a type argument (`List[Int where it % 2 == 0]`, shown as written in messages). **`T.check(x)`**, on any type (a type parameter: the type it is when the code runs), is `Ok(())` when `x` meets the type's refinements, else `Err` saying what it breaks: `Port.check(0)` is `Err("0 does not satisfy `Port` (where 1 <= it && it <= 65535)")`.
 
 The type is always named, so which implementation runs is always clear. A generic function that calls such a method is given its type arguments when it runs: each call passes the concrete type the checker inferred (or forwards the caller's own type parameter). So the type must be known at each call: `combine_any([])` alone is an error (annotate: `let xs: List[Money] = []`), and such a function can't be passed as a value (`map(combine_any)`): use a lambda. A trait-typed parameter (`xs: List[Empty]`) has no name to call `.empty()` on: write the type parameter when you need it.
+
+**Writing a `derive`.** `derive A, B for` written between a declaration's `///` docs and the declaration (`pub`, then `fn` or `type`) derives each trait for it:
+
+```rust
+/// A greeting for `name`.
+derive C, Python for
+pub fn greet(name: String) -> String {
+  f"Hello, {name}!"
+}
+
+derive CommandLine, Json for
+type Options = { count: Int, loud: Bool, name: String = "world" }
+```
+
+It is only a way of writing: each trait's derive is stored as its own definition (`derive CommandLine for Options`, `derive Json for Options`), exactly as the separate form `derive Json for Options` gives it, and `derive A, B for T` (a type, a function or `module`) gives one per trait too. `strata view`, the text `strata edit` opens and `strata doc` show a derive on its declaration when it has no block of methods written by hand, no type parameters or trait arguments, no comments of its own, and derives for a declaration of the same module shown with it; all of a declaration's such derives in one line, in their order in the module. The others (`derive Json for Point { ... }`, a type of another module, `derive C for module`) stay lines of their own, and a block needs a single trait. An edit replaces and adds derives by name like any definition and never deletes: leaving a trait out of the line keeps its derive (`strata edit --rm 'derive std.json.Json for Options'` removes it).
 
 ## Modules
 
@@ -466,6 +483,7 @@ The **standard library** is the `std/` package, written in Strata and built into
 | [std.memory](std/memory.md) | Memory, for programs that must be fast: arenas. |
 | [std.process](std/process.md) | The running program: its arguments, its environment variables and its exit code, and the other programs it runs. |
 | [std.regex](std/regex.md) |  |
+| [std.orm](std/orm.md) | Records as SQLite tables: `derive Table` (the schema, rows written and read back checked) and typed queries over their fields. |
 | [std.sqlite](std/sqlite.md) | SQLite databases through the system's libsqlite3: the `Sqlite` capability, connections as the `Database` capability trait, prepared statements, transactions. |
 | [std.term](std/term.md) | Text styled for a terminal: bold, dim, colors. |
 | [std.time](std/time.md) | The clock: the time now, waiting, and timers in `select`. |
@@ -513,6 +531,31 @@ derive Toml for Config
 config := Config.read_toml("name = \"app\"\n[[servers]]\nhost = \"a.example\"\n")!
 text := config.write_toml()!
 ```
+
+**Tables** (`std.orm`): a record that derives `Table` is kept as the rows of an SQLite table (`std.sqlite`), named after the type in snake case (`TodoItem`: `todo_item`). Each field is a column: `Int` and `Bool` are `INTEGER`, `Float` is `REAL`, `String` is `TEXT`, an `Option` the same column without `NOT NULL` (`None` is NULL), a `distinct` type what it is made of; any other field type, and `Option[Option[T]]`, is an error at the `derive`. The field named `id` is the key, which every table needs: an integer one is SQLite's row id, which `insert` gives each new row (the `id` given, `TodoId(0)` by default, is left out, and the record returned carries the new one); another key (`id: String`) is inserted as given. A `distinct` field of a type named `<Table>Id` (`project: ProjectId`) is a key of that table (`REFERENCES "project" ("id")`, which `create` has SQLite check). A refinement becomes a `CHECK` where SQL can say it: comparisons, `+`, `-`, `*`, `byte_len(it)`, numbers, strings, `true`, `false`, `!`, and `&&` / `||`; of a refinement joined by `&&`, the parts SQL can say (`it != "" && !contains(it, "/")` checks `<> ''`); a record's own refinement (`where it.start <= it.end`) is a table `CHECK`. A literal default is the column's `DEFAULT`. Every row read back is checked against the record's refinements again, so a row SQL let through that breaks one is an error value, `BadRow { table, message }`, never a fault. Everything is a `Result[_, SqlError]` and runs over a `Database`, so tests can pass a database in memory or a `mock`:
+
+```rust
+from std.orm use Table, Compare, Rows
+
+type Todo = {
+  id: TodoId = TodoId(0),
+  title: String where it != "" && byte_len(it) <= 80,
+  priority: Int where 1 <= it && it <= 5,
+  done: Bool = false,
+}
+derive Table for Todo
+
+Todo.schema().create(mut db)!                                // CREATE TABLE IF NOT EXISTS
+t := (Todo { title: "write docs", priority: 2 }).insert(mut db)!
+_ := (Todo { ..t, done: true }).update(mut db)!             // by key: whether it was there
+found := Todo.get(db, t.id)!                                  // Option[Todo]
+open := Todo.filter(Todo.done.eq(false).and(Todo.priority.le(3)))
+  .order_by(Todo.priority)
+  .limit(10)
+  .all(db)!
+```
+
+Queries are values (`Query[Todo]`, its condition a `Cond[Todo]`): `Todo.query()` (every row) or `Todo.filter(c)`, then `filter`, `order_by`, `order_by_desc` and `limit`, run by `all`, `first`, `count` and `delete`. A condition compares a column, named by its key path, with a value of its field's type: `eq`, `ne` (SQL's `IS`, `IS NOT`: `Todo.due.eq(None)` matches NULL), `lt`, `le`, `gt`, `ge` (an order with `None` holds for no row), joined with `and`, `either` (`or` is a keyword) and `not`. The checker sees the types through: a value of another type, a column of another table, or a field the record doesn't have is an error. Values are always parameters (`"done" IS ?`), never SQL text. A `distinct` key compared in a query needs `impl Sql for TodoId` (`self.value`). `Todo.schema()` is the table (its name, columns and `sql()`), `t.values()` a record's values, `Todo.from_row(r)` a row back. See `examples/todos_db.strata`. Not yet: joins and relations (a project's to-dos), migrations (a changed record against the table there), transactions as a scope, `LIKE` and `IN`, blobs, typed keys for `get`, and a record's fields read by column name.
 
 **Regular expressions** (`std.regex`) are written in Strata, so a self-hosted compiler can use them. `parse` reads the syntax of Rust's `regex` crate (Unicode by default: `\d`, `\w`, `\s` and `.` are Unicode's; `\p{Greek}`, `\p{gc=Lu}`, `\p{age=6.0}`; classes with `&&`, `--`, `~~` and `[[:alpha:]]`; named groups; the flags `imsUuRx`; `\b`, `\b{start}`, `\A`, `\z`; no look-around or back-references) into the tree regex-syntax builds: classes as ranges of code points with `(?i)` folded in, flags gone, the same simplifications (`ab|ac` is `a(?:b|c)`, `a|b` is `[ab]`). The trees of curated patterns were recorded while the two agreed (`tests/data/regex-curated.out`, the case `regex-curated`). The Unicode data (`std.unicode_tables`) is generated by `tools/unicode_tables.py` from regex-syntax's tables (Unicode 16.0.0).
 
