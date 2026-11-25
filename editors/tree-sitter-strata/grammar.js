@@ -71,6 +71,8 @@ module.exports = grammar({
   supertypes: ($) => [$._declaration, $._expression, $._pattern, $._type],
 
   conflicts: ($) => [
+    // `old e` in a contract, or `old` as a name (`old := …`, `for d in old {`)
+    [$._primary, $.old_expression],
     [$._primary, $.select_arm],
     [$._type_name, $.scoped_type_identifier],
     [$.field_initializer, $._field_name],
@@ -338,16 +340,43 @@ module.exports = grammar({
         field('body', $.impl_body),
       ),
 
-    // `derive Json for Point`, with `{ … }` for methods written by hand
+    // `derive Json for Point`, `derive Json, Toml for Point`, with `{ … }`
+    // for clauses (`key code`) and methods written by hand; `derive C for
+    // greet` (a function), `derive C, Python for module`; or written on the
+    // declaration it is for: `derive C, Python for` then `fn greet(…) …`
     derive_declaration: ($) =>
       seq(
         optional($.visibility_modifier),
         'derive',
         optional(field('type_parameters', $.type_parameters)),
         field('trait', $._type_plain),
+        repeat(seq(',', field('trait', $._type_plain))),
         'for',
-        field('type', $._type_plain),
-        optional(field('body', $.impl_body)),
+        choice(
+          field('declaration', choice($.function_declaration, $.type_declaration)),
+          seq(
+            field('type', $._type_plain),
+            optional(field('body', $.derive_body)),
+          ),
+        ),
+      ),
+
+    // a derive's block: clauses (`key code`, `key (shelf, slot)`) and
+    // methods written by hand
+    derive_body: ($) =>
+      seq(
+        '{',
+        repeat(choice($.derive_clause, $.model_definition, $.function_declaration)),
+        '}',
+      ),
+
+    derive_clause: ($) =>
+      seq(
+        field('name', $.identifier),
+        choice(
+          field('value', $.identifier),
+          seq('(', field('value', $.identifier), repeat(seq(',', field('value', $.identifier))), ')'),
+        ),
       ),
 
     impl_body: ($) =>
@@ -368,6 +397,8 @@ module.exports = grammar({
         optional($.visibility_modifier),
         'extern',
         field('language', $.identifier),
+        // `extern python "text_utils" fn …`: the module it comes from
+        optional(field('module', $.string)),
         choice(
           seq('fn', $._function_signature),
           seq('type', field('name', $.type_identifier)),
@@ -586,6 +617,13 @@ module.exports = grammar({
     _primary: ($) =>
       choice(
         $.identifier,
+        // `old` is a keyword only before an expression (`old e` in an
+        // `ensures`); elsewhere it is an ordinary name (`old := …`)
+        prec(PREC.unary, alias('old', $.identifier)),
+        // `select` and `race` are keywords only before `{` (`select(…)` is
+        // std.web's element)
+        alias('select', $.identifier),
+        alias('race', $.identifier),
         $.type_identifier,
         $.integer,
         $.float,
@@ -716,7 +754,8 @@ module.exports = grammar({
       prec(PREC.unary, seq('comptime', $._expression)),
 
     // `old len(xs)`: in an `ensures`, the value where the function started
-    old_expression: ($) => prec(PREC.unary, seq('old', $._expression)),
+    old_expression: ($) =>
+      prec.dynamic(-1, prec(PREC.unary, seq('old', $._expression))),
 
     // `f(mut x)`, `mut q.claim(2)`
     mut_expression: ($) => prec(PREC.unary, seq('mut', $._expression)),
@@ -924,7 +963,7 @@ module.exports = grammar({
 
     // `select { rx.receive() as m => …, }`, `race { … }`
     select_expression: ($) =>
-      seq(choice('select', 'race'), '{', repeat($.select_arm), '}'),
+      prec(1, seq(choice('select', 'race'), '{', repeat($.select_arm), '}')),
 
     select_arm: ($) =>
       prec.right(
@@ -964,6 +1003,7 @@ module.exports = grammar({
         $.tuple_pattern,
         $.list_pattern,
         $.identifier,
+        prec(PREC.unary, alias('old', $.identifier)),
         $.constructor_pattern,
       ),
 
