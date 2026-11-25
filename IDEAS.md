@@ -411,6 +411,23 @@ Questions to settle:
 - Send the whole page on every message, or a diff? The whole page to start.
 - Sessions: kept in memory to start; later stored through the ORM.
 
+### `strata repl` (asked by the user 2026-11-25; step 1 built, branch `repl`)
+
+An interactive session to try small things with the current project loaded (docs/tools-reference.md, "The REPL"). Step 1 (`compiler/main`: `repl_command`, `repl_eval`, `repl_line`, `repl_load`): each line an expression, a binding or a definition, checked against the package plus the session (`check_errors_of` on a probe function `strata_repl` holding the earlier values and the line), expanded (`expanded`), then run as `comptime` runs (`computed_value`: only what the line reaches is compiled, by compiler/codegen, and run by the JIT under the fault trap: a fault is an error, the session goes on); `:type`, `:view`, `:reload`, `:quit`; piped input read line by line (exit 1 when an input failed). Piped, 16 lines on a small script take about 1.3 s in all.
+
+Capabilities are the REPL's own (user, 2026-11-25): a line never gets the program's real ones. `console` is a `std.io.Recorder` (the language's stand-in `Console`), made for each line and read back with its value, so what a line prints is shown with that line's result and written nowhere else. No other capability is given yet (`disk`, `process` are unknown names), so evaluating a line can't write files or run processes.
+
+Values are kept as the code that writes them (read back, as `run f` prints a result), not in compiled memory: each line binds them again. Simple, and correct for data; nothing is run twice.
+
+Not yet:
+- values that have no code (functions, closures, capabilities, tasks) can't be kept: keep them in compiled memory instead (a session module loaded once, as `serve` keeps a model, each line's function taking them `Given`/`Lent`), which also saves re-reading big values each line;
+- each line compiles what it reaches again: compile the package once (its objects from the cache, std's precompiled library loaded) and each line only its own function, as `--precompiled` does for std;
+- the other capabilities as the REPL's own: Files/Disk an in-memory folder by default (std's stand-ins), Process/Environment denied, the real ones by an explicit opt-in (`strata repl --allow files,process`); `console.read_line` reading from the REPL (it reads nothing now);
+- `mut xs.push(7)` at the prompt gives the new list but leaves `xs` as it was (an assignment, `xs = …`, is kept): to look into;
+- multi-line input (a definition over several lines, a block), line editing and history at a terminal;
+- `:save`: a definition typed at the prompt written to the package (through `edit`: checked and logged);
+- a fault is shown as an error without its kind and call stack (`computed_value` returns its message only).
+
 ## Design principles (decided)
 
 - **No effects.** Capabilities (database, queue, console, clock) are traits; code takes an implementation as a parameter or holds it in a field. `mock T` generates an implementation that respects the trait's contracts. Iterators and concurrency are their own language features, **not** effects (concurrency: see "Concurrency: structured tasks without coloring"; it needs no capability, since tasks share nothing and `scope`/`spawn`/`await` are deterministic).
@@ -448,6 +465,12 @@ Since then: `assumed` is built (capabilities, `extern c`, mocks); loops keep the
 ### Fuzzing under a `requires`: inputs built by the program's functions (asked by the coordinator 2026-11-25 from the order-book benchmark; built, branch `fuzz-requires`)
 
 788 of 800 random books failed `requires book_ok`, so the engine's handlers were fuzzed on 12 cases. Two ways to make inputs that meet a `requires`: ask the solver for models of it, or build values with the program's own functions. The solver already makes inputs when every random one is rejected (`or_solver_inputs`, up to 20 models, each blocked for the next), but it can't model a book (its `Dict` and `Set`), and asking for many models costs a solver run each. Built: the program's functions. In codegen's fuzz driver (`built_or_generated`, `build_fn`), an argument of one of the program's records or sums, under a `requires`, is three cases in four made by a *builder* (a function returning the type without taking one) followed by 10 rounds each calling one *stepper* (a function taking it `mut`, or taking it and returning one) or none, on generated arguments, a step skipped when its `requires` doesn't hold; when some of them have an `ensures`, only those (`engine.ladder_of(b, side)` on a random book made bad ladders). The `requires` is still checked at the call, so nothing has to be proven of the builders; a fault while building runs in the frame `strata_fuzz_build` and discards the case (compiler/main's `fuzz_run`); a driver that can't be compiled with its builders (a stepper not compiled yet) is compiled without them (`=KEY` in `compiling`). Results: the book's handlers 200 cases, 69 discarded (12 and 788 before), the ladder's 200 and 36 (200 and 278); std and the examples unchanged, same verdicts and time. See docs/verification-reference.md, "Inputs built by the program".
+
+### `enumerate` on iterators; lambdas that take a tuple apart (reported by an agent writing Strata, 2026-11-25; built, branch `enumerate-tuples`)
+
+`enumerate` is lazy on every iterator (core.iter's `Enumerated`, finite when its source is, `len` passed through), as `enumerate(it)` and `it.enumerate()`. A list's stays the eager built-in: `for (i, x) in enumerate(xs)` is unchanged, and a list's methods of a built-in's name (`xs.map(f)`) stay the built-ins even when core.iter, whose `Iterator` has methods of those names, is loaded.
+
+The rule for tuples: a lambda of n ≥ 2 parameters written without types, where a function of ONE argument is expected and that argument is an n-tuple (or not known yet: a lambda of several parameters can't be a function of one anything else), binds the tuple's elements. Where a function of n arguments is expected (`fold`'s `(acc, x) -> …`) it stays a lambda of n arguments. `lambdas_typed` rewrites it to `($tuple) -> { (i, x) := $tuple; body }`, so the prover sees the destructuring; codegen takes it apart from the wanted type too, and compiler/eval from the one tuple it is given. Not built (each a syntax change, to ask): an explicit pattern parameter `((i, x)) -> …`, nested patterns `(acc, (k, v)) -> …`, and typed parameters (`(i: Int, x: Int) -> …` where a pair is expected is still a two-argument lambda). Still open: a lambda of two parameters where a function of one non-tuple argument is expected (`xs.map((a, b) -> a)` on `List[Int]`) isn't reported by the checker.
 
 ### `mut` arguments are taken after the other arguments (coordinator, 2026-11-24; built, branch `mut-order`)
 

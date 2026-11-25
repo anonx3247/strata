@@ -1,0 +1,66 @@
+# a lambda of n parameters where a function of one n-tuple is expected
+# takes the tuple apart: `(i, x) -> …` binds its elements, their types the
+# tuple's; checked, compiled and proven as such
+
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+fn sums(s: String) -> List[Int] {
+  s.bytes().enumerate().map((i, x) -> i + x).to_list()
+}
+
+fn positive(pairs: List[(String, Int)]) -> List[(String, Int)] {
+  pairs.filter((k, v) -> v > 0)
+}
+
+fn indexed(xs: List[Int]) -> List[Int] {
+  xs.enumerate().map((i, x) -> i * x)
+}
+
+fn total(pairs: List[(String, Int)]) -> Int {
+  fold(pairs.map((k, v) -> v), 0, (acc, v) -> acc + v)
+}
+
+fn triples(ts: List[(Int, Int, Int)]) -> List[Int] {
+  map(ts, (a, b, c) -> a + b + c)
+}
+
+fn clamped(pairs: List[(Int, Int)]) -> List[Int]
+  ensures it.all(x -> x >= 0)
+{
+  pairs.map((a, b) -> if b >= 0 {
+    b
+  } else {
+    0
+  })
+}
+
+fn main() {
+  print(f"{sums("ab")}")
+  print(f"{positive([("a", 1), ("b", -2), ("c", 3)])}")
+  print(f"{indexed([5, 6, 7])}")
+  print(f"{total([("a", 1), ("b", 2)])}")
+  print(f"{triples([(1, 2, 3)])}")
+  print(f"{clamped([(1, -1), (2, 4)])}")
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+stdout = "[97, 99]\n[(\"a\", 1), (\"c\", 3)]\n[0, 6, 14]\n3\n[6]\n[0, 4]\n"
+
+# the prover sees the elements bound
+[[step]]
+strata = ["--file", "t.strata", "verify", "clamped"]
+has = ["clamped", "proven"]
+
+# their types are the tuple's
+[[step]]
+strata = ["--file", "w.strata", "edit"]
+text = '''
+fn keys(pairs: List[(String, Int)]) -> List[Int] {
+  pairs.map((k, v) -> k + 1)
+}
+'''
+fails = true
+has = ["`+` operands: expected `String`, found `Int`"]
