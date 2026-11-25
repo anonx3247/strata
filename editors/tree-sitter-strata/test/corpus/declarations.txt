@@ -700,3 +700,122 @@ shared trait Queue {
                 (arguments
                   (identifier))))
             (integer)))))))
+
+================================================================================
+Derives of several traits, for a function and a module
+================================================================================
+
+derive Json, Toml for Point
+derive C for greet
+derive C, Python for module
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (derive_declaration
+    (type_identifier)
+    (type_identifier)
+    (type_identifier))
+  (derive_declaration
+    (type_identifier)
+    (identifier))
+  (derive_declaration
+    (type_identifier)
+    (type_identifier)
+    (identifier)))
+
+================================================================================
+A derive written on its declaration
+================================================================================
+
+derive C, TypeScript, Python for
+fn greet(name: String) -> String {
+  name
+}
+
+derive CommandLine, Json for
+pub type Options = {
+  count: Int
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (derive_declaration
+    (type_identifier)
+    (type_identifier)
+    (type_identifier)
+    (function_declaration
+      (identifier)
+      (parameters
+        (parameter
+          (identifier)
+          (type_identifier)))
+      (type_identifier)
+      (block
+        (identifier))))
+  (derive_declaration
+    (type_identifier)
+    (type_identifier)
+    (type_declaration
+      (visibility_modifier)
+      (type_identifier)
+      (record_body
+        (field_declaration
+          (field_identifier)
+          (type_identifier))))))
+
+================================================================================
+A derive's clauses
+================================================================================
+
+derive Table for Todo {
+  key code
+}
+
+derive Table for Slot {
+  key (shelf, slot)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (derive_declaration
+    (type_identifier)
+    (type_identifier)
+    (derive_body
+      (derive_clause
+        (identifier)
+        (identifier))))
+  (derive_declaration
+    (type_identifier)
+    (type_identifier)
+    (derive_body
+      (derive_clause
+        (identifier)
+        (identifier)
+        (identifier)))))
+
+================================================================================
+extern python, with its module
+================================================================================
+
+extern python "text_utils" fn slugify(title: String) -> Result[String, PythonError]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (extern_declaration
+    (identifier)
+    (string
+      (string_content))
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (generic_type
+      (type_identifier)
+      (type_arguments
+        (type_identifier)
+        (type_identifier)))))

@@ -203,7 +203,7 @@ out = "wrote 2 pages to stdman\n"
 [[step]]
 run = ["cat", "stdman/man3/std.io.3", "stdman/man1/strata.1"]
 has = [
-  ".SH NAME\nstd.io \\- The console: text in and out.\n",
+  ".SH NAME\nstd.io \\- The console, text in and out.\n",
   ".SS Recorder\n",
   ".TH \"STRATA\" 1 ",
   ".SH NAME\nstrata \\- an experimental language for working with agents\n.SH SYNOPSIS\n",

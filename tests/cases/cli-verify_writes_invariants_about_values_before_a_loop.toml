@@ -6,8 +6,10 @@
 # just before the loop (`start_at := at`: `invariant at >= start_at`),
 # named apart from the function's names (`start_at` is taken in
 # `quoted_after`: `start_at_2`). The next run proves them without
-# searching. (Each loop's search takes about 6M units with Z3 4.x, over the
-# 2M of `found_by_search`.)
+# searching. (`at` steps through `next`, a call, so nothing about it is
+# derived from the code: the `ensures` fails without a search. Each loop's
+# search takes about 6M units with Z3 4.x, over the 2M of
+# `found_by_search`.)
 
 [[step]]
 save = "q.strata"

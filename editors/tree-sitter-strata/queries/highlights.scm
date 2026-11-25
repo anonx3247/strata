@@ -181,3 +181,6 @@
 ["(" ")" "[" "]" "{" "}"] @punctuation.bracket
 
 ["," "." ":" ";"] @punctuation.delimiter
+
+; a derive clause: `key code`
+(derive_clause name: (identifier) @keyword)
