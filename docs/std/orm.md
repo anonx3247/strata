@@ -18,7 +18,7 @@ derive Table for Todo
 
 fn main(sqlite: Sqlite) -> Result[(), SqlError] {
   mut db := sqlite.memory()!
-  Todo.create_table(mut db)!
+  Todo.schema().create(mut db)!
   t := (Todo { title: "write docs", priority: 2 }).insert(mut db)!
   open := Todo.filter(Todo.done.eq(false))
     .order_by(Todo.priority)
@@ -32,12 +32,14 @@ The table is named after the type in snake case (`TodoItem`:
 `INTEGER`, `Float` is `REAL`, `String` is `TEXT`, an `Option` is the
 same column without `NOT NULL`, a `distinct` type is what it is made of.
 The field named `id` is the key (`PRIMARY KEY`): an integer one is
-SQLite's row id, given to each row `insert` adds; another `distinct` id
-field (`list: ListId`) is a key of the table its type names (`REFERENCES
-list (id)`). A refinement is a `CHECK` where SQL can say it (comparisons
-of `it`, `byte_len(it)`, `it.field` for the record's own, literals,
-`&&`, `||`, `!`), and every row read back is checked again in Strata, so
-a row breaking a refinement SQL couldn't state is an error value
+SQLite's row id, given to each row `insert` adds; a `distinct` field
+of a type named `<Table>Id` (`project: ProjectId`) is a key of that
+table (`REFERENCES project (id)`). A refinement is a `CHECK` where SQL
+can say it (comparisons of `it`, `byte_len(it)`, `it.field` for the
+record's own, literals, `&&`, `||`, `!`; of conditions joined by
+`&&`, those it can), a literal default is a `DEFAULT`, and every row
+read back is checked again in Strata, so a row breaking a refinement
+SQL couldn't state is an error value
 (`BadRow`), never a fault.
 
 Queries are values: `Todo.title` is a `KeyPath[Todo, String]`, so
