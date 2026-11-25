@@ -1,0 +1,42 @@
+true
+Ok(1)
+1
+Ok(2)
+Row { values: [1, "apple", 1.25, 3, Null, 1] }
+(Ok(1), Ok("apple"), Ok(1.25), Ok(3), Ok(true), Ok(true))
+Row { values: [2, "pear", 0.5, -9223372036854775808, "ripe", 0] }
+(Ok(2), Ok("pear"), Ok(0.5), Ok(-9223372036854775808), Ok(false), Ok(false))
+Row { values: [3, "fig", Null, 9223372036854775807, "é ✓", Null] }
+(Ok(3), Ok("fig"), Err(WrongType { column: 2, wanted: "Float", found: "Null" }), Ok(9223372036854775807), Ok(false), Err(WrongType { column: 5, wanted: "Bool", found: "Null" }))
+Ok([Row { values: ["apple"] }])
+Ok(3)
+Ok([Row { values: [0] }])
+Ok([Row { values: [3] }])
+Ok(1)
+Ok([Row { values: [4] }])
+Err(Constraint { message: "UNIQUE constraint failed: item.name" })
+Err(Constraint { message: "NOT NULL constraint failed: item.name" })
+Err(SqlFailed { code: 1, message: "no such column: nope" })
+Err(SqlFailed { code: 1, message: "near \"SELEC\": syntax error" })
+Err(WrongParameters { given: 0, wanted: 1 })
+Err(WrongParameters { given: 2, wanted: 1 })
+Err(NotRepresentable { message: "9223372036854775808 is beyond SQLite's 64-bit integers" })
+Err(NotRepresentable { message: "a string parameter holds a NUL character" })
+Err(NotRepresentable { message: "column 0 holds a blob (read it as text with SQL's `hex`)" })
+Err(SqlFailed { code: 1, message: "cannot commit - no transaction is active" })
+Err(SqlFailed { code: 1, message: "table item already exists" })
+(Err(WrongType { column: 1, wanted: "String", found: "Int" }), Ok(9223372036854775807), Err(NoColumn { column: 2, count: 2 }), Err(WrongType { column: 0, wanted: "Float", found: "String" }), Err(WrongType { column: 0, wanted: "Bool", found: "String" }))
+(2, 2, Ok("twice"), Ok("up"), Err(NoColumn { column: 2, count: 2 }))
+Ok(true)
+(Ok(42), Ok("ABC"), Ok(Row { values: [42, "ABC"] }))
+Ok(false)
+Ok(true)
+Ok(Row { values: [5.0, "ABC"] })
+Err(NoParameter { index: 3, count: 2 })
+Err(SqlFailed { code: 21, message: "no statement in the SQL" })
+true
+Ok([Row { values: ["kept"] }])
+true
+Err(CantOpen { path: "no/such/folder/items.db", message: "unable to open database file" })
+
+--- exit 0
