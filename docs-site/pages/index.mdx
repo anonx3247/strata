@@ -6,7 +6,7 @@ tableOfContents: false
 
 import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 
-Strata is an experimental language for working with agents. Constraints live in the types, contracts are proven by an SMT solver (or fuzzed when they can't be), unfinished code is a typed hole, and side effects are capabilities passed as parameters.
+Strata is an experimental language for working with agents. Types carry constraints, an SMT solver proves contracts (or a fuzzer tests the ones it can't), unfinished code is a typed hole, and side effects are capabilities passed as parameters.
 
 Install it (macOS on Apple silicon; [other ways](/docs/tools/#installing)):
 
@@ -21,6 +21,6 @@ curl -fsSL https://strata-lang.dev/install.sh | sh
   <LinkCard title="Learn Strata in Y minutes" href="/docs/learn-strata/" description="The language in one valid file. Give it to an agent before it writes Strata." />
 </CardGrid>
 
-The annex has the fine print: the [language](/docs/language-reference/), [verification](/docs/verification-reference/) and [tools](/docs/tools-reference/) references. [Internals](/docs/internals/) is for working on Strata itself.
+The references cover the detailed rules: [language](/docs/language-reference/), [verification](/docs/verification-reference/) and [tools](/docs/tools-reference/). [Internals](/docs/internals/) is for working on Strata itself.
 
-New to Strata? [The tour](/tour.html) shows the ideas on real programs, with every output recorded from the real CLI.
+[The tour](/tour.html) introduces the main ideas on real programs, with every output recorded from the CLI.

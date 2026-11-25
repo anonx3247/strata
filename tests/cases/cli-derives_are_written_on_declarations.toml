@@ -103,35 +103,40 @@ run = ["sh", "-c", "$STRATA --file e.strata edit < d.st"]
 strata = ["--file", "e.strata", "view", "main"]
 out_file = "d.st"
 
-# the interface level shows them too; a definition viewed alone, without
+# the interface level shows them too, and a declaration viewed alone comes
+# with its derive line (so that editing what `view Point` shows keeps them)
 [[step]]
 strata = ["--file", "d.strata", "view", "Point", "--level", "1"]
-out = "type Point = { x: Int, y: Int }\n"
+out = "derive Json, Toml for\ntype Point = { x: Int, y: Int }\n"
 
+# a derive viewed alone is a line of its own
 [[step]]
-strata = ["--file", "d.strata", "view", "Point,derive std.json.Json for Point", "--level", "1"]
-out = "derive Json for\ntype Point = { x: Int, y: Int }\n"
+strata = ["--file", "d.strata", "view", "derive std.json.Json for Point", "--level", "1"]
+out = "derive Json for Point\n"
 
-# an edit never deletes: a trait left out of the line keeps its derive (`--rm`
-# removes it)
+# a trait left out of the line removes its derive, with a warning
+# (cli-edit_drops_derives_left_off_their_line)
 [[step]]
 strata = ["--file", "d.strata", "edit"]
 text = '''
 derive Json for
 type Point = { x: Int, y: Int }
 '''
+has = ["warning: removed derive std.toml.Toml for Point (no longer on its derive line)"]
 
 [[step]]
-strata = ["--file", "d.strata", "view", "Point,derive*", "--level", "1"]
-has = ["derive Json, Toml for\ntype Point"]
+strata = ["--file", "d.strata", "view", "main.*", "--level", "0"]
+has = ["impl   derive std.json.Json for Point"]
+lacks = ["Toml for Point"]
 
+# `--rm` removes one too
 [[step]]
-strata = ["--file", "d.strata", "edit", "--rm", "derive std.toml.Toml for Point"]
+strata = ["--file", "d.strata", "edit", "--rm", "derive std.json.Json for Point"]
 text = ""
 
 [[step]]
 strata = ["--file", "d.strata", "view", "main.*", "--level", "0"]
-lacks = ["Toml for Point"]
+lacks = ["for Point"]
 
 # a derive with methods written by hand names one trait
 [[step]]
