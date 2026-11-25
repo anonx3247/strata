@@ -1,0 +1,24 @@
+# `push` onto a list of a union makes the element the union's value (a list
+# printed in a `Result` with an empty error type crashed), built, every
+# object freed
+
+[[step]]
+save = "pushed.strata"
+from = "pushed.st"
+
+[[step]]
+# (--no-verify: verify of `type U = A | B` overflows its stack in smt.sort_type, issue 4a, fixed apart)
+strata = ["build", "pushed.strata", "--no-verify", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+out = '''
+Ok([X, 3, Z])
+["a", 2]
+3
+'''
+
+[[step]]
+strata = ["--file", "pushed.strata", "run"]
+has = ["Ok([X, 3, Z])"]
