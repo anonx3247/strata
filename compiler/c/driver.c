@@ -1,9 +1,7 @@
-// What the `strata` command (compiler/driver, compiler/main) asks of the
-// operating system that std doesn't give: the current folder changed (the
-// compiler reads core/ and std/ from its home), an environment
-// variable set for the commands that read it (`STRATA_HOME`), the
-// process id (a scratch folder of its own), and a pager for what it
-// prints to read (`driver_pager`).
+// What the `strata` command asks of the operating system that std doesn't
+// give: changing the current folder (the compiler reads core/ and std/ from
+// its home), setting environment variables (`STRATA_HOME`), the process id,
+// a pager (`driver_pager`), and `--timings`.
 
 #include <errno.h>
 #include <spawn.h>
@@ -103,13 +101,12 @@ int32_t driver_pager(const char *cmd) {
 
 // ---- `--timings` (STRATA_TIMINGS=1): the time each phase takes ----
 //
-// compiler/timings marks where a phase begins and ends (`timings_begin`,
-// `timings_end`, nested: a phase inside another is taken out of the
-// other's own time), the LLVM glue its own (c/toolchain.cpp), and
-// `timings_report` writes them on stderr when the command ends: each
-// phase's own time (without the phases inside it), its time in all (an
-// inner run of the same phase counted once) and how many times it began.
-// Off, a mark costs a test.
+// compiler/timings and the LLVM glue (c/toolchain.c) mark where a phase
+// begins and ends (`timings_begin`, `timings_end`). Phases nest: a phase
+// inside another is taken out of the other's own time. `timings_report`
+// writes on stderr, when the command ends, each phase's own time, its time
+// in all (an inner run of the same phase counted once) and how many times
+// it began. When off, a mark costs a test.
 
 #include <stdio.h>
 #include <string.h>
