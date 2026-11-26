@@ -71,7 +71,7 @@ int32_t screen_begin(void) {
   raw.c_iflag &= ~(IXON | ICRNL);
   raw.c_cc[VMIN] = 1;
   raw.c_cc[VTIME] = 0;
-  if (tcsetattr(0, TCSAFLUSH, &raw) != 0) return 1;
+  if (tcsetattr(0, TCSADRAIN, &raw) != 0) return 1;
   active = 1;
   static int hooked;
   if (!hooked) {
@@ -107,8 +107,8 @@ int32_t screen_draw(const char *text) {
   k += 3;
   for (size_t i = 0; i < n; i++) {
     if (text[i] == '\n') {
-      memcpy(out + k, "\x1b[K\r\n", 5);
-      k += 5;
+      memcpy(out + k, "\x1b[K\n", 4);
+      k += 4;
     } else {
       out[k++] = text[i];
     }

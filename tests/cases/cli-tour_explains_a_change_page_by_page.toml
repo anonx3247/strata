@@ -1,0 +1,114 @@
+# `strata tour`: a package in git with two commits, and tours of the second.
+# Piped, every page is printed (the "Not in the tour" page last); `--keys`
+# presses keys on a screen and prints it; `--check` fails on names that
+# aren't changed definitions and on changed definitions no page names.
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "a.strata"
+from = "a1.st"
+
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+run = ["git", "add", "."]
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "base"]
+
+[[step]]
+save = "a.strata"
+from = "a2.st"
+
+[[step]]
+write = "notes.txt"
+text = "areas are never negative\n"
+
+[[step]]
+run = ["git", "add", "."]
+
+[[step]]
+run = ["git", "commit", "-q", "-m", "change"]
+
+[[step]]
+write = ".tours/main.md"
+from = "main.md"
+
+# every page, then the renderer's last one: `a.third` and notes.txt
+[[step]]
+strata = ["tour"]
+golden = "tests/data/tour/pages.out"
+
+# the third page, its fold of unchanged lines opened
+[[step]]
+strata = ["tour", "--keys", "l l enter"]
+golden = "tests/data/tour/keys.out"
+
+# the list of pages, the last one chosen, its folded change opened
+[[step]]
+strata = ["tour", "--keys", "g G j j j enter enter"]
+has = ["Areas  4/4  Not in the tour", "› ▾ + a.third  (added)", "    +   x / 3"]
+
+# past the last page stays on it, h goes back one; q quits, and keys after it do nothing
+[[step]]
+strata = ["tour", "--keys", "l l l l l h q l"]
+has = ["Areas  3/4  Steps"]
+
+[[step]]
+strata = ["tour", "--check"]
+code = 1
+has = ["error: `a.third` changed (added) and no page names it"]
+
+[[step]]
+write = ".tours/bad.md"
+from = "bad.md"
+
+[[step]]
+strata = ["tour", ".tours/bad.md", "--check"]
+code = 1
+has = ["`a.nothing` (strata-diff) is not a definition this change touches", "`b.*` (strata-routine) matches no definition this change touches", "`a.missing` (strata) is not a definition"]
+lacks = ["no page names it"]
+
+[[step]]
+write = ".tours/main.md"
+text = "---\nbase: HEAD~1\n---\n\n# All\n```strata-diff a.area a.third\n```\n\n```strata-routine\na.perimeter a.steps: rewritten\n```\n"
+
+[[step]]
+strata = ["tour", "--check"]
+has = ["the tour names all 4 changed definitions"]
+
+[[step]]
+strata = ["tour", "--nope"]
+code = 2
+has = ["`strata tour` takes no option `--nope`"]
+
+[[step]]
+strata = ["tour", "missing.md"]
+code = 2
+has = ["no tour at", "`strata skill tour` says how"]
+
+[[step]]
+write = ".tours/main.md"
+text = "# A\n```strata-routine\nno colon here\n```\n"
+
+[[step]]
+strata = ["tour"]
+code = 2
+has = ["a routine line is `names: reason`"]
+
+[[step]]
+strata = ["skill", "tour"]
+has = ["name: strata-tour\n", "strata tour --check", "```strata-routine"]
