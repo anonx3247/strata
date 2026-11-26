@@ -677,7 +677,7 @@ Every program has these types without a `use`:
 | Type | Notes |
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` is arbitrary-precision, like Python's: a machine integer while it fits, a big integer when it doesn't. `Float` is never NaN or infinite. Ints and Floats never mix implicitly (`float(n)`, `round(x)`). Integer `/` and `%` are Euclidean, so the remainder is never negative: `-7 / 2 == -4`, `-7 % 3 == 2`, `7 % -3 == 1`. For C's truncating division, divide the magnitudes and restore the sign (`-(7 / 2) == -3`). `parse_int` accepts an optional `+` or `-` sign (`parse_int("+5") == Some(5)`), so check the first character when only digits are allowed. Strings are UTF-8, ordered (`<`, `<=`, `>`, `>=`, `compare`, `sort`) by code point, which matches UTF-8 byte order |
-| `I8` … `I64`, `U8` … `U64` | fixed-width integers. Their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`) |
+| `I8` … `I64`, `U8` … `U64` | fixed-width integers. Their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`). A list can be indexed by an `I64` (`xs[i]`), which makes no `Int`: a loop over `I64` indices compiles to plain machine arithmetic. A list's length fits one: `len(xs).to_i64()` always does, and `verify` proves it |
 | `()` | the unit type, for "no meaningful value". It plays the role of Python's `None` as a type |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: the outcome of an operation that may fail |
@@ -760,7 +760,7 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - SQLite databases (`std.sqlite`), and records stored as tables (`std.orm`, `derive Table`)
 - command lines (`std.cli`)
 - sorted dictionaries and sets and a priority queue (`std.collections`)
-- n-dimensional arrays of floats: broadcasting, reductions, `matmul` (`std.array`)
+- n-dimensional arrays of floats and integers: broadcasting, reductions, `matmul` (`std.array`)
 - JSON and TOML (`std.json`, `std.toml`)
 - HTTP and HTML as values (`std.http`, `std.web`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
