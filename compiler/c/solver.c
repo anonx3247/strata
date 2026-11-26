@@ -330,6 +330,13 @@ static void solver_dump(const char *script, size_t n, uint64_t h, const char *ou
   size_t first = 0;
   while (out && first < len && out[first] != '\n') first++;
   fprintf(f, "\n; answer: %.*s\n", (int)first, out ? out : "");
+  // and each error the solver reported (compiler/smt's `solver_error`)
+  for (size_t i = 0; out && i < len;) {
+    size_t j = i;
+    while (j < len && out[j] != '\n') j++;
+    if (j - i >= 7 && strncmp(out + i, "(error ", 7) == 0) fprintf(f, "; %.*s\n", (int)(j - i), out + i);
+    i = j + 1;
+  }
   fclose(f);
 }
 
