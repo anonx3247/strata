@@ -1021,6 +1021,10 @@ static _Bool holds_sender(Channel *c) {
   return 0;
 }
 
+// Whether this thread holds a sender of `c` (core.runtime's contract of
+// `strata_channel_close`).
+_Bool strata_channel_held(Channel *c) { return holds_sender(c); }
+
 // A test starts holding none.
 static void forget_senders(void) { nheld = 0; }
 
