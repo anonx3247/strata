@@ -752,7 +752,7 @@ cat README.md | strata run examples/wc
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`). Each field is parsed from the arguments according to its type: a `Bool` is a flag, a `List[T]` takes the remaining arguments, and a field with a default is an option. Every refinement is checked, and `--help` is generated from the `///` doc comments. A union that derives `CommandLine` defines subcommands (`Edit` becomes `edit`), each with its own options.
 
-`main` can also take a `Console` and capabilities (`Disk`, `Process`, or the program's own), in any order. It passes them on where a trait (`Files`, `Environment`) is expected, so tests can substitute their own implementations. `main` returns `()`, an `ExitCode`, or a `Result` of either. An `Err` is written to standard error and the exit code is 1.
+`main` can also take a `Console` and capabilities (`Disk`, `Process`, `Net`, or the program's own), in any order. It passes them on where a trait (`Files`, `Environment`) is expected, so tests can substitute their own implementations. `main` returns `()`, an `ExitCode`, or a `Result` of either. An `Err` is written to standard error and the exit code is 1.
 
 The **standard library** is the `std/` package. It is written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It covers:
 
@@ -761,7 +761,8 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - command lines (`std.cli`)
 - sorted dictionaries and sets and a priority queue (`std.collections`)
 - JSON and TOML (`std.json`, `std.toml`)
-- HTTP and HTML as values (`std.http`, `std.web`)
+- TCP connections, HTTP clients and servers, HTTPS clients (`std.net`, `std.http`), and HTML as values (`std.web`)
+- an LLM agent loop with tools (`std.agent`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
 
 Each module has a [reference page](std/README.md), generated from its doc comments by `strata docgen`. `strata doc std.json` shows one in the terminal.

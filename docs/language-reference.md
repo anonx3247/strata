@@ -639,7 +639,7 @@ Not supported: `derive TypeScript` and `derive Rust` (the same `NAME_json` expor
 
 **Subcommands** are a union that derives `CommandLine`. Each member is a subcommand (`Edit` is `edit`), its fields are the subcommand's options, and its `///` doc is its help. An options record with a field of that union type parses its other fields as global options before the subcommand.
 
-**`main`'s parameters.** `main` can also take `Console` (`std.io`, chosen by the environment: the terminal) and capabilities, in any order. std provides `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself as the tools see it, a `Code`) and `Sqlite` (`std.sqlite`); a program can define its own. `main` passes them on where `Files` or `Environment` is expected: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so tests can pass `mem_files(...)`.
+**`main`'s parameters.** `main` can also take `Console` (`std.io`, chosen by the environment: the terminal) and capabilities, in any order. std provides `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself as the tools see it, a `Code`), `Sqlite` (`std.sqlite`) and `Net` (`std.net`: TCP connections and listeners); a program can define its own. `main` passes them on where `Files` or `Environment` is expected: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so tests can pass `mem_files(...)`.
 
 **Exit codes.** `main` returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either. An `Err` is written to standard error and the exit code is 1. A run-time fault exits with 101. `strata run <fn> [ARGS]` calls a single function instead, with its arguments written as code.
 
@@ -654,10 +654,12 @@ The standard library is the `std/` package. It is written in Strata and built in
 | [std.collections](std/collections.md) | Sorted dictionaries and sets (AVL trees), and a priority queue (binary heap). |
 | [std.ffi](std/ffi.md) | Calling Strata from other languages: `derive C for f`, `derive Python for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
-| [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
+| [std.agent](std/agent.md) | An LLM agent loop: messages, tools made from Strata functions, and a loop that runs the tools a `Model` asks for (`Claude`, through Anthropic's Messages API, or a mock). |
+| [std.http](std/http.md) | HTTP/1.1: requests, responses and routes, a client (`send`, `fetch`, TLS for `https://`) and a server (`serve`), over any `Stream`. |
 | [std.io](std/io.md) | Console text input and output. |
 | [std.json](std/json.md) | JSON text, and reading and writing records and sum types as JSON. |
 | [std.memory](std/memory.md) | Arenas, for programs that must be fast. |
+| [std.net](std/net.md) | TCP connections and listeners (`Net`), read and written through the `Stream` trait; TLS for clients. |
 | [std.process](std/process.md) | The running program's arguments, environment variables and exit code, and running other programs. |
 | [std.orm](std/orm.md) | Records stored as SQLite tables: `derive Table` (the schema, rows written and read back with checks) and typed queries over their fields. |
 | [std.regex](std/regex.md) | Regular expressions. |
