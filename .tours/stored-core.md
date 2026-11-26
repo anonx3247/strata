@@ -123,3 +123,44 @@ binary.expr binary.put_expr: the three tags no longer read or written
 ```strata-routine
 *: re-encoded (handlers as matches); docs rewrapped and one-expression blocks stored as their view reads back (`tools/roundtrip.sh --fix`)
 ```
+
+# Dict and set values as calls
+Compile-time code now gives a dict back as `dict([(k, v), …])` and a set
+as `set([x, …])`, the calls the parser makes of the literals, so the two
+value nodes are gone from the tree.
+
+```strata-diff eval.dict_value eval.set_value eval.dict_entries eval.set_elems eval.builtin
+```
+
+```strata-also
+eval.code eval.show eval.compare eval.canonical eval.cursor eval.collection_of eval.make_dict eval.make_set: read and write the call shape
+codegen.read_slot smt.literal_of: compile-time values and counterexamples written as the calls
+derive.fold_comptime: the value is already code (`as_code` gone)
+```
+
+# Record sugar stored by resolve
+`resolve` is the first pass with the records' declarations: once names are
+qualified it fills in defaults, writes `T { ..r, f: x }` out as every other
+field copied from `r`, and makes `T.f` a key path. `written` reads each
+shape back (`raised`), so `view` shows what was written.
+
+```strata-diff sugar.defaults_filled sugar.defaults_left sugar.update_of sugar.update_parts sugar.key_path sugar.key_path_parts resolve.walk resolve.lowered resolve.raised resolve.records_of
+```
+
+```strata-also
+parse.ident_primary binary.expr text.named_parts: an update before it is stored: the base first, under the name `..`
+sugar.python_lowered sugar.python_raised sugar.results_lowered sugar.results_raised: `extern python` and named results stored by resolve too
+capabilities.python_errors: sees a stored `extern python` function as declared
+desugar.desugar_more: only models, mocks, refinement aliases and mixed unions left
+```
+
+# The update stays in place
+`x = T { f: v, g: x.g, … }` is compiled as `x.f = v`, so a record only `x`
+holds is changed in place rather than copied.
+
+```strata-diff codegen.record_update codegen.stmt_node
+```
+
+```strata-routine
+*: arms for `DictExpr`, `SetExpr` and `UpdateArgs` removed in every pass; tree.* ported to the core tree after merging main (`tree.at` is `kids_at`)
+```
