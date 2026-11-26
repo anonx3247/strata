@@ -67,7 +67,7 @@ Not yet expressed as contracts: `matches` with a pattern that isn't a valid regu
 1. `compiler/codegen` writes LLVM IR as text.
 2. `compiler/c/ir.c` builds the IR in LLVM, which is linked into `strata`, through LLVM's C API. LLVM's own IR text reader is used only for constructs `ir.c` doesn't handle, because it is several times slower.
 3. LLVM compiles the IR to objects, at `-O0` with fast instruction selection.
-4. lld links the objects with the runtime and std's precompiled library.
+4. lld links the objects with the runtime and std's precompiled library. It keeps only the functions and data the program reaches (`-dead_strip`), so a hello world is about 55 KB.
 
 **Parts and caching.** The IR is split into parts: runs of whole functions, each with copies of the constants it uses and, when optimizing, of the small functions it calls, so they can be inlined. Parts compile in parallel, one thread per core.
 
