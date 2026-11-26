@@ -4,7 +4,7 @@ Why  (1/4)
 Areas must never be negative: `area` now says so.
 
 ~ a.area  (stricter precondition)
-  ~ pub fn area(w: Int, h: Int) -> Int[-{-]
+  ~ pub fn area(w: Int, h: Int) -> Int[- {-]
   +   requires w >= 0 && h >= 0 {    ◀ stricter precondition
       w * h
     }
