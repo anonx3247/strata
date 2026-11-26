@@ -367,16 +367,3 @@ kbd { font: 600 12px var(--mono); border: 1px solid var(--line2); border-bottom-
 .slide.intro .fx { --d: 1.35s; }
 .part-title { font: 600 11.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent2); margin: 4px 0 8px; display: block; }
 #start .links { grid-template-columns: repeat(4, 1fr); margin-top: 26px; }
-
-/* three columns: the explanation, the code, and what the tools said */
-.feature.side-by-side .split { grid-template-columns: minmax(280px, 24%) minmax(0, 1.2fr) minmax(0, 1fr); }
-.feature.side-by-side .split > .col:last-child { display: contents; }
-.feature.side-by-side .code-pane { grid-column: 2; align-self: center; max-height: 100%; }
-.feature.side-by-side .outs { grid-column: 3; margin-top: 16px; justify-content: center; }
-.feature.side-by-side.no-outs .code-pane { grid-column: 2 / 4; }
-.feature.side-by-side.no-outs .outs { display: none; }
-.feature.side-by-side .side-text .lede { font-size: clamp(15px, 1.1vw, 18px); }
-@media (max-width: 1100px) {
-  .feature.side-by-side .split { grid-template-columns: 1fr; }
-  .feature.side-by-side .code-pane, .feature.side-by-side .outs, .feature.side-by-side.no-outs .code-pane { grid-column: auto; }
-}
