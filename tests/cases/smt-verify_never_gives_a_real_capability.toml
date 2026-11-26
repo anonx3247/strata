@@ -1,0 +1,47 @@
+# verify never runs code with a real capability: a function generic over
+# `Files` is fuzzed with an in-memory one (`MemFiles`, never `Disk`), and
+# one whose only implementation holds a `Disk` isn't fuzzed. No file
+# appears in the working directory or in strata's home (which `strata`
+# runs in).
+
+[[step]]
+save = "c.strata"
+text = '''
+from std.fs use Disk, Files, FsError
+
+/// Writes a file through any `Files`.
+fn save[F: Files](mut files: F, text: String) -> Result[(), FsError]
+  ensures len(text) < 1000 {
+  files.write("verify-sandbox-probe.txt", text)
+}
+
+trait Saver {
+  fn put(mut self, text: String) -> Bool
+}
+
+type Holder = { disk: Disk }
+
+impl Saver for Holder {
+  fn put(mut self, text: String) -> Bool {
+    match self.disk.write("verify-sandbox-probe.txt", text) {
+      Ok(_) => true,
+      Err(_) => false,
+    }
+  }
+}
+
+/// Saves through a `Saver`, whose one implementation holds the disk.
+fn keep[S: Saver](mut s: S, text: String) -> Bool
+  ensures len(text) < 1000 {
+  s.put(text)
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$TMP\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verify --no-cache \"$TMP/c.strata\""]
+any_code = true
+has = ["~ save                     fuzzed: 200 cases", "- keep                     skipped: it isn't fuzzed: in `keep`: it would make the capability `Disk`, which verify never gives"]
+
+[[step]]
+run = ["sh", "-c", "test ! -e \"$TMP/verify-sandbox-probe.txt\" && test ! -e \"$ROOT/verify-sandbox-probe.txt\" && echo nothing written"]
+has = ["nothing written"]
