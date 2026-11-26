@@ -760,7 +760,7 @@ fn main() {
     C.graph = out(orders, ['view', '--graph', 'Order']);
     const db = run(orders, ['view', '--level', '2']).out;
     C.db = defs(db, ['trait Db']);
-    C.moves = defs(run(orders, ['view', '--level', '1']).out, ['type Order', 'fn ship', 'fn cancel']);
+    C.moves = defs(run(orders, ['view', '--level', '1']).out, ['type Order =', 'fn ship', 'fn cancel']);
     const lossy = `impl Db for MemDb {
   model orders = self.all
 
