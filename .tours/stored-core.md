@@ -138,29 +138,50 @@ codegen.read_slot smt.literal_of: compile-time values and counterexamples writte
 derive.fold_comptime: the value is already code (`as_code` gone)
 ```
 
-# Record sugar stored by resolve
-`resolve` is the first pass with the records' declarations: once names are
-qualified it fills in defaults, writes `T { ..r, f: x }` out as every other
-field copied from `r`, and makes `T.f` a key path. `written` reads each
-shape back (`raised`), so `view` shows what was written.
+# Defaults and updates are core forms
+Field defaults and `T { ..r, f: x }` are stored as written: the update as a
+record constructor whose first field, named `..`, is the record copied.
+`desugar` lowers both with the records' declarations of the moment, so a
+field a record gains is filled in or copied with nothing stored again.
+Storing them lowered went stale: `codegen.restore` and `check.lower` had
+lost `Gen.live` and `Types.narrows` that way (the `--live` failure). Only key
+paths are still lowered when stored: they name the record and the field,
+nothing else.
 
-```strata-diff sugar.defaults_filled sugar.defaults_left sugar.update_of sugar.update_parts sugar.key_path sugar.key_path_parts resolve.walk resolve.lowered resolve.raised resolve.records_of
+```strata-diff desugar.desugar_more desugar.records_of desugar.with_record desugar.records_lowered resolve.lowered resolve.walk codegen.restore check.lower
 ```
 
 ```strata-also
-parse.ident_primary binary.expr text.named_parts: an update before it is stored: the base first, under the name `..`
-sugar.python_lowered sugar.python_raised sugar.results_lowered sugar.results_raised: `extern python` and named results stored by resolve too
-capabilities.python_errors: sees a stored `extern python` function as declared
-desugar.desugar_more: only models, mocks, refinement aliases and mixed unions left
+sugar.update_of sugar.defaults_filled: the lowering, now called by desugar
+sugar.key_path sugar.key_path_parts: still stored by resolve
+parse.ident_primary binary.expr text.named_parts: the update's base first, under the name `..`
+sugar.python_lowered sugar.python_raised sugar.results_lowered sugar.results_raised: `extern python` and named results stored by resolve
+```
+
+# Spreads stored written out
+`f(...x)` is sugar: `resolve` stores each definition with
+`check.spreads_resolved` (which has the types) and renames the values it
+bound in walk order, so the view reads back the same tree. The printer shows
+`f(...x)` when every argument is a field of one place named like its
+parameter (the callee's parameters from the declarations), and a value bound
+first as `...make()` without declarations. The parser gives `...x` as the
+call `...(x)` until stored, so `ast.Expr` loses `Spread`.
+
+```strata-diff sugar.spread_of sugar.spread_value sugar.spread_call sugar.spread_block sugar.spread_args sugar.place_run sugar.spread_written resolve.raised resolve.callee_params resolve.spread_params_of resolve.spread_renamed resolve.spread_binders resolve.spreads_by_name text.unlowered
+```
+
+```strata-also
+check.spread_bound check.spread_values check.spread_filled check.spread_untagged check.spread_in check.spread_calls check.infer_untagged check.spreads_resolved: the spread is the call `...(x)`
+parse.args parse.ident_primary binary.expr resolve.expr_here text.inline: made, read and printed as that call
 ```
 
 # The update stays in place
-`x = T { f: v, g: x.g, … }` is compiled as `x.f = v`, so a record only `x`
+The lowered `x = T { f: v, g: x.g, … }` is compiled as `x.f = v`, so a record only `x`
 holds is changed in place rather than copied.
 
 ```strata-diff codegen.record_update codegen.stmt_node
 ```
 
 ```strata-routine
-*: arms for `DictExpr`, `SetExpr` and `UpdateArgs` removed in every pass; tree.* ported to the core tree after merging main (`tree.at` is `kids_at`)
+*: arms for `DictExpr`, `SetExpr`, `UpdateArgs` and `Spread` removed in every pass; tree.* ported to the core tree after merging main (`tree.at` is `kids_at`)
 ```
