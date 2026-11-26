@@ -2807,6 +2807,12 @@ int64_t strata_list_remove_at(List *xs, int64_t i) {
   xs->len--;
   return old;
 }
+
+// Whether `x = push(x, e)` may push onto `xs` in place: it is owned.
+_Bool strata_list_pushable(List *xs) { return strata_list_owned(xs); }
+
+// In an owned list: `x` (handed over) after its elements, its header kept.
+void strata_list_push_owned(List *xs, int64_t x) { strata_list_insert(xs, xs->len, x); }
 #else
 // (core.rt's: the list functions, below too; `append` is the host
 // functions')
