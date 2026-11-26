@@ -1,0 +1,46 @@
+# Field defaults, `..r` updates and key paths are stored as core forms
+# (`resolve`, which has the records' declarations) and shown as written:
+# `header --tree` shows the stored constructor, `view` the sugar.
+
+[[step]]
+save = "r.strata"
+text = '''
+type Opts = { names: List[String], times: Int = 1 }
+
+type Pt = { x: Int, y: Int }
+
+fn opts() -> Opts {
+  Opts { names: [] }
+}
+
+fn moved(p: Pt) -> Pt {
+  Pt { ..p, x: p.x + 1 }
+}
+
+fn made() -> Pt {
+  Pt { ..moved(Pt { x: 1, y: 2 }), y: 0 }
+}
+
+fn by_x() -> KeyPath[Pt, Int] {
+  Pt.x
+}
+
+fn main() {
+  print(opts().times)
+  print(moved(Pt { x: 1, y: 2 }))
+  print(made())
+  print((by_x().get)(Pt { x: 7, y: 0 }))
+}
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "run"]
+stdout = "1\nPt { x: 2, y: 2 }\nPt { x: 2, y: 0 }\n7\n"
+
+[[step]]
+strata = ["--file", "r.strata", "view", "main"]
+has = ["Opts { names: [] }", "Pt { ..p, x: p.x + 1 }", "Pt { ..moved(Pt { x: 1, y: 2 }), y: 0 }", "  Pt.x\n"]
+
+[[step]]
+strata = ["header", "r.strata", "--tree"]
+has = ["times", "$base", "KeyPath"]
