@@ -27,17 +27,6 @@ Code  (3/5)
   + fn cancel(o: Order, reason: NonEmptyString) -> Order
     ▸ … body: 5 lines
 
-The body  (4/5)
-───────────────
-
-+ cancel  (added)
-  + fn cancel(o: Order, reason: NonEmptyString) -> Order {
-  +   match o {
-  +     Pending { id, .. } => Cancelled { id, reason },
-  +     _ => o,
-  +   }
-  + }
-
 ship
     /// Works with any `Db`: pass the real one in production, a fake in tests.
     fn ship(
@@ -49,6 +38,17 @@ ship
       Err(_) => true,
     }
     ▸ … body: 11 lines
+
+The body  (4/5)
+───────────────
+
++ cancel  (added)
+  + fn cancel(o: Order, reason: NonEmptyString) -> Order {
+  +   match o {
+  +     Pending { id, .. } => Cancelled { id, reason },
+  +     _ => o,
+  +   }
+  + }
 
 Not in the tour  (5/5)
 ──────────────────────

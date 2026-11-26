@@ -17,9 +17,9 @@ A pending order can be cancelled.
 ```strata-diff cancel
 ```
 
-# The body
-```strata-diff cancel full
+```strata ship
 ```
 
-```strata ship
+# The body
+```strata-diff cancel full
 ```

@@ -43,7 +43,16 @@ golden = "tests/data/tour/graphs.out"
 # the first fold of the code page: the added body, opened
 [[step]]
 strata = ["tour", "--keys", "l l enter"]
-has = ["▾ … body:", "Pending { id, .. } => Cancelled { id, reason },"]
+has = ["›     ▾ … body: 5 lines", "Pending { id, .. } => Cancelled { id, reason },"]
+
+# Tab selects the second fold, `ship`'s body, and Enter opens it; Shift-Tab goes back
+[[step]]
+strata = ["tour", "--keys", "l l tab enter"]
+has = ["      ▸ … body: 5 lines", "›     ▾ … body: 11 lines", "mut db.save(o)"]
+
+[[step]]
+strata = ["tour", "--keys", "l l tab shift-tab enter"]
+has = ["›     ▾ … body: 5 lines", "      ▸ … body: 11 lines"]
 
 [[step]]
 strata = ["tour", "--check"]
