@@ -1,0 +1,43 @@
+# verify never runs code that reaches an `extern` function: C would run for
+# real. `make` calls libc's `mkdir`, `outer` reaches it through `make`;
+# neither is fuzzed nor is the solver's counterexample replayed, and the
+# verdict names the extern. Proofs still stand: `proven_caller` calls C and
+# is proven from `make`'s contract. No folder appears in the working
+# directory or in strata's home (which `strata` runs in).
+
+[[step]]
+save = "c.strata"
+text = '''
+extern c fn mkdir(path: String, mode: I32) -> I32
+
+/// Makes a folder, through C.
+fn make(name: String) -> I32
+  ensures len(name) < 1000 {
+  mkdir("verify-extern-probe-" + name, 493.wrap_i32())
+}
+
+/// Reaches C through `make`.
+fn outer(name: String) -> Bool
+  ensures len(name) < 10 {
+  make(name) == 0.wrap_i32()
+}
+
+/// Proven, though it calls C.
+fn proven_caller(name: String) -> Int where it == 1 {
+  _ := make(name)
+  1
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$TMP\" && STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" verify --no-cache \"$TMP/c.strata\""]
+any_code = true
+has = [
+  "- make                     skipped: not run: reaches `extern c` `mkdir`; not proven: ensures len(name) < 1000",
+  "- outer                    skipped: not run: reaches `extern c` `mkdir` (via make); not proven: ensures len(name) < 10: the solver found a possible counterexample",
+  "✓ proven_caller            proven",
+]
+
+[[step]]
+run = ["sh", "-c", "ls -d \"$TMP\"/verify-extern-probe-* \"$ROOT\"/verify-extern-probe-* 2>/dev/null | wc -l | tr -d ' '; echo folders"]
+has = ["0\nfolders"]

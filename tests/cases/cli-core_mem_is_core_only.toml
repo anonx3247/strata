@@ -7,7 +7,7 @@ has = ["✓ core.mem: a block holds the words and bytes stored in it", " 0 faile
 
 # anywhere else it is refused, its type included
 [[step]]
-strata = ["--file", "x.strata", "edit"]
+strata = ["--file", "x.strata", "edit", "--as-given"]
 text = '''
 fn main() {
   p := raw_alloc(8)
