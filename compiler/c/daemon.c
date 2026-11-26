@@ -45,6 +45,7 @@ extern char **environ;
 // (runtime.c: the arguments `process.args()` gives, and whether standard
 // output counts as a terminal's pager; whether the client's output closed)
 void strata_host_serve(int argc, char **argv, _Bool paged);
+void strata_host_set_args(int argc, char **argv);
 _Bool strata_host_closed(void);
 // (c/driver.c: the pager's terminal width, the phase timers; c/jit.c:
 // `--profile` and the JIT's optimization level, read again from the
@@ -410,6 +411,32 @@ static char *field(const char **p, const char *end) {
   return out;
 }
 
+// The arguments of a command line `daemon_forward` sends (the count, then
+// each), into `*argv` (malloc'd); 0, else 1.
+static int read_args(const char **p, const char *end, int *argc, char ***argv) {
+  char *n_args = field(p, end);
+  if (!n_args) return 1;
+  int n = atoi(n_args);
+  free(n_args);
+  char **v = calloc((size_t)n + 1, sizeof(char *));
+  for (int i = 0; i < n; i++)
+    if (!(v[i] = field(p, end))) return 1;
+  *argc = n;
+  *argv = v;
+  return 0;
+}
+
+// The arguments `process.args()` gives from now on: `args`, encoded as
+// `daemon_forward` sends them (`strata --daemon CMD` run without a daemon,
+// the option taken out).
+int32_t daemon_set_args(const char *args) {
+  int argc;
+  char **argv;
+  if (read_args(&args, args + strlen(args), &argc, &argv)) return 1;
+  strata_host_set_args(argc, argv);
+  return 0;
+}
+
 // The client's state taken as the process's: its streams, folder,
 // environment and arguments. 0, else 1 (a request that can't be read).
 static int enter(const char *body, uint32_t len) {
@@ -420,13 +447,9 @@ static int enter(const char *body, uint32_t len) {
   p = strchr(p, '\n');
   if (!p) return 1;
   p++;
-  char *n_args = field(&p, end);
-  if (!n_args) return 1;
-  int argc = atoi(n_args);
-  free(n_args);
-  char **argv = calloc((size_t)argc + 1, sizeof(char *));
-  for (int i = 0; i < argc; i++)
-    if (!(argv[i] = field(&p, end))) return 1;
+  int argc;
+  char **argv;
+  if (read_args(&p, end, &argc, &argv)) return 1;
   char *cwd = field(&p, end);
   char *n_env = field(&p, end);
   if (!cwd || !n_env) return 1;
