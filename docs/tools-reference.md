@@ -19,6 +19,24 @@ A change to a body alone can't break anything else, so only that body is checked
 
 **Warnings.** An edit prints warnings about what it wrote, on stderr, as `strata check` does for everything: a contract that should be a refinement, or a refinement that should be a contract (`compiler/lint`). `strata fix [NAME]...` applies the change each warning shows and logs it like an edit. With `--file F`, it writes a script or folder outside any log, as `edit --file` does.
 
+**Unused code.** `strata check` reports what a whole package, folder or script never uses (`compiler/unused`), after the unused variables. Each is a warning, or an error when strata.toml says `[check] unused = "error"`. Another value of `unused` is refused, naming the two allowed.
+
+- A private function, type, trait or capability that nothing reaches: `` warning: `deps.before` is never used (remove it with `strata fix`, or make it `pub`) ``. The roots are `main`, tests, `pub` definitions (only those `exports` lists, when it lists some), `extern` declarations, derived types and functions, and what contracts name. A definition reaches what it names. A method call `x.m()` reaches every trait and capability declaring `m` and every function named `m`. A trait reaches its methods' bodies, `derived fn`s included. An `impl` is reached when its trait and its type are, so an impl for a dead type is dead too.
+- A field of a private record that is never read: no `x.f` whose receiver the checker types as that record (or can't type), no record pattern naming it, and no spread `...x` into a parameter of that name. A field name that no other record has needs no typing. The others are typed one reader at a time, starting with the record's own module, until a read of that record is found.
+- A variant of a private sum that is never built, only matched (or never named at all).
+- A name starting with `_` is never reported. Neither are the fields and variants of a `mock`, of a derived type, or of a type a derived type or function holds, nor in a library (a package without `main`) of a type its `pub` definitions show. A script or folder without `main` and without strata.toml is not looked at. core's roots are also its `builtin` definitions, its modules outside `noalloc` and its `strata_…` functions, which compiled code calls by name; its fields and variants are left alone. std's roots also include the private functions the compiler's generated code calls (`std.python.call`, `std.regex.match_code`, …).
+- `strata fix` removes the unreached definitions (those named, or all), with the impls of the types and traits among them, logged like its other fixes: `` fixed: removed `dead_fn`, which is never used ``.
+- An edit prints what it leaves unused that wasn't before, untyped (a read of a field another record also has counts as a read). With `unused = "error"` the edit is rejected. `run`, `test`, `verify` and `build` refuse such a program too.
+- The cost is one pass over the program's trees, plus typing the readers of a few fields: about 0.2 s of `strata check`'s 5 s on `compiler/` (measured with `--timings`; the whole check took 4.9-5.3 s before and 5.2-5.4 s after).
+
+**Loop invariants found where code is written.** `verify` and `build` never search for loop invariants: they use those derived from the loop's code and the `invariant` clauses written ([verification](verification.md#loops)). The search runs when code is written. After an edit, the changed functions that have loops are proven with the derived invariants, and where a check in or after a loop fails (or a loop isn't shown to end), invariants are searched for in that function and written into its code as `invariant` clauses, each loop with a warning:
+
+```text
+warning: in `quoted_end`: added `invariant lx.at <= n` to `while lx.at < n && char_at(lx, lx.at) != "\""` (found by search)
+```
+
+An invariant naming a variable's value before the loop gets a binding just before it (`start_i := i`), and the warning says so. In a package the clauses are a change of their own, logged as made by `edit` and committed like the edit. When nothing is found, the edit says which checks still fail (`warning: in `f`: not proven: …`). `--no-search` skips the search. For code written outside `strata` (a merge, another tool), `strata fix NAME` runs the same search on demand, for the functions named (also `module:m` or `prefix*`, as `verify` takes them; every function with loops when none is named), after the warnings' changes, and prints `fixed: in `f`: added …`. A run's searches share one budget of solver resource units (2,000M).
+
 **Derives written on a declaration.** A declaration given in an edit brings its `derive A, B for` line. A stored derive that `view` would show on that line (no block of methods, for a type or function in the same module, not `for module`) is removed if the line no longer names its trait, with `warning: removed derive std.toml.Toml for Point (no longer on its derive line)`. A declaration given with no derive line loses all such derives, matching what `view` would show. The removal is a change like `--rm`'s: it is listed, logged in `strata log`, and shown by the diffs. A declaration the edit doesn't give keeps its derives. Derives with a block, derives for other modules' declarations, and `for module` derives are removed only by `--rm`. `strata view NAME` and the editor opened on a selection (`strata edit Point`) show a declaration with its derive line, so editing a definition as `view` shows it never loses its derives.
 
 ## How it is stored
@@ -107,9 +125,19 @@ top sites:
 
 With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts) and the code. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
 
-## Reference docs: `strata doc`
+## Docs in the terminal: `strata doc`
 
-`strata doc [MODULE]... [-o DIR] [--man]` (`compiler/docgen`) reads the package around the current folder, or the one given with `--file`, as `view` does. It writes names as the module's code writes them.
+`strata doc [TOPIC]` (`compiler/markdown` renders, `compiler/docgen` finds definitions) looks TOPIC up in this order:
+
+1. A page: `NAME.md` in the `docs` folder of Strata's home. The home is the release's `lib/strata`, where `tools/release.sh` puts `docs/*.md`, or a source checkout's root (`STRATA_HOME`). `docs/std/` is left out of a release: `doc MODULE` makes those pages from the code. `PAGE#SECTION` shows the section under the heading whose anchor is SECTION (`values-and-copying`, or the heading's words), else the sections whose anchors hold it. Several matches are listed.
+2. A module of the program around the current folder (or `--file`'s), of std or of core: the page `docgen` writes for it.
+3. A definition. A name is qualified (`std.json.parse`), short (`parse`), its last parts (`json.parse`), or a method (`Order.total`, `Console.print`, `Dict.insert`: a builtin whose first parameter has that type). The program's definitions come first, then core's, then std's public ones. A name defined in several modules of the first that has it is listed with each definition's first sentence. Several signatures in one module (a builtin's) are shown together.
+
+The renderer reads the Markdown the docs use: headings (bold; `#` and `##` underlined without color), paragraphs and list items wrapped to the width, fenced code indented by 4 (`rust` and `strata` fences highlighted by `compiler/highlight`, other languages as written), inline code colored (its backquotes kept without color), tables aligned, quotes, rules, and links shown by their text, with the target after it for a web address. HTML comments are left out. The width is the terminal's, through the pager too (`driver_columns`, c/driver.c), at most 100 columns, and 80 when the output is not a terminal. The output depends only on the text, the color setting and the width.
+
+## Reference pages: `strata docgen`
+
+`strata docgen [MODULE]... [-o DIR] [--man]` (`compiler/docgen`) reads the package around the current folder, or the one given with `--file`, as `view` does. It writes names as the module's code writes them.
 
 - **A module's doc** is the comment above its first import, or else above its first definition, up to a blank line. A leading `name — ` on the first line is dropped, since the title already gives the name. A section rule (`// ---- …`) is not part of the doc.
 - **Docs are read as prose.** Adjacent lines form a paragraph. A line starting with `- ` is a list item, and its indented following lines continue it. Lines indented by two or more spaces, after a blank line or a line ending in `:`, are an example, shown as code.
@@ -117,7 +145,7 @@ With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separa
 - With MODULEs given, only their pages are written, with no index.
 - **Man pages** are man(7) roff: NAME (the module and its doc's first sentence), SYNOPSIS (`use MODULE`), DESCRIPTION, then a section per kind of definition. `strata(1)` is `strata help`, with its one-line headings as subsections and its command lines as written.
 
-The site's std pages are `docs/std/`, written by `strata --file std doc -o docs/std`. `docs-site/sync.mjs` turns them into the pages under `/docs/std/`.
+The site's std pages are `docs/std/`, written by `strata --file std docgen -o docs/std`. `docs-site/sync.mjs` turns them into the pages under `/docs/std/`.
 
 ## Packages
 
@@ -154,7 +182,7 @@ Dependencies are handled by `compiler/deps` and `compiler/main`, whose `package 
 **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's.
 
 - A definition that only one side changed comes from that side, so edits to two functions never conflict, even on neighbouring lines.
-- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again.
+- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again. `resolve` names the module as its package does: core's `list.strata` is `core.list`, std's `json.strata` is `std.json`.
 - A rename on one side (a definition removed, and a new one equal to the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it.
 - The merged file is then type-checked inside its package. An error that neither side had alone fails the merge, for example when one side changed a signature and the other added a call using the old one.
 - A side that isn't a module file isn't merged, and ours is kept.

@@ -1,8 +1,9 @@
-# A `for` over a list infers what each pass keeps, as a `while` does: the
-# `ensures` of the variable returned, over the elements visited so far
-# (`n <= len(xs)`, every visited element a key, every kept one positive);
-# the list returned, `mut got := []`, has the result's type at the loop's
-# head
+# A `for` over a list keeps the `ensures` of what it changes over the
+# elements visited so far (`n <= len(xs)` with the visited part in place of
+# `xs`, every visited element a key, every kept one positive): derived,
+# with no search and nothing written, when they hold on entry and every
+# pass keeps them. Also through `enumerate`, and sums: a for's element steps
+# the list's prefix sums. Wrong claims stay refuted.
 [[step]]
 save = "f.strata"
 text = '''
@@ -39,9 +40,83 @@ fn kept(xs: List[Int]) -> List[Int]
   }
   got
 }
+
+fn numbered(xs: List[Int]) -> Int
+  ensures it <= len(xs) {
+  mut n := 0
+  for (i, x) in enumerate(xs) {
+    if x > i {
+      n += 1
+    }
+  }
+  n
+}
+
+fn total(xs: List[Int]) -> Int
+  ensures it == sum(xs) {
+  mut s := 0
+  for x in xs {
+    s += x
+  }
+  s
+}
+
+fn scaled(xs: List[Int]) -> Int
+  ensures it == sum(xs.map(x -> 2 * x)) {
+  mut s := 0
+  for x in xs {
+    s += 2 * x
+  }
+  s
+}
+
+fn all_pos(xs: List[Int]) -> Bool
+  ensures it == all(xs, x -> x > 0) {
+  mut ok := true
+  for x in xs {
+    if x <= 0 {
+      ok = false
+    }
+  }
+  ok
+}
+
+fn bad_sum(xs: List[Int]) -> Int
+  ensures it == sum(xs) {
+  mut s := 0
+  for x in xs {
+    s += x + 1
+  }
+  s
+}
+
+fn bad_all(xs: List[Int]) -> Bool
+  ensures it == all(xs, x -> x > 0) {
+  mut ok := true
+  for x in xs {
+    if x == 5 {
+      break
+    }
+    if x <= 0 {
+      ok = false
+    }
+  }
+  ok
+}
 '''
 
 [[step]]
-strata = ["--file", "f.strata", "verify", "--no-write"]
-has = ["✓ positives", "✓ marked", "✓ kept"]
-lacks = ["~ ", "✗ "]
+strata = ["--file", "f.strata", "verify", "--no-race", "--no-cache", "--checks"]
+fails = true
+has = [
+  "✓ positives",
+  "invariant of `for … in xs`: it <= len(xs) (it = n) over the elements visited (derived)",
+  "✓ marked",
+  "✓ kept",
+  "✓ numbered",
+  "✓ total",
+  "✓ scaled",
+  "✓ all_pos",
+  "✗ bad_sum",
+  "~ bad_all",
+]

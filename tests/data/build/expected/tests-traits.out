@@ -1,6 +1,7 @@
+✓ a full queue refuses more
 ✓ default methods, supertraits and generic bounds
 ✓ one generic function, several implementations
 
-2 passed, 0 failed
+3 passed, 0 failed
 
 --- exit 0

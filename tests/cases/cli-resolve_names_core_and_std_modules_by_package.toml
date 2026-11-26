@@ -1,0 +1,22 @@
+# `resolve` stores a module file of std or core under the package's own
+# module name (`core.list`, `std.json`), as `edit` does: the file name alone
+# (`list`) would leave core's runtime unable to find its functions
+
+[[step]]
+run = ["cp", "-R", "$ROOT/core", "core"]
+
+[[step]]
+strata = ["--file", "core/list.strata", "view"]
+has = ["core.list.list_len"]
+
+# a merge left the module as text; fixed by hand, it is stored again
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --no-pager --file core/list.strata view --level 2 > list.st && cp list.st core/list.strata"]
+
+[[step]]
+strata = ["resolve", "core/list.strata"]
+has = ["definitions stored"]
+
+[[step]]
+strata = ["--file", "core/list.strata", "view"]
+has = ["core.list.list_len"]

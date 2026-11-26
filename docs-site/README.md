@@ -16,7 +16,7 @@ npm run build     # into ../site/docs/, next to the landing page and the tour
 ```
 
 - To add a page, create `docs/NAME.md`, then list `NAME` in `PAGES` (sync.mjs) and in the sidebar (astro.config.mjs).
-- The standard library's pages are `docs/std/`, generated from std's `///` docs by `strata --file std doc -o docs/std`. Regenerate them after changing those docs. sync.mjs publishes them under `std/`, with their `README.md` as the index, and the sidebar lists them automatically.
+- The standard library's pages are `docs/std/`, generated from std's `///` docs by `strata --file std docgen -o docs/std`. Regenerate them after changing those docs. sync.mjs publishes them under `std/`, with their `README.md` as the index, and the sidebar lists them automatically.
 - `pages/` holds pages written only for the site (the overview, `index.mdx`).
 - Strata highlighting is `src/strata.tmLanguage.json`, a TextMate grammar that editors can use too, with the landing page's colours from `src/strata-dark.json`.
 - On Vercel, `site/vercel.json` runs this build, so `site/docs/` is never committed.
