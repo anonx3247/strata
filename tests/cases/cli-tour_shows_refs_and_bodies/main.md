@@ -7,9 +7,6 @@ base: HEAD~1
 A pending order can be cancelled.
 
 # Intuition
-```strata-graph Order
-```
-
 ```strata-refs cancel
 ```
 

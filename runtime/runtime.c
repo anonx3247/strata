@@ -346,24 +346,6 @@ int64_t *strata_memory_made(int64_t i);
 void strata_memory_start(_Bool check);
 void strata_memory_threaded(_Bool on);
 void strata_memory_thread_end(void);
-void strata_region_thread_end(void);
-int64_t *strata_region_state(void);
-
-// A task's thread ends: the counts its statement regions still hold (a
-// cancelled task leaves its functions without resetting their regions) are
-// dropped. Word 3 of the region state is the release list; each record
-// holds the record before it, the value and the function that drops it
-// (core.rt's `strata_region_state`).
-#ifdef STRATA_CORE_RT
-static void region_drain(void) {
-  int64_t *st = strata_region_state();
-  while (st[3] != 0) {
-    int64_t *r = (int64_t *)st[3];
-    st[3] = r[0];
-    ((void (*)(void *))r[2])((void *)r[1]);
-  }
-}
-#endif
 void strata_memory_spawning(void);
 #endif
 
@@ -1400,11 +1382,8 @@ static void *task_main(void *arg) {
   forget_reader();
   free_alt_stack();
 #ifdef STRATA_CORE_RT
-  // this thread's free lists and tallies back to the shared ones, and its
-  // statement regions' chunks to the free chunks
-  region_drain();
+  // this thread's free lists and tallies back to the shared ones
   strata_memory_thread_end();
-  strata_region_thread_end();
 #endif
   return NULL;
 }
@@ -4816,6 +4795,26 @@ Str *strata_str_chr(int64_t c) {
   return str_from(b, utf8_put((int32_t)c, b));
 }
 #endif
+
+// The byte offset of the first `p` in `s` at or after `from`, or -1: the
+// prelude's `str_find_from`, which codegen calls this for. memchr finds each
+// place `p`'s first byte is, memcmp compares the rest there.
+int64_t strata_str_find(Str *s, Str *p, int64_t from) {
+  int64_t n = s->len, m = p->len;
+  if (from < 0) from = 0;
+  if (from > n - m) return -1;
+  if (m == 0) return from;
+  const char *b = s->bytes, *end = s->bytes + (n - m) + 1;
+  const char *at = b + from;
+  char first = p->bytes[0];
+  while (at < end) {
+    at = memchr(at, first, (size_t)(end - at));
+    if (!at) return -1;
+    if (memcmp(at + 1, p->bytes + 1, (size_t)(m - 1)) == 0) return at - b;
+    at++;
+  }
+  return -1;
+}
 
 #ifndef STRATA_CORE_RT
 // `parse_int` of the trimmed string: a sign, then a digit, then digits and
