@@ -1,0 +1,47 @@
+Why  (1/4)
+──────────
+
+Areas must never be negative: `area` now says so.
+
+~ a.area  (stricter precondition)
+  ~ pub fn area(w: Int, h: Int) -> Int[- {-]
+  +   requires w >= 0 && h >= 0 {    ◀ stricter precondition
+      w * h
+    }
+
+Routine  (2/4)
+──────────────
+
+1 definition: rewritten without the multiplication
+    a.perimeter
+
+square
+    fn square(s: Int) -> Int {
+      area(s, s)
+    }
+
+Steps  (3/4)
+────────────
+
+The last step multiplies.
+
+~ a.steps  (body changed)
+    pub fn steps(x: Int) -> Int {
+    … 6 lines unchanged
+  ~   e [-+-]{+*+} f
+    }
+
+Not in the tour  (4/4)
+──────────────────────
+
+1 changed definition that no page names:
+
++ a.third  (added)
+  + pub fn third(x: Int) -> Int {
+  +   x / 3
+  + }
+
+1 other file changed (not Strata code)
+    notes.txt
+
+--- exit 0

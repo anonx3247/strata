@@ -255,6 +255,21 @@ The standard library has a reference page per module on the docs site, generated
 - Tested by `cli-docgen_writes_reference_pages`.
 - Not yet: links from a signature to the types it names; checking the examples in doc comments (they are shown, not compiled); removing a page whose module is gone (the folder is only written to); `std.regex` has no module doc yet (its index entry is empty); core's builtins (`view Dict` shows them) have no pages.
 
+### PR tours: `strata tour` (asked for the user 2026-11-26, phase 0 item 3 of the rebuild plan; built, branch `tour`)
+
+A tour is Markdown the PR's agent writes at `.tours/BRANCH.md`; `strata tour` (compiler/tour) shows it page by page with the structural diffs of the definitions it names. docs/tools.md has the user-facing description. Defaults picked, each the user's to change:
+- **Format**: front matter `title`, `base`, `packages` (nothing else is accepted, so a typo is an error). `# ` starts a page; text before the first heading is a page titled by the tour. Fences: `strata-diff NAME…` (names on the fence line or in its body), `strata NAME…` (code now; a plain ```` ```strata ```` with code in it stays ordinary Markdown), `strata-routine` (`names: reason` lines; `*` matches any run of characters, dots included). A name, or a glob in any block, matches a change by its new or its old name; a glob is how a test (`test "…"`) or an import (`use x`), whose names hold spaces, is named.
+- **Base**: always the merge-base of `base` (default `origin/main`, else `main`) with `HEAD`, so the commits merged into main since the branch started never show as reverted. The range ends at the working tree, as `diff --file` does.
+- **Packages**: the folders holding a `strata.toml` nearest to each changed `.strata` file (`git diff --name-only BASE` plus untracked files). Names from several packages share one namespace (std's are prefixed `std.`; compiler's and core's aren't, so a clash between them would match both).
+- **Last page** ("Not in the tour"): always there, saying so when nothing is left out; each left-out change folded at a terminal, open when printed; then the files changed outside Strata code (not checked by `--check`: tests and C files are read in the PR itself).
+- **`--check`**: errors for a `strata-diff` name that isn't a change, a routine name or glob that matches none, a `strata` name that isn't a definition, and each change no page names; exit 1. On success it says how many changed definitions the tour names.
+- **Keys**: → `l` `n`, ← `h` `p`, ↑ ↓ `j` `k`, Space/PgDn and `b`/PgUp a screen, Home, End/`G`, Enter or Tab toggles the first fold on the screen (marked `›`: no cursor of its own), `g` the list of pages (↑ ↓ to choose, Enter to open, `g`/Esc back), `q`, Ctrl-C or Ctrl-D quit. `step` (a key and a view to a view) is proven to keep the page and the list's cursor among the pages; `--keys` replays keys on an 80×24 screen for the cases.
+- **Printed** (piped or `--no-pager`): each page under its title and number, routine lists and left-out changes open, unchanged code folded as `strata diff` folds it. 80 columns piped, the terminal's (at most 100) otherwise.
+- **Cache**: each package's changes under `~/.cache/strata/tour/`, keyed by the compiler, the package, the base commit and the hashes of the working tree's definitions, as tab-separated text records (`changes_text`). Since `diff-fast` (#544) the diff takes seconds, so the cache saves little; it stays because a large PR's diff of several packages still takes a few.
+- **Terminal**: c/screen.c (raw mode, alternate screen, keys by name, size, a frame drawn in one write; the terminal restored at exit and on SIGINT/SIGTERM/SIGHUP/SIGQUIT; a resize redraws).
+- Tested by `cli-tour_explains_a_change_page_by_page` (printed pages, two key replays, `--check`'s failures and success, errors) and tour's tests (parsing, globs, escaping, the cache's text round trip, clipping).
+- Not yet: no jump to a definition by name (`/`); a fold inside an open left-out change toggles only when it is the first fold on screen; lines longer than the screen are cut, not wrapped; a diff's `fold` holds one level of lines (compiler/diff makes no deeper ones); doc diffs show as one `doc:` line; no HTML renderer.
+
 ### Docs in the terminal: `strata doc` (user, 2026-11-26; built, branch `doc-command`)
 
 `strata doc [TOPIC]` shows the documentation in the terminal, paged and highlighted as `view` is. Writing reference pages moved to `strata docgen` (above).
@@ -524,6 +539,34 @@ Definitions were shown in stored order, which means nothing to a reader. Now `vi
 - **Every definition exactly once**: `views.placed` sorts `0..n` by first place in the computed order, so the result is a permutation of the input whatever the traversal gives (`ensures len(it) == n`, proven; that each index is there follows from the sort, which the solver's model of `sorted_by` doesn't follow).
 - **Cases changed**: those comparing a whole view now expect the reading order (`cli-extern_c_declarations`: `length` above the `strlen` it calls). `cli-learn_strata_code_is_valid_and_canonical` checks the tutorial's definitions are each as `view --proofs` prints them, comparing sorted lines, since the tutorial keeps its own order.
 - Not yet: the stale headers themselves, left as they are here (not looked into: an edit of one definition does recompute that one's list; `strata upgrade` refreshes them all). The worklist loop in `views.depth_first` is not shown to terminate (it pushes only what it hasn't seen).
+
+### `strata diff` in seconds (user, 2026-11-26: phase 0, item 2 of REBUILD.md; built, branch `diff-fast`)
+PR reviews and the PR tour read structural diffs, so a diff of one commit must take seconds. Measured on `strata --file compiler diff e71ffba4~1`, a clone at e71ffba4: one commit split into 20 steps by its log entries, 4,200 definitions. origin/main's build took 39 s plain, 39 s with `--json`, and 1.6 GB.
+
+Where the time went (`STRATA_TIMINGS=1` with phases added, and `sample`):
+- 18 s hashing. Each step's touched names were found by encoding and hashing every definition of its versions before and after, twice per step (the step list, then the counts).
+- 7.4 s writing out (`resolve.written`) every whole version, both ends and every step, about 40 walks of the program.
+- 3.3 s replaying log entries. Each entry stored the whole program again (`resolve.stored`).
+- 1.9 s on the "used by N, M depend on it" counts. Each item scanned the whole graph, and `codebase.dependents` scanned it again for each node it reached.
+- 1 s comparing versions for the "edits outside strata" step (`same`, hashing everything again).
+- Underneath most of these: `resolve.walk` found each definition's module imports, bindings and uses by scanning every definition. That is quadratic in the program and was the top of the flat profile.
+- Not the cost: git (15 calls, 0.35 s), decoding the module files (0.3 s), the line LCS (0.03 s), verdicts (none in git mode).
+
+What changed:
+- `resolve.walk` works out each module's imports once. This helps every caller.
+- `stored_at` and `written_at` resolve only the definitions at given places, with the whole program in scope.
+- A range's versions are `diff.Version`s: the stored definitions and each one's hash by name, computed once per decoded version. The module headers' hashes are not used: decoding brings an older form up to date, so a header's hash can differ from its definition's.
+- A `Step` carries the names it touched.
+- A log entry is replayed (or undone) by storing and hashing only what it names.
+- `diff` writes out only the definitions whose hash differs. Users and dependents come from a reverse graph built once. Only changes and what depends on them are looked up for verdicts.
+
+After: 3.2 s plain, 3.3 s with `--json`, 300 MB (0.5 s of it comparing, 0.4 s replaying the 19 entries, 0.4 s decoding). The output is byte-identical to origin/main's on that commit, plain and `--json`, and on log-mode diffs of a small package (steps, `--from`/`--to`, verdicts). A range of three commits of compiler/ (`d5bb1c77~1`): 82 s to 8 s, identical.
+
+One output change, a fix: a definition whose hash is unchanged is not listed. Before, a definition stored again in a newer form (7213f52c's old-form match arms, the same hash) showed as changed: in std from `0945d993~1`, `impl Heap[T]` changed `{ x }` to `x`, and `impl Console for Recorder` showed no difference at all.
+
+For other modules (the PR tour): `diff.git_range` / `diff.log_range` give a `Range`, `diff.range_diff(files, verdicts, range, step, std, core)` gives the `Diff` (items, lines, checks) and its label, and `diff.step_names` gives the names per step. No text or JSON is involved.
+
+Left: about 2 s of the 3.2 s is outside the diff itself. That is loading std's definitions, reading and hashing the working tree, and starting git processes. The verdict lookups in log mode still encode every definition once for its code hash.
 
 ### Written proofs: `lemma`, `assert … by`, `calc`; proofs hidden in views (designed with the user 2026-11-26; built, branch `lemmas`)
 Proofs written in small steps the solver checks one at a time, for what plain `verify` can't reach (induction, queries too large to answer).
@@ -1443,6 +1486,84 @@ The user asked whether Strata needs manual memory management, an unsafe mode or 
     - Seen, not fixed (not run by any command or test): `compiler check core/rt.strata` reports core.rt's statics as unknown variables (on main too), and, since these groups, type errors Rust's checker doesn't give, on `I64` arithmetic with a literal (`0 - big_base()` and `8 + an` with `an := str_size(a)` typed `Int`, then refused as allocating), though the allocator's `128 + k * 8` passes: the cause isn't investigated. compiler/codegen compiles the same code (it doesn't go through that path).
     - Found on the way, fixed in llvm.rs: an `assert` comparing `I64`s dropped, after it passed, the `Int`s made to show its sides, which only its failing path had made (undefined values: core.mem's test of `div_unsigned` crashed `strata --file core test --rust`).
 
+### Memory: scoped allocation from roots (design) (agreed with the user 2026-11-26 as step 4 of "Memory: beyond counting"; phase 1 built, branch `roots-plan`)
+Reference counting stays the model. Scoped allocation is an optimization on top of it, after Goose (https://aardappel.github.io/goose/). Goose has no heap and no counts: every value has a static root, "the variable that bounds its target's lifetime", values are bump-allocated on data stacks and freed when the root's scope ends, and results are built where the caller puts them. Strata can't drop counting, since some lifetimes aren't nested, but it can use the same idea where the compiler sees the lifetime. Phase 1 is this design and a measurement that changes no generated code. The numbers decide whether to build phase 2.
+
+Terms:
+- A region is memory that grows by bump allocation and is freed whole. An object in a region has a count word of 0, so dups and releases skip it, as they do for constants and stack blocks.
+- A scope is a function's body, a block (an `if` branch, a `match` arm, a block expression), one pass of a loop's body, or one statement (its temporaries). Each scope that allocates gets a region, made at its first allocation and reset when the scope ends.
+- A value's root is the variable, or the function's result, whose scope bounds its lifetime. Its home is the outermost scope among all the places it can reach. A value goes in its home's region.
+
+How the home is found (`compiler/roots`):
+- The analysis builds a flow graph for each function. A node is a variable, a value an expression makes, or a fixed place: a statement's temporaries, the function's result, a parameter, or a reason to stay counted. An edge from `s` to `d` says that `d` may hold what `s` holds, so `s` must live as long as `d`.
+- A node's home is the join of the homes of the nodes it reaches, found as a fixed point. The join of two scopes is their nearest common ancestor. The function's result is above every scope, and counted is above everything.
+- `x := e` and `x = e` flow `e` into `x`. A constructor, tuple, list, set or dict literal holds its parts. A list's `+` holds both operands' elements. A string's `+`, an f-string and the built-ins that copy (`split`, `join`, `to_string`, …) hold nothing of their operands.
+- A call holds the arguments its callee may keep (`kept_by`): in its result, and in the variables it is lent `mut`. An argument the callee doesn't keep is a temporary of the statement. A callee whose result type can hold no other value (a number, `Bool`, `String`, or an `Option`, `Result` or tuple of those) keeps nothing in its result. A built-in the analysis doesn't know keeps every argument.
+- A field read, an index and a pattern's bindings borrow from what they read: the source must live as long as the reader. A closure holds what it captures. A spawned task borrows what it captures until its `scope` ends.
+- A function's result is made in its caller's destination: the home of the call in the caller. The same function so makes its result in a loop body's region at one call and counted at another (destination passing).
+
+A value stays counted when one of these holds. Each was chosen because a region would keep garbage there that counting frees, or because the value outlives every scope the compiler sees.
+- Replaced in a loop. `x = e` or `x.f = e` inside a loop, with `x` declared outside it, leaves the old value behind in `x`'s region on each pass. `fold` counts as such a loop.
+- Shrunk in a loop. A `pop`, `remove`, `take` or `drop` inside a loop, on a collection declared outside it, leaves what it took out behind.
+- Updated in a loop, not proven held once. An update in place that `compiler/unique` doesn't prove copies the value, and each copy stays behind.
+- Stored into a `mut` parameter, or grows one (a push or an insert into it). The value belongs to the caller's variable.
+- Crosses to another task: sent on a channel, a task's result, or captured by a `spawn` outside a `scope`.
+- Returned by a closure that captured it. The call running the closure may keep its result longer than the variable's region.
+- Kept by a function that may send it to another task.
+- A variable that a counted value flows into holds counted values, so its drop stays a release.
+
+Rules for each part of the language:
+- Loops. A loop body's region is reset at the end of each pass and at `break` and `continue`. What survives a pass was put in something declared outside the loop: kept (pushed into a list, inserted into a dict) or replaced (counted).
+- `mut` parameters. Phase 1 counts what a callee stores into one. A later phase can pass the region of the caller's argument with the call, like a result's destination. That is sound only where the callee only grows the parameter: a replaced part would pile up in the caller's region at each call.
+- Closures. A closure's block lives in its home's region. A call of a closure makes its result in the call's destination, as any function does.
+- Tasks and the shared bit. Regions are per thread, so bump allocation needs no lock. A child task of a `scope` reads its parent's region objects without counting: they have a count of 0, so no atomic operations either. The parent's region outlives the children, since the `scope` waits for them, and values never change. A child's own allocations go in the child's regions. Its result is counted. Region objects never need the shared bit.
+- Arenas. `std.memory.arena(f)` is a region for the call, with the result copied out. Regions generalize it: destination passing replaces the copy. A region keeps a release list of the counted objects its objects hold a count on, and releases them when it is reset. That also fixes the arena's leak: an arena never releases older objects its objects hold (check's peak went 252 to 322 MB).
+- In-place updates. A region object has a count of 0, so `strata_unique` finds it shared. An update `compiler/unique` proves writes in place. Any other update copies into the region; in a loop below the value's scope that keeps it counted (above).
+- Growing lists. A list at its region's top grows where it is (`arena_grow`). Any other full buffer is copied, and the old one stays until the reset: at most the final size again. A list grown in a loop whose body allocates other values is not at the top. Lanes, Goose's N data stacks, would give it a region of its own.
+- Small values. A function giving a small value returns `{ ptr, words }`. Words built on the callee's stack need no region. When the caller boxes them, it boxes them in its destination region, uncounted. A `ptr` the callee already held is unchanged.
+
+Why it is sound. The claim is that every holder of an object in region `r` ends no later than `r` is reset.
+- The analysis sees every way a pointer is copied: into a variable, a field, an element, a call's result or `mut` argument (by `kept_by`), a closure's captures and a pattern's bindings. Each is an edge. Where it can't follow a value (a built-in it doesn't know, a trait method, code it doesn't compile), it assumes the value is kept, or counts it.
+- A node's home is at least the home of every node it flows into, at the fixed point. So an object never reaches a holder whose scope outlives the object's region.
+- A counted object never holds a region object: a value flowing into a counted node is counted itself. A region object may hold counted objects, with a count recorded on the release list.
+- A loop body's reset frees nothing still held: a value held across passes flows into a node outside the loop, so its home is outside the loop.
+- A result's destination is the call's home in the caller, so the caller's join covers every holder of the result.
+- In check mode a reset can poison the region's memory, so that any use after a reset stops the program, as check mode does for freed objects today.
+
+Run-time pieces, for phase 2:
+- A region is a chain of core.rt's arena chunks (1 MB, kept for reuse). A scope's region is a pointer in its frame, null until the first allocation. A reset returns the chunks past the first and moves the pointer back, so a loop body that allocates on every pass reuses one chunk.
+- A function whose result can be in a region takes its destination as a hidden argument: a region, or null for counted. An allocation for the result is `dest ? bump(dest, n) : strata_alloc(n)`.
+- Region objects have a count word of 0. Check mode also needs a mark telling them from constants.
+- The release list: the counted objects a region holds a count on, released at its reset.
+
+What still costs: a register per call for the destination, and a test per allocation of a result; a chunk taken at a scope's first allocation and given back at its end; a copy where a region object is updated without a proof; memory held until the scope ends; and the analysis at compile time.
+
+The bounding problem. Counting frees a value at its last use, a region at its scope's end, and the garbage in between piles up while the scope lives. Loop bodies and statements are reset often, and the counted rules above catch the values replaced on each pass. Recursion is the case left. A recursive function that builds its result from its own recursive results, copying them (`[x] + f(rest)`), leaves every level's copy in the outermost destination: memory O(n²) where counting needs O(n). Phase 2 must measure the peak memory against counting, on the benchmarks and on `strata check` of the compiler, before anything is on by default.
+
+Phase 1, built (docs/internals.md, "Memory"; docs/tools-reference.md). `compiler/roots` computes the verdicts. With `--memory-sites`, codegen marks the IR with them and `counted_sites` totals, by root: the allocations at sites, the objects the runtime's calls make, and the releases with the releases they lead to inside helpers. A function's result takes its caller's verdict at run time. Without the flag nothing changes. Cases: `build-roots`, and the roots' totals in `build-memory_sites`. The analysis' helpers carry contracts that `verify` proves: `joined`, `common`, `home_code`, `reason_home`, `text_key`, `inside`, `in_loop_below`, `code_names`, `holds_nothing`.
+
+Measured, `strata check` of the compiler package built with `--memory-sites` and run with `STRATA_JOBS=1`:
+- Objects made: 77.0M blocks at sites and 109.2M inside the runtime's calls. Regions would hold 49.5% of them: 37.0% in statements, 9.4% in function bodies, 3.0% in blocks, and almost none in loop bodies (the compiler's loops push into lists declared outside them). At sites the share is 57.7%, inside the runtime's calls 43.7%.
+- 102.3M of the 186.2M objects are made by a callee as its result, and get their region from the caller. Only 38.5M are temporaries a function makes in its own statements. So destination passing is what most of the share needs.
+- Releases: 42.5% would disappear (267.1M releases in the program's functions and 155.1M inside helpers they led to). 7.0% of the releases have no verdict (they come from codegen paths no marker covers).
+- Why values stay counted, as shares of all objects: replaced in a loop 30.0%, most of it the runtime's objects in `walk.kids`, `walk.kid_types` and `walk.pattern_kids` (21M), whose `fold(…, [], (a, b) -> a + b)` makes a new list at each step, then worklists (`todo = walk.kids(x) + todo`, `drop(todo, 1)`: 3M); grows a `mut` parameter 14.2% (`binary.w_str`'s `insert(w.index, s, n)`, values passed to calls that lend `mut i` in `check`); returned by a closure 3.3%; updated in a loop without a proof 1.8%; shrunk in a loop 0.8%; stored into a `mut` parameter, replacing a part, 0.3% (but 7.4% of releases).
+- Time. Sampled with `sample` on the same check built as usual (20.8G cycles, 78.0G instructions, `STRATA_JOBS=1`): allocation takes 20.8% of the samples (`strata_alloc` and the small-object lists 18.5%, its thread-local lookups 2.2%), freeing with the `drop:` helpers 22.0%, and count changes made out of line 2.0%. Count changes made inline don't show apart: 203M dups and 422M releases, at about 2 cycles each, are about 6% more. So memory takes about 51% of the cycles. With 49.5% of the objects and 42.5% of the releases in regions, phase 2 saves at most about 23% of the cycles (20.8% × 0.495 + 30% × 0.425), less the bump allocations and resets: a ceiling of about 1.25 times as fast.
+- With `mut` parameters as destinations (the parameters a callee only grows), 14.2% more objects and 11.6% more releases go into regions. With values replaced in a loop also scoped (copied each pass), 30.0% and 24.4% more. With both, the ceiling is about 45% of the cycles. The folds in `walk` are better rewritten as loops pushing into one list, which also helps counting today.
+- The benchmarks (`--release`): `trees` (lists of records built by a function in `main`'s loop) puts all 22M objects and all 20M releases in loop-body regions, through destination passing. `small` makes no heap objects at all (small values). `update` makes 300K objects, all in `main`'s region; 62.9% of its 15.9M releases are the counts of the record lent to `bump(mut c, …)`. `strings` makes 2.1M objects, 96.1% in regions (the `chr` temporaries, the lines' f-strings); the string grown by `s = s + chr(…)` is replaced in a loop. `tasks` puts all 2.5M objects in function regions: each task's rows in its own, and the shared list in `main`'s, borrowed by the tasks inside their `scope`.
+- Cost of the measurement: building the compiler with `--memory-sites` takes 40 s and peaks at 4.8 GB.
+
+Recommended phase 2, smallest useful first:
+- 2a: the run-time pieces (regions as chunk chains, release lists, poisoning in check mode) and statement regions for the temporaries a function makes in its own statements, with no change to calls: 21% of the objects. Its first deliverable is the peak memory against counting.
+- 2b: destination passing for results, with function and block regions: up to the 49.5% above.
+- Then, measured again: destinations through `mut` parameters a callee only grows, and lanes for lists grown in loops.
+
+Decisions for the user (the defaults are what phase 1 assumes):
+- How a function gets its destination: a hidden argument on every call, or two compiled versions of the functions whose results matter. Recommended: the hidden argument (one register, one test per allocation; two versions double the code).
+- A value replaced in a loop: counted, or copied each pass into a fresh region (double buffering). Recommended: counted. The copy costs O(size) per pass, where counting frees the old value in place.
+- `std.memory.arena`: keep it until regions cover what `check` uses it for, then remove it. Recommended.
+- Destinations through `mut` parameters: only for parameters a callee only grows, after phase 2 is measured. Recommended.
+- A way to run one function counted if recursion piles up garbage: none until a measurement shows the need. Recommended.
+
 ### Memory: static uniqueness (asked by the coordinator 2026-11-26; built, branch `static-unique`)
 An update in place tests at run time whether its value is held once (`strata_unique`, `strata_list_owned`, `strata_tbl_owned`, `strata_list_pushable`) and copies the value otherwise. Decided: a dataflow analysis proves the test true where it can, before the functions are compiled, and codegen leaves the proven tests out. The user chose dataflow over solver queries for the cases that depend on a path.
 - **Built.** `compiler/unique` (`proven_sites`) walks every function and gives codegen the sites it proved, by function and statement text. Codegen's `held_test` turns a proven test into `true` (docs/internals.md, "Memory").
@@ -1541,7 +1662,7 @@ Agreed with the user: reference counting stays the model, and the next steps rem
 1. Per-site counters (stream `mem-sites`, below): count each counting operation, allocation and in-place test by its place in the code, so the next steps are chosen by numbers.
 2. Small aggregates as values (stream `small-values`). Records, tuples, and `Option` / `Result` of a few words are passed and returned in registers. They are boxed only where they flow into something that holds pointers.
 3. Static uniqueness. A value is the sole holder of a fresh value when it comes from a constructor, or from a function whose result summary says fresh. It stays unique while it is only borrowed by callees that don't keep it (`kept_by`), or moved at its last use. An in-place update proven unique skips the count test. In check mode a proven site asserts the count is 1. The analysis is compared with the per-site counters: a site proven unique that is observed shared is a bug in the analysis. Waits for (1).
-4. Scoped allocation from roots, after Goose (https://aardappel.github.io/goose/). A value's root is the variable whose scope bounds its lifetime. A value whose root is a scope the compiler sees goes in that scope's arena: bump allocation, never counted, freed by resetting the pointer. A function's result is built in its caller's arena (destination passing). A counted value may not point to a scoped one. Counting stays the fallback where no root is found. `std.memory.arena` is the run-time half of this.
+4. Scoped allocation from roots (design and measurement: "Memory: scoped allocation from roots (design)"), after Goose (https://aardappel.github.io/goose/). A value's root is the variable whose scope bounds its lifetime. A value whose root is a scope the compiler sees goes in that scope's arena: bump allocation, never counted, freed by resetting the pointer. A function's result is built in its caller's arena (destination passing). A counted value may not point to a scoped one. Counting stays the fallback where no root is found. `std.memory.arena` is the run-time half of this.
 5. Growing lists (stream `list-lanes`). A list grows in place at the top of an arena. Lanes, after Goose's N data stacks: a list grown in a loop gets its own bump area, so it stays on top.
 6. Atomics only for objects shared between threads (stream `shared-bit`). A shared bit per object replaces the global `threaded` flag. The children of a `scope` borrow the parent's values without counting. A `send` of a value held once moves it.
 
