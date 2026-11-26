@@ -46,4 +46,9 @@ builtin fn first[A, B](p: Pair[A, B]) -> A
 strata = ["--file", "y.strata", "edit"]
 text = "builtin fn f() -> Int { 1 }\n"
 fails = true
-has = ["`builtin fn f` has no body: the compiler provides it"]
+has = ["`builtin` definitions are only in `core`: `f`"]
+
+# a builtin's body (core's only) is the runtime's function it is compiled to
+[[step]]
+strata = ["--file", "$ROOT/core", "view", "builtins"]
+has = ["builtin fn trim(s: String) -> String {\n  strata_str_trim(s)\n}\n"]
