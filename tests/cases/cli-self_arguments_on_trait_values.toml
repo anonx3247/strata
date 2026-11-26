@@ -46,7 +46,7 @@ strata = ["--file", "ok.strata", "run"]
 stdout = "false\nfalse\nfalse\nfalse\nfalse\ntrue\n"
 
 [[step]]
-strata = ["--file", "bad.strata", "edit"]
+strata = ["--file", "bad.strata", "edit", "--as-given"]
 text = '''
 trait Shape {
   fn size(self) -> Int
@@ -85,7 +85,7 @@ fn main() {
 }
 '''
 fails = true
-has = ["written: ", "`bigger` takes `other: Self`"]
+has = ["written as given: ", "`bigger` takes `other: Self`"]
 
 [[step]]
 strata = ["--file", "bad.strata", "check"]

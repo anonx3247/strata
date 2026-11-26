@@ -7,7 +7,12 @@
 // reset) and `:print-success` off, then `(echo "@@strata-start")` marks the
 // start of its answers and `(echo "@@strata-done")` their end.
 // Z3's resource limit counts per `check-sat`, so a script gets the answers
-// it gets in a process of its own (the verdict cache relies on that); the
+// it gets in a process of its own (the verdict cache relies on that). A
+// module parameter (`(set-option :smt.random_seed 3)`,
+// `:smt.auto_config`) is global in Z3 and outlives a reset, so a script that
+// sets one leaves its process to be stopped (`sets_global`): the next
+// script would otherwise be solved under it (a query proven alone gave up
+// after an input search's seed). The
 // line numbers of error messages are told from the script's first line, as
 // a process of its own would. A hard time limit (`-T:S`) kills the process
 // (it is started again for the next script) and answers `timeout`, as Z3
@@ -37,6 +42,7 @@ typedef struct {
   pid_t pid;      // 0: not running
   int in, out;    // its standard input and output
   long lines;     // lines written to it so far
+  int dirty;      // a script set a parameter a reset leaves (`sets_global`)
 } Proc;
 
 typedef struct {
@@ -85,6 +91,7 @@ static void proc_stop(Proc *p) {
   }
   p->pid = 0;
   p->lines = 0;
+  p->dirty = 0;
 }
 
 // At exit, each process is told its input has ended and is waited for, so
@@ -145,6 +152,7 @@ static int proc_start(Proc *p, const char *solver) {
   p->in = in[1];
   p->out = out[0];
   p->lines = 0;
+  p->dirty = 0;
   // (it must answer a command as it reads it, within 10 s: else it is no
   // use kept running, and the scripts go to a process each, `pool_broken`)
   const char *ready = "(echo \"@@strata-ready\")\n";
@@ -215,6 +223,7 @@ typedef struct {
   uint64_t h1, h2;
   size_t len;
   char *answer;
+  double secs;  // how long the solver took (`solver_memo_ns`)
 } Memo;
 
 static Memo *memo;
@@ -273,7 +282,7 @@ static int running_has(uint64_t h1, uint64_t h2, size_t n) {
   return 0;
 }
 
-static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer) {
+static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer, double secs) {
   pthread_mutex_lock(&memo_lock);
   if (2 * (memo_count + 1) > memo_cap) {
     size_t cap = memo_cap ? 2 * memo_cap : 1024;
@@ -301,7 +310,7 @@ static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer) {
     }
     i = (i + 1) % memo_cap;
   }
-  memo[i] = (Memo){h1, h2, n, strdup(answer)};
+  memo[i] = (Memo){h1, h2, n, strdup(answer), secs};
   memo_count++;
   pthread_mutex_unlock(&memo_lock);
 }
@@ -371,6 +380,22 @@ static int has_word(const char *flags, const char *w) {
   return 0;
 }
 
+// Whether `script` sets a module parameter (`(set-option :smt.…`: a name
+// with a dot), which Z3 keeps across `(reset)`.
+static int sets_global(const char *script, size_t n) {
+  const char *key = "(set-option :";
+  size_t k = strlen(key);
+  for (size_t i = 0; i + k <= n; i++) {
+    if (memcmp(script + i, key, k) != 0) continue;
+    for (size_t j = i + k; j < n; j++) {
+      char c = script[j];
+      if (c == '.') return 1;
+      if (c == ' ' || c == ')' || c == '\n' || c == '\t' || c == '\r') break;
+    }
+  }
+  return 0;
+}
+
 // One script's answers from process `p` (started when it isn't running),
 // with its flags (`-t:MS`, `-T:S`, `rlimit=N`): what the solver wrote
 // before the end mark, or, when it died or ran past `-T`, what it wrote.
@@ -385,7 +410,16 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
     else if (strncmp(f, "rlimit=", 7) == 0) rlimit = atol(f + 7);
     while (*f && *f != ' ') f++;
   }
+  // STRATA_SOLVER_TIMEOUT_MS=N: every script's soft time limit (`:timeout`)
+  // is N ms, its resource limit unchanged, so a case can make a query stop
+  // by time well within its units (compiler/smt's `gave_up` tells the two
+  // apart).
+  const char *soft = getenv("STRATA_SOLVER_TIMEOUT_MS");
+  if (soft && *soft) timeout_ms = atol(soft);
+  // (a process left with a global parameter set starts again)
+  if (p->dirty) proc_stop(p);
   if (p->pid == 0 && !proc_start(p, solver)) return;
+  p->dirty = sets_global(script, script_len);
   // (`:print-success` outlives a reset: the head's own replies end at the
   // START mark, and are dropped, so the script's replies are its own)
   char head[320];
@@ -468,7 +502,7 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
   if (!done) {
     proc_stop(p);
   } else {
-    memo_put(h1, h2, script_len, result->buf ? result->buf : "");
+    memo_put(h1, h2, script_len, result->buf ? result->buf : "", now_s() - started);
   }
   free(in.buf);
   free(out.buf);
@@ -806,6 +840,29 @@ int64_t work_counter(void) {
 
 int64_t work_take(int64_t id) {
   return __atomic_fetch_add(&work_counters[id], 1, __ATOMIC_SEQ_CST);
+}
+
+// How long the solver took on a script answered to its end (flags and
+// script as a job gives them), in nanoseconds; 0 when it wasn't (for
+// `--timings`' per-definition table).
+int64_t solver_memo_ns(const char *flags, const char *script) {
+  size_t n = strlen(script);
+  uint64_t h1, h2;
+  memo_hash(flags, script, n, &h1, &h2);
+  int64_t ns = 0;
+  pthread_mutex_lock(&memo_lock);
+  if (memo_cap) {
+    size_t i = (size_t)(h1 % memo_cap);
+    while (memo[i].answer) {
+      if (memo[i].h1 == h1 && memo[i].h2 == h2 && memo[i].len == n) {
+        ns = (int64_t)(memo[i].secs * 1e9);
+        break;
+      }
+      i = (i + 1) % memo_cap;
+    }
+  }
+  pthread_mutex_unlock(&memo_lock);
+  return ns;
 }
 
 // The current time, in nanoseconds since the epoch (for strata.log's
