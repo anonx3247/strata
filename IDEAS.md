@@ -749,11 +749,7 @@ The user chose the scope "definitions + fields/variants", and a strict mode in s
 - Fixed on the way: `store.refs` skipped `comptime for` bodies, so header deps missed what they call (std.json's and std.toml's derive helpers).
 - Cost on compiler/: 0.20 s of `strata check`'s 5 s (`--timings`, "check: unused definitions"); the whole check 4.9-5.3 s before, 5.2-5.4 s after.
 
-Found on main (left for a follow-up, listed so they can be removed):
-- compiler/: `check.untyped_result`, `codegen.calls_in`, `codegen.all_small`, `codegen.known`, `codegen.conversion_name`, `codegen.in_place_field`, `deps.before` (a copy of `deps.sorts_before`), `eval.call_method`, `eval.bool_of`, `eval.element_lambda`, `graph.all_entries`, `comptime_stamp`, `solver_of`, `smt.not_modelled`, `smt.type_pattern`, `smt.apply_ctor`; fields never read: `check.Inf.tested`, `graph.Shape.traced`, `EditScope.removed`.
-- std: `std.json.checked`.
-- examples/counter: `view`, `step_button`, `css` (an app for `strata serve`, which no longer exists: nothing calls `view`).
-- core, tools/check, the other examples: nothing.
+Removed (branch `remove-dead`): every definition, field and unused variable above, in compiler/ and std (16 definitions and 3 fields in compiler/, `std.json.checked`; removing `Inf.tested` left `check.tested_in` unused, removed too; 16 unused parameters dropped with their arguments at every call, two rounds, since dropping one left `link_command`'s `disk` and `refactor.rename_all`'s `builtins` unused; 30 unused local bindings named `_` or deleted). `examples/counter` is deleted: an app for `strata serve`, which no longer exists. compiler/, std, core and tools/check set `[check] unused = "error"`, so dead code can't come back there.
 - Not found by this analysis, from reading: the prelude's sorted-list dict and set functions other than `dict_map_values` (runtime/prelude.strata has no `main`; codegen calls its functions by name), `declarations.Names.open` (read, but always false), `main.verified_decls`'s `own_modules` (an unused variable, already warned).
 
 Not done: methods of an inherent `impl` that are never called (an impl is reached whole); unused imports; a value that is always the same (`Names.open`).

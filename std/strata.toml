@@ -8,3 +8,7 @@ name = "std"
 # compiler/c/libsqlite3.tbd), loaded for the JIT.
 [native]
 libs = ["sqlite3"]
+
+# unused definitions, fields, variants and variables are errors
+[check]
+unused = "error"
