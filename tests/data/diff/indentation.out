@@ -1,0 +1,19 @@
+wrapped
+  step 2 wrapped  (1 definition)
+
+1 changed  ·  0 interface changes
+
+IMPLEMENTATIONS
+
+~ total  (body changed)
+    implementation only · nothing else needs re-checking
+    fn total(xs: List[Int]) -> Int {
+      mut s := 0
+  +   if len(xs) > 0 {
+        for x in xs {
+    … 3 lines unchanged
+  +   }
+      s
+    }
+
+--- exit 0

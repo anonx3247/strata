@@ -1,0 +1,38 @@
+# The printer decides indentation, so `strata diff` compares lines without
+# it: a body wrapped in a new `if` shows the `if` and its closing brace
+# added, the lines inside unchanged.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "-m", "base"]
+text = '''
+fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs {
+    s += x
+    s += 1
+  }
+  s
+}
+'''
+
+[[step]]
+strata = ["edit", "-m", "wrapped"]
+text = '''
+fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  if len(xs) > 0 {
+    for x in xs {
+      s += x
+      s += 1
+    }
+  }
+  s
+}
+'''
+
+[[step]]
+strata = ["diff", "--step", "2"]
+golden = "tests/data/diff/indentation.out"

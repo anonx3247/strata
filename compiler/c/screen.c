@@ -173,6 +173,7 @@ const char *screen_key(void) {
       case 'D': return "left";
       case 'H': return "home";
       case 'F': return "end";
+      case 'Z': return "shift-tab";
     }
     if (b >= '0' && b <= '9') {
       int t = byte_in(30);

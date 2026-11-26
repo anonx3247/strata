@@ -103,6 +103,24 @@ has = ["~ a.area  (stricter precondition)", "~ a.perimeter  (body changed)", "+ 
 strata = ["tour", "--check"]
 has = ["the tour names all 4 changed definitions"]
 
+# `strata-also`: changes that support a page, named and checked, shown folded
+[[step]]
+write = ".tours/main.md"
+text = "---\nbase: HEAD~1\n---\n\n# All\n```strata-diff a.area\n```\n\n```strata-also\na.third a.steps: what the area is built on\n```\n\n```strata-routine\na.perimeter: rewritten\n```\n"
+
+[[step]]
+strata = ["tour", "--check"]
+has = ["the tour names all 4 changed definitions"]
+
+[[step]]
+strata = ["tour"]
+has = ["▸ 2 supporting changes: what the area is built on"]
+lacks = ["a.third"]
+
+[[step]]
+strata = ["tour", "--keys", "enter tab tab enter"]
+has = ["▾ 2 supporting changes: what the area is built on", "    ▸ + a.third  (added)", "›   ▾ ~ a.steps  (body changed)", "e [-+-]{+*+} f"]
+
 [[step]]
 strata = ["tour", "--nope"]
 code = 2
