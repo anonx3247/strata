@@ -95,40 +95,6 @@ kbd { font: 600 12px var(--mono); border: 1px solid var(--line2); border-bottom-
 .problems .fix::before { content: "Strata → "; color: var(--ok); font-family: var(--mono); font-size: 12.5px; }
 
 /* ───────── the codebase graph ───────── */
-.graph { position: relative; min-height: 0; height: 100%; border: 1px solid var(--line); border-radius: 18px; background: radial-gradient(ellipse at 30% 20%, #8ea2ff0d, transparent 60%), #0f1116cc; overflow: hidden; }
-.graph svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.graph .legend { position: absolute; left: 16px; bottom: 12px; display: flex; gap: 14px; font: 11.5px var(--mono); color: var(--muted); z-index: 2; }
-.graph .legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--c); vertical-align: 0; }
-.graph .collabel { position: absolute; top: 12px; transform: translateX(-50%); font: 600 10.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
-.gnode { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 7px; padding: 5px 11px 5px 9px; border-radius: 9px; font: 12.5px var(--mono); white-space: nowrap;
-  background: var(--bg2); border: 1px solid var(--line2); color: var(--text); z-index: 1;
-  transition: left .9s cubic-bezier(.2,.8,.2,1), top .9s cubic-bezier(.2,.8,.2,1), border-color .4s, box-shadow .4s, background .4s, opacity .5s, filter .5s; }
-.gnode .kd { font: 600 9.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
-.gnode .st { width: 8px; height: 8px; border-radius: 50%; background: var(--line2); flex: none; transition: background .4s, box-shadow .4s; }
-.gnode.k-type .nm { color: var(--ty); } .gnode.k-trait .nm { color: var(--kw); } .gnode.k-fn .nm { color: var(--fn); } .gnode.k-test .nm { color: var(--muted); } .gnode.k-impl .nm { color: #c3c2bb; }
-.gnode.pass .st { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
-.gnode.fuzzed .st, .gnode.assumed .st { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
-.gnode.fail { border-color: var(--bad); background: #2a1416; box-shadow: 0 0 34px -6px var(--bad); }
-.gnode.fail .st { background: var(--bad); box-shadow: 0 0 10px var(--bad); }
-.gnode.hole { border-color: var(--hole); box-shadow: 0 0 34px -8px var(--hole); }
-.gnode.hole .st { background: var(--hole); box-shadow: 0 0 10px var(--hole); animation: pulse 1.2s infinite; }
-.gnode.changed { border-color: var(--accent2); animation: ping 1.4s cubic-bezier(.2,.8,.2,1) 2; }
-.gnode.focus { border-color: var(--accent); box-shadow: 0 0 0 3px #8ea2ff40, 0 0 40px -6px var(--accent); z-index: 3; }
-.gnode.dim { opacity: .22; filter: grayscale(.6); }
-.gnode.pop { animation: pop .55s cubic-bezier(.2,1.6,.4,1) both; }
-.gnode.gone { opacity: 0; transform: translate(-50%, -50%) scale(.6); }
-.gnode .cex[data-side=right] { left: auto; right: 0; transform: none; }
-.gnode .cex[data-side=left] { left: 0; transform: none; }
-.gnode .cex { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 8px; white-space: normal; width: max-content; max-width: 300px; font: 11.5px/1.45 var(--mono); color: #ffc2c2; background: #2a1416; border: 1px solid #ff6b6b66; border-radius: 8px; padding: 6px 9px; animation: pop .5s both; }
-@keyframes ping { 0% { box-shadow: 0 0 0 0 #f0b45ccc; } 100% { box-shadow: 0 0 0 18px #f0b45c00; } }
-@keyframes pop { from { opacity: 0; transform: translate(-50%, -50%) scale(.3); } }
-.graph path.e { stroke: #3a3f4d; stroke-width: 1.2; fill: none; transition: stroke .4s, opacity .4s; }
-.graph path.e.dim { opacity: .15; }
-.graph path.e.focus { stroke: #8ea2ffaa; stroke-width: 1.6; }
-.graph path.e.lit { stroke: var(--accent2); stroke-width: 1.8; stroke-dasharray: 5 6; animation: dash .8s linear infinite; }
-.graph path.e.bad { stroke: var(--bad); }
-.graph.shake { animation: shake .5s; }
-@keyframes shake { 20% { transform: translateX(-10px); } 40% { transform: translateX(9px); } 60% { transform: translateX(-6px); } 80% { transform: translateX(3px); } }
 
 .stage { position: relative; }
 .code-card { position: absolute; right: 18px; bottom: 18px; width: min(560px, 62%); max-height: 56%; z-index: 4; display: flex; flex-direction: column; opacity: 0; transform: translateY(20px) scale(.97); transition: opacity .5s, transform .5s; pointer-events: none; box-shadow: 0 30px 80px -20px #000, 0 0 0 1px #f0b45c33; }

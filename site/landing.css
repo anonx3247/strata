@@ -102,19 +102,19 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .block .go { display: inline-block; margin-top: 22px; font: 500 14px var(--mono); color: var(--accent); }
 
 /* what Strata changes for agents: two parts, each a few chapters */
-.part { margin-top: 56px; }
-.part-head { padding: 24px 30px; border: 1px solid var(--line2); border-radius: 18px; background: linear-gradient(120deg, #8ea2ff14, transparent 60%), #13151bd9; backdrop-filter: blur(8px); }
-.part-head h3 { font: 600 clamp(26px, 2.3vw, 36px)/1.15 var(--display); letter-spacing: -.02em; margin: 0 0 6px; }
-.part-head p { font-size: 18px; color: var(--text); max-width: 90ch; margin: 0; }
-.part-head .was { display: block; color: var(--muted); margin-bottom: 6px; }
-.chapter p.agent { margin-top: 14px; padding: 10px 14px; border-left: 2px solid var(--ok); background: #5fd07a0d; border-radius: 0 8px 8px 0; color: var(--text); font-size: 15px; }
-.chapter p.agent b { color: var(--ok); }
+.story > h2 { margin-bottom: 0; }
+.part { margin-top: 64px; }
+.part > h3 { font: 600 clamp(30px, 2.8vw, 44px)/1.1 var(--display); letter-spacing: -.02em; margin: 0; color: var(--accent2); }
+.part > .sub { color: var(--muted); font-size: 18px; margin: 8px 0 8px; }
+.chapter h4 { font: 600 22px/1.25 var(--display); letter-spacing: -.01em; margin: 0 0 10px; }
+.astpair { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 16px; }
+.astpair .pane .body { height: 440px; max-height: 440px; }
+.astpair .graph { height: 485px; }
+.visual .pane.plain .body { color: #cfcec8; }
 
 .chapter { display: grid; grid-template-columns: minmax(0, .5fr) minmax(0, 1.8fr); gap: 40px; align-items: start; padding: 44px 0; }
 .chapter + .chapter { border-top: 1px solid var(--line); }
 .chapter .text { position: sticky; top: 30px; }
-.chapter .n { font: 600 12.5px var(--mono); color: var(--accent); letter-spacing: .04em; }
-.chapter h3 { font: 600 clamp(24px, 2vw, 30px)/1.2 var(--display); letter-spacing: -.02em; margin: 10px 0 12px; }
 .chapter p { color: var(--muted); font-size: 16px; margin: 0; }
 .chapter .go { margin-top: 16px; }
 .visual { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
@@ -143,7 +143,7 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .count.warn { background: #ffb05c1f; color: var(--warn); }
 
 @media (max-width: 1050px) {
-  .start .links, .chapter, .visual.two, .visual .vs { grid-template-columns: 1fr; }
+  .start .links, .chapter, .visual.two, .visual .vs, .astpair { grid-template-columns: 1fr; }
   .chapter .text { position: static; }
 }
 
