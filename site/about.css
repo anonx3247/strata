@@ -46,3 +46,5 @@ header.top nav a[aria-current] { color: var(--text); }
 @media (min-width: 1200px) {
   .about .prose .table.wide { margin-left: -150px; margin-right: -150px; }
 }
+.about .prose tr:has(> td:last-child > strong) td { background: #8ea2ff14; }
+.about .prose td strong { color: var(--text); }
