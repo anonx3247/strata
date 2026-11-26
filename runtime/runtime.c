@@ -3749,7 +3749,8 @@ static int live_by_bytes(const void *a, const void *b) {
 // The heap's live objects at their peak (bytes with count words, a small
 // object by its size class), by the site that made them: the 25 holding
 // the most, on stderr; with STRATA_MEMORY_LIVE=PATH (not `1`), every site
-// to PATH, most bytes first: objects, bytes, then the site's table line.
+// to PATH, most bytes first: objects and bytes at the peak, then at the
+// end, then the site's table line.
 // Objects made inside the runtime's functions are their caller's site's.
 // Statement regions and arenas are not counted.
 static void live_report(void) {
@@ -3781,18 +3782,21 @@ static void live_report(void) {
   if (path && strcmp(path, "1")) {
     FILE *out = fopen(path, "w");
     if (out) {
-      fputs("objects\tbytes\tkind\tfunction\tlocation\tcode\troot\n", out);
+      int64_t *end = (int64_t *)live_tables[2];
+      fputs("objects\tbytes\tobjects_at_end\tbytes_at_end\tkind\tfunction\tlocation\tcode\troot\n", out);
       for (int64_t j = 0; j <= n; j++) {
         int64_t i = order[j];
         if (live_peak[2 * i] == 0 && live_peak[2 * i + 1] == 0) continue;
         if (i == n) {
-          fprintf(out, "%lld\t%lld\tnone\t\t\t\t\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1]);
+          fprintf(out, "%lld\t%lld\t%lld\t%lld\tnone\t\t\t\t\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1],
+                  (long long)end[2 * i], (long long)end[2 * i + 1]);
           continue;
         }
         const char *s = site_lines[i];
         size_t m = 0;
         while (s[m] && s[m] != '\n') m++;
-        fprintf(out, "%lld\t%lld\t%.*s\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1], (int)m, s);
+        fprintf(out, "%lld\t%lld\t%lld\t%lld\t%.*s\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1],
+                (long long)end[2 * i], (long long)end[2 * i + 1], (int)m, s);
       }
       fclose(out);
     } else {

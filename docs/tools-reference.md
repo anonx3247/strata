@@ -115,6 +115,18 @@ memory roots:                                    allocs   in arena      runtime 
 
 With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts), the code and the root. A function's result has the root `result`: it takes its caller's at run time. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
 
+With `STRATA_MEMORY_LIVE` set too, the program counts the heap's live objects by the place that made them, and reports the places holding the most at the peak of live bytes:
+
+```
+live at the peak: 12635102 objects, 499.3 MB (copied 267 times); now 0 objects, 0.0 MB
+     243.8 MB    7989757  runtime  strata.compiled.str_chars  push(out, byte_slice(s, i, j))
+      25.8 MB     846462  append   std.json.read_string  out + c
+```
+
+An object is a block with its count word: a small one counts its size class. Objects made inside the runtime's functions count for the place that called them. Statement regions and arenas are left out. `STRATA_MEMORY_LIVE=FILE` also writes every place to FILE: the objects and bytes at the peak, then at the end, then the place's line as in `STRATA_MEMORY_SITES`. Counting costs two atomic adds per allocation and per free.
+
+`tools/memcurve.c` samples a command's memory every 10 ms (resident size and footprint, children included) into a CSV and plots it. `tools/memprof.sh` runs the workloads in `tools/memprof/` and `strata check` of compiler/ under it.
+
 ## Docs in the terminal: `strata doc`
 
 `strata doc [TOPIC]` (`compiler/markdown` renders, `compiler/docgen` finds definitions) looks TOPIC up in this order:
