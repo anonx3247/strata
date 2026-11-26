@@ -1,0 +1,59 @@
+# `strata tour` on an added function: its interface shown and its body
+# folded (`full` opens it), a `strata` block's body folded too, a
+# `strata-graph` block's moves of `Order` and the move the change adds, and a
+# `strata-refs` block's uses and users.
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["add", "$ROOT/tests/data/graph/orders.strata"]
+
+# (`add` and `edit` commit to git: the tour's base is the commit before the edit)
+
+[[step]]
+strata = ["edit", "-m", "cancel"]
+text = '''
+/// A pending order cancelled, for `reason`; any other order as it was.
+fn cancel(o: Order, reason: NonEmptyString) -> Order {
+  match o {
+    Pending { id, .. } => Cancelled { id, reason },
+    _ => o,
+  }
+}
+'''
+
+[[step]]
+write = ".tours/main.md"
+from = "main.md"
+
+[[step]]
+strata = ["tour"]
+golden = "tests/data/tour/graphs.out"
+
+# the first fold of the code page: the added body, opened
+[[step]]
+strata = ["tour", "--keys", "l l enter"]
+has = ["▾ … body:", "Pending { id, .. } => Cancelled { id, reason },"]
+
+[[step]]
+strata = ["tour", "--check"]
+has = ["the tour names all 1 changed definition"]
+
+[[step]]
+write = ".tours/main.md"
+text = "---\nbase: HEAD~1\n---\n\n# All\n```strata-diff cancel\n```\n\n```strata-graph Shape\n```\n\n```strata-refs nothing\n```\n"
+
+[[step]]
+strata = ["tour", "--check"]
+code = 1
+has = ["`Shape` (strata-graph): no sum type `Shape` in the program", "`nothing` (strata-refs) is not a definition"]

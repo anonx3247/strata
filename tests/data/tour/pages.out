@@ -4,7 +4,7 @@ Why  (1/4)
 Areas must never be negative: `area` now says so.
 
 ~ a.area  (stricter precondition)
-  ~ pub fn area(w: Int, h: Int) -> Int[- {-]
+  ~ pub fn area(w: Int, h: Int) -> Int[-{-]
   +   requires w >= 0 && h >= 0 {    ◀ stricter precondition
       w * h
     }
@@ -12,8 +12,7 @@ Areas must never be negative: `area` now says so.
 Routine  (2/4)
 ──────────────
 
-1 definition: rewritten without the multiplication
-    a.perimeter
+▸ 1 definition: rewritten without the multiplication
 
 square
     fn square(s: Int) -> Int {
@@ -27,7 +26,7 @@ The last step multiplies.
 
 ~ a.steps  (body changed)
     pub fn steps(x: Int) -> Int {
-    … 6 lines unchanged
+    ▸ … 6 lines unchanged
   ~   e [-+-]{+*+} f
     }
 
@@ -36,12 +35,8 @@ Not in the tour  (4/4)
 
 1 changed definition that no page names:
 
-+ a.third  (added)
-  + pub fn third(x: Int) -> Int {
-  +   x / 3
-  + }
+▸ + a.third  (added)
 
-1 other file changed (not Strata code)
-    notes.txt
+▸ 1 other file changed (not Strata code)
 
 --- exit 0
