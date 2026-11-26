@@ -1,8 +1,8 @@
 # Frames, key sets and uniqueness as the solver's own operations:
 # `d.excluding(keys)` is the dict's array masked, so "nothing else changed"
-# needs no quantifier over its entries (also through a loop: the `for`
-# loop's invariant over the keys visited is inferred, from the `ensures` of
-# a `mut` parameter); `d.key_set()` the keys whose entry is present;
+# needs no quantifier over its entries (also through a loop, whose
+# invariant is the frame over the keys visited); `d.key_set()` the keys
+# whose entry is present;
 # `set(xs)` exactly the list's elements (a witness of each member's
 # position); `unique(xs)` position to element one to one (an inverse).
 # Contracts using them are proven, wrong ones refuted.
@@ -27,8 +27,12 @@ fn put_set(mut d: Dict[String, Int], k: String, v: Int)
 
 fn put_many(mut d: Dict[String, Int], ks: List[String])
   ensures d.excluding(ks) == old d.excluding(ks) {
-  for k in ks {
-    mut d.insert(k, 0)
+  d0 := d
+  mut i := 0
+  while i < len(ks)
+    invariant d.excluding(take(ks, i)) == d0.excluding(take(ks, i)) {
+    mut d.insert(ks[i], 0)
+    i += 1
   }
 }
 
