@@ -13,6 +13,7 @@
 #                                   (docs/std/ is left out: `strata doc
 #                                   std.MODULE` makes it from std's code)
 #     runtime/prelude.strata        the prelude codegen compiles programs with
+#     runtime/runtime.c, wasm.c, wasm.h  the C runtime, for WebAssembly modules
 #     runtime-lto.o                 the runtime every executable links: the C
 #                                   runtime (-DSTRATA_CORE_RT) and core.rt
 #                                   (the runtime written in Strata) in one
@@ -95,6 +96,8 @@ cp core/*.strata core/strata.toml "$HOME_DIR/core/"
 cp std/*.strata std/strata.toml "$HOME_DIR/std/"
 cp docs/*.md "$HOME_DIR/docs/"
 cp runtime/prelude.strata "$HOME_DIR/runtime/"
+# (`strata build --target wasm32` compiles these for each module, with Homebrew's clang)
+cp runtime/runtime.c runtime/wasm.c runtime/wasm.h "$HOME_DIR/runtime/"
 echo "$VERSION" > "$HOME_DIR/VERSION"
 
 # the man pages: `man strata`, `man std.io` (man looks in the share/man
