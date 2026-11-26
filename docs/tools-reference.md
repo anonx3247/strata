@@ -92,6 +92,21 @@ The hash in a location is the definition's identity hash, comments included, so 
 
 **Error locations.** `strata check` follows each error with `--> LOCATION` and the code after `| `. The location is the first node, outermost first, that the message quotes as code (an expression or pattern before a type). Without one, it is the definition's head. `compiler/codegen`'s "not compiled yet" errors (`build`, `run`, `test`) end with the code they occur in (`, in `CODE``), followed by its location in the same way. The checker itself doesn't track source positions, nor do run-time faults, `--trace` or `verify`'s refutations (see IDEAS.md).
 
+## Measuring memory: `--memory-sites`
+
+`strata build --memory-sites` builds a program that counts, at each place in its code, the blocks it allocates, the holders it adds and drops, the tests it makes before updating a value in place, and the lists and strings it extends. `strata run --memory-sites` does the same on the JIT. When the program ends it prints the totals by kind and the 20 places counted most on stderr:
+
+```
+memory sites: 68 sites
+  alloc              18 at 3 of 5 sites (heap 12, arena 6)
+  unique             31 at 3 of 3 sites (held once 30, shared 1)
+  ...
+top sites:
+            15 push     new buffer 3  grow  push(p.points, Point { x: i, y: i * i })
+```
+
+With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts) and the code. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
+
 ## Reference docs: `strata doc`
 
 `strata doc [MODULE]... [-o DIR] [--man]` (`compiler/docgen`) reads the package around the current folder, or the one given with `--file`, as `view` does. It writes names as the module's code writes them.
@@ -139,7 +154,7 @@ Dependencies are handled by `compiler/deps` and `compiler/main`, whose `package 
 **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's.
 
 - A definition that only one side changed comes from that side, so edits to two functions never conflict, even on neighbouring lines.
-- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again.
+- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again. `resolve` names the module as its package does: core's `list.strata` is `core.list`, std's `json.strata` is `std.json`.
 - A rename on one side (a definition removed, and a new one equal to the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it.
 - The merged file is then type-checked inside its package. An error that neither side had alone fails the merge, for example when one side changed a signature and the other added a call using the old one.
 - A side that isn't a module file isn't merged, and ours is kept.
