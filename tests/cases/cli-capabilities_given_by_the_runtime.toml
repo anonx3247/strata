@@ -77,13 +77,13 @@ pub capability SystemClock {
   }
 }
 
+pub type Fixed = { at: Int }
+
 impl Clock for SystemClock {
   fn now(self) -> Int {
     self.seconds()
   }
 }
-
-pub type Fixed = { at: Int }
 
 impl Clock for Fixed {
   fn now(self) -> Int {

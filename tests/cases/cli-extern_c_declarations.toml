@@ -7,14 +7,14 @@ text = '''
 /// An open database.
 extern c type Sqlite3
 
-extern c fn strlen(s: String) -> U64
-  ensures it >= 0
-
 extern c fn sqlite3_open(path: String, mut db: Sqlite3) -> I32
 
 pub fn length(s: String) -> U64 {
   strlen(s)
 }
+
+extern c fn strlen(s: String) -> U64
+  ensures it >= 0
 '''
 
 [[step]]
@@ -29,14 +29,14 @@ stdout = '''
 /// An open database.
 extern c type Sqlite3
 
-extern c fn strlen(s: String) -> U64
-  ensures it >= 0
-
 extern c fn sqlite3_open(path: String, mut db: Sqlite3) -> I32
 
 pub fn length(s: String) -> U64 {
   strlen(s)
 }
+
+extern c fn strlen(s: String) -> U64
+  ensures it >= 0
 '''
 
 [[step]]

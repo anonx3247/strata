@@ -239,7 +239,7 @@ Changes are ordered types, then interfaces, then implementations, then tests.
 
 `strata view` is the one command that shows code.
 
-- `strata view MODULE` (`shop`, `main` for the root module, or a file such as `shop/orders.strata`) prints a module as stored, imports first. This is the text `edit` reads back.
+- `strata view MODULE` (`shop`, `main` for the root module, or a file such as `shop/orders.strata`) prints a module in reading order (below). This is the text `edit` reads back.
 - `strata view SELECTOR --level N` shows the definitions a selector picks, at a level of detail (1 by default).
 - `strata view` alone prints the package's map (level 0).
 - `view --split DIR` writes every module as a text file (`shop/orders.st`) for reading, never for reading back.
@@ -249,6 +249,14 @@ Changes are ordered types, then interfaces, then implementations, then tests.
 | `--level 0` | a map: one line per definition, with its dependencies, holes and verification status |
 | `--level 1` | interfaces only: types, traits, signatures and contracts |
 | `--level 2` | full source; `view MODULE` output parses back to the same tree |
+
+**Reading order.** Every view, `--split` and the text `strata edit` opens show definitions in the order a file is read, not the order they are stored in (which stays as it is):
+
+- Imports first, then types (with traits and capabilities), then functions (with impls and externs), then tests.
+- Among types and among functions, the roots come first: `main`, then each definition nothing else in the module uses, in stored order. Each is followed by what it uses, depth first, in the order its text first names them. So a parser's `parse` comes before the parse functions it calls, and a type before the types it is made of.
+- Mutual recursion is entered where it is first used. A definition appears once, at its first place, and the same program always prints the same way.
+
+What a definition uses is what its shown text names, so a module read back from its view prints in the same order. Ordering costs a walk through each definition's tree.
 
 **Comments** are part of the tree, so they survive every edit and view.
 

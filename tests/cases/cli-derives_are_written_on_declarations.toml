@@ -68,19 +68,11 @@ from std.json use Json, JsonValue, stringify
 
 from std.toml use Toml
 
-/// A greeting for `name`.
-derive C, Python for
-pub fn greet(name: String) -> String {
-  f"Hello, {name}!"
-}
-
 derive Json for
 type Options = { count: Int, loud: Bool, name: String = "world" }
 
 derive Json, Toml for
 type Point = { x: Int, y: Int }
-
-derive C for module
 
 fn main(mut console: Console) {
   console.print(
@@ -89,6 +81,14 @@ fn main(mut console: Console) {
   console.print(stringify(Point { x: 1, y: 2 }.to_json() !! Null))
   console.print(greet("you"))
 }
+
+/// A greeting for `name`.
+derive C, Python for
+pub fn greet(name: String) -> String {
+  f"Hello, {name}!"
+}
+
+derive C for module
 '''
 
 [[step]]
