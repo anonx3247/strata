@@ -1,0 +1,26 @@
+Areas  3/4  Steps
+  The last step multiplies.
+
+  ~ a.steps  (body changed)
+      pub fn steps(x: Int) -> Int {
+›     ▾ … 6 lines unchanged
+        a := x + 1
+        b := a + 2
+        c := b + 3
+        d := c + 4
+        e := d + 5
+        f := e + 6
+    ~   e [-+-]{+*+} f
+      }
+
+
+
+
+
+
+
+
+
+←→ pages  ↑↓ scroll  Enter fold  g pages  q quit
+
+--- exit 0

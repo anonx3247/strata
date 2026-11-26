@@ -3,7 +3,7 @@
 Strata code is stored as its syntax tree, in a binary format specific to Strata. A `.strata` file is either a **module file** (`main.strata`, `shop/orders.strata`) or a **bundle** holding a whole program. Text is a view of it.
 
 - **Text goes in through an edit.** `strata edit` (from stdin or an editor) and `strata add FILE` parse text and store the result. Nothing else reads text, and a `.strata` file that holds text is refused.
-- **Text comes out through `view`.** `strata view MODULE` prints a module as stored (imports first), `view --split DIR` writes one text file per module (`shop/orders.st`), and `view SELECTOR --level 0|1|2` shows definitions at a level of detail.
+- **Text comes out through `view`.** `strata view MODULE` prints a module in reading order (docs/tools.md, "Views"), `view --split DIR` writes one text file per module (`shop/orders.st`), and `view SELECTOR --level 0|1|2` shows definitions at a level of detail.
 - `strata pack app.strata` writes a bundle, which `--file`, `run` and every view read like a package. `strata pack --prelude FILE` writes the prelude's definitions (its types and code, under the names programs use) as a module file, for Strata code that evaluates trees (`compiler/eval`).
 - `strata header core.strata` prints a module file's table of contents. `--tree` prints each definition (of a bundle too) as a `compiler/ast` value, one per line. `--text` prints it as the printer writes it, as stored, with qualified references (`view` shortens them).
 - In git, `strata setup-git` makes `git diff` and `git log -p` show `.strata` files as text, and merges them definition by definition. A conflict is left as text, and `strata resolve FILE` stores it again once fixed.

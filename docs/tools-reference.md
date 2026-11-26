@@ -43,7 +43,7 @@ An invariant naming a variable's value before the loop gets a binding just befor
 
 **Code.** Code is stored as its syntax tree, in binary. Each `.strata` file is a module file, in Strata's own format, specified in [binary-format.md](binary-format.md).
 
-- Text goes in only through an edit (`strata edit`, `strata add`) and comes out through `view`. `strata view MODULE` prints a module as stored, imports first.
+- Text goes in only through an edit (`strata edit`, `strata add`) and comes out through `view`. `strata view MODULE` prints a module in reading order ([tools](tools.md), "Views"); the stored order is kept.
 - `strata view --split DIR` writes a package's text as one `.st` file per module, for reading, not for reading back.
 - A type listed by one union is shown inside it unless it has its own doc or `impl`. `--members separate` shows every member as a separate definition. Both describe the same program.
 - Outside a package's log, `strata --file F edit < text` stores a script, or a folder's module with `--file DIR/ edit MODULE`, creating it if new. Only text that doesn't parse is refused.
@@ -133,7 +133,19 @@ top sites:
             15 push     new buffer 3  grow  push(p.points, Point { x: i, y: i * i })
 ```
 
-With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts) and the code. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
+A `runtime` site is a call of the runtime that may allocate, with the objects made during it.
+
+After the sites come the totals by root. A root is the scope whose region would hold a value if values were allocated by scope (IDEAS.md, "Memory: scoped allocation from roots"): a statement, a loop's body, a block or a function. A value that would stay counted is listed with the reason. Each line gives the blocks allocated at sites (and how many of them an arena made), the objects made inside the runtime's calls, and the releases with the releases they led to inside helpers. The last line gives the share that regions would hold.
+
+```
+memory roots:                                    allocs   in arena      runtime     releases       nested
+  statement                                           1          0           15           14            1
+  loop body                                           6          0            6            3            6
+  counted: replaced in a loop                         4          0            0            5            0
+  scoped (codes 1-4), share of all                72.2%                  100.0%        80.0%       100.0%
+```
+
+With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts), the code and the root. A function's result has the root `result`: it takes its caller's at run time. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
 
 ## Docs in the terminal: `strata doc`
 

@@ -12,7 +12,7 @@ curl -fsSL https://strata-lang.dev/install.sh | sh
 
 It installs into `~/.strata` (`bin/strata` and `lib/`) and prints how to add `~/.strata/bin` to your PATH. Set `STRATA_VERSION=v0.1` to pin a release, `STRATA_INSTALL=DIR` to install somewhere else, or `STRATA_MODIFY_PATH=1` to add the line to your shell's rc file. Running the script again upgrades in place.
 
-**For coding agents**, `strata skill install` writes a short skill, `strata/SKILL.md`, into the folders where agents look for skills: `~/.agents/skills` (Codex, Pi, OpenCode), plus `~/.claude/skills` and `~/.codex/skills` when those agents are installed. `--dir DIR` writes to one folder, such as a project's `.claude/skills`. The skill explains that `.strata` files are binary, that code is read and changed through `strata`, and lists the commands. `strata skill` prints it.
+**For coding agents**, `strata skill install` writes a short skill, `strata/SKILL.md`, into the folders where agents look for skills: `~/.agents/skills` (Codex, Pi, OpenCode), plus `~/.claude/skills` and `~/.codex/skills` when those agents are installed. `--dir DIR` writes to one folder, such as a project's `.claude/skills`. The skill explains that `.strata` files are binary, that code is read and changed through `strata`, and lists the commands. `strata skill` prints it. A second skill, `strata-tour/SKILL.md` (`strata skill tour` prints it), says how to write a pull request's tour (below).
 
 **Building from source** needs LLVM 23's libraries, zstd and clang, which are linked into strata and not needed to run it, and lld's libraries, built once into `target/lld`. Because strata is written in Strata, an existing `strata` builds the next one: `STRATA_SEED` if set, else one on the PATH, else the latest release, downloaded.
 
@@ -235,11 +235,50 @@ Changes are ordered types, then interfaces, then implementations, then tests.
 - `--json` prints the same for other tools.
 - In a git repository, `strata --file F diff [BASE]` compares a file with a commit (`HEAD` by default). After `strata setup-git`, `git diff` shows `.strata` files the same way.
 
+## Tours of a pull request: `strata tour`
+
+A tour explains a pull request page by page. The PR's author writes it in Markdown at `.tours/BRANCH.md` and commits it with the PR:
+
+````markdown
+---
+title: Areas are never negative
+base: origin/main     # optional: the merge-base with origin/main (else main) is the default
+packages: compiler    # optional: the packages whose .strata files changed are the default
+---
+
+# Why
+What the PR is for.
+
+# Saying so in the contract
+How it is solved.
+
+```strata-diff a.area
+```
+
+# Routine
+```strata-routine
+a.perimeter a.steps: rewritten without multiplying
+smt.*: renamed `not_modelled` to `unmodelled`
+```
+````
+
+- `# Heading` starts a page.
+- ```` ```strata-diff NAME… ```` shows each definition's structural diff, as `strata diff` finds it between the base and the working tree. Names are qualified (`check.Inf`); a root module's definitions go by their name alone. A glob (`tour.test*`) shows every change it matches, which is how tests (`test "…"`) and imports (`use x`) are named.
+- ```` ```strata NAME ```` shows a definition's code as it is now.
+- ```` ```strata-routine ```` lists mechanical changes, one line each: names or globs (`*` matches any run of characters), a colon, the reason. Each line shows as a count, folded: `16 definitions: unused parameter removed`.
+- The renderer adds a last page, "Not in the tour": every changed definition that no page names, and the files changed outside Strata code.
+
+`strata tour [FILE]` reads `FILE`, or `.tours/BRANCH.md` at the repository's root. At a terminal it shows one page at a time on the alternate screen: → `l` `n` next page, ← `h` `p` previous, ↑ ↓ `j` `k` scroll (Space and `b` a screen), Enter or Tab opens or closes the first fold on the screen (marked `›`), `g` the list of pages, `q` quits. Piped, or with `--no-pager`, it prints every page one after another, folds of names open and unchanged code folded. `--keys "l l enter"` presses those keys on an 80 by 24 screen and prints it, without color; the test cases use it.
+
+`strata tour --check` exits 1 when a name in the tour isn't a definition the change touched (in a `strata` block: isn't a definition at all), or when a changed definition is on no page. `strata skill tour` tells agents how to write one.
+
+The diff of each package is cached under `~/.cache/strata/tour/`, keyed by the base commit and the hashes of the working tree's definitions: a second showing reads it back.
+
 ## Views (levels of detail)
 
 `strata view` is the one command that shows code.
 
-- `strata view MODULE` (`shop`, `main` for the root module, or a file such as `shop/orders.strata`) prints a module as stored, imports first. This is the text `edit` reads back.
+- `strata view MODULE` (`shop`, `main` for the root module, or a file such as `shop/orders.strata`) prints a module in reading order (below). This is the text `edit` reads back.
 - `strata view SELECTOR --level N` shows the definitions a selector picks, at a level of detail (1 by default).
 - `strata view` alone prints the package's map (level 0).
 - `view --split DIR` writes every module as a text file (`shop/orders.st`) for reading, never for reading back.
@@ -249,6 +288,14 @@ Changes are ordered types, then interfaces, then implementations, then tests.
 | `--level 0` | a map: one line per definition, with its dependencies, holes and verification status |
 | `--level 1` | interfaces only: types, traits, signatures and contracts |
 | `--level 2` | full source; `view MODULE` output parses back to the same tree |
+
+**Reading order.** Every view, `--split` and the text `strata edit` opens show definitions in the order a file is read, not the order they are stored in (which stays as it is):
+
+- Imports first, then types (with traits and capabilities), then functions (with impls and externs), then tests.
+- Among types and among functions, the roots come first: `main`, then each definition nothing else in the module uses, in stored order. Each is followed by what it uses, depth first, in the order its text first names them. So a parser's `parse` comes before the parse functions it calls, and a type before the types it is made of.
+- Mutual recursion is entered where it is first used. A definition appears once, at its first place, and the same program always prints the same way.
+
+What a definition uses is what its shown text names, so a module read back from its view prints in the same order. Ordering costs a walk through each definition's tree.
 
 **Comments** are part of the tree, so they survive every edit and view.
 

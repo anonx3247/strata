@@ -1,0 +1,31 @@
+# `view` shows a module in reading order, whatever order it is stored in
+# (`stored.st`, as written): imports, then types, then functions, then
+# tests. A root (`main`, then what nothing else uses) comes first and each
+# definition is followed by what it uses, depth first, in the order it
+# names them: `parse` above `sum` above `number` above `digits`, a union
+# above its members, a record above its fields' types. The mutual
+# recursion `is_odd`/`is_even` is entered where `shown` first uses it. The
+# stored order stays, and the text reads back to the same view.
+
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+from = "stored.st"
+
+[[step]]
+strata = ["--file", "m.strata", "view", "main"]
+golden = "tests/cases/cli-view_shows_definitions_in_reading_order/read.st"
+
+# only the rendering changes: the header lists the stored order
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" header m.strata | awk '$1 == \"fn\" || $1 == \"type\" { printf \"%s \", $NF } END { print \"\" }'"]
+stdout = "Span number digits Sum sum Expr Lit value_of is_odd is_even main shown parse literal \n"
+
+# a selection, in the same order
+[[step]]
+strata = ["--file", "m.strata", "view", "digits,sum,parse", "--level", "1"]
+has = ["pub fn parse(s: String) -> Option[Expr]\n\nfn sum(s: String) -> Option[Expr]\n\nfn digits(s: String) -> Option[Int]\n"]
+
+# the text reads back to the same tree, and views the same
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file m.strata view main > a.st && \"$STRATA\" --file b.strata edit < a.st > /dev/null 2>&1 && \"$STRATA\" --file b.strata view main | diff - a.st && echo same"]
+stdout = "same\n"

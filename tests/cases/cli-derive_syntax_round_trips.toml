@@ -1,4 +1,4 @@
-# cli.rs: derive_syntax_round_trips: derived traits and `comptime`: stored and printed exactly
+# cli.rs: derive_syntax_round_trips: derived traits and `comptime`: stored and printed exactly (in reading order)
 
 # stored as written (a derive with no block shown on the type it derives
 # for); it doesn't check (`Point` and `Pair` aren't records), as the edit says
@@ -53,22 +53,22 @@ pub derivable(Record) trait Named
   fn shout(self) -> String
 }
 
+type Point = { x: Int, y: Int }
+
+derive Named for
+type Pair = { a: Int, b: Int }
+
 comptime fn kind_of(comptime f: Field) -> String {
   match comptime f.type {
     _ => f.name,
   }
 }
 
-type Point = { x: Int, y: Int }
-
 derive Named for Point {
   fn shout(self) -> String {
     "point"
   }
 }
-
-derive Named for
-type Pair = { a: Int, b: Int }
 
 fn derive(derive: Int) -> Int {
   derive + 1

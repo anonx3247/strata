@@ -3623,6 +3623,23 @@ static const char *site_text;
 static const char **site_lines;
 static int64_t site_n;
 
+// The first lines of the table are totals by root (codegen's `roots_table`,
+// compiler/roots): for each code, the allocations at sites (`root.alloc`),
+// the runtime's calls and the objects made during them (`root.rt`), and
+// the releases in the program's functions with those that helpers made
+// during them (`root.drop`). The code's name is in the function's column.
+static int64_t root_n;
+
+// The thread's words for `--memory-sites`' roots: the code of the call
+// running, which the program's functions read on entry (a function's
+// result goes where its caller's code says), and the releases made inside
+// helpers (`drop:`, `unbox:`, …) so far, which a release in the program's
+// functions reads before and after. Cost: a call.
+int64_t *strata_roots_state(void) {
+  static _Thread_local int64_t state[2];
+  return state;
+}
+
 // Site `i`'s field `k` of its table line (0 kind, 1 function, 2 location,
 // 3 code), copied into `out`.
 static void site_field(int64_t i, int k, char *out, size_t cap) {
@@ -3644,8 +3661,10 @@ static int site_by_count(const void *a, const void *b) {
 
 // `unique.p` and `owned.p`: tests the analysis proved hold (compiler/unique),
 // still run with `--memory-sites` to compare.
-static const char *site_kinds[] = {"alloc", "stack", "dup", "release", "unique", "owned", "push", "append", "arena", "unique.p", "owned.p"};
-#define SITE_KINDS 11
+// `runtime`: a call of the runtime's that may allocate (a pointer result),
+// with the objects made during it.
+static const char *site_kinds[] = {"alloc", "stack", "dup", "release", "unique", "owned", "push", "append", "arena", "unique.p", "owned.p", "runtime"};
+#define SITE_KINDS 12
 #define SITE_TEST(k) ((k) == 4 || (k) == 5 || (k) == 9 || (k) == 10)
 
 // At the end: the totals by kind and the 20 sites counted most, on stderr;
@@ -3654,6 +3673,46 @@ static const char *site_kinds[] = {"alloc", "stack", "dup", "release", "unique",
 // between). Allocations made inside the runtime's own functions (a list
 // grown, a string joined) have no site: their number is the objects made
 // (`strata_memory_allocated`) less the heap blocks the sites made.
+// `--memory-sites`' roots, after the sites: for each code that counted
+// anything, the allocations at sites (and how many of those an arena made),
+// the objects the runtime's functions made, and the releases with those
+// they led to inside helpers; then the releases in helpers that no release
+// of the program's led to, and the shares that a region would hold (codes
+// 1 to 4: statement, loop body, block, function).
+static void roots_report(void) {
+  int64_t codes = root_n / 3;
+  if (codes == 0) return;
+  int64_t sum[4] = {0}, scoped[4] = {0}, nested = 0;
+  char name[256];
+  // (the releases in helpers: sites whose root is `nested`)
+  for (int64_t i = root_n; i < site_n; i++) {
+    site_field(i, 4, name, sizeof name);
+    if (!strcmp(name, "nested")) nested += strata_site_counts[2 * i];
+  }
+  fprintf(stderr, "memory roots: %-40s %12s %10s %12s %12s %12s\n", "", "allocs", "in arena", "runtime", "releases", "nested");
+  for (int64_t c = 0; c < codes; c++) {
+    int64_t a = strata_site_counts[2 * c], ar = strata_site_counts[2 * c + 1];
+    int64_t r = strata_site_counts[2 * (codes + c) + 1];
+    int64_t d = strata_site_counts[2 * (2 * codes + c)], dn = strata_site_counts[2 * (2 * codes + c) + 1];
+    int64_t v[4] = {a, r, d, dn};
+    for (int k = 0; k < 4; k++) {
+      sum[k] += v[k];
+      if (c >= 1 && c <= 4) scoped[k] += v[k];
+    }
+    if (a == 0 && r == 0 && d == 0 && dn == 0) continue;
+    site_field(c, 1, name, sizeof name);
+    fprintf(stderr, "  %-52s %12lld %10lld %12lld %12lld %12lld\n", name, (long long)a, (long long)ar, (long long)r, (long long)d, (long long)dn);
+  }
+  fprintf(stderr, "  %-52s %12s %10s %12s %12s %12lld\n", "releases in helpers called outside a release", "", "", "", "",
+          (long long)(nested - sum[3]));
+  fprintf(stderr, "  %-52s", "scoped (codes 1-4), share of all");
+  for (int k = 0; k < 4; k++) {
+    if (k == 1) fprintf(stderr, " %10s", "");
+    fprintf(stderr, " %11.1f%%", sum[k] ? 100.0 * (double)scoped[k] / (double)sum[k] : 0.0);
+  }
+  fputc('\n', stderr);
+}
+
 static void sites_report(void) {
   int64_t total[SITE_KINDS] = {0}, second[SITE_KINDS] = {0}, reached[SITE_KINDS] = {0}, sites[SITE_KINDS] = {0};
   int64_t *order = malloc((size_t)(site_n ? site_n : 1) * sizeof(int64_t));
@@ -3661,6 +3720,10 @@ static void sites_report(void) {
   char f[256];
   for (int64_t i = 0; i < site_n; i++) {
     order[i] = i;
+    if (i < root_n) {
+      kind[i] = -1;
+      continue;
+    }
     site_field(i, 0, f, sizeof f);
     kind[i] = 0;
     for (int k = 0; k < SITE_KINDS; k++)
@@ -3671,12 +3734,13 @@ static void sites_report(void) {
     if (strata_site_counts[2 * i]) reached[kind[i]]++;
   }
   qsort(order, (size_t)site_n, sizeof(int64_t), site_by_count);
-  fprintf(stderr, "memory sites: %lld sites\n", (long long)site_n);
+  fprintf(stderr, "memory sites: %lld sites\n", (long long)(site_n - root_n));
   for (int k = 0; k < SITE_KINDS; k++) {
     fprintf(stderr, "  %-8s %12lld at %lld of %lld sites", site_kinds[k], (long long)total[k], (long long)reached[k], (long long)sites[k]);
     if (k == 0) fprintf(stderr, " (heap %lld, arena %lld)", (long long)(total[k] - second[k]), (long long)second[k]);
     if (SITE_TEST(k)) fprintf(stderr, " (held once %lld, shared %lld)", (long long)second[k], (long long)(total[k] - second[k]));
     if (k == 6 || k == 7) fprintf(stderr, " (in place %lld, new buffer %lld)", (long long)second[k], (long long)(total[k] - second[k]));
+    if (k == 11) fprintf(stderr, " (objects made %lld)", (long long)second[k]);
     fputc('\n', stderr);
   }
 #ifdef STRATA_CORE_RT
@@ -3687,23 +3751,27 @@ static void sites_report(void) {
   fprintf(stderr, "  allocations inside the runtime's functions: %lld\n", (long long)(made - (total[0] - second[0])));
   fprintf(stderr, "top sites:\n");
   char fn[256], code[256];
-  for (int64_t j = 0; j < site_n && j < 20; j++) {
+  for (int64_t j = 0, shown = 0; j < site_n && shown < 20; j++) {
     int64_t i = order[j], c = strata_site_counts[2 * i], d = strata_site_counts[2 * i + 1];
     if (c == 0) break;
+    if (kind[i] < 0) continue;
+    shown++;
     site_field(i, 1, fn, sizeof fn);
     site_field(i, 3, code, sizeof code);
     fprintf(stderr, "  %12lld %-8s", (long long)c, site_kinds[kind[i]]);
     if (kind[i] == 0) fprintf(stderr, " arena %lld", (long long)d);
     if (SITE_TEST(kind[i])) fprintf(stderr, " shared %lld", (long long)(c - d));
     if (kind[i] == 6 || kind[i] == 7) fprintf(stderr, " new buffer %lld", (long long)(c - d));
+    if (kind[i] == 11) fprintf(stderr, " made %lld", (long long)d);
     fprintf(stderr, "  %s  %s\n", fn, code);
   }
   const char *path = getenv("STRATA_MEMORY_SITES");
   FILE *out = path && *path ? fopen(path, "w") : NULL;
   if (out) {
-    fputs("count\tsecond\tkind\tfunction\tlocation\tcode\n", out);
+    fputs("count\tsecond\tkind\tfunction\tlocation\tcode\troot\n", out);
     for (int64_t j = 0; j < site_n; j++) {
       int64_t i = order[j];
+      if (kind[i] < 0) continue;
       const char *s = site_lines[i];
       size_t n = 0;
       while (s[n] && s[n] != '\n') n++;
@@ -3713,6 +3781,7 @@ static void sites_report(void) {
   } else if (path && *path) {
     fprintf(stderr, "memory sites: can't write %s\n", path);
   }
+  roots_report();
   fflush(stderr);
 }
 
@@ -3728,6 +3797,7 @@ void strata_sites_start(const char *text) {
   int64_t k = 0;
   for (const char *s = text; *s && k < site_n; k++) {
     site_lines[k] = s;
+    if (!strncmp(s, "root.", 5)) root_n = k + 1;
     while (*s && *s != '\n') s++;
     if (*s) s++;
   }
