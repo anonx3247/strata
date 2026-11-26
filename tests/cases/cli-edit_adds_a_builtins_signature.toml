@@ -1,7 +1,9 @@
 # An edit that adds a signature to a builtin that has one already (`all` of a
 # dict next to `all` of a list) keeps both, each as written: a module file
 # keeps an unchanged definition's stored bytes by name, which gave the new
-# signature the old one's
+# signature the old one's. The copy is viewed as `builtins`, its module as
+# the edit names it: `view core.builtins` names no module of the copy, so it
+# shows the core built into `strata`, without the edit
 
 [[step]]
 run = ["sh", "-c", "cp -R $ROOT/core c && chmod -R u+w c"]
@@ -10,9 +12,9 @@ run = ["sh", "-c", "cp -R $ROOT/core c && chmod -R u+w c"]
 run = ["sh", "-c", "printf '/// Every entry passes.\\nbuiltin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool\\n' | $STRATA --file c edit builtins"]
 
 [[step]]
-strata = ["--file", "c", "view", "core.builtins"]
+strata = ["--file", "c", "view", "builtins"]
 has = [
-  "builtin fn all[A](xs: List[A], ok: (A) -> Bool) -> Bool",
-  "builtin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool",
+  "/// Cost: at most n calls of `ok`. Stops at the first false.\nbuiltin fn all[A](xs: List[A], ok: (A) -> Bool) -> Bool",
+  "/// Every entry passes.\nbuiltin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool",
 ]
 counts = { "builtin fn all[A](xs: List[A]" = 1 }
