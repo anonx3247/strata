@@ -1,0 +1,55 @@
+# std.net, std.http and std.agent: the echo example (a server and a client in
+# tasks, over 127.0.0.1; a blocked read cancelled by a `race` with a timer; a
+# closed listener and a refused connection as values), built (every object
+# freed) and under `strata run`, its tests (a mock connection, and tests asking
+# for `Net`); an HTTP/1.1 server (`serve` with a `Router`) and client (`fetch`,
+# `send`) in one program; the agent example's loop against a scripted mock
+# model, and its run without a key. Offline: nothing leaves this machine.
+
+[[step]]
+strata = ["build", "$ROOT/examples/echo.strata", "-o", "echo"]
+
+[[step]]
+run = ["./echo"]
+memory = true
+stdout = "served 2 lines: [\"echo: hello\", \"echo: wörld\"]\ntimed out\nErr(Closed)\nErr(Failed { message: \"connect: Connection refused\" })\n"
+
+[[step]]
+strata = ["run", "--file", "$ROOT/examples/echo.strata"]
+stdout = "served 2 lines: [\"echo: hello\", \"echo: wörld\"]\ntimed out\nErr(Closed)\nErr(Failed { message: \"connect: Connection refused\" })\n"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/echo.strata", "test"]
+has = ["✓ each line comes back", "✓ over a real connection", "✓ a quiet connection times out", "3 passed, 0 failed"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/echo.strata", "verify"]
+lacks = ["✗"]
+
+[[step]]
+save = "http.strata"
+from = "http.st"
+
+[[step]]
+strata = ["build", "http.strata", "-o", "http"]
+
+[[step]]
+run = ["./http"]
+memory = true
+stdout = "200 text/plain; charset=utf-8 hello ada l\n200 text/plain; charset=utf-8 é body (Dict { \"x\": \"1\", \"y\": \"a b\" })\n200 application/json [1,2,3]\n404 text/plain; charset=utf-8 not found\nerror BadUrl { url: \"ftp://x\", message: \"it starts with neither http:// nor https://\" }\n"
+
+[[step]]
+strata = ["run", "http.strata"]
+has = ["200 text/plain; charset=utf-8 hello ada l\n", "404 text/plain; charset=utf-8 not found\n"]
+
+[[step]]
+strata = ["--file", "$ROOT/examples/agent.strata", "test"]
+has = ["✓ a tool call, its result sent back, then the answer", "✓ bad tool input is a failed call", "✓ a model that keeps calling tools runs out of turns", "3 passed, 0 failed"]
+
+[[step]]
+strata = ["build", "$ROOT/examples/agent.strata", "-o", "agent"]
+
+[[step]]
+run = ["env", "-u", "ANTHROPIC_API_KEY", "./agent"]
+fails = true
+has = ["NoKey"]
