@@ -223,6 +223,7 @@ typedef struct {
   uint64_t h1, h2;
   size_t len;
   char *answer;
+  double secs;  // how long the solver took (`solver_memo_ns`)
 } Memo;
 
 static Memo *memo;
@@ -281,7 +282,7 @@ static int running_has(uint64_t h1, uint64_t h2, size_t n) {
   return 0;
 }
 
-static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer) {
+static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer, double secs) {
   pthread_mutex_lock(&memo_lock);
   if (2 * (memo_count + 1) > memo_cap) {
     size_t cap = memo_cap ? 2 * memo_cap : 1024;
@@ -309,7 +310,7 @@ static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer) {
     }
     i = (i + 1) % memo_cap;
   }
-  memo[i] = (Memo){h1, h2, n, strdup(answer)};
+  memo[i] = (Memo){h1, h2, n, strdup(answer), secs};
   memo_count++;
   pthread_mutex_unlock(&memo_lock);
 }
@@ -501,7 +502,7 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
   if (!done) {
     proc_stop(p);
   } else {
-    memo_put(h1, h2, script_len, result->buf ? result->buf : "");
+    memo_put(h1, h2, script_len, result->buf ? result->buf : "", now_s() - started);
   }
   free(in.buf);
   free(out.buf);
@@ -839,6 +840,29 @@ int64_t work_counter(void) {
 
 int64_t work_take(int64_t id) {
   return __atomic_fetch_add(&work_counters[id], 1, __ATOMIC_SEQ_CST);
+}
+
+// How long the solver took on a script answered to its end (flags and
+// script as a job gives them), in nanoseconds; 0 when it wasn't (for
+// `--timings`' per-definition table).
+int64_t solver_memo_ns(const char *flags, const char *script) {
+  size_t n = strlen(script);
+  uint64_t h1, h2;
+  memo_hash(flags, script, n, &h1, &h2);
+  int64_t ns = 0;
+  pthread_mutex_lock(&memo_lock);
+  if (memo_cap) {
+    size_t i = (size_t)(h1 % memo_cap);
+    while (memo[i].answer) {
+      if (memo[i].h1 == h1 && memo[i].h2 == h2 && memo[i].len == n) {
+        ns = (int64_t)(memo[i].secs * 1e9);
+        break;
+      }
+      i = (i + 1) % memo_cap;
+    }
+  }
+  pthread_mutex_unlock(&memo_lock);
+  return ns;
 }
 
 // The current time, in nanoseconds since the epoch (for strata.log's
