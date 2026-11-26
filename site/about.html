@@ -38,24 +38,61 @@
     <div class="table"><table><thead><tr><th>Milestone</th><th>When</th><th>After</th></tr></thead><tbody><tr><td>First draft in Rust: parser, type checker, interpreter, contracts, fuzzing</td><td>19 Nov, 05:38</td><td>23 min</td></tr><tr><td>SMT verification (Z3) and termination proofs</td><td>19 Nov, 22:17</td><td>17 h</td></tr><tr><td>LLVM compiler (<code>strata build</code>) and JIT (<code>strata run --jit</code>)</td><td>20 Nov, 22:46</td><td>1 day 17 h</td></tr><tr><td>JIT becomes the default for <code>run</code></td><td>21 Nov, 06:12</td><td>2 days 1 h</td></tr><tr><td>Interpreter deleted: everything runs compiled</td><td>22 Nov, 05:43</td><td>3 days</td></tr><tr><td>Rewrite in Strata starts: evaluator, printer, lexer, parser (in order through the morning)</td><td>22 Nov, 07:36 to 09:35</td><td>3 days 2 h</td></tr><tr><td>Resolver and type checker in Strata</td><td>22 Nov, 10:00 to 21:00</td><td>3 days 5 h</td></tr><tr><td>Code generator in Strata, first step</td><td>22 Nov, 21:13</td><td>3 days 16 h</td></tr><tr><td>SMT encoder in Strata, first step</td><td>23 Nov, 03:13</td><td>3 days 22 h</td></tr><tr><td>Strata code generator becomes the default for <code>build</code> and <code>test</code></td><td>23 Nov, 14:31</td><td>4 days 9 h</td></tr><tr><td><code>strata verify</code> runs the verifier written in Strata</td><td>23 Nov, 23:03</td><td>4 days 18 h</td></tr><tr><td>Full bootstrap: the <code>strata</code> command written in Strata builds itself to a fixed point</td><td>24 Nov, 05:02</td><td>5 days</td></tr><tr><td>Fixes until release: static LLVM and lld in the binary, shipped z3, caches, the test harness and the bugs it found</td><td>24 Nov, 05:00 to 13:00</td><td></td></tr><tr><td><strong>v0.1 released</strong>, Rust removed half an hour later</td><td>24 Nov, 13:51</td><td>5 days 8.5 h</td></tr><tr><td>v0.2.0: speed work (symbols, hashed dicts, parallel LLVM), <code>find</code>/<code>refs</code>, colors</td><td>24 Nov, 23:26</td><td></td></tr><tr><td>v0.3.0 to v0.3.3: high-level contracts (<code>old</code>, trait invariants), <code>derive</code> on declarations, <code>noalloc</code>, the ORM, fixes from the agent experiments</td><td>25 Nov, 05:12 to 26 Nov, 00:08</td><td></td></tr><tr><td>v0.3.4: memory work (static uniqueness, small values in registers), loop invariants derived from code, the solver soundness fix</td><td>26 Nov, 04:34</td><td>7 days</td></tr></tbody></table></div>
     <p>Written proofs (<code>lemma</code>, <code>assert … by</code>, <code>calc</code>) merged an hour after v0.3.4 and go into the next release.</p>
     <h2>The approach: working at the level of contracts</h2>
-    <p>The most important part of this project was contract-based development. When I work with agents, I try to stay at the level of how things compose: the traits, the contracts, the relationships between them, the flows, the invariants, what must be true or false in each situation. I think about a program as a state machine, and leave to the agents the details of how it gets from one state to the next. I only go down into the implementation when I need to, for optimization or for something that needs more detail.</p>
-    <p>This is what Strata is meant to make possible. Code is stored as a tree, so it can be shown at whatever level of detail you need: interfaces and contracts by default, bodies only on request. Contracts and refinement types are checked by a verifier, so you can trust an implementation you haven't read. That is progressive complexity: you see only the complexity you need at a given level.</p>
+    <p>The most important part of this project was contract-based development. When I work with agents, I try to stay at the level of how things compose: the traits, the contracts, the relationships between them, the flows, the invariants, what I want to make sure is true or false in different situations. I think about my programs as state machines, and I let the agents worry about the nitty-gritty of how you get from one state to the other. I only go down into the implementation when I really need it, for optimization or for things that need more detail.</p>
+    <p>This is a lot of what Strata is supposed to achieve. Code is stored as a tree, so it can be shown at whatever level of detail you need: interfaces and contracts by default, bodies only when you ask. Contracts and refinement types are checked by a verifier, so you can trust an implementation you haven't read. That's progressive complexity: you only see the complexity you need at the level you're working at.</p>
     <p>For the prototype I went further than that and stayed in the chat entirely, for three reasons:</p>
-    <ul><li>I wanted to move fast.</li><li>Much of the code was likely to be replaced. The plan was a first compiler in Rust, then a rewrite in Strata, so what I cared about was that the language behaved correctly and the rewrite had a correct reference.</li><li>I wanted to test the premise on Strata itself: improve the tools until agents can use them on a large project, this one included.</li></ul>
+    <ul><li>I wanted to move fast.</li><li>A lot of the code was likely to be replaced. The plan was a first compiler in Rust, then a rewrite in Strata, so what I cared about was that the language behaved correctly and the rewrite had a correct reference.</li><li>I wanted to test the premise on Strata itself: improve the tools until agents can use them on a large project, this one included.</li></ul>
+    <h2>Test-driven and proof-driven development</h2>
+    <p>Since I wasn't looking at the code, what was important to me was the functionality: that it does what it's supposed to do. With test-driven development you'd write tests for that. Here I wanted proof-driven development: state what must be true, and have the built-in proof system prove it for every input, with the built-in fuzzer covering what it can't prove. Then you don't need all sorts of tests. As I put it to one of the agents:</p>
+    <blockquote><p>Ideally we don't actually use tests and we just have verifications and constraints within the Strata code. Tests should only be there for things that depend on the outside or cannot be proven, which should be a very small number of things.</p></blockquote>
+    <p>In practice it looks like this. A refinement type and two small functions:</p>
+<pre class="strata"><code>/// A decimal digit.
+type Digit = Int
+  where 0 &lt;= it &amp;&amp; it &lt;= 9
+
+fn next_digit(d: Digit) -&gt; Digit {
+  d + 1
+}
+
+fn isqrt(n: Natural) -&gt; Natural
+  ensures it * it &lt;= n {
+  mut r: Natural = 0
+  while (r + 1) * (r + 1) &lt;= n {
+    r += 1
+  }
+  r
+}</code></pre>
+    <p>There are no tests for either, and <code>strata verify</code> reports:</p>
+<pre class="term"><code>✓ isqrt                    proven (6 checks)
+✗ next_digit               Refinement violation (found by the solver)
+    input:   9
+    result of `next_digit`: 10 does not satisfy `Digit` (where 0 &lt;= it &amp;&amp; it &lt;= 9) (stack: next_digit)</code></pre>
+    <p><code>isqrt</code> is proven for every natural number, loop included. <code>next_digit</code> has a bug, and the solver found the one input that shows it.</p>
+    <p>The more of the language we had, and the faster it ran, the more the agents could work correctly without me looking at the code, and the fewer bugs came up along the way. That's what makes me comfortable starting on the next steps.</p>
     <h2>How I worked</h2>
     <h3>Design by conversation</h3>
-    <p>Claude proposed options, explained the background when I needed it (how SMT solvers work, garbage-collection strategies, how Go bootstraps), and I decided. A few examples:</p>
-    <ul><li>Claude's first draft had algebraic effects. I asked what an effect gave me that passing a backend object didn't, and we replaced effects with capabilities: ordinary traits passed as parameters.</li><li>Code is stored as a binary syntax tree, one file per module, and text exists only when it is rendered. I wanted agents to go through the checked tools instead of editing text files.</li><li>Claude kept adding ordering to dicts. I refused it each time: a dict is a hash map with no order.</li></ul>
+    <p>Claude proposed options and explained the background when I needed it (how SMT solvers work, garbage-collection strategies, how Go bootstraps its compiler), and I made the decisions. A lot of the language came out of exchanges like these, lightly trimmed.</p>
+    <p>On the first morning, Claude's draft had algebraic effects:</p>
+    <blockquote><p><strong>Me:</strong> Is there really a difficulty in just passing things through? Couldn't we just pass a backend object and have different implementations of said backend? I'm guessing here it's just about not having to mention it everywhere, but that feels more like a syntactical detail than something really fundamental about effects.</p><p><strong>Claude:</strong> You're not missing anything. For a database or any backend, passing an object is equivalent, and an effect adds nothing fundamental. … Capabilities are ordinary values of trait types, passed explicitly.</p></blockquote>
+    <p>Effects went, and capabilities became ordinary traits passed as parameters. Then mutability:</p>
+    <blockquote><p><strong>Me:</strong> I never said that all values needed to be immutable. I think it can be completely fine to have procedural code with steps and state changes. Immutable by default, and you set mutable variables when you need them. It's easier for both agents and humans to read, because they're more used to procedural code.</p><p><strong>Claude:</strong> Understood. Immutability was my over-reach. The direction is now immutable by default, mutable when you say so. … To keep the guarantees, mutation stays visible.</p></blockquote>
+    <p>Unions, the same evening:</p>
+    <blockquote><p><strong>Me:</strong> What exactly is the issue with <code>Int | Positive</code>? It's not ambiguous. If <code>Positive</code> is <code>Int</code> with more restrictions, you take the one that's the least restrictive. And if it's a union of two refinements, it becomes an or of the clauses.</p><p><strong>Claude:</strong> You're right. I was treating unions as tagged. … Strata's refinements are already sets of values, so a union should be the union of those sets. <code>Int | Positive</code> is just <code>Int</code>.</p></blockquote>
+    <p>Which method runs when a type has its own method and a trait's:</p>
+    <blockquote><p><strong>Me:</strong> If we're in a context where all we know is that the object is a <code>Describe</code>, it should use the <code>Describe</code> method. The only place where there's ambiguity is when you know the type of the object. Otherwise its own method should never take precedence.</p><p><strong>Claude:</strong> You're right, and PR #13 gets this wrong. I shouldn't merge it as it stands.</p></blockquote>
+    <p>Test doubles:</p>
+    <blockquote><p><strong>Me:</strong> I see that we've been making fake implementations of a bunch of traits for tests. Wasn't the point of <code>mock</code> to not have to make these, because they get created automatically?</p></blockquote>
+    <p>That one led to <code>mock</code> becoming the way to write test doubles, with no hand-written fakes. And dictionaries, which Claude kept giving an order:</p>
+    <blockquote><p><strong>Me:</strong> It's a dict. People shouldn't think that a dict is sorted or has a particular order. Nothing should assume that a dict has a constant order. It should be a simple hash map.</p></blockquote>
+    <p>Other decisions came the same way: strings aren't iterable (you ask for <code>bytes()</code>, <code>code_points()</code> or <code>graphemes()</code>), errors are values and never faults, sized integers are real machine types that wrap, <code>spawn</code>/<code>await</code> with channels, <code>old(x)</code> in contracts, and code stored as a binary syntax tree so agents go through the checked tools instead of editing text.</p>
     <h3>Setting the order of the work</h3>
     <p>The large decisions were mine: replace the interpreter with a JIT, write the regex engine in Strata because Rust crates wouldn't exist after bootstrapping, start the Strata compiler while the Rust one was still growing, then delete Rust and ship a release that needs nothing else installed.</p>
-    <h3>Proofs over tests</h3>
-    <p>I kept pushing agents to state contracts and have <code>verify</code> prove them, and to write tests only for what touches the outside world. I also wanted contracts at a higher level than bounds on inputs, describing how state changes, which led to <code>old</code>, named outputs and trait-level invariants. When the solver hit its limits, I brought in the idea of agents writing proofs themselves, which became <code>lemma</code>, <code>assert … by</code> and <code>calc</code>.</p>
     <h3>Running the sessions</h3>
     <p>One worktree and PR per change. I told each session what the others had merged and passed context between them with handoffs. When CI became slower than the work, I dropped it for a rule: test and verify only what changed.</p>
     <h3>Catching mistakes</h3>
-    <p>Most of my corrections came from asking one more question about what Claude reported. When it said factorial was proven to terminate, I asked whether Strata's verifier had proven it or Claude had just reasoned it out. When a verify used 3 GB for one function, I said that couldn't be normal, and it wasn't.</p>
+    <p>Most of my corrections came from asking one more question about what Claude reported. When it said factorial was proven to terminate, I asked whether Strata's verifier had proven it or Claude had just reasoned it out. When a verify used 3 GB for one function: "Don't you find it a bit bizarre? There's probably an issue with the verify command." There was.</p>
     <h3>Testing as a user</h3>
-    <p>I built a small calculator by hand, and had agents build an order book and a SQL engine in Rust and in each Strata release, graded by hidden fuzz suites.</p>
+    <p>I built a small calculator by hand, and had agents build the same programs in Rust and in each Strata release to compare them (below).</p>
     <h2>What Claude did</h2>
     <p>Claude wrote essentially everything: the Rust prototype, its replacement in Strata, the C runtime, the standard library, the editor support, the site and the docs. It also profiled and fixed its own slow paths, for example verifying std going from over 20 minutes to 24 seconds, and ran fleets of subagents for the release.</p>
     <p>It also made mistakes I had to work around. With several sessions merging into <code>main</code> and no CI, bad merges reverted other PRs four times. For a week, <code>verify</code> could count a check as proven from a script Z3 had partly rejected. It sometimes stated causes it hadn't checked, or did work I hadn't asked for.</p>
@@ -66,9 +103,13 @@
     <p>Working only in the chat had a cost. I could see behaviour and decisions, but not the system's traits, contracts and how they fit together, which is the level I want to work at. The prototype grew to about 40 commands and 25 language features in a week, with leftovers from every direction I tried, and no view of it that I could follow.</p>
     <h2>Why I'm starting again</h2>
     <p>The prototype convinced me that Strata is a long-term project, and that I want to do it properly.</p>
-    <p>The main reason to start again is to understand all of it. I have a good understanding of the system at a high level: the language, the design decisions, how the pieces fit together. My understanding of the details is shallow: how the parser works and what could be optimized there, how the verifier encodes a program, and many other parts. To work on Strata for the long term I need that depth. Getting it means going slower, doing things properly and reading code, which I didn't do here because I was going for speed.</p>
-    <p>This repository becomes <code>strata-lab</code>, where ideas are tried and measured first. The new Strata is written in Strata, in small layers: a minimal compiler, then verification as early as possible, then self-hosting. The plan is a draft in <code>REBUILD.md</code>.</p>
-    <p>The way I work changes. In the prototype I stayed in the chat and saw only behaviour and decisions. In the rebuild I look at every layer in much more detail as it is built: the traits, the contracts, the relationships between them, the flows and the invariants, and the code itself, through Strata's own tools. Contract-based development is still the goal, with agents writing the code and proofs checking it, but now I follow and understand the system as it grows, and go into the implementation wherever I need to.</p>
+    <p>The main reason to start again is to understand all of it. I have a very good understanding of a lot of things at a high level. But the details, how the parser works and the optimizations I could do there, or the verifier, or a bunch of other parts, I have limited depth in. To work on it long term I want more depth, and that means going slower, doing things properly and actually looking at code, which I wasn't doing here because I was trying to go fast.</p>
+    <p>That doesn't mean reading everything. I want detail in some sections and not in others:</p>
+    <ul><li>I want to know the main contracts and how the parser is built up, but the details of how desugaring is done aren't particularly interesting to me.</li><li>I want the core built-ins, the standard library and the collections implemented the way I want them, or at least with the shapes I want. How the regex engine is built, I don't mind: I don't know much about Pike VMs, and as long as it works, it works.</li><li>When the web side comes, I want the Elm architecture done well. How <code>comptime</code> and <code>derive</code> were done isn't something I need to see.</li></ul>
+    <p>I care about implementation details when I want to optimize something. The rest of the time I want to know each section well enough, especially its contracts, to navigate the codebase and find those details with the agents when I need them.</p>
+    <p>There are two more reasons. I've learned a lot, and I'd rather build it right from the start than refactor huge sections of the prototype and bring in new bugs. And now I have the base language: the rebuild can be written with verification and proofs from day one, so it's safer and needs much less testing. I'm in a much better place to start this now that I have the language I wanted for this kind of project.</p>
+    <p>This repository becomes <code>strata-lab</code>, where ideas are tried and measured first. The new Strata is written in Strata, in small layers: a minimal compiler, then verification as early as possible, then self-hosting. I look at every layer as it's built, through Strata's own tools: the traits, the contracts, the relationships between them, the flows, and the code itself where I want the detail. The plan is a draft in <code>REBUILD.md</code>.</p>
+    
   </article>
 
   <footer>
@@ -76,5 +117,11 @@
     <span><a href="tour.html">Tour</a> · <a href="/docs/">Docs</a> · <a href="about.html">About</a> · <a href="https://github.com/anonx3247/strata">GitHub</a></span>
   </footer>
 </main>
+<script>window.STRATA = {};</script>
+<script src="common.js"></script>
+<script>
+for (const c of document.querySelectorAll('pre.strata code')) c.innerHTML = hl(c.textContent);
+for (const c of document.querySelectorAll('pre.term code')) c.innerHTML = term(c.textContent);
+</script>
 </body>
 </html>

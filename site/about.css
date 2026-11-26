@@ -31,3 +31,12 @@ header.top nav a[aria-current] { color: var(--text); }
   .about .prose th, .about .prose td { padding: 8px 10px; }
   .about footer { flex-direction: column; }
 }
+
+/* code and quotes */
+.about .prose pre { margin: 22px 0 26px; padding: 18px 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; font: 14px/1.6 var(--mono); }
+.about .prose pre code { background: none; border: 0; padding: 0; font-size: inherit; white-space: pre; }
+.about .prose pre.term .term-line { display: block; }
+.about .prose blockquote { margin: 18px 0 26px; padding: 4px 0 4px 20px; border-left: 2px solid var(--accent); }
+.about .prose blockquote p { color: var(--muted); margin: 0 0 12px; }
+.about .prose blockquote p:last-child { margin-bottom: 0; }
+.about .prose blockquote strong { color: var(--accent2); font-weight: 600; }
