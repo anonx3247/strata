@@ -13,7 +13,7 @@ wait_for() { # FILE TEXT: waits (up to 60 s) until FILE holds TEXT
 edit() { # N FILE [ARGS]: live edit N
   n=$1 f=$2
   shift 2
-  "$S" --file srv.strata edit "$@" < "$f" > /dev/null 2>&1
+  "$S" --file srv.strata edit --as-given "$@" < "$f" > /dev/null 2>&1
   wait_for err.txt "live edit $n"
 }
 "$S" --file srv.strata run --live > out.txt 2> err.txt &

@@ -159,7 +159,7 @@ A compiled program behaves like `strata run`: the same output, and the same run-
 
 ### Live edits: `strata run --live`
 
-With `--live`, a running program takes edits. When its module files change (a `strata edit`, or any write), and the program as it is now checks and verifies, the changed functions are swapped in: new calls run the new code, and a call already running finishes in the old code. A note on stderr says what happened to each edit:
+With `--live`, a running program takes edits. When its module files change (a `strata edit`, or any write; `strata edit` writes an edit that doesn't check only with `--as-given`), and the program as it is now checks and verifies, the changed functions are swapped in: new calls run the new code, and a call already running finishes in the old code. A note on stderr says what happened to each edit:
 
 ```text
 $ strata run srv.strata --live

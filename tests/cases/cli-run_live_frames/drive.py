@@ -7,7 +7,7 @@ import subprocess, sys, time, os, re
 S, program, edits = sys.argv[1], sys.argv[2], sys.argv[3:]
 if os.path.exists("demo.strata"):
     os.remove("demo.strata")
-subprocess.run([S, "--file", "demo.strata", "edit"], stdin=open(program), capture_output=True)
+subprocess.run([S, "--file", "demo.strata", "edit", "--as-given"], stdin=open(program), capture_output=True)
 p = subprocess.Popen([S, "--file", "demo.strata", "run", "--live"], stdin=subprocess.PIPE,
                      stdout=subprocess.PIPE, stderr=open("err.txt", "w"), text=True, bufsize=1)
 
@@ -24,7 +24,7 @@ def tick():
 tick()
 tick()
 for n, e in enumerate(edits, 1):
-    subprocess.run([S, "--file", "demo.strata", "edit"], stdin=open(e), capture_output=True)
+    subprocess.run([S, "--file", "demo.strata", "edit", "--as-given"], stdin=open(e), capture_output=True)
     t0 = time.time()
     while f"live edit {n}" not in open("err.txt").read() and time.time() - t0 < 60:
         time.sleep(0.05)

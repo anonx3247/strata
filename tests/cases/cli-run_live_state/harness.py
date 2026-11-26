@@ -161,7 +161,7 @@ def run():
         f.write(program(P))
     if os.path.exists("st.strata"):
         os.remove("st.strata")
-    subprocess.run([S, "--file", "st.strata", "edit"], stdin=open("st.st"), capture_output=True)
+    subprocess.run([S, "--file", "st.strata", "edit", "--as-given"], stdin=open("st.st"), capture_output=True)
     args = [S, "--file", "st.strata", "run"] + (["--live"] if MODE == "live" else [])
     err = open("err.txt", "w")
     p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, bufsize=1)
@@ -219,7 +219,7 @@ def run():
             if "raw" not in ch and m.P["score"] != "plain" and newP["score"] == "plain":
                 rm_args += ["--rm", "grow"]
             t0 = time.time()
-            r = subprocess.run([S, "--file", "st.strata", "edit"] + rm_args, input=src, text=True, capture_output=True)
+            r = subprocess.run([S, "--file", "st.strata", "edit", "--as-given"] + rm_args, input=src, text=True, capture_output=True)
             note = None
             while time.time() - t0 < 60:
                 txt = open("err.txt").read()
