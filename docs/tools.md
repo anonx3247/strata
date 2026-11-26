@@ -239,7 +239,7 @@ Changes are ordered types, then interfaces, then implementations, then tests.
 
 `strata view` is the one command that shows code.
 
-- `strata view MODULE` (`shop`, `main` for the root module, or a file such as `shop/orders.strata`) prints a module as stored, imports first. This is the text `edit` reads back. In std and core, a module can also be named without its package prefix (`--file core view iter` for `core.iter`).
+- `strata view MODULE` (`shop`, `main` for the root module, or a file such as `shop/orders.strata`) prints a module as stored, imports first. This is the text `edit` reads back.
 - `strata view SELECTOR --level N` shows the definitions a selector picks, at a level of detail (1 by default).
 - `strata view` alone prints the package's map (level 0).
 - `view --split DIR` writes every module as a text file (`shop/orders.st`) for reading, never for reading back.
