@@ -6,8 +6,9 @@ write = "slow-solver"
 text = '''
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo slow 1.0; exit 0; fi
-if grep -q 99; then sleep 30; fi
-echo unknown
+in=$(cat)
+if echo "$in" | grep -q 99; then sleep 30; fi
+echo "$in" | awk '/^\(check-sat/ { print "unknown"; next } /^\(echo/ { print "@@answered"; next } /^\(get-info/ { print "unsupported"; next } /^\(get-(value|model)/ { print "(error \"model is not available\")"; next } /^\(/ { print "success" }'
 '''
 
 [[step]]

@@ -1,0 +1,23 @@
+# A list literal of constants (`Int` literals, strings, field-less
+# constructors) is one constant block (codegen `constant_list`), a header
+# and a buffer, 8 lists here. It is never allocated. A change to it copies
+# it first, and every object is still freed.
+
+[[step]]
+save = "lists.strata"
+from = "lists.st"
+
+[[step]]
+strata = ["build", "lists.strata", "--no-verify", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "2 [\"a\", \"b\", \"c\"] [\"a\", \"b\"] [\"a\", \"b\"] [\"a\", \"b\", \"d\"] [\"k\"] [9, 1, 2, 3] [Red, Blue] [\"b\"]\n"
+
+[[step]]
+strata = ["build", "lists.strata", "--no-verify", "--emit-llvm", "-o", "prog.ll"]
+
+[[step]]
+run = ["grep", "-c", "^@.list.*= private", "prog.ll"]
+out = "16\n"
