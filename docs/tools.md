@@ -313,7 +313,7 @@ What a definition uses is what its shown text names, so a module read back from 
 
 All rendered code is formatted to about 80 columns. Long argument lists, record literals, method chains, `&&`, `||` and `+` chains, parameter lists and doc comments are broken across lines.
 
-**Selectors:** `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), or a comma-separated combination. A part that matches nothing is an error.
+**Selectors:** `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), `m.Type.method` (one method of an implementation, for `verify`), or a comma-separated combination. A part that matches nothing is an error.
 
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
 

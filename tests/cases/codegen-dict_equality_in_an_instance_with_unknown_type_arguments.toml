@@ -1,0 +1,42 @@
+# `==` on dicts whose entries' type is known only in part: `empty()` doesn't
+# say `P`, so `bump` is compiled as `bump[_]` and its dicts hold
+# `Entry[_]`s. The dicts' entry comparison is still made (it once was a
+# null function, and the program crashed: examples/tasks' `claim` with the
+# invariant `self.table.excluding(seen) == before.excluding(seen)`)
+
+[[step]]
+save = "shelf.strata"
+text = '''
+type Entry[P] = { payload: P, n: Int }
+
+type Shelf[P] = { table: Dict[String, Entry[P]] }
+
+fn empty[P]() -> Shelf[P] {
+  Shelf { table: Dict[String, Entry[P]] {} }
+}
+
+fn put[P](mut s: Shelf[P], k: String, p: P) {
+  mut s.table.insert(k, Entry { payload: p, n: 0 })
+}
+
+fn bump[P](mut s: Shelf[P], k: String) -> (Bool, Bool) {
+  before := s.table
+  match s.table.get(k) {
+    Some(e) => mut s.table.insert(k, Entry { ..e, n: e.n + 1 }),
+    None => (),
+  }
+  (s.table.excluding([k]) == before.excluding([k]), s.table == before)
+}
+
+fn main() {
+  mut s := empty()
+  put(mut s, "a", "x")
+  put(mut s, "b", "y")
+  print(bump(mut s, "a"))
+  print(s.table.get("a"))
+}
+'''
+
+[[step]]
+strata = ["run", "shelf.strata"]
+has = ["(true, false)\n"]
