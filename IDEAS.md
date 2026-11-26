@@ -1872,6 +1872,43 @@ Tested (`tests/toml.rs`) against the `toml` crate on curated documents and, with
 **`derive Toml`** (asked for by the user 2026-11-22, "like JSON"; built, branch `toml-derive`): `derivable(Record | Union) trait Toml`, `std.json`'s machinery adapted. Decisions: records carry no `type` key (a configuration file, not a message; a record in a union written out, `A | B`, gets one so it can be told apart); `Option` only as a field, `None` left out (TOML has no null); the methods are named for TOML (`to_toml`, `from_toml`, `from_toml_with`, `read_toml`, `write_toml`, derived `to_toml_at` / `from_toml_at`) because a type implementing two traits with the same method can't call it (`Json` and `Toml` together); `UnknownKeys` is `std.json`'s; `[toml] unknown_keys` in `strata.toml`; `Date` / `Time` / `DateTime` impls. Found on the way: derive was minutes slow on nested records (a `DateTime` field: 2+ min to store): `derive.rs` keyed every compile-time `Type` value by its printed, laid-out text, and remade a type's value on each access; keys are now `Debug` text and values are made once per type (4+ min → ~30 s for the test's program, cold).
 The tools read `strata.toml` and `strata.lock` through it (compiler/deps, commit 1e882fc; the `toml` crate left with Rust). Not yet: a writer that keeps comments and layout (editing `strata.toml` in place).
 
+### `std.array`: NumPy-like arrays (asked for by the user, REBUILD.md 4c/4d; built, branch `std-math`)
+
+Decisions (each can change):
+- **One type, `Array`, of `Float`s**: `{ data: List[Float], shape: List[Natural], strides: List[Int], offset: Natural } where len(it.shape) == len(it.strides)`, and `Matrix = Array where len(it.shape) == 2`. Element `(i, j, …)` is `data[offset + i*strides[0] + …]`. `Int` and sized-int arrays are left out: methods can't be written once for both without numeric traits (branch `operators-traits`, #558) or overloads of user functions.
+- **Views, then row-major loops**: `transpose`, `slice`, `row` and `reshape` (of compact data) share the data in O(number of axes). Arithmetic, reductions and `matmul` first make each operand row-major (`to_list`: O(1) when `is_compact`, else one `gather`), then run plain index loops over flat lists. A changed element (`mut a.set`) copies the data when it is shared, as any list does.
+- **Broadcasting is NumPy's rule** (`broadcast_shape`, `broadcasts`): stretched axes get stride 0 and both sides are gathered to the broadcast shape. Equal shapes skip that and zip the two lists.
+- **Shapes are contracts**: `matmul(a: Matrix, b: Matrix) requires a.shape[1] == b.shape[0] ensures it.shape == [a.shape[0], b.shape[1]]`; `add`/`sub`/`mul`/`div` require `broadcasts`; reductions along an axis require `axis < len(self.shape)` and ensure `without_axis`. `verify` proves these at call sites with known shapes and refutes mismatches (case `build-std_array`). Out-of-range indices are values: `get` gives `Option`, `set` gives `Bool`. Every index read inside the module is guarded by its loop condition, so all bounds checks are proven.
+- **Operators**: `add`, `sub`, `mul`, `div`, `neg` are methods with the shape `fn add(self, other: Array) -> Array`, so `impl Add for Array` (after #558) is a one-line forward each. `scale(k)` and `shift(k)` take a scalar.
+- **Sums add in four interleaved partial sums** (`sum`, `dot`, `matmul`'s dot products), so additions don't wait on each other. The result can differ from a left-to-right sum in the last bits (NumPy's pairwise sum differs too).
+- **`matmul` is one dot product per element** over `a`'s rows and the columns of `b` (a row-major copy of `b.transpose()`). The i-k-j order would read better but writes the result in the inner loop, and an element write costs a uniqueness test, a count increment and a release per element today.
+- **`argmax_axis` returns `List[Natural]`** (the result's positions in row-major order), since there is no integer array.
+- **A codegen change for speed**: a float operation's finiteness test is inline (`fabs` against infinity, `codegen.finite`), `strata_finite` declared `cold` and called only on the failing path. Before, every `+`/`*` on floats was a call into the C runtime followed, in any program linked with std's library (`supervises`), by a cancellation poll. That halved the time of float loops (sum of 10M: 19 → 10 ms; matmul 256: 97 → 43 ms before the four partial sums).
+
+Speed, measured 2026-11-26 on this Mac (M-series), `strata build --release`, against C at `clang -O2` (NumPy is not installed):
+
+| | Strata `std.array` | the same loop compiled in the program | C, same algorithm | C, best |
+|---|---|---|---|---|
+| sum of 10M floats | 9.3 ms | 7.2 ms | 2.0 ms (4 accumulators) | 1.3 ms (`-O3 -ffast-math`, vectorized) |
+| matmul 256×256 | 36 ms | | 7.6 ms (dot form, one accumulator) | 2.3 ms (i-k-j, vectorized) |
+
+Why the inner loops are 3-5x off C (read in the disassembly of `std.array.dot_run`):
+1. **`Int` index arithmetic**: each `a + 1`, `a + 3 < end` and `a < len(xs)` tests whether the operands are small integers (shift, xor, branch) and has a call to the big-integer path; the old value gets an `int_drop` test. A loop counter bounded by `len(xs)` is always small; nothing uses that fact yet.
+2. **Bounds checks kept in std's precompiled library**: `verify` proves every index of `dot_run` and `sum_run`, and a copy of the same function in a program has them left out (7.2 ms against 9.3 ms for the sum), but the library's code keeps a compare and branch per read.
+3. **The list's header is reloaded on every read** (buffer, offset, length), because the slow-path calls of point 1 may write memory.
+4. **No vectorization**: floats are strict IEEE (no reassociation), so even C's sequential sum doesn't vectorize; with points 1-3 in the loop, LLVM doesn't vectorize the four-accumulator form either.
+
+`--require proven`: 40 of the module's 52 functions are proven. The 12 others (`add`, `sub`, `mul`, `div`, `neg`, `scale`, `shift`, `mean`, `sum_axis`, `mean_axis`, `dot_run`, `sum_run`) are fuzzed only because "`+` gives a finite number" can't be proven: the prover doesn't model floats. Every other check in them is proven. So std's "every function proven" rule can't hold for float arithmetic until floats are modelled (SMT-LIB's FP theory), or until a float overflow is a value.
+
+Left, in order:
+1. Kept checks: compile std's library with the checks `verify` proved left out, as programs are (point 2 above).
+2. Small-integer facts for loop counters bounded by a length (point 1), in codegen: plain `i64` arithmetic where the solver proved the range.
+3. Operators: `impl Add/Sub/Mul/Div/Neg for Array` once #558 lands, so `a + b` works.
+4. Integer arrays (`Array` generic over its element, with numeric traits), and `argmax_axis` returning one.
+5. More of NumPy: `exp`, `log`, `pow` and the trigonometric functions (core has none yet: `sqrt` only), `concatenate`/`stack`, boolean masks, `where`, `cumsum`, `linspace`, a 1-D × 2-D `matmul`, `inv`/`solve`.
+6. `count(shape)` in the prover: it is recursive, so `reshape`'s `requires count(shape) == count(self.shape)` is only fuzzed at call sites (`gram` in the case).
+7. Vectorized loops: once points 1-3 are gone, test whether LLVM vectorizes the four-accumulator loops, else write them over `F64x4` lanes.
+
 ### Doc comments on union members (2026-11-23; built, branch `variant-docs`)
 A member a union declares takes a `///` doc comment above its `|`, as a field does (`Variant.doc`, a format change: every file with a union re-encoded). Docs are left out of the hashes, printed by `render`, and given to derived traits (`std.typing`'s member `Type.doc`): needed for `std.cli` commands, whose help is their members' docs. A `///` after the last member is the next definition's. Not done: a type shown inside a union (`render`'s inlining) still keeps its own doc out of it (it stays separate when it has one).
 

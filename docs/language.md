@@ -760,6 +760,7 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - SQLite databases (`std.sqlite`), and records stored as tables (`std.orm`, `derive Table`)
 - command lines (`std.cli`)
 - sorted dictionaries and sets and a priority queue (`std.collections`)
+- n-dimensional arrays of floats: broadcasting, reductions, `matmul` (`std.array`)
 - JSON and TOML (`std.json`, `std.toml`)
 - HTTP and HTML as values (`std.http`, `std.web`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
