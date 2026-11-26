@@ -56,7 +56,7 @@ holder as before.
 ```
 
 ```strata-also
-codegen.select_expr codegen.channel_op: sends cross owned
+codegen.select_expr codegen.channel_op codegen.method_call: sends cross owned; `tx.send(x)` is sent from its call site, so a fresh value moves
 codegen.declarations: the new runtime entries
 codegen.equal: channel ends compare by channel (an end that crossed is a new end)
 ```
