@@ -38,9 +38,9 @@ fn c(xs: List[Int]) -> Int {
   len(xs)
 }
 
-fn sq(x: Float) -> Float
-  ensures it >= 0.0 {
-  x * x
+fn sq(x: Float) -> Int
+  ensures it >= 0 {
+  float_bits(x)
 }
 '''
 

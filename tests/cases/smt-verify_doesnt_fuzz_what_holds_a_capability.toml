@@ -10,34 +10,34 @@ type Holder = { disk: Disk, n: Float }
 
 type Outer = | Vacant | Full(Holder)
 
-fn top(d: Disk, x: Float) -> Float
-  ensures it >= 0.0 {
-  x * x
+fn top(d: Disk, x: Float) -> Int
+  ensures it >= 0 {
+  float_bits(x)
 }
 
-fn opt(d: Option[Disk], x: Float) -> Float
-  ensures it >= 0.0 {
-  x * x
+fn opt(d: Option[Disk], x: Float) -> Int
+  ensures it >= 0 {
+  float_bits(x)
 }
 
-fn held(h: Holder) -> Float
-  ensures it >= 0.0 {
-  h.n * h.n
+fn held(h: Holder) -> Int
+  ensures it >= 0 {
+  float_bits(h.n)
 }
 
-fn nested(o: List[Outer], x: Float) -> Float
-  ensures it >= 0.0 {
-  x * x
+fn nested(o: List[Outer], x: Float) -> Int
+  ensures it >= 0 {
+  float_bits(x)
 }
 
-fn files(f: Files, x: Float) -> Float
-  ensures it >= 0.0 {
-  x * x
+fn files(f: Files, x: Float) -> Int
+  ensures it >= 0 {
+  float_bits(x)
 }
 
-fn plain(x: Float) -> Float
-  ensures it >= 0.0 {
-  x * x
+fn plain(x: Float) -> Int
+  ensures it >= 0 {
+  float_bits(x)
 }
 '''
 
