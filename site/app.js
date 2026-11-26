@@ -488,10 +488,10 @@ const V = D.verify, F = D.features;
 
 // ───────────────────────── slides with the explanation beside the code ─────────────────────────
 /** The explanation on the side, arriving as it is read; the code and what the tools said beside it. */
-function feature(id, { kicker, title, steps, three = false }) {
+function feature(id, { kicker, title, steps, sideBySide = false }) {
   const el = $('#' + id);
-  // three: the explanation, the code and the output side by side, for long code with long output
-  el.classList.toggle('three', three);
+  // sideBySide: the explanation, the code and the output in three columns, for long code with long output
+  el.classList.toggle('side-by-side', sideBySide);
   el.innerHTML = `<div class="split"><div class="col side-text"><div class="kicker fx">${kicker}</div><h2 class="fx small"></h2><div class="say"></div></div>
     <div class="col"><div class="pane code-pane fx"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title"></span></div><div class="body"></div></div><div class="outs"></div></div></div>`;
   let shown = null;
@@ -532,7 +532,7 @@ feature('contracts', {
   ],
 });
 feature('behaviour', {
-  kicker: 'Contracts on behaviour', title: 'A trait says what it means.', three: true,
+  kicker: 'Contracts on behaviour', title: 'A trait says what it means.', sideBySide: true,
   steps: [
     { file: 'examples/bank.strata', code: V.behaviour.model, hot: /^\s*(model|ensures len)/,
       say: 'Contracts don\'t stop at numbers. <code>Ledger</code> is the trait for anywhere accounts are kept, in memory or in a database. Its <code>model</code> says what any implementation is: each account\'s balance. The <code>ensures</code> under it holds after every method: accounts are never removed. Each method says what it does to the model, with <code>old</code> for its value before the call. <code>withdraw</code> takes the amount off if there is enough, and changes nothing otherwise.' },
@@ -583,7 +583,7 @@ feature('points', {
 });
 
 feature('proofs', {
-  kicker: 'Proving over testing', title: 'Proofs, written where the solver needs help.', three: true,
+  kicker: 'Proving over testing', title: 'Proofs, written where the solver needs help.', sideBySide: true,
   steps: [
     { file: 'trees', code: V.behaviour.proofs, hot: /^lemma|sum_natural|assert .* by/, where: '~/trees', outs: [V.behaviour.proofs_verify],
       say: 'Some facts need induction, which the solver doesn\'t do by itself: a tree\'s sum is never negative because each subtree\'s isn\'t. A <code>lemma</code> states it and proves it by recursion on the tree, and <code>assert … by</code> uses it inside a loop. <code>total</code> is proven; <code>total_plain</code>, the same loop without the proof, is not. A lemma is never compiled, and views hide proofs unless asked for.' },
