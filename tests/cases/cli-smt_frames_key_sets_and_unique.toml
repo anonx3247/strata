@@ -98,4 +98,4 @@ has = [
 
 [[step]]
 strata = ["--file", "t.strata", "run"]
-out = "true\ntrue\nfalse\n"
+has = ["true\ntrue\nfalse\n"]

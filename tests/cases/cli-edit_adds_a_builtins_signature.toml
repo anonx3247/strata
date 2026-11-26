@@ -4,13 +4,13 @@
 # signature the old one's
 
 [[step]]
-run = ["sh", "-c", "cp -R $ROOT/core core && chmod -R u+w core"]
+run = ["sh", "-c", "cp -R $ROOT/core c && chmod -R u+w c"]
 
 [[step]]
-run = ["sh", "-c", "printf '/// Every entry passes.\\nbuiltin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool\\n' | $STRATA --file core edit builtins"]
+run = ["sh", "-c", "printf '/// Every entry passes.\\nbuiltin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool\\n' | $STRATA --file c edit builtins"]
 
 [[step]]
-strata = ["--file", "core", "view", "builtins"]
+strata = ["--file", "c", "view", "core.builtins"]
 has = [
   "builtin fn all[A](xs: List[A], ok: (A) -> Bool) -> Bool",
   "builtin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool",
