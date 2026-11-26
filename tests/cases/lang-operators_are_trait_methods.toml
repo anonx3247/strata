@@ -193,10 +193,14 @@ fn main() {
   print(total([1, 2, 3], 0))
   print(total([1.5, 2.0], 0.0))
   print(3.add(4))
-  print(i32_add(1, 2))
+  let a: I32 = 1
+  print(sized_add(a, a + 1))
+  let b: U8 = 250
+  print(b.add(5))
+  print(total([a, a], 0))
 }
 '''
 
 [[step]]
 strata = ["--file", "g.strata", "run"]
-stdout = "6\n3.5\n7\n3\n"
+stdout = "6\n3.5\n7\n3\n255\n2\n"
