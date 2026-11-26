@@ -474,7 +474,7 @@ extern c fn cbrt(x: Float) -> Float
 
 /// The fewest single-character edits that turn `a` into `b`.
 pub fn distance(a: String, b: String) -> Natural {
-  edit_distance(a, b)
+  edit_distance(a, b).to_int()
 }
 ```
 

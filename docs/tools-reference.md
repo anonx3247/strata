@@ -164,7 +164,7 @@ Dependencies are handled by `compiler/deps` and `compiler/main`, whose `package 
 **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's.
 
 - A definition that only one side changed comes from that side, so edits to two functions never conflict, even on neighbouring lines.
-- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again.
+- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again. `resolve` names the module as its package does: core's `list.strata` is `core.list`, std's `json.strata` is `std.json`.
 - A rename on one side (a definition removed, and a new one equal to the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it.
 - The merged file is then type-checked inside its package. An error that neither side had alone fails the merge, for example when one side changed a signature and the other added a call using the old one.
 - A side that isn't a module file isn't merged, and ours is kept.
