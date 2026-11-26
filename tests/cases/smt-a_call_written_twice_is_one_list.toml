@@ -1,0 +1,35 @@
+# smt: a call seen through, written twice on the same values, is one list
+# (`call` returns the list made before), so a predicate of it holds of
+# both: `good(bids(xs))` assumed is `good(bids(xs))` asserted. Before, the
+# second was another list, equal to the first only where read.
+
+[[step]]
+save = "ids.strata"
+text = '''
+type Box = { id: String, n: Int }
+
+fn bids(xs: List[Box]) -> List[String] {
+  xs.map(b -> b.id)
+}
+
+fn good(ks: List[String]) -> Bool {
+  all(ks, k -> k != "")
+}
+
+lemma good_at(ks: List[String], i: Int)
+  requires good(ks)
+  requires 0 <= i && i < len(ks)
+  ensures ks[i] != ""
+
+fn first_ok(xs: List[Box]) -> Bool
+  requires len(xs) > 0
+  requires good(bids(xs)) {
+  assert good(bids(xs))
+  assert bids(xs)[0] != "" by good_at(bids(xs), 0)
+  true
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$TMP\" && STRATA_CACHE=\"$TMP/cache\" perl -e \"alarm 60; exec @ARGV\" \"$STRATA\" --file ids.strata verify --no-cache 2>&1"]
+has = ["first_ok                 proven (5 checks)"]

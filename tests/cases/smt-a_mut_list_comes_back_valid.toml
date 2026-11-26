@@ -1,0 +1,65 @@
+# A list passed `mut` to a call comes back as a valid list of the
+# parameter's type, its elements included, that the callee's `ensures`
+# describe (`old xs`: the list before the call). So `got` is still a
+# `List[Try]` after `add_one(mut got, a)`, and `last_of` reads the element
+# `push_try`'s `ensures` names.
+
+[[step]]
+save = "t.strata"
+text = '''
+/// A try of a job: its number counts from 1.
+pub type Try = { name: String, n: Int where it >= 1 }
+
+/// `xs` with one more try.
+pub fn add_one(mut xs: List[Try], name: String)
+  ensures len(xs) == old len(xs) + 1 {
+  xs = xs + [Try { name, n: 1 }]
+}
+
+/// Tries for two names.
+pub fn two(a: String, b: String) -> List[Try]
+  ensures len(it) == 2 {
+  mut got: List[Try] = []
+  add_one(mut got, a)
+  add_one(mut got, b)
+  got
+}
+
+/// Tries for two names, after `start`.
+pub fn more(start: List[Try], a: String, b: String) -> List[Try]
+  ensures len(it) == len(start) + 2 {
+  mut got := start
+  add_one(mut got, a)
+  add_one(mut got, b)
+  got
+}
+
+/// `xs` with a try of `name` last.
+pub fn push_try(mut xs: List[Try], name: String)
+  ensures len(xs) == old len(xs) + 1
+  ensures xs[len(xs) - 1].name == name
+  ensures all(0..len(xs) - 1, i -> xs[i] == (old xs)[i]) {
+  xs = xs + [Try { name, n: 1 }]
+}
+
+/// The last try is of `b`.
+pub fn last_of(start: List[Try], a: String, b: String) -> String
+  ensures it == b {
+  mut got := start
+  push_try(mut got, a)
+  push_try(mut got, b)
+  got[len(got) - 1].name
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
+has = [
+  "✓ two ",
+  "✓ more ",
+  "✓ push_try ",
+  "✓ last_of ",
+  "proven:  ensures it == b",
+]
+# (the written-back list is valid by its type, so its checks need no query)
+lacks = ["not proven", "writing back"]

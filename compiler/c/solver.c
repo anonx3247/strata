@@ -7,7 +7,12 @@
 // reset) and `:print-success` off, then `(echo "@@strata-start")` marks the
 // start of its answers and `(echo "@@strata-done")` their end.
 // Z3's resource limit counts per `check-sat`, so a script gets the answers
-// it gets in a process of its own (the verdict cache relies on that); the
+// it gets in a process of its own (the verdict cache relies on that). A
+// module parameter (`(set-option :smt.random_seed 3)`,
+// `:smt.auto_config`) is global in Z3 and outlives a reset, so a script that
+// sets one leaves its process to be stopped (`sets_global`): the next
+// script would otherwise be solved under it (a query proven alone gave up
+// after an input search's seed). The
 // line numbers of error messages are told from the script's first line, as
 // a process of its own would. A hard time limit (`-T:S`) kills the process
 // (it is started again for the next script) and answers `timeout`, as Z3
@@ -37,6 +42,7 @@ typedef struct {
   pid_t pid;      // 0: not running
   int in, out;    // its standard input and output
   long lines;     // lines written to it so far
+  int dirty;      // a script set a parameter a reset leaves (`sets_global`)
 } Proc;
 
 typedef struct {
@@ -85,6 +91,7 @@ static void proc_stop(Proc *p) {
   }
   p->pid = 0;
   p->lines = 0;
+  p->dirty = 0;
 }
 
 // At exit, each process is told its input has ended and is waited for, so
@@ -145,6 +152,7 @@ static int proc_start(Proc *p, const char *solver) {
   p->in = in[1];
   p->out = out[0];
   p->lines = 0;
+  p->dirty = 0;
   // (it must answer a command as it reads it, within 10 s: else it is no
   // use kept running, and the scripts go to a process each, `pool_broken`)
   const char *ready = "(echo \"@@strata-ready\")\n";
@@ -371,6 +379,22 @@ static int has_word(const char *flags, const char *w) {
   return 0;
 }
 
+// Whether `script` sets a module parameter (`(set-option :smt.…`: a name
+// with a dot), which Z3 keeps across `(reset)`.
+static int sets_global(const char *script, size_t n) {
+  const char *key = "(set-option :";
+  size_t k = strlen(key);
+  for (size_t i = 0; i + k <= n; i++) {
+    if (memcmp(script + i, key, k) != 0) continue;
+    for (size_t j = i + k; j < n; j++) {
+      char c = script[j];
+      if (c == '.') return 1;
+      if (c == ' ' || c == ')' || c == '\n' || c == '\t' || c == '\r') break;
+    }
+  }
+  return 0;
+}
+
 // One script's answers from process `p` (started when it isn't running),
 // with its flags (`-t:MS`, `-T:S`, `rlimit=N`): what the solver wrote
 // before the end mark, or, when it died or ran past `-T`, what it wrote.
@@ -385,7 +409,16 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
     else if (strncmp(f, "rlimit=", 7) == 0) rlimit = atol(f + 7);
     while (*f && *f != ' ') f++;
   }
+  // STRATA_SOLVER_TIMEOUT_MS=N: every script's soft time limit (`:timeout`)
+  // is N ms, its resource limit unchanged, so a case can make a query stop
+  // by time well within its units (compiler/smt's `gave_up` tells the two
+  // apart).
+  const char *soft = getenv("STRATA_SOLVER_TIMEOUT_MS");
+  if (soft && *soft) timeout_ms = atol(soft);
+  // (a process left with a global parameter set starts again)
+  if (p->dirty) proc_stop(p);
   if (p->pid == 0 && !proc_start(p, solver)) return;
+  p->dirty = sets_global(script, script_len);
   // (`:print-success` outlives a reset: the head's own replies end at the
   // START mark, and are dropped, so the script's replies are its own)
   char head[320];
