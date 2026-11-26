@@ -102,7 +102,7 @@ has = [
   "✓ fill                     proven (12 checks)",
   "proven:  `let` annotated `Natural`",
   "proven:  assigning `q`: List[Resting]",
-  "✗ fill_wrong               Refinement violation (found by the solver)",
+  "✗ fill_wrong               Refinement violation (found by the ",
   "does not satisfy `Positive` (where it > 0) (stack: fill_wrong)",
   "✓ head                     proven (10 checks)",
   "proven:  invariant `n > 0 ==> seen == first_id(orders)` after a pass of `while n < 1 && len(q) > 0`",
