@@ -983,6 +983,7 @@ Bugs and rough edges reported while working through `strata`, each with a case:
   | nested operators' results and `p := …` on the stack (`stack_call` through `binary`, `stack_let`) | 22 | 159 |
   | Euclid's GCD on machine words with the processor's remainder (`rem_trunc`) | 17 | 132 |
   | after `den: Positive` and the proofs' guards | 15 | 110 |
+  | the bootstrapped fixed point, final (noise between runs is about 15%) | 19 | 130 |
   | `Float` | 1.4 | 10.5 |
 
   Tried and dropped: binary (Stein's) GCD on words was slower (98 ns on the add loop): a numerator much larger than its denominator takes a step per bit, Euclid one or two remainders. Dividing by the GCD in machine words (`div_trunc`) gained nothing measurable. The add loop now allocates nothing; the mixed one makes one object an iteration (`Real.from`'s result as an operand). Found on the way: an integer literal of 2^62 or more is parsed from its digits at every evaluation (`strata_int_lit`), and `to_u64`'s `requires` holds one, so `n.to_u64()` allocated a big integer each call (core.real uses `wrap_u64`; not fixed in codegen).
