@@ -132,14 +132,14 @@ codegen.as_type smt.real_term eval.real_pair: an integer constant beside a `Real
 Inside core.real, smt sees a `Real` as its record (`real_record`), so its
 own functions are proven. Everywhere else a `Real` is an SMT real, and a
 part's refinement (`den: Positive`) is core.real's to keep. std.json's and
-std.toml's `Number` now hold the number's digits as they were read.
+std.toml's `Number` now hold a `Real`, built in two bootstrap stages (A: core has `Real`, std the old `Number`; B: `Number(Real)`, seeded by A).
 
 ```strata-diff smt.real_record smt.refined real.Real
 ```
 
 ```strata-also
 smt.real_key smt.shape smt.sort_of smt.from_term smt.check_type smt.check_type_at smt.in_type smt.shape_test smt.plain_real
-std.json.* std.toml.* std.sqlite.* std.orm.*: Number(String), Json/Toml/Sql for Real, Row.real, TEXT columns
+std.json.* std.toml.* std.sqlite.* std.orm.*: Number(Real) beside Integer(Int), Json/Toml/Sql for Real (an error for 1/3), Row.real, TEXT columns
 real.real_of real.real_mod real.real_text real.real_to_float real.real_pow10: guards and bounded loops for the proofs
 ```
 
