@@ -1,0 +1,33 @@
+/* The about page (about.html): one column of prose. landing.css has the header and footer. */
+.about .prose { max-width: 860px; margin: 0 auto; padding: 5vh 5vw 90px; }
+.about .prose h1 { font-size: clamp(38px, 4.6vw, 60px); line-height: 1.05; letter-spacing: -.035em; }
+.about .prose .date { color: var(--faint); font: 500 14px var(--mono); margin: 18px 0 42px; }
+.about .prose h2 { font-size: clamp(26px, 2.4vw, 34px); max-width: none; margin: 64px 0 18px; }
+.about .prose h3 { font-size: 20px; margin: 36px 0 10px; color: var(--text); }
+.about .prose p, .about .prose li { color: #d6d5cf; }
+.about .prose p { margin: 0 0 18px; }
+.about .prose ul, .about .prose ol { margin: 0 0 18px; padding-left: 22px; }
+.about .prose li { margin: 6px 0; }
+.about .prose li::marker { color: var(--accent); }
+.about .prose strong { color: var(--text); }
+.about .prose .table { overflow-x: auto; margin: 26px 0 30px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.about .prose table { width: 100%; border-collapse: collapse; font-size: 14.5px; line-height: 1.45; }
+.about .prose th, .about .prose td { text-align: left; vertical-align: top; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+.about .prose th { font: 600 12.5px var(--mono); letter-spacing: .04em; color: var(--muted); background: var(--bg2); }
+.about .prose tr:last-child td { border-bottom: 0; }
+.about .prose td:first-child { color: var(--text); }
+.about .prose code { white-space: nowrap; }
+.about .prose td code { white-space: nowrap; }
+.about .prose td code.cmd { white-space: normal; overflow-wrap: anywhere; }
+.about .prose td:nth-child(2), .about .prose td:nth-child(3) { white-space: nowrap; }
+.about .prose td:nth-child(2):last-child { white-space: normal; }
+header.top nav a[aria-current] { color: var(--text); }
+
+@media (max-width: 720px) {
+  .about header.top { flex-wrap: wrap; gap: 8px 14px; }
+  .about header.top nav { flex-wrap: wrap; gap: 2px; }
+  .about header.top nav a { padding: 6px 8px; }
+  .about .prose td, .about .prose td:nth-child(2), .about .prose td:nth-child(3) { white-space: normal; }
+  .about .prose th, .about .prose td { padding: 8px 10px; }
+  .about footer { flex-direction: column; }
+}
