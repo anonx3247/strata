@@ -185,6 +185,12 @@ A fault prints the call stack as `strata run` does (`    stack: main -> inner ->
 - With `fib(37)` making 78M calls through the stub, and the verifier done before `main` starts, there was no difference above the noise of a loaded machine: at `-O0`, 910 ms against 912 ms; with `--release`, 490 ms against 555 ms (medians of 6, load 15–25).
 - A run without a verifier, and every built executable, have no stubs.
 
+**Live edits** (`strata run --live`, `compiler/c/jit.c`). The program is compiled swappable, as with a verifier alongside, and the run starts `strata live-edits`, a process of its own.
+
+- It reads the program's module files every 100 ms (`verified_key`: their bytes). A change, the same bytes twice 30 ms apart, is an edit. Its definitions' headers (`live_snapshot`: hashes only, nothing decoded) are compared with those running (`live_changes`): only functions and impls whose interface hash is unchanged, other than `main`, may change.
+- Each edit is checked, verified and compiled by `strata live-edit`, a new process each time, so nothing of an earlier edit's is left in it. It writes the module to the run's folder (`live-N.ll`).
+- The watcher tells the run on a pipe (its descriptor 3): `swap N T` or `refused N`, with a note in a file. A thread of the run swaps the module in. A function changed since the program started, or swapped before, is compiled as `NAME.live.N` and its slot pointed at it. A function whose type changed is refused (the slot's callers were compiled for the old one). In the edit's module, a definition the main module has with the same code is declared, so it is shared. A changed one becomes the module's own internal copy, and so does a constant whose value changed. A variable is always the main module's, so its state is kept. The run answers in `done-N.txt`, so the watcher knows which code runs.
+
 `build` and the JIT share one code generator (IR text, which `compiler/c/ir.c` builds in LLVM for the JIT too) and one runtime (`runtime/runtime.c`, linked into `strata` for the JIT and into the program by `strata build`). A release ships the runtime precompiled together with core.rt as `runtime-lto.o`.
 
 ## The compiler (`compiler/`)

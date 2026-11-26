@@ -157,6 +157,28 @@ A compiled program behaves like `strata run`: the same output, and the same run-
 
 `strata run` compiles the program in memory and runs it with a JIT, at native speed without a build step. If the program changed since it was last verified, it starts immediately while being verified alongside, and the proven code (without the proven checks) is swapped in while it runs ([verification](verification.md#what-is-proven-isnt-checked-again); see `--no-verify`, `--verify-alongside`, `--wait-for-proofs`). `strata test` compiles tests the same way. A fault ends the test, not the run, and what a test prints is shown only if it fails. [Internals](internals.md#compiling) describes how the compiler and the JIT work.
 
+### Live edits: `strata run --live`
+
+With `--live`, a running program takes edits. When its module files change (a `strata edit`, or any write), and the program as it is now checks and verifies, the changed functions are swapped in: new calls run the new code, and a call already running finishes in the old code. A note on stderr says what happened to each edit:
+
+```text
+$ strata run srv.strata --live
+note: live edits: when the program's files change, and they check and verify, the changed functions are swapped in
+hello
+note: live edit 1: `message` swapped in (verified 2 changed: 2 proven, 0 fuzzed), 230 ms after the change
+world
+note: live edit 2 refused: it doesn't check:
+  error in message: unknown variable `greeting`
+note: the program goes on with its code as it was
+```
+
+- Only bodies change in a running program. An edit is refused, and the program keeps its code, when it changes a function's signature, `main` (its frame lasts the run), or a type, trait, capability or `extern` (the program holds values made with the old one). Run the program again for those.
+- An edit is refused when the program doesn't check, or when `verify` finds a counterexample. A check `verify` doesn't prove stays in the new code, as in any run.
+- The files are the program: an edit is judged with everything in the files at that moment. A refused change stays refused until the files no longer hold it.
+- Globals keep their state (the lab has none of its own: only the runtime's). A lambda is compiled again with the function that holds it.
+- It takes about 0.3 s from the file being written to the new code running: up to 0.13 s to see the change (the files are read every 100 ms, and must be the same twice), then about 0.23 s to check, verify and compile the program in a process of its own, and swap it in.
+- No verifier runs alongside a `--live` run: the program starts with the checks the last `verify` proved, and each edit's code leaves out what its own verify proved.
+
 ## Structural diffs
 
 `strata diff` shows changes by definition rather than by line. This example follows four changes to `examples/orders.strata` made through strata: a variant renamed with `strata rename`, a stronger `ensures`, a new variant, and a body rewritten as a loop.
