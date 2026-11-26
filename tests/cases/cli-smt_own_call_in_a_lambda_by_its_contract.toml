@@ -1,0 +1,91 @@
+# A function's own call in a lambda its code passes (`ms.all(m ->
+# known(m, ...))`) is known by its contract, as a recursive call in the
+# code is. Seen through, its body was seen through again at each element
+# the lambda is applied to, nested (with the helpers it calls):
+# compiler/'s `contracts.refn` made a 15 MB query that took past 300 s to
+# write. `known`'s ensures is proven from a query of a few KB (326 KB
+# before).
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+/// A condition on a number.
+type Cond =
+  | Yes
+  | Below(Int)
+  | Not(Cond)
+  | Both { a: Cond, b: Cond }
+
+/// A shape: a number with conditions, or one of several shapes.
+type Shape =
+  | Num
+  | Name(String)
+  | Where { base: Shape, cond: Cond }
+  | OneOf(List[Shape])
+
+/// What is known.
+type Known = | Unknown | Free | Is(Bool)
+
+/// Whether `c` holds of `n`.
+fn holds(c: Cond, n: Int) -> Bool {
+  match c {
+    Yes => true,
+    Below(k) => n < k,
+    Not(d) => !holds(d, n),
+    Both { a, b } => holds(a, n) && holds(b, n),
+  }
+}
+
+/// Whether `s` is a number, through `fuel` levels.
+fn numeric(s: Shape, fuel: Int) -> Bool
+  ensures fuel <= 0 ==> !it {
+  if fuel <= 0 {
+    false
+  } else {
+    match s {
+      Num => true,
+      Name(x) => x == "Int",
+      Where { base, .. } => numeric(base, fuel - 1),
+      OneOf(_) => false,
+    }
+  }
+}
+
+/// What a shape's conditions say of `n`.
+fn known(s: Shape, n: Int, fuel: Int) -> Known
+  ensures fuel <= 0 ==> it == Unknown {
+  if fuel <= 0 {
+    Unknown
+  } else {
+    match s {
+      Where { base, cond } => match known(base, n, fuel - 1) {
+        Unknown => Unknown,
+        Free => if numeric(base, 8) {
+          Is(holds(cond, n))
+        } else {
+          Unknown
+        },
+        Is(a) => Is(a && holds(cond, n)),
+      },
+      OneOf(ms) => if ms.all(m -> known(m, n, fuel - 1) == Free) {
+        Free
+      } else {
+        Unknown
+      },
+      _ => Free,
+    }
+  }
+}
+
+fn main() {
+  print(known(OneOf([Where { base: Num, cond: Not(Below(3)) }, Name("x")]), 5, 16))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "known"]
+has = ["✓ known                    proven (1 check)"]
+
+# the queries stay small
+[[step]]
+run = ["sh", "-c", "mkdir d && STRATA_SOLVER_DUMP=$TMP/d $STRATA --file t.strata verify --no-race --no-cache --no-write known > /dev/null; cat d/*.smt2 | wc -c | awk '{ print ($1 < 30000) ? \"small\" : \"large \" $1 }'"]
+has = ["small"]
