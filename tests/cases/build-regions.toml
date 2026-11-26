@@ -1,0 +1,31 @@
+# Statement regions (codegen's region_site, core.rt's regions): values that
+# live only in the statement making them go in the thread's region; values
+# a callee keeps, even by a field, a string given back, a list's + and an
+# f-string of one part stay counted. A return and a continue inside a
+# statement with a mark. Built with and without regions
+# (STRATA_MEMORY=check: everything made is freed, no freed object used),
+# and on the JIT.
+
+[[step]]
+save = "regions.strata"
+from = "regions.st"
+
+[[step]]
+strata = ["build", "regions.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "%x.0,%x.1,%x.2,%x.3\nb4\na1\ns1\n100014066\n10\no3\n"
+
+[[step]]
+strata = ["build", "regions.strata", "--no-regions", "-o", "counted"]
+
+[[step]]
+run = ["./counted"]
+memory = true
+stdout = "%x.0,%x.1,%x.2,%x.3\nb4\na1\ns1\n100014066\n10\no3\n"
+
+[[step]]
+strata = ["run", "regions.strata"]
+stdout = "%x.0,%x.1,%x.2,%x.3\nb4\na1\ns1\n100014066\n10\no3\n"
