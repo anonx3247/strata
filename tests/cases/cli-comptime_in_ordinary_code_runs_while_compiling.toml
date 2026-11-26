@@ -34,10 +34,10 @@ lacks = ["std.regex.parse", "@\"strata:shout\""]
 
 # the edit says so at once (it is stored, as a script's edit is)
 [[step]]
-strata = ["--file", "v.strata", "edit"]
+strata = ["--file", "v.strata", "edit", "--as-given"]
 text = "fn main() {\n  n := 3\n  print(comptime n + 1)\n}\n"
 fails = true
-has = ["unknown variable `n`", "written: "]
+has = ["unknown variable `n`", "written as given: "]
 
 [[step]]
 strata = ["--file", "v.strata", "check"]
