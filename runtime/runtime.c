@@ -118,8 +118,9 @@ void strata_share_unknown(void) {
 static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
 
 // The bit of a count word saying the object is shared between threads
-// (core.rt's `shared_bit`).
-#define SHARED ((int64_t)1 << 62)
+// (core.rt's `shared_bit`): the sign bit. A live object's count word is
+// positive unless it is shared; a freed one in check mode is this bit alone.
+#define SHARED INT64_MIN
 
 // A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
 // memory ends the program, as for any allocation.
@@ -253,12 +254,12 @@ void strata_dup(void *p) {
   int64_t *c = count_of(p);
   if (THREADED) {
     int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
-    if (v > 0) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
-    else if (v == FREED) freed_again("dup");
+    if (v == FREED) freed_again("dup");
+    else if (v) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
     return;
   }
-  if (*c > 0) ++*c;
-  else if (*c == FREED) freed_again("dup");
+  if (*c == FREED) freed_again("dup");
+  else if (*c) ++*c;
 }
 
 // One holder fewer: whether that was the last one, in which case the caller
@@ -268,10 +269,10 @@ _Bool strata_release(void *p) {
   if (THREADED) {
     int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
     if (v == FREED) freed_again("drop");
-    return v > 0 && (__atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) & ~SHARED) == 0;
+    return v && (__atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) & ~SHARED) == 0;
   }
   if (*c == FREED) freed_again("drop");
-  return *c > 0 && (--*c & ~SHARED) == 0;
+  return *c && (--*c & ~SHARED) == 0;
 }
 
 // Frees an object whose contents are already dropped.
@@ -315,7 +316,7 @@ _Bool strata_release_word(void *p, int64_t v) {
 // Marks `p` shared between threads: whether it wasn't yet.
 _Bool strata_share(void *p) {
   int64_t v = __atomic_load_n(count_of(p), __ATOMIC_RELAXED);
-  if (v <= 0 || (v & SHARED)) return 0;
+  if (v == 0 || (v & SHARED)) return 0;
   __atomic_fetch_add(count_of(p), SHARED, __ATOMIC_RELAXED);
   return 1;
 }
