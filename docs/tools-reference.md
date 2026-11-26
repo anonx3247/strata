@@ -43,7 +43,7 @@ An invariant naming a variable's value before the loop gets a binding just befor
 
 **Code.** Code is stored as its syntax tree, in binary. Each `.strata` file is a module file, in Strata's own format, specified in [binary-format.md](binary-format.md).
 
-- Text goes in only through an edit (`strata edit`, `strata add`) and comes out through `view`. `strata view MODULE` prints a module as stored, imports first.
+- Text goes in only through an edit (`strata edit`, `strata add`) and comes out through `view`. `strata view MODULE` prints a module in reading order ([tools](tools.md), "Views"); the stored order is kept.
 - `strata view --split DIR` writes a package's text as one `.st` file per module, for reading, not for reading back.
 - A type listed by one union is shown inside it unless it has its own doc or `impl`. `--members separate` shows every member as a separate definition. Both describe the same program.
 - Outside a package's log, `strata --file F edit < text` stores a script, or a folder's module with `--file DIR/ edit MODULE`, creating it if new. Only text that doesn't parse is refused.
