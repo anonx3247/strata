@@ -5174,6 +5174,8 @@ typedef struct NetSlot {
   _Bool broken;      // an operation on it was cancelled half-way
   char *in;          // bytes received, not read yet
   size_t in_len, in_cap;
+  void *tls;         // Secure Transport's context, once `std_net_tls` started TLS
+  short want;        // what TLS waited for last: POLLIN or POLLOUT
 } NetSlot;
 
 static pthread_mutex_t net_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -5220,6 +5222,7 @@ static uint64_t net_add(int fd) {
   s->fd = fd;
   s->broken = 0;
   s->in_len = 0;
+  s->tls = NULL;
   uint64_t h = ((uint64_t)s->gen << 32) | (uint64_t)(i + 1);
   pthread_mutex_unlock(&net_lock);
   return h;
@@ -5422,12 +5425,185 @@ const char *std_net_peer(uint64_t h) {
   return net_give(out, strlen(out));
 }
 
+
+// ---- TLS (macOS: Secure Transport, loaded at the first use) ----
+//
+// The system's TLS, loaded with dlopen so that programs that don't use it
+// don't link Security.framework. Secure Transport checks the server's
+// certificate against the system's roots and its name. It speaks up to
+// TLS 1.2. Elsewhere TLS fails with a message (not built: OpenSSL's libssl
+// the same way).
+
+#include <dlfcn.h>
+
+enum { SSL_WOULD_BLOCK = -9803, SSL_CLOSED_GRACEFUL = -9805, SSL_CLOSED_ABORT = -9806, SSL_CLOSED_NO_NOTIFY = -9816 };
+typedef int32_t (*SslIo)(const void *conn, void *data, size_t *len);
+static struct {
+  _Bool tried, ok;
+  void *(*create)(void *alloc, int side, int type);
+  int32_t (*set_io)(void *ctx, SslIo rd, SslIo wr);
+  int32_t (*set_conn)(void *ctx, const void *conn);
+  int32_t (*set_name)(void *ctx, const char *name, size_t len);
+  int32_t (*handshake)(void *ctx);
+  int32_t (*read)(void *ctx, void *data, size_t len, size_t *done);
+  int32_t (*write)(void *ctx, const void *data, size_t len, size_t *done);
+  int32_t (*close)(void *ctx);
+  void (*release)(const void *cf);
+} st;
+static pthread_mutex_t st_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static _Bool tls_load(void) {
+  pthread_mutex_lock(&st_lock);
+  if (!st.tried) {
+    st.tried = 1;
+#ifdef __APPLE__
+    void *sec = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY);
+    void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+    if (sec && cf) {
+      st.create = (void *(*)(void *, int, int))dlsym(sec, "SSLCreateContext");
+      st.set_io = (int32_t (*)(void *, SslIo, SslIo))dlsym(sec, "SSLSetIOFuncs");
+      st.set_conn = (int32_t (*)(void *, const void *))dlsym(sec, "SSLSetConnection");
+      st.set_name = (int32_t (*)(void *, const char *, size_t))dlsym(sec, "SSLSetPeerDomainName");
+      st.handshake = (int32_t (*)(void *))dlsym(sec, "SSLHandshake");
+      st.read = (int32_t (*)(void *, void *, size_t, size_t *))dlsym(sec, "SSLRead");
+      st.write = (int32_t (*)(void *, const void *, size_t, size_t *))dlsym(sec, "SSLWrite");
+      st.close = (int32_t (*)(void *))dlsym(sec, "SSLClose");
+      st.release = (void (*)(const void *))dlsym(cf, "CFRelease");
+      st.ok = st.create && st.set_io && st.set_conn && st.set_name && st.handshake && st.read && st.write && st.close && st.release;
+    }
+#endif
+  }
+  pthread_mutex_unlock(&st_lock);
+  return st.ok;
+}
+
+// Secure Transport's reads and writes, on the slot's non-blocking socket.
+static int32_t tls_recv(const void *conn, void *data, size_t *len) {
+  NetSlot *s = (NetSlot *)conn;
+  size_t want = *len, got = 0;
+  while (got < want) {
+    ssize_t r = recv(s->fd, (char *)data + got, want - got, 0);
+    if (r > 0) {
+      got += (size_t)r;
+      continue;
+    }
+    if (r == 0) {
+      *len = got;
+      return SSL_CLOSED_GRACEFUL;
+    }
+    if (errno == EINTR) continue;
+    *len = got;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      s->want = POLLIN;
+      return SSL_WOULD_BLOCK;
+    }
+    return SSL_CLOSED_ABORT;
+  }
+  *len = got;
+  return 0;
+}
+
+static int32_t tls_send(const void *conn, void *data, size_t *len) {
+  NetSlot *s = (NetSlot *)conn;
+  size_t want = *len, sent = 0;
+  while (sent < want) {
+#ifdef MSG_NOSIGNAL
+    ssize_t w = send(s->fd, (char *)data + sent, want - sent, MSG_NOSIGNAL);
+#else
+    ssize_t w = send(s->fd, (char *)data + sent, want - sent, 0);
+#endif
+    if (w >= 0) {
+      sent += (size_t)w;
+      continue;
+    }
+    if (errno == EINTR) continue;
+    *len = sent;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      s->want = POLLOUT;
+      return SSL_WOULD_BLOCK;
+    }
+    return SSL_CLOSED_ABORT;
+  }
+  *len = sent;
+  return 0;
+}
+
+static void tls_failed(int32_t e) {
+  const char *why = e == -9807 ? "the server's certificate chain isn't trusted"
+                  : e == -9813 ? "the server's certificate has no trusted root"
+                  : e == -9814 ? "the server's certificate has expired"
+                  : e == -9843 ? "the server's certificate is for another name"
+                  : e == SSL_CLOSED_GRACEFUL || e == SSL_CLOSED_ABORT ? "the server closed the connection"
+                  : NULL;
+  net_status = NET_FAILED;
+  if (why) snprintf(net_msg, sizeof net_msg, "TLS: %s", why);
+  else snprintf(net_msg, sizeof net_msg, "TLS failed (Secure Transport error %d)", (int)e);
+}
+
+// Starts TLS on a connection, as a client of `host` (the name its
+// certificate must hold): 1, or 0 with the status set. A cancelled
+// handshake leaves the connection broken.
+_Bool std_net_tls(uint64_t h, const char *host) {
+  NetSlot *s = net_get(h);
+  if (!s) return 0;
+  if (s->tls) {
+    net_fail(NET_FAILED, "TLS is already on");
+    return 0;
+  }
+  if (!tls_load()) {
+    net_fail(NET_FAILED, "TLS isn't available on this system");
+    return 0;
+  }
+  void *ctx = st.create(NULL, 1 /* client */, 0 /* stream */);
+  if (!ctx) {
+    net_fail(NET_FAILED, "TLS: no context");
+    return 0;
+  }
+  st.set_io(ctx, tls_recv, (SslIo)tls_send);
+  st.set_conn(ctx, s);
+  st.set_name(ctx, host, strlen(host));
+  s->tls = ctx;
+  for (;;) {
+    s->want = POLLIN;
+    int32_t e = st.handshake(ctx);
+    if (e == 0) break;
+    if (e != SSL_WOULD_BLOCK) {
+      tls_failed(e);
+      s->broken = 1;
+      return 0;
+    }
+    if (!wait_fd(s->fd, s->want)) {
+      s->broken = 1;
+      net_fail(NET_CANCELLED, "cancelled");
+      return 0;
+    }
+  }
+  net_status = NET_OK;
+  return 1;
+}
+
 // Receive more bytes into the slot's buffer: how many (0 at the end), -1
 // failed, -2 cancelled (nothing received).
 static ssize_t net_fill(NetSlot *s) {
   if (s->in_cap - s->in_len < 4096) {
     s->in_cap = s->in_cap ? s->in_cap * 2 : 8192;
     s->in = realloc(s->in, s->in_cap);
+  }
+  while (s->tls) {
+    size_t got = 0;
+    s->want = POLLIN;
+    int32_t e = st.read(s->tls, s->in + s->in_len, s->in_cap - s->in_len, &got);
+    s->in_len += got;
+    if (got > 0) return (ssize_t)got;
+    if (e == SSL_CLOSED_GRACEFUL || e == SSL_CLOSED_NO_NOTIFY) return 0;
+    if (e != 0 && e != SSL_WOULD_BLOCK) {
+      tls_failed(e);
+      return -1;
+    }
+    if (e == SSL_WOULD_BLOCK && !wait_fd(s->fd, s->want)) {
+      net_fail(NET_CANCELLED, "cancelled");
+      return -2;
+    }
   }
   for (;;) {
     ssize_t r = recv(s->fd, s->in + s->in_len, s->in_cap - s->in_len, 0);
@@ -5577,6 +5753,29 @@ int64_t std_net_read_bytes(uint64_t h, int64_t max) {
   return (int64_t)n;
 }
 
+// Exactly `n` bytes into the thread's byte buffer: `n`, or -1 (the end of
+// the stream first: status NET_END, and what arrived stays to be read).
+int64_t std_net_read_exact_bytes(uint64_t h, int64_t n) {
+  NetSlot *s = net_get(h);
+  if (!s) return -1;
+  while ((int64_t)s->in_len < n) {
+    ssize_t r = net_fill(s);
+    if (r < 0) return -1;
+    if (r == 0) {
+      net_fail(NET_END, "the stream ended early");
+      return -1;
+    }
+  }
+  if (net_bytes_cap < (size_t)n) {
+    net_bytes_cap = (size_t)n;
+    net_bytes = realloc(net_bytes, net_bytes_cap);
+  }
+  memcpy(net_bytes, s->in, (size_t)n);
+  net_bytes_len = (size_t)n;
+  net_consume(s, (size_t)n);
+  return n;
+}
+
 // Byte `i` of the thread's byte buffer.
 uint8_t std_net_byte(int64_t i) {
   return i >= 0 && (size_t)i < net_bytes_len ? net_bytes[i] : 0;
@@ -5596,7 +5795,29 @@ void std_net_clear_bytes(void) { net_bytes_len = 0; }
 
 static _Bool net_send(NetSlot *s, const char *p, size_t n) {
   size_t sent = 0;
-  while (sent < n) {
+  while (s->tls) {
+    // (a write of what is left, or of nothing: Secure Transport sends what
+    // it holds back first)
+    size_t w = 0;
+    s->want = POLLOUT;
+    int32_t e = st.write(s->tls, p + sent, n - sent, &w);
+    sent += w;
+    if (e == 0 && sent == n) {
+      net_status = NET_OK;
+      return 1;
+    }
+    if (e == 0) continue;
+    if (e != SSL_WOULD_BLOCK) {
+      tls_failed(e);
+      return 0;
+    }
+    if (!wait_fd(s->fd, s->want)) {
+      s->broken = 1;
+      net_fail(NET_CANCELLED, "cancelled");
+      return 0;
+    }
+  }
+  while (!s->tls && sent < n) {
 #ifdef MSG_NOSIGNAL
     ssize_t w = send(s->fd, p + sent, n - sent, MSG_NOSIGNAL);
 #else
@@ -5653,6 +5874,11 @@ void std_net_close(uint64_t h) {
   pthread_mutex_lock(&net_lock);
   if (i >= 1 && i <= net_count && net_slots[i - 1]->fd >= 0 && net_slots[i - 1]->gen == gen) {
     NetSlot *s = net_slots[i - 1];
+    if (s->tls) {
+      st.close(s->tls);
+      st.release(s->tls);
+      s->tls = NULL;
+    }
     close(s->fd);
     s->fd = -1;
     s->gen++;

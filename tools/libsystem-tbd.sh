@@ -29,7 +29,7 @@ extra="dyld_stub_binder ___bzero ___stack_chk_fail ___stack_chk_guard ___chkstk_
   _pthread_mutex_init _pthread_mutex_destroy _pthread_cond_wait _pthread_cond_signal
   _pthread_cond_broadcast _pthread_cond_timedwait _pthread_cond_init _pthread_cond_destroy
   _getaddrinfo _freeaddrinfo _gai_strerror _socket _connect _bind _listen _accept _setsockopt
-  _getsockopt _getsockname _getpeername _recv _send _shutdown _inet_ntop"
+  _getsockopt _getsockname _getpeername _recv _send _shutdown _inet_ntop _dlopen _dlsym"
 defined=$(for o in "$@"; do nm -g -U "$o" | awk '{print $3}'; done | sort -u)
 symbols=$( { for o in "$@"; do nm -u "$o"; done; for s in $extra; do echo "$s"; done; } \
   | grep -v '^_strata_' | sort -u | comm -23 - "$(f=$(mktemp); echo "$defined" > "$f"; echo "$f")")
