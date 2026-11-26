@@ -1,0 +1,31 @@
+# build.rs: tasks share nested values with the main thread and each other,
+# through captures, channels, `await` on two threads, races and panics:
+# only what crosses to another thread counts atomically (core.rt's
+# shared_bit), and every object is freed once (STRATA_MEMORY=check), on
+# every run
+
+[[step]]
+save = "shared.strata"
+from = "shared.st"
+
+[[step]]
+strata = ["build", "shared.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/shared-counts.out"
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/shared-counts.out"
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/shared-counts.out"
+
+[[step]]
+strata = ["run", "shared.strata"]
+golden = "tests/data/build/expected/shared-counts.out"
