@@ -1,7 +1,7 @@
 ---
 title: Floats in the prover
 base: 52cec923
-packages: compiler, std
+packages: compiler std
 ---
 
 # Why
@@ -46,14 +46,14 @@ Three fixes the std.array contracts needed: a type's own method called in a cont
 # std.array: bounds on magnitudes
 Each operation takes bounds on its arrays' elements (`within`), named by functions (`add_bound`, `factor_bound`, `sum_bound`, `dot_bound`, `product_bound`). The bounds reach the loops through refined element types (`AddSample`, `SumSample`…) on private helpers' parameters, and generic `gather` / `pair` keep them through a broadcast.
 
-```strata-diff std.array.impl* std.array.add_lists std.array.sum_run std.array.dot_run
+```strata-diff std.array.add_lists std.array.sum_run
 ```
 
 ```strata-also
 std.array.sub_lists std.array.mul_lists std.array.div_lists: the other element-wise operations
+std.array.dot_run: the dot product's loops, bounded
 std.array.lane_sums std.array.transposed std.array.product: reductions along an axis, matmul's transposed copy, a bounded product
 std.array.gather std.array.pair: generic, so the element type says what holds of a copy
 std.array.add_bound std.array.factor_bound std.array.sum_bound std.array.dot_bound std.array.product_bound std.array.AddSample std.array.Factor std.array.Divisor std.array.SumSample std.array.DotSample: the bounds
 std.array.dot std.array.matmul std.array.as_float std.array.Array: contracts and docs
-std.sqlite.impl*: `Row.float` converts the 64-bit integers SQLite stores (a larger Int faulted in `float`)
 ```
