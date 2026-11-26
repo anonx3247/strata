@@ -1,0 +1,26 @@
+# In a package opened from its folder, the invariants `verify` finds by
+# search are written as one change, logged in strata.log as made by verify
+# (and committed in a git repository, as an edit is).
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "main.strata"
+from = "q.st"
+
+[[step]]
+strata = ["verify", "--no-race", "--no-cache"]
+has = ["edited quoted_end: added `invariant lx.at <= n`"]
+
+[[step]]
+strata = ["log"]
+has = ["verify: loop invariants found by search"]
+
+[[step]]
+run = ["grep", "-c", '"by":"verify"', "strata.log"]
+has = ["1"]
+
+[[step]]
+strata = ["view", "main"]
+has = ["    invariant lx.at <= n {"]

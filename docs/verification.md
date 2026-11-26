@@ -211,7 +211,14 @@ A `while` loop terminates when a bound derived from its condition decreases on e
 
 A variable that the loop doesn't change keeps its value without any invariant. A place passed `mut`, assigned a value of another form, or named again by a binding inside the loop gets none of these facts. Neither does a sized integer, since sized integers wrap. The same facts hold at the head of a `for` and a `loop`.
 
-**`verify` searches for nothing.** `verify` and `build` use only the derived invariants and the `invariant` clauses written in the code, so a verdict depends on the code alone, and a run asks the solver nothing it didn't ask the time before. A check in or after a loop that these don't prove (an index, an `ensures`, an overflow, a written `invariant`) is fuzzed, and the result says which loop and variable it is about and how to go on:
+**A search, only where a check needs it.** When a check made after the start of a loop isn't proven with the derived invariants, `verify` runs that function again with a search for more invariants. Such a check can be an index, an `ensures`, an overflow, a written `invariant` or a termination bound. The search uses these candidates:
+
+- the condition's comparisons made non-strict (`i < n` gives `i <= n`, which still holds after the last pass)
+- the function's `ensures`, about the variable it returns
+- its `requires`
+- each integer the loop changes, compared with its value on entry, with 0, with the integer parameters, and with the other integers the loop changes
+
+At first only the candidates that name a variable of the failing checks or of the loop's condition are tried. All of them are tried only if a check still fails. Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates, the derived invariants and the condition hold. Candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass, so they are assumed at the head. Facts already given by the declared types are omitted. `--checks` lists the invariants, derived and found:
 
 ```rust
 fn isqrt(n: Natural) -> Natural
@@ -225,35 +232,18 @@ fn isqrt(n: Natural) -> Natural
 ```
 
 ```text
-~ isqrt                    fuzzed: 200 cases, 0 discarded by `requires`; 4 of 5 checks proven
-    not proven: ensures it * it <= n: the solver found a possible counterexample: n = 0, but running it did not fail; after `while (r + 1) * (r + 1) <= n`, no invariant bounds `r`: write one, or run `strata fix isqrt` to search for one
+✓ isqrt                    proven (7 checks)
+    proven:  `let` annotated `Natural`
+    proven:  assigning `r`: Natural
+    proven:  result of `isqrt`: Natural
+    proven:  ensures it * it <= n
+    proven:  invariant of `while (r + 1) * (r + 1) <= n`: r >= r₀ (derived)
+    proven:  invariant of `while (r + 1) * (r + 1) <= n`: it * it <= n (it = r) (inferred)
+    proven:  invariant of `while (r + 1) * (r + 1) <= n`: r <= n (inferred)
+    terminates: `while (r + 1) * (r + 1) <= n` ends: `n - (r + 1) * (r + 1) + 1` goes down on every pass
 ```
 
-The loop named is the latest one before the check (or around it) that changes a variable the check names; for an `ensures`, the variable the body ends with counts. A check that names no variable, such as `index in range`, names the loop it is in. A loop whose bound isn't shown to go down says the same (`may not terminate: …; write an `invariant` or a `decreases` for it, or run `strata fix NAME` to search for an invariant`).
-
-**The search runs where code is written.** `strata edit` searches the loops of the functions it changes, and `strata fix NAME` searches on demand, for code written some other way (by `edit --no-search`, a merge, another tool). The search runs only in a function with a check failing in or after a loop with the derived invariants (or a loop not shown to end), and writes what it finds into the code as `invariant` clauses, with a warning (`fixed:` from `fix`):
-
-```text
-warning: in `isqrt`: added `invariant r * r <= n` to `while (r + 1) * (r + 1) <= n` (found by search)
-```
-
-```rust
-  while (r + 1) * (r + 1) <= n
-    invariant r * r <= n {
-    r += 1
-  }
-```
-
-`verify` then proves the written invariants, and `isqrt` with them. The search uses these candidates:
-
-- the condition's comparisons made non-strict (`i < n` gives `i <= n`, which still holds after the last pass)
-- the function's `ensures`, about the variable it returns
-- its `requires`
-- each integer the loop changes, compared with its value on entry, with 0, with the integer parameters, and with the other integers the loop changes
-
-At first only the candidates that name a variable of the failing checks or of the loop's condition are tried. All of them are tried only if a check still fails. Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates, the derived invariants and the condition hold. Candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass. Facts already given by the declared types are omitted. Of those, only the fewest that prove as much are written: each is left out while the function proves as many checks without it. And they are written only if, once written, `verify` proves them without a search (else a note says they aren't written).
-
-An invariant that nothing derives and no candidate states, such as the closed form of a sum, isn't found. The check stays fuzzed, unless the loop states the invariant. An `invariant e` clause goes on its own line between the loop's header and its body, like a function's `requires`. It is proven on entry and after every pass, including at each `continue`, and then assumed at the head together with the derived invariants, since each may depend on the others:
+Here `r <= n` and the `ensures` aren't derived (`r` is bounded through `(r + 1) * (r + 1)`), so the `ensures` fails without them and the loop is searched. An invariant that nothing derives and no candidate states, such as the closed form of a sum, isn't found. The check is then fuzzed and the result says so, unless the loop states the invariant. An `invariant e` clause goes on its own line between the loop's header and its body, like a function's `requires`. It is proven on entry and after every pass, including at each `continue`, and then assumed at the head together with the inferred invariants, since each may depend on the others:
 
 ```rust
 fn triangle_closed(n: Natural) -> Natural
@@ -284,22 +274,26 @@ fn triangle_closed(n: Natural) -> Natural
     terminates: `while i < n` ends: `n - i` goes down on every pass
 ```
 
-How the invariants found are written:
-
-- All of a run's invariants are written in one change. Only the module files of the changed definitions are re-encoded, since an `invariant` clause changes no signature and the search has just proven it. Only clauses that print as Strata and read back as the same tree are written. A function's loops and an implementation's methods' are written; a `for` over a list is searched with an index the code doesn't have, so what its search finds can't be written: its checks say so, and suggest a `while` over the indexes, which `strata fix` can search.
-- In a package opened from its folder, the change is logged in `strata.log` as made by `edit` or `fix` (`"by":"edit"`) and committed, like the edit. With `--file`, it is written the way `--file F edit` writes.
-- Only the program being edited is written. std and core are never written when they are dependencies.
-- An invariant that refers to a variable's value before the loop (`x₀`) is written without new syntax. If neither the loop nor the statements since change the variables of the expression the variable was last set to, that expression is used: with `mut end := n` before the loop, the invariant is `invariant end <= n`. Otherwise a binding is added just before the loop, with a name distinct from the function's names (`start_i := i`, then `invariant i >= start_i`). The warning says so: ``added `invariant i >= start_i` to `while …` and `start_i := i` before it``.
-- When nothing is found, the edit says which checks still fail: ``warning: in `f`: not proven: …``.
-- Inside a loop with written invariants, the search asks only within a single proof's budget: 0.5M units per question, stopping at the first unanswered one.
-
-**One search budget per run.** All of an edit's or a `fix`'s searches, for termination and for checks, draw on one pool of solver resource units, which are deterministic, unlike time: 2,000M units. Most functions need no search, so a run takes far less. Once the pool is used up, the loops not yet searched are reported:
+**Invariants found by search are written into the code.** Most loops need no search, or find their invariants quickly (a few queries, a few thousand solver resource units), and they stay implicit. When finding them takes a real search, more than the 2M resource units a single proof may use, `verify` writes them into the code as `invariant` clauses on that loop. Later runs then only have to prove them, and readers can see them. `verify` prints one line per definition:
 
 ```text
-note: `quoted_end`: the invariant search budget was used up before `while …` was searched: write an `invariant` for that loop, or run `strata fix quoted_end` again (this run's budget was 2000M solver resource units)
+edited quoted_end: added `invariant lx.at <= n` to `while lx.at < n && char_at(lx, lx.at) != "\""` (found by search in 0.6 s, 3M solver resource units)
 ```
 
-`verify --show-searches` lists what each loop's search cost and found; as `verify` searches nothing, it lists nothing.
+- All of a run's invariants are written in one edit, after its verdicts. Only the module files of the changed definitions are re-encoded, since an `invariant` clause changes no signature and `verify` has just proven it. Only clauses that print as Strata and read back as the same tree are written.
+- In a package opened from its folder (`strata verify`, or `strata build` without `--file`), the change is logged in `strata.log` as made by `verify` (`"by":"verify"`) and committed, like an edit. With `--file`, it is written the way `--file F edit` writes.
+- Only the program being verified is written. std and core are never written when they are dependencies.
+- An invariant that refers to a variable's value before the loop (`x₀`) is written without new syntax. If neither the loop nor the statements since change the variables of the expression the variable was last set to, that expression is used: with `mut end := n` before the loop, the invariant is `invariant end <= n`. Otherwise `verify` adds a binding just before the loop, with a name distinct from the function's names (`start_i := i`, then `invariant i >= start_i`). The message says so: ``added `invariant i >= start_i` to `while …` and `start_i := i` before it``.
+- `--no-write` writes nothing.
+- A loop with written invariants isn't searched. Its invariants are proven, and any further facts are asked only within a single proof's budget: 0.5M units per question, stopping at the first unanswered one.
+
+**One search budget per run.** All of a run's loop-invariant searches, for termination and for verification, draw on one pool of solver resource units, which are deterministic, unlike time. The default pool is 2,000M units. Since most loops need no search, a run takes far less: with nothing cached, the compiler's `main` module takes about 75M (460M when every loop was searched) and std about 2M. A search already answered in the same run costs nothing. Once the pool is used up, the loops not yet searched are reported and their verdicts aren't kept:
+
+```text
+note: `quoted_end`: the invariant search budget was used up before `while …` was searched: write an `invariant` for that loop, or verify again with a larger budget (`--search-budget N`; this run's was 0k solver resource units)
+```
+
+`--search-budget N` sets the pool; a negative N means no limit. Which loops are left when the pool runs out depends on the order the workers reach them. `--show-searches` lists what each loop's search cost and found.
 
 A written invariant is also checked at run time at the loop's head: on entry, after every pass and `continue`, and when the loop ends normally. It isn't checked at a `break`, whose state it doesn't have to describe. `for` and `loop` accept invariants too. A `for` loop's invariant can't name the loop variable, because it must hold before the first element and after the last, where the variable has no value.
 

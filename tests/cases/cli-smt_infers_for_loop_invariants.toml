@@ -1,11 +1,8 @@
-# A `for` over a list is searched as a `while` over its indexes would be
-# (the `ensures` of the variable returned, over the elements visited so
-# far: `n <= len(xs)`, every visited element a key, every kept one
-# positive), but what that finds names the index and can't be written into
-# a `for`, and `verify` searches nothing: those checks are fuzzed, and say
-# which loop and variable they are about, and that a `while` over the
-# indexes is what `strata fix` can search. (Undecided: IDEAS.md, "The
-# invariant search runs where code is written".)
+# A `for` over a list infers what each pass keeps, as a `while` does: the
+# `ensures` of the variable returned, over the elements visited so far
+# (`n <= len(xs)`, every visited element a key, every kept one positive);
+# the list returned, `mut got := []`, has the result's type at the loop's
+# head
 [[step]]
 save = "f.strata"
 text = '''
@@ -45,11 +42,6 @@ fn kept(xs: List[Int]) -> List[Int]
 '''
 
 [[step]]
-strata = ["--file", "f.strata", "verify", "--no-race", "--no-cache"]
-has = [
-  "~ positives",
-  "after `for`, no invariant bounds `n`: write one, or loop with `while` over the indexes for `strata fix positives` to search for one",
-  "~ marked",
-  "~ kept",
-]
-lacks = ["✗ "]
+strata = ["--file", "f.strata", "verify", "--no-write"]
+has = ["✓ positives", "✓ marked", "✓ kept"]
+lacks = ["~ ", "✗ "]
