@@ -99,12 +99,22 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="colo
   if (still) show(0, false); else setTimeout(() => show(0), 900);
 }
 
-// ───────── the tour, in short: one visual per main point, from the same recordings ─────────
+// ───────── what Strata changes for agents: the usual way next to Strata's, from the same recordings ─────────
 {
   const D = STRATA, V = D.verify;
   const pane = (title, body, { cls = '', count = '' } = {}) =>
     `<div class="pane ${cls}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">${esc(title)}</span>${count}</div><div class="body${cls.includes('term') ? ' wrap' : ''}">${body}</div></div>`;
   const run = (cmd, out) => cmdLine(cmd) + term(out);
+  /** The usual way on the left, Strata's on the right, each with its size. */
+  const compare = (usual, strata) => `<div class="vs">
+    <div class="side old"><h4>${esc(usual.label)} <span class="big-n">${esc(usual.n)}</span></h4>${usual.html}</div>
+    <div class="side new"><h4>${esc(strata.label)} <span class="big-n">${esc(strata.n)}</span></h4>${strata.html}</div>
+  </div>`;
+
+  const P = V.points;
+  $('#ch-points').innerHTML = compare(
+    { label: 'Usual: tests', n: '4 tests', html: pane('points.strata', hl(P.tests)) + pane('~/points', run(P.test.cmd, P.test.out), { cls: 'term' }) },
+    { label: 'Strata: a contract', n: '1 line', html: pane('points.strata', hl(P.one)) + pane('~/points', run(P.verify.cmd, P.verify.out), { cls: 'term' }) });
 
   $('#ch-contracts').innerHTML =
     pane('contracts.strata', hl([V.contracts.types, V.contracts.discount, V.contracts.callers].join('\n\n'))) +
@@ -114,23 +124,19 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="colo
     pane('examples/bank.strata', hl(V.behaviour.laws)) +
     pane('~/bank', run(V.behaviour.bank_verify.cmd, V.behaviour.bank_verify.out), { cls: 'term' });
 
-  const P = V.points;
-  $('#ch-points').innerHTML =
-    `<div><div class="cap bad">four tests</div>${pane('points.strata', hl(P.tests))}${pane('~/points', run(P.test.cmd, P.test.out), { cls: 'term' })}</div>` +
-    `<div><div class="cap ok">one line</div>${pane('points.strata', hl(P.one))}${pane('~/points', run(P.verify.cmd, P.verify.out), { cls: 'term' })}</div>`;
+  const R = D.rename, st = structural(R.changes[R.step]), n = diffCount(R.diff);
+  $('#ch-diff').innerHTML = compare(
+    { label: 'Usual: git diff', n: `${n} lines`, html: pane('git diff', diffHtml(R.diff)) },
+    { label: 'Strata: strata diff', n: `${st.count} change${st.count > 1 ? 's' : ''}`, html: pane('strata diff', st.html, { cls: 'term' }) });
 
-  const s0 = D.session[0], fill = D.session.find(s => s.title === 'It fills the hole'), bad = D.session.find(s => s.title === 'A broken edit is refused');
-  const refund = s0.graph.find(d => d.name === 'refund').text;
+  const s0 = D.session[0], all = s0.graph.map(d => d.text).join('\n\n'), map = D.orders.levels[0].trimEnd();
+  $('#ch-views').innerHTML = compare(
+    { label: 'Usual: read the files', n: `${all.split('\n').length} lines`, html: pane('the order system, all of it', hl(all), { cls: 'long' }) },
+    { label: 'Strata: a view', n: `${map.split('\n').length} lines`, html: pane('$ strata view slice:Order --level 0', term(map), { cls: 'term' }) });
+
+  const fill = D.session.find(s => s.title === 'It fills the hole'), bad = D.session.find(s => s.title === 'A broken edit is refused');
   $('#ch-holes').innerHTML =
-    pane('refund, for now', hl(refund)) +
+    pane('refund, for now', hl(s0.graph.find(d => d.name === 'refund').text)) +
     pane('~/shop', run('strata holes', D.orders.holes) + '\n' + cmdLine(fill.cmd) + piped(fill.input.trim()) + term(fill.out), { cls: 'term' }) +
     pane('~/shop', cmdLine(bad.cmd) + piped(bad.input.trim()) + term(bad.out), { cls: 'term' });
-
-  $('#ch-views').innerHTML = pane('$ strata view slice:Order --level 0', term(D.orders.levels[0].trimEnd()), { cls: 'term' });
-
-  const R = D.rename, st = structural(R.changes[R.step]), n = diffCount(R.diff);
-  $('#ch-diff').innerHTML = `<div class="vs">
-    <div class="side old"><h4>✗ line diff <span class="big-n">${n} lines</span></h4>${pane('git diff', diffHtml(R.diff), { count: `<span class="count bad">${n} lines changed</span>` })}</div>
-    <div class="side new"><h4>✓ structural change <span class="big-n">${st.count} change</span></h4>${pane('strata diff', st.html, { cls: 'term', count: `<span class="count ok">${st.count} change${st.count > 1 ? 's' : ''}</span>` })}</div>
-  </div>`;
 }
