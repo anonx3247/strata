@@ -100,7 +100,7 @@ fn set_var(st: St, x: String, held: Bool) -&gt; St
     <h3>Catching mistakes</h3>
     <p>Most of my corrections came from asking one more question about what Claude reported. When it said factorial was proven to terminate, I asked whether Strata's verifier had proven it or Claude had just reasoned it out. When a verify used 3 GB for one function: "Don't you find it a bit bizarre? There's probably an issue with the verify command." There was.</p>
     <h3>Testing as a user</h3>
-    <p>I built a small calculator by hand, and had agents build the same programs in Rust and in each Strata release to compare them (below).</p>
+    <p>I wrote a small calculator in Strata by hand, using the tools the way an agent would, and listed the bugs I hit. I also had agents build two larger programs, an order book and a SQL engine, once in Rust and once in each Strata release, to compare the two languages (results below).</p>
     <h2>What Claude did</h2>
     <p>Claude wrote essentially everything: the Rust prototype, its replacement in Strata, the C runtime, the standard library, the editor support, the site and the docs. It also profiled and fixed its own slow paths, for example verifying std going from over 20 minutes to 24 seconds, and ran fleets of subagents for the release.</p>
     <p>It also made mistakes I had to work around. With several sessions merging into <code>main</code> and no CI, bad merges reverted other PRs four times. For a week, <code>verify</code> could count a check as proven from a script Z3 had partly rejected. It sometimes stated causes it hadn't checked, or did work I hadn't asked for.</p>
