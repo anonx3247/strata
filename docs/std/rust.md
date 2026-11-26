@@ -34,7 +34,8 @@ Why a call of a Rust function failed.
 
 functions into `.strata/rust` in the package and build it with `cargo
 build --release` (cargo from `PATH`, or `[rust] cargo` in strata.toml).
-The library is loaded on the first call, in this process.
+A built executable has the static library linked in; `run` and `test`
+load the shared one on the first call, in the process.
 
 - Values cross as JSON through the derived `Json` trait and serde: the
 

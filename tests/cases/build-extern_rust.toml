@@ -2,7 +2,9 @@
 # strata.toml (worker/, a folder with a Cargo.toml) and turns them into the
 # `Worker` capability, which `main` and a test ask for. `strata run`, `test`
 # and `build` write a crate calling them into .strata/rust and build it
-# with cargo; the library is loaded on the first call, in the process.
+# with cargo: `run` and `test` load its shared library on the first call,
+# a built executable has its static library linked in (it runs with
+# .strata deleted, moved to another folder).
 # Values cross as JSON (a record through `derive Json` and serde); every
 # failure is a `RustError` value: an `Err` the function returned, a panic
 # (caught: the next call works), arguments that aren't the Rust types, a
@@ -77,8 +79,22 @@ has = ["printed by Rust", "x is 7"]
 strata = ["build", "-o", "prog"]
 dir = "p"
 
+# (the executable holds the library: it runs with .strata gone, from another folder)
 [[step]]
-run = ["./p/prog"]
+run = ["rm", "-rf", "p/.strata"]
+
+[[step]]
+run = ["mkdir", "elsewhere"]
+
+[[step]]
+run = ["mv", "p/prog", "elsewhere/prog"]
+
+[[step]]
+run = ["otool", "-L", "elsewhere/prog"]
+lacks = ["strata_rust", ".strata"]
+
+[[step]]
+run = ["./elsewhere/prog"]
 memory = true
 has = ["Ok(Plain { x: 42 })", "Err(Panicked { message: \"x is 7\" })", "Ok(19), Ok(20)]"]
 

@@ -5187,7 +5187,9 @@ const char *ts_worker_call(const char *node, const char *path, const char *reque
 // ---- `extern rust`: a library made by cargo ----
 //
 // std.rust calls the C functions of the library cargo made from the
-// package's crates (compiler/cargo), loaded on the first call and kept:
+// package's crates (compiler/cargo): linked into a built executable, found
+// with `dlsym`; under `strata run` and `test`, the shared library, loaded on
+// the first call and kept:
 // each takes its arguments as a JSON array and gives its reply, freed by
 // the library's `strata_rust_free` once copied. Calls aren't serialized.
 static pthread_mutex_t rust_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -5196,7 +5198,13 @@ static char *rust_path = NULL;
 
 const char *rust_library_call(const char *library, const char *symbol, const char *args) {
   pthread_mutex_lock(&rust_lock);
-  if (!rust_handle || strcmp(rust_path, library) != 0) {
+  // (a built executable has the library linked in: its functions are the
+  // program's own. Under `strata run` it is loaded from `library`.)
+  if (!rust_handle && dlsym(RTLD_DEFAULT, "strata_rust_free")) {
+    rust_handle = RTLD_DEFAULT;
+    rust_path = strdup(library);
+  }
+  if (!rust_handle || (rust_handle != RTLD_DEFAULT && strcmp(rust_path, library) != 0)) {
     void *h = dlopen(library, RTLD_NOW | RTLD_LOCAL);
     if (!h) {
       char why[1200];

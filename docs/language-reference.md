@@ -584,7 +584,7 @@ pub fn summary(post: Post) -> Card { ... }
 ```
 
 - **How it is built.** `strata run`, `strata test` and `strata build` write a crate into `.strata/rust` in the package: one `#[no_mangle] extern "C"` function per declaration, which reads the arguments from a JSON array (`serde_json`), calls the Rust function and writes its reply. They build it with `cargo build --release` into a shared library, `cargo` from the `PATH` or `[rust] cargo` in strata.toml. The first build compiles serde and the crates (seconds); after that cargo finds nothing to do (about 50 ms). Without cargo, these commands fail with an error saying what to install. A declared function the crate lacks is cargo's compile error.
-- **How it is called.** The library is loaded (`dlopen`) on the first call, in the program's process, and each call is a C call with a JSON string each way. Calls from several tasks run at once. Its path is fixed at compile time, so a built executable needs the library where it was built.
+- **How it is called.** cargo builds the crate twice over: a static library and a shared one. `strata build` links the static library into the executable (`-force_load`, then `-dead_strip`), together with the system libraries Rust's std needs (`-lSystem -lc`), through the C compiler. The executable runs from anywhere, with `.strata` deleted. On macOS, Rust's std, serde_json and the shim add about 0.5 MB to it; std.rust and std.json add another 0.15 MB. `strata run` and `strata test` load the shared library instead (`dlopen`) on the first call. Each call is a C call with a JSON string each way, and calls from several tasks run at once.
 - **Every call returns a `Result`.** The result type is written `Result[T, RustError]` (std.rust):
   - `Failed`: the Rust function returned `Err(e)`, with `e.to_string()`. A Rust function returning `Result<T, E>` (`E: Display`) answers its `Err` this way; any other return type is the value.
   - `Panicked`: the function panicked. The panic is caught, and the next call works. Rust prints the panic to standard error.
@@ -593,7 +593,7 @@ pub fn summary(post: Post) -> Card { ... }
   - `BadReply`, `NotEncodable`: as for `extern python`.
 - **The same rules as `extern python`:** never `pub`, called only from the module's capabilities, assumed by `verify` and never run by it, contracts checked at run time.
 
-Not supported: a dependency's `extern rust` (only the package's own modules are read for the crate), linking the library into the executable (it is loaded from where it was built), Rust values kept on the Rust side (handles), and generic Rust functions.
+Not supported: a dependency's `extern rust` (only the package's own modules are read for the crate), linking with lld (lld's stub of libSystem lacks what Rust's std calls, so these executables are linked by clang), Rust values kept on the Rust side (handles), and generic Rust functions.
 
 ## Foreign functions: `extern ts`
 
