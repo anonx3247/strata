@@ -132,8 +132,8 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 /* the Strata side sets the height (all of it shown), the Rust side takes the same and scrolls its code */
 .vs.ledger .side.old { height: 0; min-height: 100%; }
 .vs.ledger .col { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
-.vs.ledger .pane { display: flex; flex-direction: column; min-height: 0; flex: none; }
-.vs.ledger .side.old .pane:first-child { flex: 1 1 0; }
+.visual .vs.ledger .side .pane { display: flex; flex-direction: column; min-height: 0; flex: none; height: auto; }
+.visual .vs.ledger .side.old .pane:first-child { flex: 1 1 0; }
 .vs.ledger .pane .body { flex: 1; min-height: 0; overflow: auto; }
 
 /* Rust, in Rust's orange: the same shapes as Strata, another colour */
