@@ -26,7 +26,8 @@ function run(cwd, args, input) {
   const r = spawnSync('sh', ['-c', '"$0" "$@" 2>&1', STRATA, ...args], { cwd, input, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
   // (what `verify` found, kept for the codebase's snapshots, as a viewer would show it)
   if (args[0] === 'verify' && !args.includes('--json')) keepVerdicts(cwd, args.slice(1));
-  return { out: r.stdout, code: r.status };
+  // (unused-definition warnings: true of a slide's small program, and noise on the slide)
+  return { out: r.stdout.replace(/^warning: .* is never (used|read|built)\b.*\n/gm, ''), code: r.status };
 }
 /** Only what strata writes on standard output, as JSON. */
 function json(cwd, args) {
@@ -725,33 +726,75 @@ fn main() {
   // loops and termination, on examples/math.strata
   {
     const dir = pkg('v-math', [join(EX, 'math.strata')]);
-    const src = run(dir, ['view', 'main']).out;
+    // (`--proofs`: views hide loop invariants by default)
+    const src = run(dir, ['view', 'main', '--proofs']).out;
     V.loops = {};
     for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['triangle', 'triangle_closed'], ['collatz', 'collatz_steps']])
       V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
-    // what a list keeps, said by its type and proven by position
-    const s = prog('records', `/// Numbers in increasing order: each one is at least the one before it.
-type Sorted = List[Int] where all(1..len(it), i -> it[i - 1] <= it[i])
+  }
+  // contracts on behaviour: trait models, laws, generic code, a broken backend, state graphs
+  {
+    /** A trait's members as rendered by `view --level 1`: its header (up to the first doc
+     *  comment of a member), then each member with the doc comment above it. */
+    const members = text => {
+      const lines = text.split('\n'), open = lines.findIndex(l => /^[^\s/].*\{$/.test(l)), close = lines.lastIndexOf('}');
+      const blocks = [];
+      for (let i = open + 1; i < close; i++) {
+        if (!blocks.length || (/^  (\/\/\/|fn |law |model |ensures |invariant )/.test(lines[i]) && !/^  \/\/\//.test(lines[i - 1]))) blocks.push([]);
+        blocks.at(-1).push(lines[i]);
+      }
+      const isMember = b => b.some(l => /^  (fn|law) /.test(l));
+      const head = [...lines.slice(0, open + 1), ...blocks.filter(b => !isMember(b)).flat()].join('\n');
+      const parts = blocks.filter(isMember).map(b => b.join('\n'));
+      return { head, parts, pick: re => parts.filter(p => re.test(p)) };
+    };
+    const C = {};
+    const bank = pkg('v-bank', [join(EX, 'bank.strata')]);
+    const ledger = members(run(bank, ['view', 'Ledger', '--level', '1']).out.trimEnd());
+    C.model = [ledger.head, ...ledger.pick(/fn withdraw/), '  …', '}'].join('\n');
+    C.laws = [ledger.head.split('\n').find(l => /^trait /.test(l)), '  …', ...ledger.pick(/^  law |\n  law /m), '}'].join('\n');
+    C.sweep = defs(run(bank, ['view', '--level', '2']).out, ['fn sweep']);
+    C.bank_verify = out(bank, ['verify', '--no-race']);
+    // a store that keeps only the last order it saved: the trait's contract refutes it
+    const orders = pkg('v-db', [join(EX, 'orders.strata')]);
+    C.graph = out(orders, ['view', '--graph', 'Order']);
+    const db = run(orders, ['view', '--level', '2']).out;
+    C.db = defs(db, ['trait Db']);
+    C.moves = defs(run(orders, ['view', '--level', '1']).out, ['type Order', 'fn ship', 'fn cancel']);
+    const lossy = `impl Db for MemDb {
+  model orders = self.all
 
-/// Adds a reading if it beats the last record.
-fn record(best: Sorted, x: Int) -> Sorted {
-  if len(best) == 0 || x > best[len(best) - 1] {
-    best + [x]
-  } else {
-    best
+  fn load(self, id: OrderId) -> Option[Order] {
+    self.all.get(id)
+  }
+
+  /// Keeps only the order just saved.
+  fn save(mut self, id: OrderId, o: Order) {
+    self.all = Dict[OrderId, Order] {}
+    mut self.all.insert(id, o)
   }
 }
-
-/// The same, compared with the first record instead of the last.
-fn record_wrong(best: Sorted, x: Int) -> Sorted {
-  if len(best) == 0 || x > best[0] {
-    best + [x]
-  } else {
-    best
-  }
-}
-`);
-    V.loops.sorted = { code: run(s, ['view', 'main']).out.trim(), verify: out(s, ['verify']) };
+`;
+    const e = out(orders, ['edit', '-m', 'MemDb: keep only the last order'], lossy);
+    if (e.code) throw new Error('lossy MemDb: ' + e.out);
+    C.lossy = lossy.trim();
+    const all = out(orders, ['verify', '--no-race']);
+    const keep = all.out.split('\n'), at = keep.findIndex(l => /^\S+ MemDb\.save /.test(l));
+    const v = { ...all, cmd: all.cmd, out: [keep[at], ...keep.slice(at + 1).filter((l, i, a) => a.slice(0, i + 1).every(x => /^\s/.test(x)))].join('\n') };
+    // the counterexample is a dictionary of random orders: keep the verdict and the contract it breaks
+    C.lossy_verify = { ...v, out: v.out.split('\n').filter(l => !/^\s+input:/.test(l)).map(l => l.replace(/ \(before: .*$/, '').replace(/ \(stack: .*$/, '')).join('\n') };
+    // a real queue: its laws, proven or fuzzed
+    const tasks = join(WORK, 'v-tasks');
+    cpSync(join(EX, 'tasks'), tasks, { recursive: true });
+    const queue = members(run(tasks, ['view', 'model.Queue', '--level', '1']).out.trimEnd());
+    C.queue = [queue.head, ...queue.pick(/fn claim\(/), '  …', ...queue.pick(/^  law /m), '}'].join('\n');
+    const qv = out(tasks, ['verify', 'memory.*', '--no-race']);
+    C.queue_verify = { ...qv, out: qv.out.split('\n').filter(l => /^\S+ law /.test(l)).join('\n') };
+    // written proofs: a lemma, proven by induction, used where the solver alone can't
+    const proofs = prog('proofs', readFileSync(join(ROOT, 'tests/cases/cli-lemmas_are_proven_once_and_used_in_proofs/trees.st'), 'utf8'));
+    C.proofs = defs(run(proofs, ['view', '--level', '2', '--proofs']).out, ['type Tree', 'fn sum(', 'lemma sum_natural', 'fn total_plain', 'fn total(']);
+    C.proofs_verify = out(proofs, ['verify', '--no-race']);
+    V.behaviour = C;
   }
   // more of the language: data types, traits, values, comptime
   {
