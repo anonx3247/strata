@@ -1,0 +1,217 @@
+# `strata doc`: the docs in the terminal, as plain text when the output is
+# no terminal (wrapped to 80 columns, no color). A topic is a page of the
+# docs (or a section of one), then a module, then a definition: the
+# program's first, then core's, then std's. A name defined in several
+# modules lists them.
+
+[[step]]
+write = "shop/strata.toml"
+text = "name = \"shop\"\n"
+
+[[step]]
+strata = ["--file", "shop/", "edit", "orders"]
+text = '''
+// shop.orders — orders and their totals.
+//
+// An order is a list of lines. See [the guide](https://strata-lang.dev/docs/).
+
+/// A line of an order.
+pub type Line = { price: Int where it >= 0, count: Int where it >= 0 }
+
+/// What was bought.
+pub type Order = { lines: List[Line] }
+
+impl Order {
+  /// How many lines it has.
+  fn size(self) -> Int {
+    len(self.lines)
+  }
+}
+
+/// What an order costs, in cents: each line's `price` times its `count`.
+pub fn total(o: Order) -> Int
+  ensures it >= 0
+{
+  mut t := 0
+  for l in o.lines {
+    t += l.price * l.count
+  }
+  t
+}
+'''
+
+# alone: the pages, and how to look things up
+[[step]]
+strata = ["doc"]
+env = { NO_COLOR = "1" }
+stdout = '''
+Strata documentation
+====================
+
+Page                    Title
+----------------------  -------------------------
+learn-strata            Learn Strata in Y minutes
+language                The language
+language-reference      Language reference
+verification            Verification
+verification-reference  Verification reference
+tools                   Tools
+tools-reference         Tools reference
+testing                 Testing
+internals               Internals
+binary-format           The binary format
+
+Looking things up
+-----------------
+
+  - `strata doc PAGE` shows a page, and `strata doc PAGE#SECTION` one of its
+    sections, by its heading or a word of it: `strata doc language#traits`.
+  - `strata doc MODULE` shows a module's reference: its types, traits and
+    functions, with their docs (`strata doc std.json`).
+  - `strata doc NAME` shows a definition: its signature, its contracts and its
+    doc. NAME is short or qualified (`parse`, `std.json.parse`), or a method
+    (`Dict.insert`). The program around the current folder is searched first,
+    then core, then std.
+
+A topic is a page first, then a module, then a definition. `strata docgen`
+writes the reference as Markdown or man pages.
+'''
+
+# a page
+[[step]]
+strata = ["doc", "testing"]
+env = { NO_COLOR = "1" }
+has = ["Testing\n=======\n\n"]
+
+# a section: up to the next heading of its level
+[[step]]
+strata = ["doc", "language#traits"]
+env = { NO_COLOR = "1" }
+has = ["Traits\n------\n\nA trait describes what a type can do."]
+lacks = ["Modules: units that meet only through contracts"]
+
+[[step]]
+strata = ["doc", "language#no-such-heading"]
+fails = true
+has = ["no section `no-such-heading` in language"]
+
+# a module of the program: what `strata docgen` writes for it
+[[step]]
+strata = ["--file", "shop/", "doc", "shop.orders"]
+env = { NO_COLOR = "1" }
+stdout = '''
+shop.orders
+===========
+
+Orders and their totals.
+
+An order is a list of lines. See the guide <https://strata-lang.dev/docs/>.
+
+Types
+-----
+
+Line
+
+    type Line = { price: Int where it >= 0, count: Int where it >= 0 }
+
+A line of an order.
+
+Order
+
+    type Order = { lines: List[Line] }
+
+What was bought.
+
+Methods
+-------
+
+Order.size
+
+    fn size(self) -> Int
+
+How many lines it has.
+
+Functions
+---------
+
+total
+
+    fn total(o: Order) -> Int
+      ensures it >= 0
+
+What an order costs, in cents: each line's `price` times its `count`.
+'''
+
+# a module of std
+[[step]]
+strata = ["doc", "std.json"]
+env = { NO_COLOR = "1" }
+has = ["std.json\n========\n", "    fn parse(text: String) -> Result[JsonValue, String]\n"]
+
+# a definition of the program: its signature, contracts and doc
+[[step]]
+strata = ["--file", "shop/", "doc", "total"]
+env = { NO_COLOR = "1" }
+stdout = '''
+orders.total
+============
+
+    fn total(o: Order) -> Int
+      ensures it >= 0
+
+What an order costs, in cents: each line's `price` times its `count`.
+'''
+
+[[step]]
+strata = ["--file", "shop/", "doc", "Order.size"]
+env = { NO_COLOR = "1" }
+has = ["    fn size(self) -> Int\n\nHow many lines it has.\n"]
+
+# a builtin, with its cost
+[[step]]
+strata = ["doc", "Dict.insert"]
+env = { NO_COLOR = "1" }
+stdout = '''
+core.builtins.insert
+====================
+
+    builtin fn insert[K, V](mut d: Dict[K, V], k: K, v: V)
+      ensures d.get(k) == Some(v)
+
+`mut d.insert(k, v)`: adds `k`, or replaces its value. Cost: O(1) amortized, in
+place when nothing else holds `d`. Else O(n) to copy the entries and their
+index; the next changes are then in place.
+'''
+
+# a name in several modules: the candidates
+[[step]]
+strata = ["doc", "parse"]
+env = { NO_COLOR = "1" }
+has = [
+  "`parse` names definitions in several modules:\n",
+  "  - `std.json.parse`: Parses JSON text.\n",
+  "  - `std.regex.parse`: A pattern read as a `Regex`, or why it isn't one.\n",
+]
+
+[[step]]
+strata = ["doc", "std.json.parse"]
+env = { NO_COLOR = "1" }
+has = ["Parses JSON text."]
+lacks = ["several modules"]
+
+# nothing of that name
+[[step]]
+strata = ["doc", "no_such_thing_anywhere"]
+fails = true
+has = ["`no_such_thing_anywhere` names no page, module or definition"]
+
+[[step]]
+strata = ["doc", "language", "traits"]
+fails = true
+has = ["`strata doc` takes one topic"]
+
+# writing reference pages is `docgen`'s
+[[step]]
+strata = ["doc", "--man"]
+fails = true
+has = ["`strata doc` takes no option `--man`"]

@@ -5,10 +5,13 @@
 #   strata/bin/strata               the compiler (compiler/, compiled), LLVM and
 #                                   lld linked in (no clang or linker needed)
 #   strata/share/man/               man1/strata.1, man3/std.MODULE.3: the
-#                                   man pages `strata doc --man` writes
+#                                   man pages `strata docgen --man` writes
 #   strata/lib/strata/              what it finds relative to itself (its home)
 #     VERSION
 #     core/ std/                    core's and std's modules (sources)
+#     docs/                         docs/*.md, the pages `strata doc` shows
+#                                   (docs/std/ is left out: `strata doc
+#                                   std.MODULE` makes it from std's code)
 #     runtime/prelude.strata        the prelude codegen compiles programs with
 #     runtime-lto.o                 the runtime every executable links: the C
 #                                   runtime (-DSTRATA_CORE_RT) and core.rt
@@ -55,7 +58,7 @@ DIST=$REPO/target/release-dist
 ROOT=$DIST/strata
 HOME_DIR=$ROOT/lib/strata
 rm -rf "$ROOT"
-mkdir -p "$ROOT/bin" "$HOME_DIR/std" "$HOME_DIR/core" "$HOME_DIR/runtime" "$HOME_DIR/cache"
+mkdir -p "$ROOT/bin" "$HOME_DIR/std" "$HOME_DIR/core" "$HOME_DIR/runtime" "$HOME_DIR/cache" "$HOME_DIR/docs"
 step() { echo "release: $*" >&2; }
 
 # the compiler, LLVM and lld statically linked in
@@ -90,13 +93,14 @@ fi
 step "core, std, prelude"
 cp core/*.strata core/strata.toml "$HOME_DIR/core/"
 cp std/*.strata std/strata.toml "$HOME_DIR/std/"
+cp docs/*.md "$HOME_DIR/docs/"
 cp runtime/prelude.strata "$HOME_DIR/runtime/"
 echo "$VERSION" > "$HOME_DIR/VERSION"
 
 # the man pages: `man strata`, `man std.io` (man looks in the share/man
 # beside each bin/ on the PATH)
 step "man pages"
-STRATA_HOME="$REPO" "$S" --file std doc --man -o "$ROOT/share/man" >&2
+STRATA_HOME="$REPO" "$S" --file std docgen --man -o "$ROOT/share/man" >&2
 
 # the runtime, precompiled for macOS 13 on (as the compiler's objects are):
 # runtime.c (clang's LTO bitcode) and core.rt (the compiler's codegen) linked
