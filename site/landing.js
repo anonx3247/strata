@@ -138,12 +138,12 @@ const rustDiff = d => d.split('\n').filter(l => !/^(diff --git|index )/.test(l))
   // the Strata ledger as `strata view` printed it, in reading order: types, the trait (one law in full), the implementation's transfer
   const defs = L.ledger.strata.split(/\n\n(?=\S)/);
   const def = re => defs.find(d => re.test(d));
-  const trait = def(/^(\/\/\/.*\n)*trait Ledger/).replace(/(  law failed_transfer_changes_nothing\([^)]*\)) \{[\s\S]*?\n  \}/, '$1 { … }');
-  const impl = def(/^impl Ledger/).replace(/  model balances = self\.accounts\n\n  fn balance[\s\S]*?\n  \}\n\n/, '  …\n\n');
-  const ledger = [def(/type Cents/), def(/type Account/), trait, impl].join('\n\n');
+  const ledger = [def(/type Cents/), def(/type Account/), def(/^(\/\/\/.*\n)*trait Ledger/), 'impl Ledger for MemLedger { … }'].join('\n\n');
+  // the Rust file with its implementation folded the same way
+  const rust = L.ledger.rust.replace(/impl Ledger for MemLedger \{[\s\S]*?\n\}\n/, 'impl Ledger for MemLedger { … }\n');
   const V = L.ledger.verify;
   $('#ch-ledger').innerHTML = `<div class="vs">` +
-    side('old', 'Rust: rules in comments', '3 tests pass', pane('ledger.rs', hlRust(L.ledger.rust)) + pane('~/ledger', run(L.ledger.test.cmd, L.ledger.test.out), { cls: 'term' })) +
+    side('old', 'Rust: rules in comments', '3 tests pass', pane('ledger.rs', hlRust(rust), { cls: 'rust' }) + pane('~/ledger', run(L.ledger.test.cmd, L.ledger.test.out), { cls: 'term rust' })) +
     side('new', 'Strata: rules in code', '1 bug found', pane('ledger.strata', hl(ledger)) + pane('~/ledger', run(V.cmd, V.out), { cls: 'term' })) + `</div>`;
 
   // ── editing the syntax tree: the tour's session, next to the same edits in Rust ──
@@ -154,40 +154,45 @@ const rustDiff = d => d.split('\n').filter(l => !/^(diff --git|index )/.test(l))
   const strataRun = s => cmdLine(s.cmd) + (s.input ? piped(s.input.trim()) : '') + term(s.out);
   const steps = [
     { tab: 'Read it', say: 'To find its way, an agent working in Rust reads the files. In Strata it asks for a view of the part it needs, at the level of detail it needs.',
-      rust: [`${R.read.lines} lines`, pane('cat src/*.rs', hlRust(R.read.text))],
+      rust: [`${R.read.lines} lines`, pane('cat src/*.rs', hlRust(R.read.text), { cls: 'rust' })],
       strata: ['9 lines', pane('~/shop', run('strata view slice:Order --level 0', D.orders.levels[0].trimEnd()), { cls: 'term' })],
       graph: g => g.set(S[0].graph, { layout: every, focus: 'Order' }) },
     { tab: 'Fill a gap', say: 'A Rust <code>todo!()</code> compiles and says nothing about what is missing. A Strata hole is a task: the type to produce, what is in scope, the contract to meet. The edit that fills it is checked before it is stored.',
-      rust: [`${R.fill.lines} lines changed`, pane('~/shop', run(R.fill.find.cmd, R.fill.find.out), { cls: 'term' }) + pane('git diff', rustDiff(R.fill.diff))],
+      rust: [`${R.fill.lines} lines changed`, pane('~/shop', run(R.fill.find.cmd, R.fill.find.out), { cls: 'term rust' }) + pane('git diff', rustDiff(R.fill.diff), { cls: 'rust' })],
       strata: ['1 hole filled', pane('~/shop', strataRun({ ...holes, out: D.orders.holes }) + '\n' + strataRun(fill), { cls: 'term' })],
       graph: g => g.set(fill.graph, { layout: every, focus: 'refund', changed: new Set(['refund', 'test "refund keeps the handling fee"']) }) },
     { tab: 'Check it', say: 'The Rust tests pass. Strata’s <code>verify</code> finds the order the test didn’t try: one worth less than the fee gets a negative refund. After the fix, <code>refund</code> is proven for every order.',
-      rust: ['2 tests pass', pane('~/shop', run(R.fill.test.cmd, R.fill.test.out), { cls: 'term' })],
+      rust: ['2 tests pass', pane('~/shop', run(R.fill.test.cmd, R.fill.test.out), { cls: 'term rust' })],
       strata: ['1 bug found, then proven', pane('~/shop', strataRun(bug) + '\n' + strataRun(fix), { cls: 'term' })],
       graph: g => g.set(fix.graph, { layout: every, focus: 'refund', changed: new Set(['refund']) }) },
     { tab: 'Change a signature', say: '<code>total</code> takes a coupon. In Rust the build stops at the calls that no longer fit, to be found and fixed by hand. In Strata they become holes in one pending change, each saying what it was and why it broke.',
-      rust: [`${(R.coupons.build.out.match(/^error\[/gm) || []).length} errors`, pane('~/shop', run(R.coupons.build.cmd, R.coupons.build.out), { cls: 'term' }) + pane('git diff', rustDiff(R.coupons.diff))],
+      rust: [`${(R.coupons.build.out.match(/^error\[/gm) || []).length} errors`, pane('~/shop', run(R.coupons.build.cmd, R.coupons.build.out), { cls: 'term rust' }) + pane('git diff', rustDiff(R.coupons.diff), { cls: 'rust' })],
       strata: ['2 holes, filled', pane('~/shop', strataRun(broke) + '\n' + strataRun(closed), { cls: 'term' })],
       graph: g => g.set(closed.graph, { layout: every, changed: changedBetween(fix.graph, closed.graph) }) },
     { tab: 'Rename', say: 'Rust renames by search and replace, read back as a diff. Strata renames in the tree: names are resolved, so the change is one rename, and every use follows it.',
-      rust: [`${R.rename.lines} lines changed`, pane('~/shop', run(R.rename.cmd, ''), { cls: 'term' }) + pane('git diff', rustDiff(R.rename.diff))],
+      rust: [`${R.rename.lines} lines changed`, pane('~/shop', run(R.rename.cmd, ''), { cls: 'term rust' }) + pane('git diff', rustDiff(R.rename.diff), { cls: 'rust' })],
       strata: ['1 change', pane('~/shop', strataRun(renamed), { cls: 'term' }) + pane('strata diff', structural(renamed.changes[renamed.changes.all.steps.at(-1).id]).html, { cls: 'term' })],
       graph: g => g.set(renamed.graph, { layout: every, changed: changedBetween(closed.graph, renamed.graph) }) },
   ];
   const root = $('#ch-session'), tabs = $('.vtabs', root), graph = new Graph($('.graph', root), { legend: false });
-  tabs.innerHTML = steps.map((s, i) => `<button data-i="${i}"><b>${i + 1}</b> ${s.tab}</button>`).join('') + `<button class="next">next →</button>`;
-  let cur = 0;
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches, EVERY = 9000;
+  tabs.innerHTML = steps.map((s, i) => `<button data-i="${i}"><b>${i + 1}</b> ${s.tab}<i class="fill"></i></button>`).join('');
+  let cur = 0, timer = null, seen = false, held = false;
   const show = i => {
     cur = i; const s = steps[i];
-    $$('button[data-i]', tabs).forEach((b, j) => b.classList.toggle('on', j === i));
+    $$('button', tabs).forEach((b, j) => { b.classList.remove('on'); if (j === i) { void b.offsetWidth; b.classList.add('on'); } });
+    root.classList.toggle('playing', seen && !held && !still);
     $('.caption', root).innerHTML = s.say;
     $('.old .big-n', root).textContent = s.rust[0]; $('.rust', root).innerHTML = s.rust[1];
     $('.new .big-n', root).textContent = s.strata[0]; $('.strata', root).innerHTML = s.strata[1];
     s.graph(graph);
   };
-  tabs.addEventListener('click', e => {
-    const b = e.target.closest('button'); if (!b) return;
-    show(b.classList.contains('next') ? (cur + 1) % steps.length : +b.dataset.i);
-  });
+  // the steps go round on their own while the section is on screen, and stop while the pointer is over it
+  const tick = () => { clearTimeout(timer); if (seen && !held && !still) timer = setTimeout(() => { show((cur + 1) % steps.length); tick(); }, EVERY); };
+  new IntersectionObserver(es => { seen = es.some(e => e.isIntersecting); show(cur); tick(); }, { threshold: .3 }).observe(root);
+  root.addEventListener('mouseenter', () => { held = true; root.classList.remove('playing'); tick(); });
+  root.addEventListener('mouseleave', () => { held = false; show(cur); tick(); });
+  tabs.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { show(+b.dataset.i); tick(); } });
+  root.style.setProperty('--every', EVERY + 'ms');
   show(0);
 }

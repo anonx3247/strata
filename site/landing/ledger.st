@@ -19,7 +19,7 @@ trait Ledger {
 
   /// Moves money from one account to another, if there is enough.
   fn transfer(mut self, from: Account, to: Account, amount: Cents) -> Result[(), Insufficient]
-    ensures it is Ok == (amount <= old (self.balances.get(from) ?? 0))
+    ensures amount <= old self.balance(from) ==> it is Ok
     ensures it is Err ==> self.balances == old self.balances
 
   /// A transfer moves money: it never makes or loses any.
@@ -30,12 +30,6 @@ trait Ledger {
     r.balance(from) + r.balance(to) == before
   }
 
-  /// A transfer that fails changes nothing.
-  law failed_transfer_changes_nothing(l: Self, from: Account, to: Account, amount: Cents) {
-    mut r := l
-    ok := mut r.transfer(from, to, amount)
-    ok is Ok || r.balance(from) == l.balance(from) && r.balance(to) == l.balance(to)
-  }
 }
 
 /// Accounts in memory.
