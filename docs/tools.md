@@ -265,7 +265,6 @@ smt.*: renamed `not_modelled` to `unmodelled`
 - `# Heading` starts a page. `strata skill tour` suggests the order: why, background, intuition, then the code, one page per objective.
 - ```` ```strata-diff NAME… ```` shows each definition's structural diff, as `strata diff` finds it between the base and the working tree. Names are qualified (`check.Inf`); a root module's definitions go by their name alone. A glob (`tour.test*`) shows every change it matches, which is how tests (`test "…"`) and imports (`use x`) are named. A change shows folded to its shape: its name and what changed in words; an added or removed definition its first doc line, signature and contracts (as `view --level 1` prints them), its body behind a fold (`body: 42 lines`); a changed one its changed lines with their context, unchanged lines, its doc's change, any changed run of more than 12 lines (after its first 6) and, past 20 changed lines, the rest of the definition behind folds. `full` on the fence line (```` ```strata-diff NAME full ````) shows the bodies, docs and long runs open.
 - ```` ```strata NAME ```` shows a definition's code as it is now: its interface, its body folded (`full` opens it).
-- ```` ```strata-graph TYPE ```` shows how the values of the sum type `TYPE` move between its variants, as `strata view --graph TYPE` finds them, then the moves the change adds and removes, as `strata diff --graph TYPE` says them. It asks the solver when shown, and is cached with the package's changes.
 - ```` ```strata-refs NAME ```` shows what `NAME` uses and what uses it among the package's definitions, the changed ones marked `+` `~` `-`.
 - ```` ```strata-also ```` lists the changes that support a page without being its point, one line each like a routine line: names or globs, a colon, what they do for the page. Each line shows as a count, folded (`9 supporting changes: drawing the folds`); opened, each change is a folded line of its own that opens its diff. A page diffs with `strata-diff` the few definitions its prose is about and names the rest here.
 - ```` ```strata-routine ```` lists mechanical changes, one line each: names or globs (`*` matches any run of characters), a colon, the reason. Each line shows as a count, folded: `16 definitions: unused parameter removed`.
@@ -273,9 +272,9 @@ smt.*: renamed `not_modelled` to `unmodelled`
 
 `strata tour [FILE]` reads `FILE`, or `.tours/BRANCH.md` at the repository's root. At a terminal it shows one page at a time on the alternate screen: → `l` `n` next page, ← `h` `p` previous, ↑ ↓ `j` `k` scroll (Space and `b` a screen), Tab or `]` selects the next fold and Shift-Tab or `[` the one before, scrolling to it; Enter opens or closes the selected fold (marked `›` in reverse; with none selected, the first fold on the screen, and scrolling it out of view selects the first one in view), `g` the list of pages, `q` quits. Each page keeps the folds opened on it when the reader comes back. Piped, or with `--no-pager`, it prints every page one after another, every fold closed (marked `▸`), as a reader first sees it. `--keys "l l enter"` presses those keys on an 80 by 24 screen and prints it, without color; the test cases use it.
 
-`strata tour --check` exits 1 when a name in the tour (`strata-diff`, `strata-also`, `strata-routine`) isn't a definition the change touched (in a `strata` or `strata-refs` block: isn't a definition at all; in a `strata-graph` block: isn't a sum type), or when a changed definition is on no page. `strata skill tour` tells agents how to write one.
+`strata tour --check` exits 1 when a name in the tour (`strata-diff`, `strata-also`, `strata-routine`) isn't a definition the change touched (in a `strata` or `strata-refs` block: isn't a definition at all), or when a changed definition is on no page. `strata skill tour` tells agents how to write one.
 
-The diff of each package is cached under `~/.cache/strata/tour/`, keyed by the base commit and the hashes of the working tree's definitions: a second showing reads it back. So are the graphs.
+The diff of each package is cached under `~/.cache/strata/tour/`, keyed by the base commit and the hashes of the working tree's definitions: a second showing reads it back.
 
 Added and removed lines, here and in `strata diff` at a terminal, keep their syntax colors on a dark green or red band, the `+` or `-` bold green or red; plain code on the band is light gray, so it reads the same on a dark or a light terminal.
 
@@ -316,47 +315,6 @@ All rendered code is formatted to about 80 columns. Long argument lists, record 
 **Selectors:** `name` (a definition, or a module with the modules inside it: `std.ast.check`), `prefix*`, `module:m`, `slice:Name` (Name, what it uses, and what uses it), `m.Type.method` (one method of an implementation, for `verify`), or a comma-separated combination. A part that matches nothing is an error.
 
 Every view is Strata text, so an agent can edit what it sees and send it back with `strata edit`.
-
-## State graphs: how a type's values move
-
-`strata view --graph T` derives a type's pipeline from the code; nothing declares it. For a sum type `T` (`Status = Pending | Running | Done | Exhausted`), it finds each function that takes a value holding a `T` and returns one. The `T` can be the value itself, a field at a path such as `Entry.status`, a list or dict of them, or a trait's model. The function can return it as its result, through a `mut` parameter, or through `mut self`. For each pair of variants, it asks whether the function can move a value from one to the other. A list's element is compared with the element at the same position, and a dict's value with the value at the same key.
-
-```
-$ strata --file examples/tasks view --graph Status
-Status = Pending | Running | Done | Exhausted
-  (new)     -> Pending    by MemQueue.enqueue (possible)
-  (new)     -> Running    by MemQueue.claim (unknown)
-  Pending   -> Running    by MemQueue.claim (possible)
-  Pending   -> Done       by after_attempt (possible)
-  Running   -> Pending    by MemQueue.enqueue (unknown), after_attempt (possible)
-  ...
-  Exhausted -> Running    by MemQueue.claim (unknown)
-  Exhausted -> Done       by after_attempt (possible)
-  any       -> any        by MemQueue.record (unknown), MemQueue.release (unknown), ... (nothing proven impossible: --all lists their moves)
-proven impossible: 33 more (in 4 functions; --all lists them)
-```
-
-Each pass of `MemQueue.claim`'s loop puts only `Running` entries in its table, so the body's shape proves it makes no other move, and a run on generated inputs shows `Pending -> Running`. Some moves stay unknown: those that need a key followed through the loop (`Done -> Running`, since `claim` only takes pending entries), and those that need the trait's contracts over every entry of a dict (`all(d.items(), …)`, not modelled: `Queue.claim`, `run_worker`).
-
-Each move is labelled with what is known about it:
-
-- `possible`: the solver found values that make the move with an exact encoding of the function (no loop, no callee known only by its contract), or a run on generated inputs made it.
-- `unknown`
-- proven impossible: listed with `--all`.
-
-The body's shape is checked first:
-
-- A list kept as is (`filter`, slices, the first part of `xs + [x]`) moves nothing.
-- An element added as written (`Entry { status: Pending, … }`) is an entry in that variant.
-- A loop pass that inserts values written as specific variants (`mut self.table.insert(id, Entry { ..e, status: Running { … } })`) makes no move to any other variant.
-- A method that hands its state to a function (`self = mem_claim(self, limit)`) moves as that function does.
-- A trait method with models moves as its contract says (`ensures self.entries == …`).
-
-A value created from nothing is an entry: `(new) -> Shipped by ship`. A function about which nothing is proven, because it calls functions whose contracts don't say what they do with the type, gets one `any -> any` line instead of a line per move. `--html` writes a page with the graph drawn: the variants in a row, each move an arc labelled with its functions and coloured by what is known.
-
-**From a run.** `strata run --trace` prints each call and return. `strata view --graph T --trace FILE` reads those lines and counts the moves each call made (`Running -> Done by after_attempt ×2`).
-
-**In a diff.** `strata diff --graph T` adds how the moves changed, in words (`new move `Running -> Cancelled` by `cancel``, `` `expire` no longer reaches `Pending` ``). `--html` draws both graphs side by side, with added and removed moves marked.
 
 ## Docs in the terminal: `strata doc`
 
