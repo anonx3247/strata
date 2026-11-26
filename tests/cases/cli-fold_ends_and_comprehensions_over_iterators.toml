@@ -97,7 +97,7 @@ has = ["it calls `spin`, which may not terminate"]
 
 # `fold` on an unbounded iterator: never returns, so refused
 [[step]]
-strata = ["--file", "inf.strata", "edit"]
+strata = ["--file", "inf.strata", "edit", "--as-given"]
 text = '''
 type N = { at: Int }
 

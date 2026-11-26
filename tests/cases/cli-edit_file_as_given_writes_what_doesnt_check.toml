@@ -1,0 +1,28 @@
+# `strata --file F edit --as-given` writes what doesn't check all the same (a
+# script written in steps) and says so plainly: how many errors, which; exit
+# 1. Without it, the same edit is rejected and writes nothing
+# (cli-edit_that_fails_writes_nothing).
+
+[[step]]
+strata = ["--file", "s.strata", "edit", "--as-given"]
+text = '''
+fn f(x: Int) -> Int {
+  x + true
+}
+
+fn g() -> Int {
+  len(1)
+}
+'''
+code = 1
+has = ["written as given: s.strata doesn't check (2 errors):", "  error in f:", "  error in g:"]
+
+[[step]]
+strata = ["--file", "s.strata", "view", "main"]
+has = ["x + true"]
+
+[[step]]
+strata = ["--file", "s.strata", "edit", "--as-given"]
+text = "fn g() -> Int { 1 }"
+code = 1
+has = ["(1 error):"]

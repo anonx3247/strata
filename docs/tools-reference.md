@@ -4,7 +4,7 @@ This page holds the detailed rules of [the tools](tools.md). Each section adds t
 
 ## What the tools tell you
 
-**Editing a script.** Outside a package, `strata --file F edit < text` writes a script, or a folder's module, as given, then checks it. Text that doesn't check is still written, and the command reports `written: F doesn't check (N errors; --file edits are kept as given, unlike a package's edit, which is rejected):` with the errors and exits with code 1. A single module file of a folder isn't checked alone, since its neighbours may not be written yet.
+**Editing a script.** Outside a package, `strata --file F edit < text` changes a script, or a folder's module: the result is checked, then written, each file in one step (a temporary file renamed over it). Text that doesn't check writes nothing: the command reports `rejected: F doesn't check (N errors; nothing was written; ...)` with the errors and exits with code 1. `--as-given` writes it all the same (a script written in steps), reporting `written as given: F doesn't check (N errors):` and exiting with code 1. A single module file of a package isn't checked alone, since its neighbours may not be written yet.
 
 **Editing a package.** A package's `strata edit` rejects an edit that doesn't check by itself. Uses that it breaks elsewhere (a changed return type, parameter list or parameter type) become holes of a pending change instead. The text of a rejected edit is saved in the package's `.strata/rejected/edit-N.st`, and the rejection message gives the path. This applies to an edit from standard input and to an editor session that gives up.
 
