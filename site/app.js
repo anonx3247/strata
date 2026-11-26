@@ -1,80 +1,11 @@
 // The presentation. Everything it shows comes from site/data/*.js, recorded by
 // site/build.mjs from the real CLI. It is a deck of slides: ← → (or space) step through each slide, then on to the next.
-// Highlighting and terminal colouring live in common.js.
+// Highlighting, terminal colouring and structural changes live in common.js.
 'use strict';
 const D = window.STRATA;
 const lastStep = snap => snap.changes.all.steps.at(-1).id;
 const stepTitled = (snap, t) => snap.changes.all.steps.find(s => s.title === t).id;
 const S = t => D.session.find(s => s.title === t);
-const md = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
-
-// ───────────────────────── a structural change, from the viewer's /api/changes ─────────────────────────
-// The headline says what happened in one line (a rename is "Order.Shipped → Order.Sent");
-// the code is there on demand.
-function segs(ss) {
-  return ss.map(([k, t]) => k === '=' ? esc(t) : k === '+' ? `<span class="ins">${esc(t)}</span>` : `<span class="del">${esc(t)}</span>`).join('');
-}
-function codeHtml(it) {
-  return it.lines.map(l => {
-    if (l.s === 'fold') return `<span class="fold">  … ${esc(l.t)}</span>`;
-    if (l.s === '-') return `<span class="del">${esc(l.t)}</span>`;
-    if (l.s === '~' && l.segs) return `<span class="mark">${segs(l.segs)}</span>`;
-    if (l.s === '+') return `<span class="ins">${esc(l.t)}</span>${l.note ? `  <span class="note">◀ ${esc(l.note)}</span>` : ''}`;
-    return esc(l.t);
-  }).join('\n');
-}
-const KINDS = { fn: 'fn', type: 'type', test: 'test', trait: 'trait', impl: 'impl' };
-/** One line saying what happened to a definition, read from the change's own words. */
-function headline(it, c) {
-  const kind = `<span class="pill">${esc(KINDS[it.kind] || it.kind)}</span>`;
-  const moved = it.what.map(w => w.match(/^renamed from `([^`]+)`/)).find(Boolean);
-  if (moved) {
-    const to = it.label.split(' → ').pop();
-    return { cls: 'rename', html: `<div class="hl-tag">rename · ${esc(it.kind)}</div><div class="hl-big"><span class="from">${esc(moved[1])}</span> <span class="arrow">→</span> <span class="to">${esc(to)}</span></div>${it.detail.length ? `<div class="hl-why">${it.detail.map(esc).join(' · ')}</div>` : ''}` };
-  }
-  for (const w of it.what) {
-    const m = w.match(/^(variant|field|method) `([^`]+)` renamed to `([^`]+)`/);
-    if (m) return { cls: 'rename', html: `<div class="hl-tag">rename · ${m[1]}</div><div class="hl-big">${esc(it.label)}.<span class="from">${esc(m[2])}</span> <span class="arrow">→</span> ${esc(it.label)}.<span class="to">${esc(m[3])}</span></div>` };
-  }
-  const noted = it.lines.find(l => l.note);
-  if (noted) {
-    const cond = noted.t.trim().replace(/^(requires|ensures)\s+/, '').replace(/\s*\{$/, '');
-    const isReq = /^\s*requires/.test(noted.t);
-    const users = it.affected?.map(a => a.name) || [];
-    const why = isReq ? `Every caller must now guarantee <code>${esc(cond)}</code>.` : `Callers can now rely on <code>${esc(cond)}</code>.`;
-    return { cls: 'contract', html: `<div class="hl-tag warn">⚠ ${esc(noted.note)}</div><div class="hl-big">${kind} ${esc(it.label)} <span class="hl-clause"><b>${esc(noted.t.trim().replace(/\s*\{$/, ''))}</b></span></div>
-      <div class="hl-why">${why}${users.length ? ` ${users.length === 1 ? 'Its user is' : `Its ${users.length} users are`} re-checked: ${users.map(u => `<code>${esc(u)}</code>`).join(' ')}.` : ''}</div>` };
-  }
-  if (it.what.includes('signature changed')) {
-    const sig = it.lines.find(l => l.s === '~' && l.segs);
-    return { cls: 'sig', html: `<div class="hl-tag">signature changed</div><div class="hl-big code">${sig ? segs(sig.segs).replace(/\s*\{\s*$/, '') : esc(it.label)}</div>${it.what.includes('body changed') ? `<div class="hl-why">and its body changed:</div><pre class="hl-body">${codeHtml(it)}</pre>` : ''}` };
-  }
-  if (it.mk === 'add') return { cls: 'add', html: `<div class="hl-tag ok">added</div><div class="hl-big">${kind} ${esc(it.label)}</div>` };
-  return { cls: 'body', html: `<div class="hl-tag">${it.what.map(esc).join(' · ')}</div><div class="hl-big">${kind} ${esc(it.label)}</div>${it.detail.length ? `<div class="hl-why">${it.detail.map(esc).join(' · ')}</div>` : ''}${it.what.includes('body changed') ? `<pre class="hl-body">${codeHtml(it)}</pre>` : ''}` };
-}
-function structural(c) {
-  const items = c.sections.flatMap(s => s.items);
-  const ifc = items.filter(i => i.interface_changed);
-  // the names an interface change is about: the definition's own, and any new name it gave
-  const names = ifc.flatMap(m => [...m.label.split(' → '), ...m.what.flatMap(w => [...w.matchAll(/renamed to `([^`]+)`/g)].map(x => x[1]))]);
-  // a definition that only changed to keep up with another's new interface follows it
-  const follows = i => !i.interface_changed && i.lines.some(l => '~+'.includes(l.s) && names.some(n => new RegExp(`\\b${n}\\b`).test(l.t)));
-  const main = items.filter(i => !follows(i)), followers = items.filter(follows);
-  const hs = main.map(it => headline(it, c));
-  const followLine = [
-    c.summary.follow_renames ? `${c.summary.follow_renames + followers.length} definitions only follow the rename` : '',
-    followers.length && !c.summary.follow_renames ? `call sites updated to follow it: ${followers.map(f => `<code>${esc(f.label)}</code>`).join(' ')}` : '',
-  ].filter(Boolean).map(t => `<div class="hl-follow">↳ ${t}</div>`).join('');
-  const vs = (c.verification || []).filter(v => !/not verified yet/.test(v.after));
-  const ver = vs.length ? `<div class="hl-ver">${vs.map(v => `<span><code>${esc(v.name)}</code> ${esc(v.before)} → <b class="${/counter|fail/.test(v.after) ? 'o-bad' : /proven/.test(v.after) ? 'o-ok' : ''}">${esc(v.after)}</b></span>`).join('')}</div>` : '';
-  const code = items.map(it => `<div class="change"><div class="head"><span>${esc(it.label)}</span><span class="pill">${esc(it.kind)}</span><span class="what">${it.what.map(md).join(' · ')}</span></div><pre>${codeHtml(it)}</pre></div>`).join('');
-  return {
-    count: main.length,
-    html: hs.map(h => `<div class="headline ${h.cls}">${h.html}</div>`).join('') + followLine + ver +
-      `<details class="code-details"><summary>show the code</summary>${code}</details>`,
-  };
-}
-
 
 // ───────────────────────── typing ─────────────────────────
 /** Strata code arriving line by line; instant when `fast`. Resolves false if interrupted. */

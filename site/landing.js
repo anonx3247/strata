@@ -99,31 +99,33 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="colo
   if (still) show(0, false); else setTimeout(() => show(0), 900);
 }
 
-// ───────── the agent loop: steps of the recorded session (data/session.js) ─────────
+// ───────── the tour, in short: one visual per main point, from the same recordings ─────────
 {
-  const S = STRATA.session, md = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
-  const at = t => S.find(s => s.title === t);
-  const steps = [
-    ['The agent asks what is left', at('The agent asks what is left to do')],
-    ['It fills the hole; the edit is checked', at('It fills the hole')],
-    ['Verification finds the bug the test missed', at('Verification finds the bug')],
-    ['It fixes it, and it is proven', at('It fixes it, and proves it')],
-    ['An edit that doesn\'t check never gets in', at('A broken edit is refused')],
-  ];
-  $('#loop').innerHTML = steps.map(([h, s], i) => `
-    <div class="step${s.code ? ' bad' : ''}">
-      <div class="n">${i + 1}</div><h3>${esc(h)}</h3><p>${md(s.say)}</p>
-      <div class="pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">~/shop</span></div>
-        <div class="body wrap">${cmdLine(s.cmd)}${s.input ? piped(s.input.trim()) : ''}${term(s.out)}</div></div>
-    </div>`).join('');
-}
+  const D = STRATA, V = D.verify;
+  const pane = (title, body, { cls = '', count = '' } = {}) =>
+    `<div class="pane ${cls}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">${esc(title)}</span>${count}</div><div class="body${cls.includes('term') ? ' wrap' : ''}">${body}</div></div>`;
+  const run = (cmd, out) => cmdLine(cmd) + term(out);
 
-// ───────── a rename: lines of text, or one change (data/rename.js) ─────────
-{
-  const R = STRATA.rename, n = diffCount(R.diff);
-  $('#rename').innerHTML = `
-    <div class="side old"><div class="big"><b>${n}</b> changed lines</div><p>A text diff of renaming a type: every file and line that mentions it.</p>
-      <div class="pane"><div class="bar"><span class="title">git diff</span><span class="count bad">${n} lines</span></div><div class="body">${diffHtml(R.diff)}</div></div></div>
-    <div class="side new"><div class="big"><b>1</b> change</div><p>The same change in Strata: a rename, with the definitions it reached.</p>
-      <div class="pane"><div class="bar"><span class="title">~/tasks</span><span class="count ok">1 change</span></div><div class="body wrap">${cmdLine(R.cmd)}${term(R.out)}</div></div></div>`;
+  $('#ch-contracts').innerHTML =
+    pane('contracts.strata', hl([V.contracts.types, V.contracts.discount, V.contracts.callers].join('\n\n'))) +
+    pane('~/contracts', run(V.contracts.verify.cmd, V.contracts.verify.out), { cls: 'term' });
+
+  const P = V.points;
+  $('#ch-points').innerHTML =
+    `<div><div class="cap bad">four tests</div>${pane('points.strata', hl(P.tests))}${pane('~/points', run(P.test.cmd, P.test.out), { cls: 'term' })}</div>` +
+    `<div><div class="cap ok">one line</div>${pane('points.strata', hl(P.one))}${pane('~/points', run(P.verify.cmd, P.verify.out), { cls: 'term' })}</div>`;
+
+  const s0 = D.session[0], fill = D.session.find(s => s.title === 'It fills the hole');
+  const refund = s0.graph.find(d => d.name === 'refund').text;
+  $('#ch-holes').innerHTML =
+    pane('refund, for now', hl(refund)) +
+    pane('~/shop', run('strata holes', D.orders.holes) + '\n' + cmdLine(fill.cmd) + piped(fill.input.trim()) + term(fill.out), { cls: 'term' });
+
+  $('#ch-views').innerHTML = pane('$ strata view slice:Order --level 0', term(D.orders.levels[0].trimEnd()), { cls: 'term' });
+
+  const R = D.rename, st = structural(R.changes[R.step]), n = diffCount(R.diff);
+  $('#ch-diff').innerHTML = `<div class="vs">
+    <div class="side old"><h4>✗ line diff <span class="big-n">${n} lines</span></h4>${pane('git diff', diffHtml(R.diff), { count: `<span class="count bad">${n} lines changed</span>` })}</div>
+    <div class="side new"><h4>✓ structural change <span class="big-n">${st.count} change</span></h4>${pane('strata diff', st.html, { cls: 'term', count: `<span class="count ok">${st.count} change${st.count > 1 ? 's' : ''}</span>` })}</div>
+  </div>`;
 }

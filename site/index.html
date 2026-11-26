@@ -66,41 +66,59 @@
     </div>
   </section>
 
-  <section class="block problem" id="why">
-    <div class="kicker">Why a new language</div>
-    <h2>Agents work on text files. Strata gives them something better to work on.</h2>
-    <div class="fixes">
-      <a href="tour.html#views"><span class="p">It searches files to find its way</span><span class="f">a view of just what it needs</span></a>
-      <a href="tour.html#contracts"><span class="p">Hundreds of tests, apart from the code</span><span class="f">contracts, proven or fuzzed</span></a>
-      <a href="tour.html#travel"><span class="p">A change breaks code far away</span><span class="f">changes follow the graph</span></a>
-      <a href="tour.html#diffs"><span class="p">Diffs too long to read</span><span class="f">changes you can read</span></a>
+  <section class="block story">
+    <div class="kicker">The tour, in short</div>
+    <h2>What it is like to write code in Strata.</h2>
+
+    <div class="chapter">
+      <div class="text">
+        <div class="n">01 · Types as contracts</div>
+        <h3>Constraints on types, promises on functions.</h3>
+        <p>A <code>Cents</code> is never negative, a <code>Percent</code> stays between 0 and 100. <code>requires</code> says what a caller must guarantee, <code>ensures</code> what the result keeps. The solver checks both sides: <code>sale</code> calls <code>discount</code> with a price it doesn't accept.</p>
+        <a class="go" href="tour.html#contracts">In the tour →</a>
+      </div>
+      <div class="visual" id="ch-contracts"></div>
     </div>
-  </section>
 
-  <section class="block loop" id="agent-loop">
-    <div class="kicker">The agent loop</div>
-    <h2>A hole is a task. Every edit is checked before it is stored.</h2>
-    <p class="lede">An order system with one function left as a hole. Each step below is what the CLI printed, recorded from a real run.</p>
-    <div class="steps" id="loop"></div>
-    <a class="go" href="tour.html#build">See the whole session in the tour →</a>
-  </section>
-
-  <section class="block diffs" id="changes">
-    <div class="kicker">The code is the AST</div>
-    <h2>Code is stored as its syntax tree, so a change is one change.</h2>
-    <div class="vsrow" id="rename"></div>
-    <a class="go" href="tour.html#diffs">More on structural changes →</a>
-  </section>
-
-  <section class="block proven" id="proven">
-    <div class="kicker">What "proven" means</div>
-    <h2>Every verdict says where it came from.</h2>
-    <div class="verdicts">
-      <div><b class="o-ok">✓ proven</b><p>The SMT solver (Z3) showed the contract holds for every input.</p></div>
-      <div><b class="o-warn">~ fuzzed</b><p>The solver could not decide, so the fuzzer ran the function on random inputs against the contract. The verdict says which checks were left unproven.</p></div>
-      <div><b class="o-bad">✗ refuted</b><p>An input breaks the contract, found by the solver or the fuzzer, and printed with the verdict.</p></div>
+    <div class="chapter">
+      <div class="text">
+        <div class="n">02 · Proving over testing</div>
+        <h3>Four tests, or one line.</h3>
+        <p>Tests check the values someone thought of. One <code>ensures</code> says the same for every input, and the solver proves it. Where it can't, a fuzzer runs the function against the contract, and the verdict says which of the two it was.</p>
+        <a class="go" href="tour.html#points">In the tour →</a>
+      </div>
+      <div class="visual two" id="ch-points"></div>
     </div>
-    <p class="fine">Termination is checked on its own: a loop or recursion with no bound shown is reported as <code>may not terminate</code>, never assumed to end. What is trusted: the solver, Strata's encoding of the program for it, the compiler and the C runtime. <a href="/docs/verification/">How verification works →</a></p>
+
+    <div class="chapter">
+      <div class="text">
+        <div class="n">03 · What a change reaches</div>
+        <h3>Unfinished code still checks.</h3>
+        <p>In this order system, <code>refund</code> isn't written yet: its body is a hole, <code>?refund_policy</code>, and everything around it still type-checks and verifies. <code>strata holes</code> gives an agent the task: the type to produce, what is in scope, the contract to meet. It fills the hole, and the edit is checked against everything it touches before it is stored.</p>
+        <a class="go" href="tour.html#build">In the tour →</a>
+      </div>
+      <div class="visual" id="ch-holes"></div>
+    </div>
+
+    <div class="chapter">
+      <div class="text">
+        <div class="n">04 · The code is the AST</div>
+        <h3>Only what it needs.</h3>
+        <p>Code is stored as a graph of definitions, not text files. An agent asks for the part it needs, at the detail it needs: a map of what uses what, the interfaces with their contracts, or the source. Every view is rendered from the same trees.</p>
+        <a class="go" href="tour.html#views">In the tour →</a>
+      </div>
+      <div class="visual" id="ch-views"></div>
+    </div>
+
+    <div class="chapter">
+      <div class="text">
+        <div class="n">05 · Structural changes</div>
+        <h3>A rename reads as a rename.</h3>
+        <p>Because changes are made to definitions, a diff is a list of what happened to them, not of lines that moved.</p>
+        <a class="go" href="tour.html#diffs">In the tour →</a>
+      </div>
+      <div class="visual" id="ch-diff"></div>
+    </div>
   </section>
 
   <section class="block start">
@@ -124,6 +142,7 @@
 <script src="data/verify.js"></script>
 <script src="data/session.js"></script>
 <script src="data/rename.js"></script>
+<script src="data/orders.js"></script>
 <script src="common.js"></script>
 <script src="landing.js"></script>
 </body>
