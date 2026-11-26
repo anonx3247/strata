@@ -168,15 +168,14 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 18 If(cond:Expr, then:Expr, else:Expr)
      | 19 Match(scrutinee:Expr, as:option(str), arms:list(Arm))
      | 20 Mut(Expr)                      21 Block(list(Stmt), last:Expr)
-     | 22 Mock(TypeExpr)                 23 Return(Expr)             24 Try(Expr, TryKind)
-     | 25 Except(Expr, err:option(str), fallback:Expr)          x except e { … }, x !! v
+     | 22 Mock(TypeExpr)                 23 Return(Expr)             24, 25: unused
      | 26 Interp(list(StrPart))
      | 27 Range(lo:option(Expr), hi:option(Expr), inclusive:bool)    a..b, a..=b
      | 28 Index(Expr, index:Expr)                                   xs[i], xs[a..b]
      | 29 Comp(CompKind, elem:Expr, list(CompFor))                  [e for x in xs where c]
      | 30 Dict(types:list(TypeExpr), list((Expr, Expr)))            Dict { "a": 1 }
      | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
-     | 32 Or(Expr, fallback:Expr)                                   x or { … }, x ?? v
+     | 32 unused
      | 33 Comptime(Expr)                                            comptime e
      | 34 Scope(Expr)                                               scope { … }
      | 35 Spawn(Expr)                                               spawn e
@@ -201,8 +200,9 @@ FmtSpec  = fill:char  align:option(char)  plus:bool  zero:bool  width:uint  prec
 BinOp    = 0 +  1 -  2 *  3 /  4 %  5 ==  6 !=  7 <  8 <=  9 >  10 >=  11 &&  12 ||  13 ==>
          | 14 &  15 |  16 ^  17 <<  18 >>
 UnOp     = 0 -  1 !
-TryKind  = 0 `!` (Result)  1 `?` (Option)
 ```
+
+`x!`, `x?`, `x except e { … }`, `x or { … }`, `x !! v` and `x ?? v` are stored as the `Match` they stand for (`compiler/sugar`), with names starting with `$`, which no program can write: `x!` is `match x { Ok($v) => $v, Err($e) => return Err($e) }`, `x ?? v` is `match x { Some($v) => $v, None => v }`. `view` shows such a match as the sugar again. A reader refuses tags 24, 25 and 32.
 
 `BigInt` is an integer literal too large for 64 bits, as its decimal digits.
 
