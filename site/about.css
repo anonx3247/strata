@@ -40,3 +40,9 @@ header.top nav a[aria-current] { color: var(--text); }
 .about .prose blockquote p { color: var(--muted); margin: 0 0 12px; }
 .about .prose blockquote p:last-child { margin-bottom: 0; }
 .about .prose blockquote strong { color: var(--accent2); font-weight: 600; }
+.about .prose td:nth-child(n+2) { font-variant-numeric: tabular-nums; }
+.about .prose .table.wide td { white-space: nowrap; }
+.about .prose .table.wide td:first-child { white-space: normal; min-width: 150px; }
+@media (min-width: 1200px) {
+  .about .prose .table.wide { margin-left: -150px; margin-right: -150px; }
+}
