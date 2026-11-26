@@ -347,19 +347,19 @@ void strata_memory_start(_Bool check);
 void strata_memory_threaded(_Bool on);
 void strata_memory_thread_end(void);
 void strata_region_thread_end(void);
-int64_t strata_region_held(void);
-void strata_region_unhold(int64_t r);
+int64_t *strata_region_state(void);
 
 // A task's thread ends: the counts its statement regions still hold (a
 // cancelled task leaves its functions without resetting their regions) are
-// dropped, each record giving the record before it, the value and the
-// function that drops it (core.rt's `strata_region_held`).
+// dropped. Word 3 of the region state is the release list; each record
+// holds the record before it, the value and the function that drops it
+// (core.rt's `strata_region_state`).
 #ifdef STRATA_CORE_RT
 static void region_drain(void) {
-  int64_t h;
-  while ((h = strata_region_held()) != 0) {
-    int64_t *r = (int64_t *)h;
-    strata_region_unhold(r[0]);
+  int64_t *st = strata_region_state();
+  while (st[3] != 0) {
+    int64_t *r = (int64_t *)st[3];
+    st[3] = r[0];
     ((void (*)(void *))r[2])((void *)r[1]);
   }
 }
