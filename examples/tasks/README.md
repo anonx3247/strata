@@ -51,7 +51,7 @@ The property is stated once, as `Entry`'s refinement, so every backend must pres
 - Three laws, all proven for `MemQueue`: enqueuing again adds nothing, two claims never hand out the same task, and a worker whose lease expired can't report.
 - The queue is `shared`, since many workers use it, so entrypoints rely only on what each call returns: `run_worker` returns one result per claimed attempt, at most a batch, each id once.
 
-`strata --file examples/tasks verify` proves the helpers, `drain`, `run_producer`, the demo, `empty_queue`, and the laws `enqueue_once` and `late_worker_refused`. `MemQueue`'s methods and `no_double_claim` are fuzzed without a counterexample, with most of their checks proven. The unproven checks are in their loops, whose invariants relating the table to its value before the loop are not inferred, and in `record`'s refusal path (see "Examples over trait models: what the prover lacks" in `IDEAS.md`).
+`strata --file examples/tasks verify` proves every definition: the helpers, `drain`, `run_producer`, `run_worker`, the demo, each method of `MemQueue` and the three laws. The loops of `claim`, `record`, `release` and `expire` are written as step functions whose contracts are the loop's invariants (see "tasks-proofs-7" in `IDEAS.md`). Task ids are built from numbers (`t{i}`, `task-{i}`), so the numbers are bounded: an `Int` is arbitrary-precision, and an id has 64 characters at most.
 
 ## Gaps compared with the reference
 
