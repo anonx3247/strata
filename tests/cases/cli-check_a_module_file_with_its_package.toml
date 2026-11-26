@@ -7,13 +7,13 @@ write = "p/strata.toml"
 text = "name = \"p\"\n"
 
 [[step]]
-strata = ["--file", ".", "edit", "util"]
+strata = ["--file", ".", "edit", "util", "--as-given"]
 dir = "p"
 text = "pub fn helper() -> Int {\n  1\n}\n\nfn broken() -> Int {\n  \"no\"\n}\n"
 fails = true
 
 [[step]]
-strata = ["--file", ".", "edit", "main", "--no-commit"]
+strata = ["--file", ".", "edit", "main", "--no-commit", "--as-given"]
 dir = "p"
 text = "from util use helper\n\nfn a() -> Int {\n  helper()\n}\n\nfn b() -> Int {\n  true\n}\n"
 fails = true

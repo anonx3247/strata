@@ -30,7 +30,7 @@ strata = ["--file", "i.strata", "run"]
 stdout = "3\n2\ntrue\n195\n[\"a\", \" \", \"b\"]\n[\"b\", \"c\", \"d\"]\n[120, 121]\n[\"h\", \"é\"]!\n"
 
 [[step]]
-strata = ["--file", "j.strata", "edit"]
+strata = ["--file", "j.strata", "edit", "--as-given"]
 text = '''
 type Naturals = { at: Int }
 
