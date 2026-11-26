@@ -513,6 +513,34 @@ Not yet:
 
 ## Decisions
 
+### `strata diff` in seconds (user, 2026-11-26: phase 0, item 2 of REBUILD.md; built, branch `diff-fast`)
+PR reviews and the PR tour read structural diffs, so a diff of one commit must take seconds. Measured on `strata --file compiler diff e71ffba4~1`, a clone at e71ffba4: one commit split into 20 steps by its log entries, 4,200 definitions. origin/main's build took 39 s plain, 39 s with `--json`, and 1.6 GB.
+
+Where the time went (`STRATA_TIMINGS=1` with phases added, and `sample`):
+- 18 s hashing. Each step's touched names were found by encoding and hashing every definition of its versions before and after, twice per step (the step list, then the counts).
+- 7.4 s writing out (`resolve.written`) every whole version, both ends and every step, about 40 walks of the program.
+- 3.3 s replaying log entries. Each entry stored the whole program again (`resolve.stored`).
+- 1.9 s on the "used by N, M depend on it" counts. Each item scanned the whole graph, and `codebase.dependents` scanned it again for each node it reached.
+- 1 s comparing versions for the "edits outside strata" step (`same`, hashing everything again).
+- Underneath most of these: `resolve.walk` found each definition's module imports, bindings and uses by scanning every definition. That is quadratic in the program and was the top of the flat profile.
+- Not the cost: git (15 calls, 0.35 s), decoding the module files (0.3 s), the line LCS (0.03 s), verdicts (none in git mode).
+
+What changed:
+- `resolve.walk` works out each module's imports once. This helps every caller.
+- `stored_at` and `written_at` resolve only the definitions at given places, with the whole program in scope.
+- A range's versions are `diff.Version`s: the stored definitions and each one's hash by name, computed once per decoded version. The module headers' hashes are not used: decoding brings an older form up to date, so a header's hash can differ from its definition's.
+- A `Step` carries the names it touched.
+- A log entry is replayed (or undone) by storing and hashing only what it names.
+- `diff` writes out only the definitions whose hash differs. Users and dependents come from a reverse graph built once. Only changes and what depends on them are looked up for verdicts.
+
+After: 3.2 s plain, 3.3 s with `--json`, 300 MB (0.5 s of it comparing, 0.4 s replaying the 19 entries, 0.4 s decoding). The output is byte-identical to origin/main's on that commit, plain and `--json`, and on log-mode diffs of a small package (steps, `--from`/`--to`, verdicts). A range of three commits of compiler/ (`d5bb1c77~1`): 82 s to 8 s, identical.
+
+One output change, a fix: a definition whose hash is unchanged is not listed. Before, a definition stored again in a newer form (7213f52c's old-form match arms, the same hash) showed as changed: in std from `0945d993~1`, `impl Heap[T]` changed `{ x }` to `x`, and `impl Console for Recorder` showed no difference at all.
+
+For other modules (the PR tour): `diff.git_range` / `diff.log_range` give a `Range`, `diff.range_diff(files, verdicts, range, step, std, core)` gives the `Diff` (items, lines, checks) and its label, and `diff.step_names` gives the names per step. No text or JSON is involved.
+
+Left: about 2 s of the 3.2 s is outside the diff itself. That is loading std's definitions, reading and hashing the working tree, and starting git processes. The verdict lookups in log mode still encode every definition once for its code hash.
+
 ### Written proofs: `lemma`, `assert … by`, `calc`; proofs hidden in views (designed with the user 2026-11-26; built, branch `lemmas`)
 Proofs written in small steps the solver checks one at a time, for what plain `verify` can't reach (induction, queries too large to answer).
 - **`lemma name[T](params) requires … ensures … { steps }`**: a function with the `FnDecl.lemma` flag (bit 4 of its stored flags byte, so files stay readable). It is never compiled (`codegen.generate` leaves lemmas out, and proofs too: `proofs_dropped`) and has no fuzz driver. Only proofs call it (`capabilities.lemma_errors`), and it returns nothing and takes no `mut` parameter. `verify` proves it as any function (its `requires`, its body's steps, its `ensures` at the end), cached like any verdict. Its verdict is proven or not (`main.lemma_verdict`): a solver counterexample is its verdict unless it depends on something not modelled ("(depends on …)", then incomplete), and what's left open stays open, never fuzzed. A lemma not shown to terminate is incomplete: its recursion is its induction. A call in a proof is a contract call: its `requires` are checked there, its `ensures` assumed. An empty body: proven from the `requires` alone. Lemmas keep their contracts as written (no refinement lint).
