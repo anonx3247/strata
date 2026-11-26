@@ -1,0 +1,414 @@
+# What a function or method says of its result's variant (`ensures o is
+# Paid ==> it is Shipped`, `-> Order where it is Shipped`) narrows its calls'
+# results:
+# `strata check` reads a field only the narrowed variants have and covers a
+# match on the call with the variants left; a field not every variant has is
+# an error; `if o is Paid` narrows `o` in the branch taken. Where the
+# condition is the solver's (`d.contains(k)`), `verify` proves the match
+# covers the call; an `ensures` not proven is checked when the callee
+# returns, so the narrowed read never sees another variant
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+type Order =
+  | Pending { id: Int }
+  | Paid { id: Int, amount: Int }
+  | Shipped { id: Int, tracking: String }
+
+/// Ships a paid order.
+fn ship(o: Order) -> Order
+  ensures (it is Shipped) == (o is Paid || o is Shipped) {
+  match o {
+    Paid => Shipped { id: o.id, tracking: f"T{o.amount}" },
+    _ => o,
+  }
+}
+
+/// Always shipped.
+fn shipped(id: Int) -> Order where it is Shipped {
+  Shipped { id, tracking: "X" }
+}
+
+fn label(o: Order) -> String {
+  match o {
+    Paid => ship(o).tracking,
+    Shipped => {
+      s := ship(o)
+      s.tracking
+    },
+    Pending => match ship(o) {
+      Pending => "pending",
+      Paid => "paid",
+    },
+  }
+}
+
+fn amount(o: Order) -> Int {
+  if o is Paid {
+    o.amount
+  } else {
+    0
+  }
+}
+
+fn reset(o: Order) -> Int {
+  match o {
+    Paid => {
+      mut s := ship(o)
+      s = Pending { id: 0 }
+      s.id
+    },
+    _ => o.id,
+  }
+}
+
+fn lookup(d: Dict[String, Int], k: String) -> Option[Int]
+  ensures (it is Some) == d.contains(k) {
+  get(d, k)
+}
+
+fn known(d: Dict[String, Int], k: String) -> Int {
+  if d.contains(k) {
+    match lookup(d, k) {
+      Some(v) => v,
+    }
+  } else {
+    0
+  }
+}
+
+fn main() {
+  print(label(Paid { id: 1, amount: 5 }))
+  print(label(Pending { id: 2 }))
+  print(shipped(3).tracking)
+  print(amount(Paid { id: 4, amount: 7 }) + reset(Paid { id: 5, amount: 1 }))
+  print(known(Dict { "a": 1 }, "a") + known(Dict { "a": 1 }, "b"))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--checks", "--no-race"]
+has = [
+  "proven:  ensures it is Shipped == (o is Paid || o is Shipped)",
+  "proven:  result of `shipped`: Order where it is Shipped",
+  "✓ known                    proven (1 check)\n    proven:  some arm of the `match` matches",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+out = "T5\npending\nX\n7\n1\n"
+
+[[step]]
+strata = ["--file", "bad.strata", "edit"]
+text = '''
+type Order =
+  | Pending { id: Int }
+  | Paid { id: Int, amount: Int }
+  | Shipped { id: Int, tracking: String }
+
+fn ship(o: Order) -> Order
+  ensures o is Paid ==> it is Shipped {
+  match o {
+    Paid => Shipped { id: o.id, tracking: "T" },
+    _ => o,
+  }
+}
+
+fn first[T](xs: List[T]) -> Option[T] {
+  match xs {
+    [x, ..] => Some(x),
+    _ => None,
+  }
+}
+
+fn tracking(o: Order) -> String {
+  o.tracking
+}
+
+fn unshipped(o: Order) -> String {
+  ship(o).tracking
+}
+
+fn pending(o: Order) -> Int {
+  match o {
+    Pending => match ship(o) {
+      Shipped => 1,
+    },
+    Paid => match ship(o) {
+      Shipped => 2,
+      Pending => 3,
+    },
+    _ => match first([1]) {
+      Some(x) => x,
+    },
+  }
+}
+'''
+fails = true
+has = [
+  "error in tracking: `Pending` has no field `tracking`, so not every `Order` does (match on it first)",
+  "error in pending: non-exhaustive match on `Order`: `Paid` is not covered",
+  "error in pending: unreachable match arm `Pending`: the result is `Shipped` here (from what its function ensures)",
+  "error in pending: non-exhaustive match on `Option[Int]`: `None` is not covered",
+]
+# `ship(o).tracking` with `o` not narrowed: the condition is left to verify
+lacks = ["error in unshipped"]
+
+[[step]]
+strata = ["--file", "lie.strata", "edit"]
+text = '''
+type Order =
+  | Pending { id: Int }
+  | Paid { id: Int, amount: Int }
+  | Shipped { id: Int, tracking: String }
+
+fn ship(o: Order) -> Order
+  ensures o is Paid ==> it is Shipped {
+  match o {
+    Paid => if o.amount > 10 {
+      o
+    } else {
+      Shipped { id: o.id, tracking: "T" }
+    },
+    _ => o,
+  }
+}
+
+fn label(o: Order) -> String {
+  match o {
+    Paid => ship(o).tracking,
+    _ => "",
+  }
+}
+
+fn lookup(d: Dict[String, Int], k: String) -> Option[Int]
+  ensures (it is Some) == d.contains(k) {
+  get(d, k)
+}
+
+fn careless(d: Dict[String, Int], k: String) -> Int {
+  match lookup(d, k) {
+    Some(v) => v,
+  }
+}
+
+fn main() {
+  print(careless(Dict { "a": 1 }, "a"))
+  print(label(Paid { id: 1, amount: 5 }))
+  print(label(Paid { id: 1, amount: 50 }))
+}
+'''
+
+[[step]]
+strata = ["--file", "lie.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "postcondition of `ship` violated: ensures o is Paid ==> it is Shipped (it = Paid { id: 0, amount: 11 })",
+  "✗ careless",
+  "no match arm for None (stack: careless)",
+]
+
+[[step]]
+strata = ["--file", "lie.strata", "run"]
+fails = true
+has = [
+  "1\nT\n",
+  "fault (Ensures): postcondition of `ship` violated: ensures o is Paid ==> it is Shipped (it = Paid { id: 1, amount: 50 })",
+]
+
+[[step]]
+strata = ["--file", "care.strata", "edit"]
+text = '''
+fn lookup(d: Dict[String, Int], k: String) -> Option[Int]
+  ensures (it is Some) == d.contains(k) {
+  get(d, k)
+}
+
+fn careless(d: Dict[String, Int], k: String) -> Int {
+  match lookup(d, k) {
+    Some(v) => v,
+  }
+}
+
+fn main() {
+  print(careless(Dict { "a": 1 }, "b"))
+}
+'''
+
+[[step]]
+strata = ["--file", "care.strata", "run"]
+fails = true
+has = ["fault (Runtime): no match arm for None"]
+
+# methods (a type's own, a trait's), `Option` narrowed by the checker, and a
+# field read whose condition only verify decides (proven in `known`, refuted
+# in `careless`, checked when it runs)
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+text = '''
+type Order =
+  | Pending { id: Int }
+  | Paid { id: Int, amount: Int }
+  | Shipped { id: Int, tracking: String }
+
+impl Order {
+  fn shipped(self) -> Order
+    ensures (it is Shipped) == (self is Paid || self is Shipped) {
+    match self {
+      Paid => Shipped { id: self.id, tracking: f"T{self.amount}" },
+      _ => self,
+    }
+  }
+}
+
+trait Ship {
+  fn ship(self) -> Order
+    ensures it is Shipped
+}
+
+impl Ship for Order {
+  fn ship(self) -> Order {
+    Shipped { id: self.id, tracking: "S" }
+  }
+}
+
+fn by_method(o: Order) -> String {
+  match o {
+    Paid => o.shipped().tracking,
+    _ => match o.ship() {
+      Shipped => o.ship().tracking,
+    },
+  }
+}
+
+fn same(o: Option[Int]) -> Option[Int]
+  ensures (it is Some) == (o is Some) {
+  o
+}
+
+fn opt(o: Option[Int]) -> Int {
+  match o {
+    Some(_) => match same(o) {
+      Some(v) => v,
+    },
+    None => 0,
+  }
+}
+
+fn find(d: Dict[String, Int], k: String) -> Order
+  ensures d.contains(k) ==> it is Shipped {
+  if d.contains(k) {
+    Shipped { id: 1, tracking: "F" }
+  } else {
+    Pending { id: 0 }
+  }
+}
+
+fn known(d: Dict[String, Int], k: String) -> String {
+  if d.contains(k) {
+    find(d, k).tracking
+  } else {
+    ""
+  }
+}
+
+fn careless(d: Dict[String, Int], k: String) -> String {
+  find(d, k).tracking
+}
+
+fn main() {
+  print(by_method(Paid { id: 1, amount: 5 }))
+  print(by_method(Pending { id: 2 }))
+  print(opt(Some(4)))
+  d := Dict { "a": 1 }
+  print(known(d, "a"))
+  print(careless(d, "b"))
+}
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "verify", "--checks", "--no-race"]
+fails = true
+has = [
+  "✓ by_method                proven (2 checks)\n    proven:  some arm of the `match` matches\n    proven:  field `tracking` of a call's result",
+  "✓ opt                      proven (1 check)",
+  "✓ known                    proven (1 check)\n    proven:  field `tracking` of a call's result",
+  "field `tracking` of a call's result: Pending { id: 0 } has no such field (stack: careless)",
+]
+
+[[step]]
+strata = ["--file", "m.strata", "run"]
+fails = true
+has = [
+  "T5\nS\n4\nF\n",
+  "fault (Refinement): field `tracking` of a call's result: Pending { id: 0 } has no such field",
+]
+
+[[step]]
+strata = ["--file", "mbad.strata", "edit"]
+text = '''
+type Order =
+  | Pending { id: Int }
+  | Paid { id: Int, amount: Int }
+  | Shipped { id: Int, tracking: String }
+
+impl Order {
+  fn shipped(self) -> Order
+    ensures (it is Shipped) == (self is Paid || self is Shipped) {
+    self
+  }
+  fn first_item(self) -> Option[Int] {
+    None
+  }
+}
+
+fn same(o: Option[Int]) -> Option[Int]
+  ensures (it is Some) == (o is Some) {
+  o
+}
+
+fn find(d: Dict[String, Int], k: String) -> Order
+  ensures d.contains(k) ==> it is Shipped {
+  Pending { id: 0 }
+}
+
+fn a(o: Order) -> Int {
+  match o.shipped() {
+    Shipped => 1,
+  }
+}
+
+fn b(o: Order) -> Int {
+  match o.first_item() {
+    Some(x) => x,
+  }
+}
+
+fn c(o: Option[Int]) -> Int {
+  match o {
+    None => match same(o) {
+      None => 0,
+      Some(x) => x,
+    },
+    Some(_) => 1,
+  }
+}
+
+fn e(o: Order) -> Int {
+  match o {
+    Pending => o.shipped().amount,
+    _ => 0,
+  }
+}
+
+fn f(d: Dict[String, Int]) -> Int {
+  find(d, "k").amount
+}
+'''
+fails = true
+has = [
+  "error in b: non-exhaustive match on `Option[Int]`: `None` is not covered",
+  "error in c: unreachable match arm `Some(x)`: the result is `None` here (from what its function ensures)",
+  "error in e: `Pending` has no field `amount`, so not every `Paid | Pending` does (match on it first)",
+]
+lacks = ["error in a:", "error in f:"]
