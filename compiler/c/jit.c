@@ -20,6 +20,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <sys/resource.h>
+#include <time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -573,6 +574,13 @@ static void names_add(Names *n, const char *s) {
   n->names[n->count++] = strdup(s);
 }
 
+static void names_free(Names *n) {
+  for (int i = 0; i < n->count; i++) free(n->names[i]);
+  free(n->names);
+  n->names = NULL;
+  n->count = n->cap = 0;
+}
+
 static int names_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
 static void names_sort(Names *n) { qsort(n->names, n->count, sizeof(char *), names_cmp); }
@@ -583,10 +591,24 @@ static int names_index(const Names *n, const char *s) {
 }
 
 static Names defined;
-// The swappable functions, sorted, and each one's code as first compiled
-// (printed: a function the verifier's module has the same is left alone).
+// With live edits (`jit_live`): each of `defined`'s definitions as first
+// compiled (printed), so that one an edit changed gets a copy of its own in
+// the edit's module rather than the main module's.
+static char **defined_code;
+// The swappable functions, sorted, and each one's code and type as first
+// compiled (printed: a function the verifier's module has the same is left
+// alone, and one whose type changed can't be swapped). `moved`: its slot
+// points at a swapped-in body, so it is swapped again (to its new copy, or
+// back to its first code).
 static Names swappable_names;
 static char **swappable_code;
+static char **swappable_type;
+static int *moved;
+// Whether live edits are watched for (`jit_live`), the process watching
+// (`strata live-edits`), the pipe it tells the run on, and its folder.
+static int live;
+static pid_t live_pid;
+static int live_fd = -1;
 
 static pid_t verifier;
 static char *alongside_dir;
@@ -666,6 +688,16 @@ static void stub(LLVMModuleRef mod, LLVMValueRef f, const char *name) {
   free(args);
 }
 
+// What a definition is, to compare it with another module's: a function's
+// code, a global's value (its linkage aside: the main module's private
+// globals are made visible).
+static char *code_of(LLVMValueRef v) {
+  if (LLVMIsAFunction(v)) return LLVMPrintValueToString(v);
+  LLVMValueRef init = LLVMGetInitializer(v);
+  if (!init) return LLVMCreateMessage("");
+  return LLVMPrintValueToString(init);
+}
+
 // The program's module made swappable (before it is optimized): its own
 // functions called through slots (`stub`), and every global it defines
 // visible (`static`s, constants, tables), so that the verifier's module
@@ -692,14 +724,43 @@ static void swappable_module(LLVMModuleRef mod) {
   for (int i = 0; i < count; i++) names_add(&swappable_names, name_of(fs[i]));
   names_sort(&swappable_names);
   swappable_code = calloc(count ? count : 1, sizeof(char *));
+  swappable_type = calloc(count ? count : 1, sizeof(char *));
+  moved = calloc(count ? count : 1, sizeof(int));
+  names_sort(&defined);
+  // (each definition's code before any is made a stub: what codegen gave)
+  if (live) {
+    defined_code = calloc(defined.count ? defined.count : 1, sizeof(char *));
+    for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) {
+      int at = names_index(&defined, name_of(g));
+      if (at >= 0) defined_code[at] = code_of(g);
+    }
+    for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) {
+      int at = LLVMIsDeclaration(f) ? -1 : names_index(&defined, name_of(f));
+      if (at >= 0) defined_code[at] = LLVMPrintValueToString(f);
+    }
+  }
   for (int i = 0; i < count; i++) {
     char *name = strdup(name_of(fs[i]));
-    swappable_code[names_index(&swappable_names, name)] = LLVMPrintValueToString(fs[i]);
+    int at = names_index(&swappable_names, name);
+    swappable_code[at] = LLVMPrintValueToString(fs[i]);
+    swappable_type[at] = LLVMPrintTypeToString(LLVMGlobalGetValueType(fs[i]));
     stub(mod, fs[i], name);
     free(name);
   }
   free(fs);
-  names_sort(&defined);
+}
+
+// Whether `v` of an edit's module is what the main module defines under its
+// name (always, without live edits: the verifier's module is the same
+// program).
+static int same_as_defined(LLVMValueRef v) {
+  if (!defined_code) return 1;
+  int at = names_index(&defined, name_of(v));
+  if (at < 0 || !defined_code[at]) return 0;
+  char *code = code_of(v);
+  int same = !strcmp(code, defined_code[at]);
+  LLVMDisposeMessage(code);
+  return same;
 }
 
 // `v` (a function or a global of `mod`) as a declaration of the same name:
@@ -725,18 +786,106 @@ static void declared(LLVMModuleRef mod, LLVMValueRef v, int function) {
   free(name);
 }
 
+// Whether `code` (a definition's printed IR) refers to `@name`.
+static int refers(const char *code, const char *name) {
+  size_t n = strlen(name);
+  for (const char *at = strchr(code, '@'); at; at = strchr(at + 1, '@')) {
+    if (at[1] == '"') {
+      if (!strncmp(at + 2, name, n) && at[2 + n] == '"') return 1;
+    } else if (!strncmp(at + 1, name, n)) {
+      char c = at[1 + n];
+      if (!(c == '.' || c == '_' || c == '$' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+        return 1;
+    }
+  }
+  return 0;
+}
+
+// With live edits: the definitions of an edit's module that are its own
+// rather than the main module's (sorted, in `own`). Those whose code
+// differs from the main module's or that it hasn't, then, until nothing
+// changes, those that refer to one of them that isn't called through a
+// slot: a function making a closure of a changed lambda, a table of one.
+// (A reference to a swappable function goes through its stub, so it
+// doesn't count.) Local definitions are always the module's own and
+// don't count either, unless they are globals: local functions are
+// codegen's helpers, the same in every module. 0, else -1 when
+// a function the running program calls directly changed (said in `why`).
+static int live_own(LLVMModuleRef mod, Names *own, char *why, size_t why_len) {
+  int count = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) count++;
+  for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) count++;
+  LLVMValueRef *vs = malloc(sizeof(LLVMValueRef) * (count ? count : 1));
+  char **code = calloc(count ? count : 1, sizeof(char *));
+  int *mine = calloc(count ? count : 1, sizeof(int));
+  int k = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) vs[k++] = f;
+  for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) vs[k++] = g;
+  int n = 0;
+  for (int i = 0; i < count; i++) {
+    LLVMValueRef v = vs[i];
+    // (a local global, a closure's table say, counts: the main module's
+    // were made visible, and an edit's has the same name)
+    if (LLVMIsDeclaration(v) || starts(name_of(v), "llvm.")) continue;
+    if (is_local(LLVMGetLinkage(v)) && LLVMIsAFunction(v)) continue;
+    vs[n] = v;
+    code[n] = code_of(v);
+    mine[n] = !same_as_defined(v);
+    n++;
+  }
+  for (int grew = 1; grew;) {
+    grew = 0;
+    for (int i = 0; i < n; i++) {
+      if (!mine[i] || names_index(&swappable_names, name_of(vs[i])) >= 0) continue;
+      for (int j = 0; j < n; j++)
+        if (!mine[j] && refers(code[j], name_of(vs[i]))) mine[j] = grew = 1;
+    }
+  }
+  int result = 0;
+  for (int i = 0; i < n; i++) {
+    if (!mine[i]) continue;
+    const char *name = name_of(vs[i]);
+    // (a function the main module has, called directly by its code, not
+    // through a slot: its change would never run. A lambda runs only in the
+    // closures its maker makes, which are swapped with it.)
+    if (LLVMIsAFunction(vs[i]) && names_index(&defined, name) >= 0 && names_index(&swappable_names, name) < 0 &&
+        !starts(name, "lambda.") && !starts(name, "drop.lambda.") && !starts(name, "share.lambda.") && result == 0) {
+      snprintf(why, why_len, "`%s` changed, and the running program calls it directly, not through a slot", name);
+      result = -1;
+    }
+    names_add(own, name);
+  }
+  names_sort(own);
+  for (int i = 0; i < n; i++) LLVMDisposeMessage(code[i]);
+  free(code);
+  free(mine);
+  free(vs);
+  return result;
+}
+
 // The verifier's module (the program compiled without the checks it
 // proved) added to the running program: each swappable function whose code
 // changed compiled as `NAME.proven.N` and its slot pointed at it; what
 // else it defines is the main module's (declared), or its own (local).
 // How many functions were swapped; -1 when it couldn't be (said in `why`).
-static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
+// `tag`: their bodies are `NAME.TAG.N` (`proven`, `live`). `names`: the
+// functions swapped, each in backquotes, comma-separated (NULL: not wanted).
+static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_t why_len, char *names,
+                   size_t names_len) {
+  if (names) names[0] = 0;
   LLVMContextRef ctx;
   LLVMModuleRef mod;
   char *msg = NULL;
   if (ir_module(ir, len, &ctx, &mod, &msg)) {
     snprintf(why, why_len, "LLVM rejected it: %s", msg ? msg : "");
     LLVMDisposeMessage(msg);
+    return -1;
+  }
+  // (with live edits: what is the edit's own, `live_own`)
+  Names own = {0};
+  if (live && live_own(mod, &own, why, why_len) < 0) {
+    LLVMDisposeModule(mod);
+    LLVMContextDispose(ctx);
     return -1;
   }
   int generation = ++swaps;
@@ -753,7 +902,24 @@ static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
     int at = names_index(&swappable_names, name_of(f));
     if (at >= 0) {
       char *code = LLVMPrintValueToString(f);
-      if (strcmp(code, swappable_code[at])) changed[i] = strdup(name_of(f));      LLVMDisposeMessage(code);
+      if (moved[at] || strcmp(code, swappable_code[at]) || names_index(&own, name_of(f)) >= 0)
+        changed[i] = strdup(name_of(f));
+      LLVMDisposeMessage(code);
+      // (a slot holds a body of one type: callers compiled for the old one
+      // can't call a new one)
+      char *type = LLVMPrintTypeToString(LLVMGlobalGetValueType(f));
+      int same = !strcmp(type, swappable_type[at]);
+      LLVMDisposeMessage(type);
+      if (changed[i] && !same) {
+        snprintf(why, why_len, "the type of `%s` changed", name_of(f) + strlen("strata:"));
+        for (int j = 0; j <= i; j++) free(changed[j]);
+        free(changed);
+        free(fs);
+        names_free(&own);
+        LLVMDisposeModule(mod);
+        LLVMContextDispose(ctx);
+        return -1;
+      }
     }
   }
   int n = 0;
@@ -762,10 +928,16 @@ static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
     if (LLVMIsDeclaration(f) || is_local(LLVMGetLinkage(f))) continue;
     if (changed[i]) {
       char name[1024];
-      snprintf(name, sizeof name, "%s.proven.%d", changed[i], generation);
+      snprintf(name, sizeof name, "%s.%s.%d", changed[i], tag, generation);
       LLVMSetValueName2(f, name, strlen(name));
       n++;
-    } else if (names_index(&defined, name_of(f)) >= 0) {
+      if (names && strlen(names) + strlen(changed[i]) + 4 < names_len) {
+        if (names[0]) strcat(names, ", ");
+        strcat(names, "`");
+        strcat(names, changed[i] + strlen("strata:"));
+        strcat(names, "`");
+      }
+    } else if (names_index(&defined, name_of(f)) >= 0 && names_index(&own, name_of(f)) < 0) {
       declared(mod, f, 1);
     } else {
       LLVMSetLinkage(f, LLVMInternalLinkage);
@@ -785,7 +957,9 @@ static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
       LLVMDeleteGlobal(g);
     } else if (LLVMIsDeclaration(g)) {
       continue;
-    } else if (names_index(&defined, name_of(g)) >= 0) {
+    } else if (names_index(&defined, name_of(g)) >= 0 &&
+               (!LLVMIsGlobalConstant(g) || names_index(&own, name_of(g)) < 0)) {
+      // (a variable is the main module's: its state is kept)
       declared(mod, g, 0);
     } else {
       LLVMSetLinkage(g, LLVMInternalLinkage);
@@ -795,6 +969,7 @@ static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
   if (n == 0) {
     for (int i = 0; i < count; i++) free(changed[i]);
     free(changed);
+    names_free(&own);
     LLVMDisposeModule(mod);
     LLVMContextDispose(ctx);
     return 0;
@@ -817,7 +992,7 @@ static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
   for (int i = 0; i < count && result >= 0; i++) {
     if (!changed[i]) continue;
     char name[1024];
-    snprintf(name, sizeof name, "%s.proven.%d", changed[i], generation);
+    snprintf(name, sizeof name, "%s.%s.%d", changed[i], tag, generation);
     e = LLVMOrcLLJITLookup(run_jit, &bodies[i], name);
     if (!e) {
       snprintf(name, sizeof name, "%s.slot", changed[i]);
@@ -831,12 +1006,15 @@ static int swap_in(const char *ir, size_t len, char *why, size_t why_len) {
     }
   }
   for (int i = 0; i < count && result >= 0; i++)
-    if (changed[i])
+    if (changed[i]) {
       atomic_store_explicit((_Atomic(uintptr_t) *)(uintptr_t)slots[i], (uintptr_t)bodies[i], memory_order_release);
+      moved[names_index(&swappable_names, changed[i])] = 1;
+    }
   free(bodies);
   free(slots);
   for (int i = 0; i < count; i++) free(changed[i]);
   free(changed);
+  names_free(&own);
   return result;
 }
 
@@ -891,7 +1069,7 @@ static void *watch(void *unused) {
   verifier_said = said;
   if (!ending && ir) {
     char why[512] = "";
-    swapped = swap_in(ir, len, why, sizeof why);
+    swapped = swap_in(ir, len, "proven", why, sizeof why, NULL, 0);
     if (swapped < 0 && alongside_notes) fprintf(stderr, "note: the proven code couldn't be swapped in: %s\n", why);
   }
   verified = 1;
@@ -973,10 +1151,198 @@ int32_t jit_alongside(const char *argv, const char *dir, int32_t notes) {
   return 0;
 }
 
+// ---- live edits of a running program ----
+//
+// `strata run --live` starts `strata live-edits` (`jit_live`), a process of
+// its own that watches the program's module files. When they change and
+// the program as it is now checks and verifies, it compiles it (into its
+// folder, `live-N.ll`) and tells the run on a pipe (descriptor 3): a line
+// `swap N T` (T: when the change was seen, `jit_live_now`) or `refused N`
+// (why in `note-N.txt`). A thread of the run (`live_watch`) swaps the code
+// in (`swap_in`, the bodies `NAME.live.N`), says so on stderr, and answers
+// in `done-N.txt` (`swapped`, else why not), so that the watcher knows
+// which code runs.
+
+static char *live_dir;
+
+static char *live_file(const char *what, int n) {
+  size_t len = strlen(live_dir) + strlen(what) + 32;
+  char *p = malloc(len);
+  snprintf(p, len, "%s/%s-%d.txt", live_dir, what, n);
+  if (!strcmp(what, "live")) snprintf(p, len, "%s/live-%d.ll", live_dir, n);
+  return p;
+}
+
+static void write_text(const char *path, const char *text) {
+  char tmp[2048];
+  snprintf(tmp, sizeof tmp, "%s.tmp", path);
+  FILE *f = fopen(tmp, "wb");
+  if (!f) return;
+  fputs(text, f);
+  fclose(f);
+  rename(tmp, path);
+}
+
+// Now, in nanoseconds since an arbitrary start, the same in every process.
+int64_t jit_live_now(void) { return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
+
+static void *live_watch(void *unused) {
+  (void)unused;
+  FILE *in = fdopen(live_fd, "r");
+  if (!in) return NULL;
+  char line[256];
+  while (fgets(line, sizeof line, in)) {
+    int n = 0;
+    long long seen = 0;
+    char *note_path;
+    if (sscanf(line, "swap %d %lld", &n, &seen) == 2) {
+      char *ir_path = live_file("live", n);
+      size_t len = 0;
+      char *ir = read_file(ir_path, &len);
+      unlink(ir_path);
+      free(ir_path);
+      note_path = live_file("note", n);
+      char *note = read_file(note_path, NULL);
+      unlink(note_path);
+      free(note_path);
+      char why[512] = "", names[1024] = "";
+      int got = -1;
+      pthread_mutex_lock(&swap_lock);
+      if (!ending && ir) {
+        got = swap_in(ir, len, "live", why, sizeof why, names, sizeof names);
+        double ms = (double)(jit_live_now() - seen) / 1e6;
+        fflush(stdout);
+        // (the note: the functions edited, a tab, verify's line)
+        char *edited = note ? note : "";
+        char *verdict = strchr(edited, '\t');
+        if (verdict) *verdict++ = 0;
+        if (got > 0)
+          fprintf(stderr, "note: live edit %d: %s swapped in (%s), %.0f ms after the change\n", n,
+                  edited[0] ? edited : names, verdict ? verdict : "", ms);
+        else if (got == 0)
+          fprintf(stderr, "note: live edit %d: %s changed, but none of the compiled code (%s)\n", n, edited,
+                  verdict ? verdict : "");
+        else
+          fprintf(stderr, "note: live edit %d refused: %s; the program goes on with its code as it was\n", n, why);
+        fflush(stderr);
+      }
+      pthread_mutex_unlock(&swap_lock);
+      char *done = live_file("done", n);
+      write_text(done, got >= 0 ? "swapped" : why[0] ? why : "the program is ending");
+      free(done);
+      free(ir);
+      free(note);
+    } else if (sscanf(line, "refused %d", &n) == 1) {
+      note_path = live_file("note", n);
+      char *note = read_file(note_path, NULL);
+      unlink(note_path);
+      free(note_path);
+      pthread_mutex_lock(&swap_lock);
+      if (!ending) {
+        char *text = note ? note : strdup("");
+        size_t k = strlen(text);
+        while (k && text[k - 1] == '\n') text[--k] = 0;
+        fflush(stdout);
+        fprintf(stderr, "note: live edit %d refused: %s\nnote: the program goes on with its code as it was\n", n, text);
+        fflush(stderr);
+        if (!note) free(text);
+      }
+      pthread_mutex_unlock(&swap_lock);
+      free(note);
+    }
+  }
+  fclose(in);
+  return NULL;
+}
+
+// When the program ends: no edit is swapped in after it.
+static void live_end(void) {
+  pthread_mutex_lock(&swap_lock);
+  ending = 1;
+  pthread_mutex_unlock(&swap_lock);
+}
+
+// Starts the watcher of live edits: `argv` (newline-separated: this
+// executable, `live-edits`, ...), its output to `dir`/log, its standard
+// input empty, the pipe it tells the run on as its descriptor 3, nothing
+// else of this process's inherited. The program is then compiled
+// swappable. 0 when started, else 1.
+int32_t jit_live(const char *argv, const char *dir) {
+  char *copy = strdup(argv);
+  char *args[64];
+  int n = 0;
+  for (char *p = copy, *at = copy; n < 63; p++) {
+    if (*p == '\n' || *p == 0) {
+      int end = *p == 0;
+      *p = 0;
+      args[n++] = at;
+      at = p + 1;
+      if (end) break;
+    }
+  }
+  args[n] = NULL;
+  int fds[2];
+  if (pipe(fds)) {
+    free(copy);
+    return 1;
+  }
+  live_dir = strdup(dir);
+  size_t ln = strlen(dir) + 8;
+  char *log = malloc(ln);
+  snprintf(log, ln, "%s/log", dir);
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_addopen(&fa, 1, log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  posix_spawn_file_actions_adddup2(&fa, 1, 2);
+  posix_spawn_file_actions_adddup2(&fa, fds[1], 3);
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+#endif
+  int failed_to = posix_spawn(&live_pid, args[0], &fa, &attr, args, environ);
+  posix_spawn_file_actions_destroy(&fa);
+  posix_spawnattr_destroy(&attr);
+  free(log);
+  free(copy);
+  close(fds[1]);
+  if (failed_to) {
+    close(fds[0]);
+    live_pid = 0;
+    return 1;
+  }
+  fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+  live_fd = fds[0];
+  swappable = 1;
+  live = 1;
+  return 0;
+}
+
+// The watcher's side: tells the run `line` (on descriptor 3). 0, else 1.
+int32_t jit_live_tell(const char *line) {
+  size_t n = strlen(line);
+  char *buf = malloc(n + 2);
+  memcpy(buf, line, n);
+  buf[n] = '\n';
+  ssize_t w = write(3, buf, n + 1);
+  free(buf);
+  return w == (ssize_t)(n + 1) ? 0 : 1;
+}
+
+// The watcher's side: waits `ms` milliseconds.
+int32_t jit_live_sleep(int64_t ms) { return usleep((useconds_t)(ms * 1000)); }
+
 // When the program is about to start (compiled): the verifier watched, and
 // the summary registered for its end. With STRATA_SWAP_WAIT=start (for
 // tests), the program starts only once the proven code is in.
 static void alongside_begin(void) {
+  if (live_pid) {
+    atexit(live_end);
+    pthread_t t;
+    if (!pthread_create(&t, NULL, live_watch, NULL)) pthread_detach(t);
+    // (the watcher took its own end of the pipe: this one's is only read)
+  }
   if (!verifier) return;
   atexit(alongside_end);
   if (pthread_create(&watcher, NULL, watch, NULL)) return;

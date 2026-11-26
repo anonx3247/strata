@@ -36,6 +36,8 @@ The solver found `d = 9`, and running `next_digit(9)` confirmed it. A counterexa
 
 A parameter's refinement behaves like a `requires`: it is assumed on entry and checked for each argument at the call. A result's refinement behaves like an `ensures`: it is proven at each `return` and assumed by callers. A fact about one value is therefore written as a refinement, and contracts are for facts that relate values (`requires lo <= hi`, `ensures it >= price`). `strata check` warns about a `requires` that names one parameter, an `ensures` that names only `it` (or only one element of a tuple result), and a refinement that names another parameter. `strata fix` rewrites each one (see [the language](language.md#refinements-and-contracts-one-way-each)). The rewrite doesn't change any verdict, since the same checks are made in their new places.
 
+A callee's contract is what a caller knows of the call. `let n: Natural = abs(y)` with `fn abs(x: Int) -> Int where it >= 0` needs no check, and a function whose facts say which variant it gives (`ensures (it is Some) == d.contains(k)`) lets a `match` on its call leave out the arms the facts rule out where the caller knows the condition (`if d.contains(k) { match lookup(d, k) { Some(v) => v } }`): `verify` proves that some arm matches. When the checker can decide the condition from the arguments' types (`o is Paid`), it narrows the call itself (see [the language](language.md)). Either way the callee's contract is relied on, so it is checked when the callee returns until it is proven.
+
 Named results (`-> (q: Natural, r: Natural)`) are the tuple's elements in an `ensures`. `verify` reads `q` as `it.0` and `r` as `it.1`, and reports a broken `ensures` in those terms (`ensures it.0 * b + it.1 == a`).
 
 ## Values before and after: `old`
@@ -84,17 +86,6 @@ A trait's `model` ([the reference](language-reference.md#traits)) is the abstrac
 A trait's `invariant` refines the model of every implementing type. A value of the trait's type carries it as a refinement: a function taking `db: Db` knows it, and the new value of a `mut` argument is assumed to satisfy it. Each implementation's methods assume it for `self` and other `Self` parameters. They must preserve it in a `mut self` method and establish it for a result of type `Self`. A trait's `ensures` is proven in each `mut self` method.
 
 Contracts that name a model are assumed contracts (`(assumed: not checked when the program runs)`), because computing the abstraction at run time is what the implementation exists to avoid. One that `verify` neither proves nor refutes makes its function assumed (`≈`).
-
-## State graphs
-
-`strata view --graph T` uses the solver to find how values of the sum type `T` move between variants. For each function that takes and returns a value holding `T`, it asks whether the function can move a value from one variant to another, and draws the moves that may happen. The result is the type's pipeline, generated from the code instead of declared.
-
-- Each question is an `ensures !(x is A && it is B)` on a copy of the function.
-- Through a list, the question is `!(graph_i < len(old xs) && graph_i < len(xs) && old xs[graph_i].status is A && xs[graph_i].status is B)`, with the position as a parameter of the copy. Through a dict, it is the same at a key `graph_key`.
-- Questions settled by the body's shape are skipped: a list returned unchanged, or a call to a function that moves the type.
-- Questions the solver leaves unknown are run on generated inputs.
-
-Moves proven impossible are left out, so the graph shows what the code can do. [The tools](tools.md#state-graphs-how-a-types-values-move) page shows the graph, along with the moves of a run and of a diff.
 
 ## Laws of statements and shared traits
 

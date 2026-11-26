@@ -1,0 +1,107 @@
+# `strata check` keeps the verdict of each definition that checks
+# (compiler/checked), under a key of its code and of the interfaces of what
+# it reaches: a body change re-checks that definition, a signature change
+# re-checks its callers too, and a refinement's predicate counts by its code.
+# The warnings of a definition not checked again are still given.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "orders.strata"
+text = '''
+pub type Small = Int where ok(it)
+
+pub fn ok(x: Int) -> Bool {
+  x < 10
+}
+
+pub fn take(s: Small) -> Int {
+  s + 1
+}
+
+pub fn price(n: Int) -> Int {
+  n * 2
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+from orders use price, take
+
+fn twice() -> Int {
+  price(3) + 1
+}
+
+fn small() -> Int {
+  take(5)
+}
+
+fn r() -> Result[Int, String] {
+  Ok(1)
+}
+
+fn dropped() {
+  _ := r()
+}
+
+fn main() {
+  print(to_string(twice() + small()))
+  dropped()
+}
+'''
+
+[[step]]
+strata = ["check"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["warning: in `dropped`: `_ := r()` throws away a `Result`", "ok: 10 definitions check"]
+
+# one line per definition that checked
+[[step]]
+run = ["sh", "-c", "grep -vc '^;' cache/check/*.keys"]
+out = "10\n"
+
+# nothing changed: every verdict kept, the warning given again
+[[step]]
+strata = ["check"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["warning: in `dropped`: `_ := r()` throws away a `Result`", "ok: 10 definitions check"]
+
+# a signature change: its caller is checked again
+[[step]]
+strata = ["--file", "orders.strata", "edit"]
+text = '''
+pub fn price(n: Int) -> String {
+  "x" + to_string(n)
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["check"]
+env = { STRATA_CACHE = "$TMP/cache" }
+fails = true
+has = ["error in twice: `+` operands: expected `String`, found `Int`"]
+
+# a body change of a refinement's predicate: what relies on the refinement
+# is checked again
+[[step]]
+strata = ["--file", "orders.strata", "edit"]
+text = '''
+pub fn ok(x: Int) -> Bool {
+  x < 3
+}
+
+pub fn price(n: Int) -> Int {
+  n * 3
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["check"]
+env = { STRATA_CACHE = "$TMP/cache" }
+fails = true
+has = ["error in small: refinement violated at compile time in argument `s` of `orders.take`"]
+lacks = ["error in twice"]

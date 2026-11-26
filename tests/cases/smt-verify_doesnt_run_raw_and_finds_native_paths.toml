@@ -19,7 +19,7 @@ int64_t seven(void) { return SEVEN; }
 run = ["sh", "-c", "printf 'name = \"rw\"\\n\\n[native]\\nsources = [\"c/lib.c\"]\\ninclude_dirs = [\"%s/include\"]\\n\\n[values]\\nread = true\\n' \"$PWD\" > rw/strata.toml"]
 
 [[step]]
-strata = ["--file", "rw/", "edit", "main"]
+strata = ["--file", "rw/", "edit", "main", "--as-given"]
 text = '''
 fn first_word(r: Raw) -> Int
   ensures it >= 0 {

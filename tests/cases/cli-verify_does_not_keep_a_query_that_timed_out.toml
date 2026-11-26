@@ -1,0 +1,35 @@
+# Z3 answers `canceled` both at its resource limit and at its time limit
+# (in a batch, between `push` and `pop`), so the units a query used tell
+# them apart: fewer than its limit, it ran out of time (a busy machine), and
+# that verdict isn't kept, so the next run asks again. With a 1 ms time
+# limit (`STRATA_SOLVER_TIMEOUT_MS`) the query stops long before its 2M
+# units; with none it uses them all and gave up, which is kept.
+
+[[step]]
+save = "g.strata"
+text = '''
+fn cubes(x: Int, y: Int, z: Int) -> Int
+  requires x > 1 && y > 1 && z > 1
+  ensures it != 0
+{
+  x * x * x + y * y * y - z * z * z
+}
+'''
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "20"]
+env = { STRATA_CACHE = "$TMP/cache", STRATA_SOLVER_TIMEOUT_MS = "1" }
+has = ["not proven: ensures it != 0: the solver timed out (machine load?)"]
+lacks = ["(cached)", "the solver gave up"]
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "20"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["not proven: ensures it != 0: the solver gave up"]
+lacks = ["(cached)", "timed out"]
+
+[[step]]
+strata = ["--file", "g.strata", "verify", "--cases", "20"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["the solver gave up"]
+counts = { "(cached)" = 1 }

@@ -1,8 +1,8 @@
 # build.rs: tasks share nested values with the main thread and each other,
 # through captures, channels, `await` on two threads, races and panics:
-# only what crosses to another thread counts atomically (core.rt's
-# shared_bit), and every object is freed once (STRATA_MEMORY=check), on
-# every run
+# what crosses to another thread is moved or copied, never counted by two
+# threads (codegen's cross:T), and every object is freed once
+# (STRATA_MEMORY=check), on every run
 
 [[step]]
 save = "shared.strata"

@@ -5,16 +5,21 @@ has = ["0 failed"]
 
 [[step]]
 strata = ["--file", "$ROOT/examples/tasks", "verify", "--no-race"]
-# (`print.demo` is fuzzed, not proven, since `MemQueue`'s refinement says
-# `all(table.items(), …)`, which the prover doesn't model yet: after `drain`
-# it can't show `describe(queue)` its argument still satisfies it)
+# every definition is proven
 has = [
   "✓ law enqueue_once for memory.MemQueue[P, E] proven",
   "✓ model.drain",
-  "~ model.run_worker         fuzzed: 200 cases",
-  "print.demo",
+  "✓ model.run_worker         proven",
+  "✓ memory.MemQueue[P, E].claim proven",
+  "✓ memory.MemQueue[P, E].record proven",
+  "✓ memory.MemQueue[P, E].release proven",
+  "✓ memory.MemQueue[P, E].expire proven",
+  "✓ memory.tasks_of",
+  "✓ memory.queue_after",
+  "✓ print.PrintProducer.discover",
+  "✓ print.demo",
 ]
-lacks = ["✗", "skipped"]
+lacks = ["✗", "~ ", "skipped", "warning"]
 
 [[step]]
 strata = ["--file", "$ROOT/examples/tasks", "run", "print.demo"]
