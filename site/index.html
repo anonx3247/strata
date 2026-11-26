@@ -99,6 +99,10 @@
         <p>The contracts are the same idea: refinement types, <code>requires</code> and <code>ensures</code>, checked by an SMT solver. Strata differs around them. Where the solver can't decide, a fuzzer runs the function against the contract, and the verdict says which of the two it came from. Code is stored as a syntax tree, so unfinished code with holes still checks, and every edit is checked before it is stored. And it is built to be used by agents, through a command line.</p>
       </details>
       <details>
+        <summary>And from Lean?</summary>
+        <p>Lean is a proof assistant and a programming language: it can prove nearly anything, with proofs that someone writes, usually with tactics. Strata aims lower and stays automatic. Its types are refinement types, not dependent types. The solver proves what it can without help, the fuzzer tests the rest, and a <code>lemma</code> or an <code>assert … by</code> is the hint you give when it needs one.</p>
+      </details>
+      <details>
         <summary>And from Unison?</summary>
         <p>Unison also stores code as definitions identified by a hash of their content. Strata adds contracts and verification to that, and keeps text as a view: agents and people read and write ordinary text, which <code>strata edit</code> parses back into the tree.</p>
       </details>
