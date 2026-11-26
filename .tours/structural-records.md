@@ -84,7 +84,7 @@ argument gave the parameter: a record with each field of a fitting type
 knowing the refinement), or a caller's own type parameter whose bound has
 the fields.
 
-```strata-diff check.row_met check.field_met check.rows_by_param check.infer
+```strata-diff check.row_met check.field_met check.rows_by_param check.infer_untagged
 ```
 
 ```strata-also
@@ -92,6 +92,7 @@ check.Shape check.types_of: a record's fields' types as written
 check.Methods check.methods_of: each function's structural bounds
 check.Inf check.fn_inferred: the bounds in scope
 check.infer_call: keeps the type variables of a function with structural bounds, checks each bound
+check.infer_method check.static_call check.given_for: the same for a type's own methods, on a value and on the type
 check.bounds_by_param: a structural bound is no trait
 check.row_text check.row_refined: messages, refined field types
 ```
@@ -117,6 +118,7 @@ type has none).
 ```strata-routine
 ast.bare_type check.self_is check.mentions_any check.mentions_self check.type_head check.lower codegen.self_is codegen.written_in codegen.mentions_self codegen.mentions_any codegen.needs_check: the new node in a match over types
 capabilities.json_error contracts.refined_errors declarations.type_names derive.subst derive.unwhere derive.ty derive.type_value_in derive.kind_of derive.mentions_name desugar.subst_type diff.type_head: the new node in a match over types
-eval.type_head eval.fits eval.substitute eval.mentions_param eval.has_unknown locate.type_expr_kids locate.replaced_type main.refined_in main.takes_raw parse.type_head refactor.type_renamed resolve.type_head: the new node in a match over types
+eval.type_head eval.fits eval.substitute eval.mentions_param eval.has_unknown locate.type_expr_kids locate.replaced_type refined_in takes_raw parse.type_head refactor.type_renamed resolve.type_head: the new node in a match over types
 smt.structured smt.subst smt.shape smt.unfold smt.sort_of smt.sort_type smt.from_term smt.refined_by smt.refined_walk smt.erased smt.check_type_at smt.sx_ok smt.self_written smt.refined_types smt.sx_literal store.ty termination.refinements_in unused.type_names: the new node in a match over types
+cache.Cache codebase.merge_parsed derive.pairs derive.remember desugar.inline_refinements diff.members_words docgen.titled graph.Shape merge.tokens resolve.walk resolve.union_members smt.infer_invariants termination.call_name termination.struct_call finding.untagged: stored again by the package-wide edit, the same text
 ```

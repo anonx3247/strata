@@ -226,3 +226,34 @@ has = [
   "error in f: a structural type",
   "error in g: a structural type",
 ]
+
+# a type's own method with a structural parameter: run, and checked at each
+# call, on a value and on the type
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+text = '''
+type Shop = { name: String }
+
+type Order = { id: Int, total: Int }
+
+impl Shop {
+  fn line(self, x: { id: Int, .. }) -> String = self.name + to_string(x.id)
+}
+
+fn show() -> String = Shop { name: "s" }.line(Order { id: 1, total: 2 }) + Shop { name: "t" }.line(Order { id: 3, total: 4 })
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "run", "show"]
+has = ["s1t3"]
+
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+fails = true
+text = '''
+fn bad(s: Shop) -> String = s.line(5) + Shop.line(s, "x")
+'''
+has = [
+  "error in bad: calling `Shop.line`: `Int` is not a record (the parameter must be `{ id: Int, .. }`)",
+  "error in bad: calling `Shop.line`: `String` is not a record (the parameter must be `{ id: Int, .. }`)",
+]
