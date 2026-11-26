@@ -62,6 +62,12 @@ fn keep_parts(mut out: List[String], p: P, xs: List[String]) {
   mut out.push(xs[0])
 }
 
+/// A list's slice and a literal joined: the `+` shares the literal's
+/// elements with the result, so they stay counted.
+fn wrap(seq: List[P], n: Int) -> Result[List[P], String] {
+  Ok(seq[..len(seq) - 1] + [P { name: f"w{n}", n, tags: [f"t{n}"] }])
+}
+
 fn in_arena(i: Int) -> List[String] {
   mut out := []
   for j in 0..3 {
@@ -95,5 +101,9 @@ fn main() {
     await hs
   }
   made := arena(() -> in_arena(7))
-  print(f"{total} {len(kept)} {sum(sums)} {made} {get(kept, 899) ?? ""}")
+  wrapped := match wrap([P { name: "a", n: 1, tags: [] }, P { name: "b", n: 2, tags: [] }], 5) {
+    Ok(ps) => ps.map(q -> q.name + q.tags.join("")),
+    Err(e) => [e],
+  }
+  print(f"{total} {len(kept)} {sum(sums)} {made} {get(kept, 899) ?? ""} {wrapped}")
 }

@@ -5,7 +5,8 @@
 # the statement ends. The program gives what it gives without regions, frees
 # every counted object in check mode (where a region's reset poisons what
 # it held), with early exits, tasks, big integers, an arena, and a function
-# keeping what an argument holds, on the JIT too.
+# keeping what an argument holds, a list slice joined to a literal, on the
+# JIT too.
 
 [[step]]
 save = "regions.strata"
@@ -17,7 +18,7 @@ strata = ["--file", "regions.strata", "build", "--no-verify", "-o", "plain"]
 [[step]]
 run = ["./plain"]
 memory = true
-stdout = "44850000000000000000055663 900 36 [\"a7.0\", \"a7.1\", \"a7.2\"] x299\n"
+stdout = "44850000000000000000055663 900 36 [\"a7.0\", \"a7.1\", \"a7.2\"] x299 [\"a\", \"w5t5\"]\n"
 
 [[step]]
 strata = ["--file", "regions.strata", "build", "--no-verify", "--regions", "-o", "regions"]
@@ -25,11 +26,11 @@ strata = ["--file", "regions.strata", "build", "--no-verify", "--regions", "-o",
 [[step]]
 run = ["./regions"]
 memory = true
-stdout = "44850000000000000000055663 900 36 [\"a7.0\", \"a7.1\", \"a7.2\"] x299\n"
+stdout = "44850000000000000000055663 900 36 [\"a7.0\", \"a7.1\", \"a7.2\"] x299 [\"a\", \"w5t5\"]\n"
 
 [[step]]
 strata = ["--file", "regions.strata", "run", "--regions"]
-out = "44850000000000000000055663 900 36 [\"a7.0\", \"a7.1\", \"a7.2\"] x299\n"
+out = "44850000000000000000055663 900 36 [\"a7.0\", \"a7.1\", \"a7.2\"] x299 [\"a\", \"w5t5\"]\n"
 
 [[step]]
 strata = ["--file", "regions.strata", "build", "--no-verify", "--regions", "--emit-llvm"]
