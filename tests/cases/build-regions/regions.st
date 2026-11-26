@@ -55,6 +55,13 @@ fn task_work(rows: List[Row], k: Int) -> Int {
   s
 }
 
+/// Keeps what its arguments hold, but not the arguments themselves: a value
+/// inside an argument lent to a function stays counted.
+fn keep_parts(mut out: List[String], p: P, xs: List[String]) {
+  mut out.push(p.name)
+  mut out.push(xs[0])
+}
+
 fn in_arena(i: Int) -> List[String] {
   mut out := []
   for j in 0..3 {
@@ -75,6 +82,7 @@ fn main() {
     total += count([1, 2, i], x -> x > i - 1 + big - big)
     total += width((base + "!", i))
     mut kept.push(f"k{i}")
+    keep_parts(mut kept, P { name: f"p{i}", n: 0, tags: [] }, [f"x{i}"])
     total += { s := f"in{i}"; byte_len(s) + byte_len(f"{s}{s}") }
   }
   total += early(10) + early(100) + early(1000)
@@ -87,5 +95,5 @@ fn main() {
     await hs
   }
   made := arena(() -> in_arena(7))
-  print(f"{total} {len(kept)} {sum(sums)} {made}")
+  print(f"{total} {len(kept)} {sum(sums)} {made} {get(kept, 899) ?? ""}")
 }
