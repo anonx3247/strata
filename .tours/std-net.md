@@ -41,7 +41,7 @@ The wire functions take a `Stream`: `exchange` writes a request and `read_respon
 ```
 
 ```strata-also
-std.http.exchange std.http.fetch std.http.parse_url std.http.Url std.http.answer: the client, and a connection per task for the server
+std.http.exchange std.http.fetch std.http.parse_url std.http.Url std.http.answer: the client (its request head and response head shared with `open`), and a connection per task for the server
 std.http.read_request std.http.write_response std.http.read_headers std.http.read_body std.http.read_chunks std.http.read_to_end std.http.reason: the wire format
 std.http.parse_query std.http.percent_decode std.http.parse_hex: query strings and escapes
 std.http.HttpError std.http.BadMessage std.http.BadUrl: the errors, `NetError`'s members included
@@ -57,17 +57,59 @@ std.http.Request: its doc no longer names `strata serve`
 ```
 
 # The agent loop
-`run` calls a `Model` until it ends its turn, running each tool it calls and sending the results back in one message. `Claude` is a `Model`: one HTTPS request per turn to the Messages API, the key read from `ANTHROPIC_API_KEY` through `Environment`. Blocks the loop doesn't read (thinking) are kept and sent back as they came. `tool` makes a tool from a function on a record that derives `Json`.
+`run` asks a `Model` for replies until one calls no tools, answering each reply's calls in one `User` message; `run_streamed` does the same over `stream`, writing text as it arrives. A message is a `Role` and `Content`s; a streamed reply is `Chunk`s, its errors a member of `Chunk`. `Claude` is a `Model`: the Messages API over HTTPS, the key from `ANTHROPIC_API_KEY` through `Environment`.
 
-```strata-diff std.agent.run std.agent.Model std.agent.Claude std.agent.tool
+```strata-diff std.agent.run std.agent.run_streamed std.agent.Model std.agent.Chunk
 ```
 
 ```strata-also
-std.agent.claude: the request, the key from the environment
-std.agent.request_json std.agent.block_json std.agent.read_reply std.agent.read_block std.agent.api_error std.agent.field std.agent.text_field: the API's JSON both ways
-std.agent.Message std.agent.Role std.agent.Block std.agent.Reply std.agent.Run std.agent.Tool std.agent.Param std.agent.object_schema: the conversation and the tools
-std.agent.AgentError std.agent.ApiError std.agent.BadReply std.agent.Refused std.agent.OutOfTokens std.agent.TooManyTurns std.agent.NoKey: why a run stops
-std.agent.call_tool std.agent.text_of: running one call, the answer's text
+std.agent.Role std.agent.Message std.agent.Content std.agent.ToolCall std.agent.user std.agent.system std.agent.text_of std.agent.calls_of: the conversation
+std.agent.AgentError std.agent.ApiError std.agent.BadReply std.agent.Refused std.agent.OutOfTokens std.agent.TooManyTurns std.agent.NoKey std.agent.chunk_error: why a run stops
+std.agent.Claude std.agent.claude std.agent.finished std.agent.request_json std.agent.blocks_of std.agent.read_message std.agent.block_content std.agent.api_error std.agent.field std.agent.text_field: the Messages API's JSON both ways
+std.agent.answer: running one call
+```
+
+# Streaming without async
+`stream` gives a `Stream`, an `Iterator[Chunk]`: each `next` reads server-sent events from the open body (`std.http.open`, `Body.read_line`) until one makes a chunk. A read blocks in the task iterating; nothing is colored. `Stream.of` makes one from a list, for mocks.
+
+```strata-diff std.agent.Stream std.agent.on_event std.http.open std.http.Body
+```
+
+```strata-also
+std.agent.Source std.agent.Sse std.agent.next_chunk std.agent.step std.agent.close_body std.agent.read_event std.agent.put_at: reading events into chunks
+std.http.Streaming std.http.start std.http.some_bytes std.http.newline_in std.http.request_head std.http.read_head: a response read as it arrives
+```
+
+# Tools from functions: `derive AsTool`
+`derive AsTool for` above a function makes the function, used as a value, a `Tool`: name, doc, a JSON Schema from its parameters' types, and a call decoding them. `derive AsTool(bind: notes)` leaves `notes` to the use, `note.with(notes)`.
+
+```strata-diff std.agent.AsTool std.agent.Tool std.agent.input_schema std.agent.schema_of
+```
+
+```strata-also
+std.agent.bound_names std.agent.is_option std.agent.shaped std.agent.record_schema std.agent.member_schema std.agent.field_schema std.agent.described: the schema of each kind of type
+std.agent.tool_argument std.agent.tool_output: the call's input and output as JSON
+```
+
+# Derives with arguments, and derived values
+The compiler side: `derive T(bind: x) for f` stores its arguments as the derive's clauses (`Self.clauses`). A `derived fn` with no parameters giving another type is a value standing for the function, specialized to take the bound parameters, and `value_uses` puts it where the function is used as a value, `f.with(x)` included. An unbound use is an error.
+
+```strata-diff derive.derive_fn derive.value_uses derive.value_use parse.derive_args
+```
+
+```strata-also
+ast.DeriveFnDecl: its clauses and values
+binary.decl binary.put_decl: a flags byte in place of `derived`, clauses after
+parse.derive_fn parse.derive_group parse.function_derive: arguments after each trait
+text.simple_derive text.derive_args_text text.decl_body_text: printed back
+derive.Expander derive.call_fn derive.fn_value derive.clause_values derive.bound_of derive.original derive.derive_all: bound parameters passed through, clauses shown to the derive
+expanded: the rewrite applied to the whole program
+```
+
+# Two fixes found on the way
+A std union mixing its own variants with member types (`Content`) failed in codegen: its own sum was named unqualified. And a type pattern naming a union of some members (`AgentError => c`) wasn't compiled.
+
+```strata-diff desugar.mixed_unions codegen.matches
 ```
 
 # Routine

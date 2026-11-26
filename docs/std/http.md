@@ -102,6 +102,34 @@ type Url = { tls: Bool, host: String, port: Port, target: String }
 A URL split for a request: `https://api.example.com:8443/v1/x?y=1` is
 TLS to `api.example.com` on 8443, asking for `/v1/x?y=1`.
 
+### Streaming
+
+```rust
+type Streaming = { status: Status, headers: Dict[String, String], body: Body }
+```
+
+A response whose body is still arriving: its status and headers, and the
+body to read from the open connection. Made by `open`.
+
+### Body
+
+```rust
+type Body = {
+  conn: TcpStream,
+  chunked: Bool,
+  /// Bytes left: of the `content-length`, or of the current chunk. -1: up
+  /// to the end of the stream.
+  left: Int,
+  /// Bytes read from the connection, not yet given out.
+  pending: List[Int] = [],
+  ended: Bool = false,
+}
+```
+
+A response's body read from its connection as it arrives, by
+`content-length`, by chunks, or up to the end of the stream. Close it
+when done (`Body.close`).
+
 ## Methods
 
 ### Request.param
@@ -174,6 +202,39 @@ The response of the first route that fits, with the named path parts in `req.par
 
 - A `HEAD` request uses the `GET` routes.
 - No route for the path gives 404. Routes for it, but not for this method, give 405.
+
+### Body.read_line
+
+```rust
+fn read_line(mut self) -> Result[Option[String], HttpError]
+```
+
+The next line of the body, without its `\n` or `\r\n`: `None` at its
+end. A line longer than `line_limit()` is an error.
+
+### Body.rest
+
+```rust
+fn rest(mut self) -> Result[String, HttpError]
+```
+
+The rest of the body, as text.
+
+### Body.more
+
+```rust
+fn more(mut self) -> Result[Bool, HttpError]
+```
+
+Reads more of the body into `pending`: false at its end.
+
+### Body.close
+
+```rust
+fn close(mut self)
+```
+
+Closes the connection.
 
 ## Functions
 
@@ -384,3 +445,19 @@ fn serve(listener: Listener, handler: (Request) -> Response) -> NetError
 Accepts connections on `listener` and answers each in a task of its
 own (`serve_connection`), until accepting fails, such as when the task
 is cancelled. Returns why it stopped.
+
+### open
+
+```rust
+fn open(
+  net: Net,
+  method: Method,
+  url: String,
+  headers: List[(String, String)],
+  body: String,
+) -> Result[Streaming, HttpError]
+```
+
+Sends a request and reads the response's status and headers, leaving
+its body to be read as it arrives: for server-sent events and other
+long responses. TLS for `https://`. The connection is the body's.
