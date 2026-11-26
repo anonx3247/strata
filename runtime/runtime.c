@@ -133,6 +133,18 @@ void *strata_raw_alloc(int64_t n) {
   return p;
 }
 
+// An update in place that codegen proved finds its value held once
+// (compiler/unique) found it shared: a mistake in the proof. Codegen calls
+// this only where counts go through the runtime (in check mode, and while
+// tasks run). In check mode it stops the program, naming the function and
+// the statement `site`; else it returns.
+void strata_proven_shared(Str *site) {
+  if (!checking) return;
+  fflush(stdout);
+  fprintf(stderr, "memory: an update in place proven to find its value held once found it shared, in %.*s\n", (int)site->len, site->bytes);
+  abort();
+}
+
 // Stops the program (core.mem's `raw_fail`): memory used wrongly.
 _Noreturn void strata_raw_fail(Str *m) {
   fflush(stdout);
@@ -2914,6 +2926,10 @@ int64_t strata_list_remove_at(List *xs, int64_t i) {
 // Whether `x = push(x, e)` may push onto `xs` in place: it is owned.
 _Bool strata_list_pushable(List *xs) { return strata_list_owned(xs); }
 
+// Whether a list known to be owned may be pushed onto in place: always,
+// since these lists have no arenas.
+_Bool strata_list_arena_pushable(List *xs) { (void)xs; return 1; }
+
 // In an owned list: `x` (handed over) after its elements, its header kept.
 void strata_list_push_owned(List *xs, int64_t x) { strata_list_insert(xs, xs->len, x); }
 #else
@@ -3626,8 +3642,11 @@ static int site_by_count(const void *a, const void *b) {
   return *(const int64_t *)a < *(const int64_t *)b ? -1 : 1;
 }
 
-static const char *site_kinds[] = {"alloc", "stack", "dup", "release", "unique", "owned", "push", "append", "arena"};
-#define SITE_KINDS 9
+// `unique.p` and `owned.p`: tests the analysis proved hold (compiler/unique),
+// still run with `--memory-sites` to compare.
+static const char *site_kinds[] = {"alloc", "stack", "dup", "release", "unique", "owned", "push", "append", "arena", "unique.p", "owned.p"};
+#define SITE_KINDS 11
+#define SITE_TEST(k) ((k) == 4 || (k) == 5 || (k) == 9 || (k) == 10)
 
 // At the end: the totals by kind and the 20 sites counted most, on stderr;
 // with STRATA_MEMORY_SITES=PATH, every site to PATH, most counted first, a
@@ -3656,7 +3675,7 @@ static void sites_report(void) {
   for (int k = 0; k < SITE_KINDS; k++) {
     fprintf(stderr, "  %-8s %12lld at %lld of %lld sites", site_kinds[k], (long long)total[k], (long long)reached[k], (long long)sites[k]);
     if (k == 0) fprintf(stderr, " (heap %lld, arena %lld)", (long long)(total[k] - second[k]), (long long)second[k]);
-    if (k == 4 || k == 5) fprintf(stderr, " (held once %lld, shared %lld)", (long long)second[k], (long long)(total[k] - second[k]));
+    if (SITE_TEST(k)) fprintf(stderr, " (held once %lld, shared %lld)", (long long)second[k], (long long)(total[k] - second[k]));
     if (k == 6 || k == 7) fprintf(stderr, " (in place %lld, new buffer %lld)", (long long)second[k], (long long)(total[k] - second[k]));
     fputc('\n', stderr);
   }
@@ -3675,7 +3694,7 @@ static void sites_report(void) {
     site_field(i, 3, code, sizeof code);
     fprintf(stderr, "  %12lld %-8s", (long long)c, site_kinds[kind[i]]);
     if (kind[i] == 0) fprintf(stderr, " arena %lld", (long long)d);
-    if (kind[i] == 4 || kind[i] == 5) fprintf(stderr, " shared %lld", (long long)(c - d));
+    if (SITE_TEST(kind[i])) fprintf(stderr, " shared %lld", (long long)(c - d));
     if (kind[i] == 6 || kind[i] == 7) fprintf(stderr, " new buffer %lld", (long long)(c - d));
     fprintf(stderr, "  %s  %s\n", fn, code);
   }
