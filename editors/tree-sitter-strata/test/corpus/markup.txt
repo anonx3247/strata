@@ -1,0 +1,74 @@
+============================================================
+Markup: elements, attributes, text, braces, fragments
+============================================================
+
+fn row(l: Language, busy: Bool) -> Html[Msg] {
+  x := a < b
+  <tr class="row" data-n={l.year} disabled on_click={Pick(l.name)}>
+    Hello, {l.name}!
+    <br />
+    <>{"<"}</>
+  </tr>
+}
+
+------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    name: (identifier)
+    parameters: (parameters
+      (parameter
+        name: (identifier)
+        type: (type_identifier))
+      (parameter
+        name: (identifier)
+        type: (type_identifier)))
+    return_type: (generic_type
+      name: (type_identifier)
+      arguments: (type_arguments
+        (type_identifier)))
+    body: (block
+      (binding
+        pattern: (identifier)
+        value: (binary_expression
+          left: (identifier)
+          right: (identifier)))
+      (markup_element
+        (markup_start_tag
+          name: (tag_name)
+          (markup_attribute
+            name: (attribute_name)
+            value: (string
+              (string_content)))
+          (markup_attribute
+            name: (attribute_name)
+            value: (markup_expression
+              value: (field_expression
+                value: (identifier)
+                field: (field_identifier))))
+          (markup_attribute
+            name: (attribute_name))
+          (markup_attribute
+            name: (attribute_name)
+            value: (markup_expression
+              value: (call_expression
+                function: (type_identifier)
+                arguments: (arguments
+                  (field_expression
+                    value: (identifier)
+                    field: (field_identifier)))))))
+        (markup_text)
+        (markup_expression
+          value: (field_expression
+            value: (identifier)
+            field: (field_identifier)))
+        (markup_text)
+        (markup_element
+          (markup_self_closing_tag
+            name: (tag_name)))
+        (markup_fragment
+          (markup_expression
+            value: (string
+              (string_content))))
+        (markup_end_tag
+          name: (tag_name))))))

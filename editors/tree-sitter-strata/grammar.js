@@ -64,6 +64,7 @@ module.exports = grammar({
     $._try_bang,
     $._try_question,
     $._binary_minus,
+    $._binary_less,
     // never produced: tells the scanner it is called in error recovery
     $._error_sentinel,
   ],
@@ -696,6 +697,8 @@ module.exports = grammar({
         $.select_expression,
         $.scope_expression,
         $.mock_expression,
+        $.markup_element,
+        $.markup_fragment,
       ),
 
     binary_expression: ($) => {
@@ -703,7 +706,7 @@ module.exports = grammar({
       const table = [
         [PREC.or, '||'],
         [PREC.and, '&&'],
-        [PREC.compare, choice('==', '!=', '<', '<=', '>', '>=')],
+        [PREC.compare, choice('==', '!=', alias($._binary_less, '<'), '<=', '>', '>=')],
         [PREC.bitor, '|'],
         [PREC.bitxor, '^'],
         [PREC.bitand, '&'],
@@ -1178,6 +1181,65 @@ module.exports = grammar({
       ),
 
     format_spec: (_) => token.immediate(/[^}]+/),
+
+    // markup: `<p class="x">Hi {name}</p>`, `<br />`, `<>…</>`. The tag's
+    // name is written against its `<` (`a <b` compares).
+    markup_element: ($) =>
+      choice(
+        seq(
+          $.markup_start_tag,
+          repeat($._markup_child),
+          $.markup_end_tag,
+        ),
+        $.markup_self_closing_tag,
+      ),
+
+    markup_start_tag: ($) =>
+      seq(
+        '<',
+        field('name', $.tag_name),
+        repeat($.markup_attribute),
+        '>',
+      ),
+
+    markup_self_closing_tag: ($) =>
+      seq(
+        '<',
+        field('name', $.tag_name),
+        repeat($.markup_attribute),
+        '/>',
+      ),
+
+    markup_end_tag: ($) =>
+      seq('</', field('name', $.tag_name), '>'),
+
+    markup_fragment: ($) =>
+      seq('<', token.immediate('>'), repeat($._markup_child), '</', '>'),
+
+    tag_name: (_) => token.immediate(/[a-zA-Z][a-zA-Z0-9-]*/),
+
+    markup_attribute: ($) =>
+      seq(
+        field('name', $.attribute_name),
+        optional(
+          seq('=', field('value', choice($.string, $.markup_expression))),
+        ),
+      ),
+
+    attribute_name: (_) => /[a-zA-Z_][a-zA-Z0-9_:.-]*/,
+
+    _markup_child: ($) =>
+      choice(
+        $.markup_text,
+        $.markup_expression,
+        $.markup_element,
+        $.markup_fragment,
+      ),
+
+    markup_expression: ($) => seq('{', field('value', $._expression), '}'),
+
+    // text between tags; the spaces around it are `extras`
+    markup_text: (_) => token(prec(-1, /[^{}<\s]([^{}<]*[^{}<\s])?/)),
 
     comment: (_) => token(seq('//', /[^\n]*/)),
 

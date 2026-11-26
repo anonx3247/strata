@@ -146,6 +146,14 @@
         "named": true
       },
       {
+        "type": "markup_element",
+        "named": true
+      },
+      {
+        "type": "markup_fragment",
+        "named": true
+      },
+      {
         "type": "match_expression",
         "named": true
       },
@@ -2373,6 +2381,186 @@
     }
   },
   {
+    "type": "markup_attribute",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "attribute_name",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "markup_expression",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "markup_element",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "markup_element",
+          "named": true
+        },
+        {
+          "type": "markup_end_tag",
+          "named": true
+        },
+        {
+          "type": "markup_expression",
+          "named": true
+        },
+        {
+          "type": "markup_fragment",
+          "named": true
+        },
+        {
+          "type": "markup_self_closing_tag",
+          "named": true
+        },
+        {
+          "type": "markup_start_tag",
+          "named": true
+        },
+        {
+          "type": "markup_text",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "markup_end_tag",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "tag_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "markup_expression",
+    "named": true,
+    "fields": {
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "markup_fragment",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "markup_element",
+          "named": true
+        },
+        {
+          "type": "markup_expression",
+          "named": true
+        },
+        {
+          "type": "markup_fragment",
+          "named": true
+        },
+        {
+          "type": "markup_text",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "markup_self_closing_tag",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "tag_name",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "markup_attribute",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "markup_start_tag",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "tag_name",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "markup_attribute",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "match_arm",
     "named": true,
     "fields": {
@@ -4105,6 +4293,10 @@
     "named": false
   },
   {
+    "type": "/>",
+    "named": false
+  },
+  {
     "type": ":",
     "named": false
   },
@@ -4118,6 +4310,10 @@
   },
   {
     "type": "<",
+    "named": false
+  },
+  {
+    "type": "</",
     "named": false
   },
   {
@@ -4199,6 +4395,10 @@
   {
     "type": "assumed",
     "named": false
+  },
+  {
+    "type": "attribute_name",
+    "named": true
   },
   {
     "type": "await",
@@ -4363,6 +4563,10 @@
     "named": false
   },
   {
+    "type": "markup_text",
+    "named": true
+  },
+  {
     "type": "match",
     "named": false
   },
@@ -4432,6 +4636,10 @@
   },
   {
     "type": "supervised_spawn",
+    "named": true
+  },
+  {
+    "type": "tag_name",
     "named": true
   },
   {
