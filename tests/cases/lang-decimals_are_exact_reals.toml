@@ -137,3 +137,112 @@ has = [
   "error in c: call to `sqrt`, argument 1: expected `Float`, found `Real`",
   "error in d: function body: expected `Float`, found `Real`",
 ]
+
+# integer literals where a `Real` is wanted, patterns on literals, exact
+# JSON numbers, a division by zero said as such
+
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+from std.json use Json, parse, stringify
+
+type Price = { amount: Real, rate: Float }
+
+derive Json for Price
+
+fn name(x: Real) -> String {
+  match x {
+    0.5 => "half",
+    2 => "two",
+    -1.5 => "minus",
+    where it > 10.0 => "big",
+    _ => "other",
+  }
+}
+
+fn twice(x: Real) -> Real {
+  x * 2 + 1
+}
+
+fn main() {
+  print([name(0.5), name(1.0 / 2.0), name(2.0), name(12.5), name(0.25), name(-1.5)])
+  print(twice(0.25))
+  let r: Real = 3
+  print(r / 4)
+  p := Price { amount: 0.1 + 0.2, rate: 0.5 }
+  print(stringify(p.to_json() !! std.json.Null))
+  print(Price.from_json(parse("{\"amount\": 12345678901234567890.123456789, \"rate\": 0.25}") !! std.json.Null))
+  print(stringify(parse("[0.1, 1e-30, 1e300, 3]") !! std.json.Null))
+  print(1.0 / (r - 3))
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "build", "-o", "prog2"]
+
+[[step]]
+run = ["sh", "-c", "./prog2 2>&1; echo exit $?"]
+stdout = "[\"half\", \"half\", \"two\", \"big\", \"other\", \"minus\"]\n1.5\n0.75\n{\"type\":\"Price\",\"amount\":0.3,\"rate\":0.5}\nOk(Price { amount: 12345678901234567890.123456789, rate: 0.25 })\n[0.1,1e-30,1e+300,3]\nfault (Runtime): division by zero\n    stack: main\nexit 101\n"
+
+[[step]]
+strata = ["--file", "w.strata", "edit"]
+text = '''
+pub fn doubled(x: Real) -> Real
+  ensures it == x + x {
+  x * 2
+}
+
+pub fn label(x: Real) -> Int
+  ensures x == 0.5 ==> it == 1 {
+  match x {
+    0.5 => 1,
+    2 => 2,
+    _ => 0,
+  }
+}
+
+pub fn halve(x: Real) -> Real {
+  x / 2
+}
+
+
+fn main() {
+  print(doubled(0.25))
+}
+'''
+
+[[step]]
+strata = ["--file", "w.strata", "verify"]
+has = ["✓ doubled ", "✓ label ", "✓ halve "]
+
+# a `Real` is never built from its parts
+[[step]]
+strata = ["--file", "q.strata", "edit"]
+text = '''
+pub fn a() -> Real {
+  Real { num: 2, den: 4 }
+}
+
+pub fn b(r: Real) -> Real {
+  mut x := r
+  x.num = 3
+  x
+}
+
+pub fn c(r: Real) -> Int {
+  r.num + r.den
+}
+
+fn main() {
+  print(c(0.5))
+}
+'''
+any_code = true
+
+[[step]]
+strata = ["--file", "q.strata", "check"]
+fails = true
+has = [
+  "error in a: a `Real` is made by a literal (`0.5`, `2`), `Real.from(n)`, `Real.parse(s)` or arithmetic, not from its parts (`num` and `den` are kept in lowest terms)",
+  "error in b: `x.num`: a `Real`'s `num` and `den` can't be assigned (it is kept in lowest terms): make a new one with arithmetic",
+]
