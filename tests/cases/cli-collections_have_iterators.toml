@@ -38,7 +38,7 @@ any_code = true
 lacks = ["may not terminate"]
 
 [[step]]
-strata = ["--file", "d.strata", "edit"]
+strata = ["--file", "d.strata", "edit", "--as-given"]
 text = "type ListIter = { n: Int }\n"
 any_code = true
 has = ["`ListIter` is already defined in the prelude"]

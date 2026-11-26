@@ -1,6 +1,5 @@
 # `strata tour` on an added function: its interface shown and its body
-# folded (`full` opens it), a `strata` block's body folded too, a
-# `strata-graph` block's moves of `Order` and the move the change adds, and a
+# folded (`full` opens it), a `strata` block's body folded too, and a
 # `strata-refs` block's uses and users.
 
 [[step]]
@@ -16,7 +15,7 @@ run = ["git", "config", "user.email", "t@example.com"]
 strata = ["init"]
 
 [[step]]
-strata = ["add", "$ROOT/tests/data/graph/orders.strata"]
+strata = ["add", "$ROOT/tests/data/tour/orders.strata"]
 
 # (`add` and `edit` commit to git: the tour's base is the commit before the edit)
 
@@ -38,7 +37,7 @@ from = "main.md"
 
 [[step]]
 strata = ["tour"]
-golden = "tests/data/tour/graphs.out"
+golden = "tests/data/tour/refs.out"
 
 # the first fold of the code page: the added body, opened
 [[step]]
@@ -60,9 +59,9 @@ has = ["the tour names all 1 changed definition"]
 
 [[step]]
 write = ".tours/main.md"
-text = "---\nbase: HEAD~1\n---\n\n# All\n```strata-diff cancel\n```\n\n```strata-graph Shape\n```\n\n```strata-refs nothing\n```\n"
+text = "---\nbase: HEAD~1\n---\n\n# All\n```strata-diff cancel\n```\n\n```strata-refs nothing\n```\n"
 
 [[step]]
 strata = ["tour", "--check"]
 code = 1
-has = ["`Shape` (strata-graph): no sum type `Shape` in the program", "`nothing` (strata-refs) is not a definition"]
+has = ["`nothing` (strata-refs) is not a definition"]

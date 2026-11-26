@@ -1,0 +1,79 @@
+# `edit MODULE --rm NAME` takes NAME in MODULE first, imports included:
+# `use util` in `tour` is tour's import, not the root module's `use util`
+# (whose qualified name is the same text). Through `--file DIR` and in a
+# package.
+
+[[step]]
+write = "f/strata.toml"
+text = "name = \"f\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "util"]
+dir = "f"
+text = "pub fn helper() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "f"
+text = "use util\n\nfn main() {\n  print(util.helper())\n}\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "tour"]
+dir = "f"
+text = "use util\n\npub fn tour() -> Int {\n  2\n}\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "tour", "--rm", "use util"]
+dir = "f"
+has = ["1 definition changed"]
+lacks = ["error", "doesn't check"]
+
+[[step]]
+strata = ["--file", ".", "view", "main"]
+dir = "f"
+has = ["use util"]
+
+[[step]]
+strata = ["--file", ".", "view", "tour"]
+dir = "f"
+lacks = ["use util"]
+
+# the same in a package
+
+[[step]]
+run = ["mkdir", "p"]
+
+[[step]]
+strata = ["init"]
+dir = "p"
+
+[[step]]
+strata = ["edit", "util"]
+dir = "p"
+text = "pub fn helper() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["edit", "main"]
+dir = "p"
+text = "use util\n\nfn main() {\n  print(util.helper())\n}\n"
+
+[[step]]
+strata = ["edit", "tour"]
+dir = "p"
+text = "use util\n\npub fn tour() -> Int {\n  2\n}\n"
+
+[[step]]
+strata = ["edit", "tour", "--rm", "use util"]
+dir = "p"
+has = ["tour.use util            removed"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "p"
+has = ["use util"]
+
+# a qualified name still picks the definition it names
+[[step]]
+strata = ["edit", "util", "--rm", "tour.tour"]
+dir = "p"
+has = ["tour.tour                removed"]

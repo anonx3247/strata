@@ -1,0 +1,267 @@
+# merge-file merges a definition changed on both sides node by node: the
+# changes need not be lines apart, and a conflict is one node, left as a hole
+
+# neighbouring statements: clean, where a merge of the lines conflicts
+[[step]]
+save = "next/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 1
+  b := a * 2
+  a + b
+}
+'''
+
+[[step]]
+save = "next/a.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 10
+  b := a * 2
+  a + b
+}
+'''
+
+[[step]]
+save = "next/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 1
+  b := a * 20
+  a + b
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "for s in o a b; do \"$STRATA\" --file $s.strata view main > $s.st; done; git merge-file -p a.st o.st b.st > /dev/null"]
+dir = "next"
+code = 1
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "next"
+has = ["merged node by node"]
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+dir = "next"
+stdout = '''
+fn f(x: Int) -> Int {
+  a := x + 10
+  b := a * 20
+  a + b
+}
+'''
+
+# two arguments of one call, on one line
+[[step]]
+save = "call/o.strata"
+text = "fn g(a: Int, b: Int) -> Int = a + b\n\nfn f(x: Int) -> Int = g(x + 1, x * 2)\n"
+
+[[step]]
+save = "call/a.strata"
+text = "fn g(a: Int, b: Int) -> Int = a + b\n\nfn f(x: Int) -> Int = g(x + 5, x * 2)\n"
+
+[[step]]
+save = "call/b.strata"
+text = "fn g(a: Int, b: Int) -> Int = a + b\n\nfn f(x: Int) -> Int = g(x + 1, x * 7)\n"
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "call"
+
+[[step]]
+strata = ["--file", "a.strata", "view", "f", "--level", "2"]
+dir = "call"
+has = ["g(x + 5, x * 7)"]
+
+# arms reordered on one side, an arm changed on the other
+[[step]]
+save = "arms/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  match x {
+    0 => 1,
+    1 => 2,
+    _ => 3,
+  }
+}
+'''
+
+[[step]]
+save = "arms/a.strata"
+text = '''
+fn f(x: Int) -> Int {
+  match x {
+    1 => 2,
+    0 => 1,
+    _ => 3,
+  }
+}
+'''
+
+[[step]]
+save = "arms/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  match x {
+    0 => 1,
+    1 => 2,
+    _ => 30,
+  }
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "arms"
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+dir = "arms"
+stdout = '''
+fn f(x: Int) -> Int {
+  match x {
+    1 => 2,
+    0 => 1,
+    _ => 30,
+  }
+}
+'''
+
+# one node changed on both sides: a conflict there only, as a hole in the
+# stored code; the rest of the definition is merged
+[[step]]
+save = "same/o.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 1
+  b := a * 2
+  a + b
+}
+'''
+
+[[step]]
+save = "same/a.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 2
+  b := a * 2
+  a + b
+}
+'''
+
+[[step]]
+save = "same/b.strata"
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 3
+  b := a * 3
+  a + b
+}
+'''
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "same"
+fails = true
+has = ["conflict in f: ?conflict_1 at body/0/value/right"]
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+dir = "same"
+stdout = '''
+fn f(x: Int) -> Int {
+  a := x + ?conflict_1(2, 1, 3)
+  b := a * 3
+  a + b
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "holes"]
+dir = "same"
+has = ["?conflict_1  in f"]
+
+# fixed with an edit, the file checks again
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+dir = "same"
+text = "fn f(x: Int) -> Int {\n  a := x + 2\n  b := a * 3\n  a + b\n}\n"
+
+[[step]]
+strata = ["--file", "a.strata", "holes"]
+dir = "same"
+lacks = ["conflict_1"]
+
+# a conflict outside every expression (a parameter's type) has no hole: that
+# definition is merged line by line, with markers around it
+[[step]]
+save = "sig/o.strata"
+text = "fn f(x: Int) -> Int = 1\n"
+
+[[step]]
+save = "sig/a.strata"
+text = "fn f(x: Bool) -> Int = 1\n"
+
+[[step]]
+save = "sig/b.strata"
+text = "fn f(x: String) -> Int = 1\n"
+
+[[step]]
+strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
+dir = "sig"
+fails = true
+has = ["conflict in f", "left as text with conflict markers"]
+
+[[step]]
+run = ["cat", "a.strata"]
+dir = "sig"
+has = ["<<<<<<< ours\n", "fn f(x: Bool) -> Int", ">>>>>>> theirs"]
+
+# the stored forms are merged: ours imports `f` and `g` (so its text calls
+# them `f(1)`, `g(2)`) and changes `k`; theirs calls `m.g` where `h` called
+# `m.f`. As stored, ours left `h` alone, so theirs' `h` is taken, written
+# with ours' imports
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "m"]
+dir = "p"
+text = "pub fn f(x: Int) -> Int = x\n\npub fn g(x: Int) -> Int = x * 2\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "use m\n\nfn h() -> Int {\n  a := m.f(1)\n  b := m.g(2)\n  a + b\n}\n\nfn k() -> Int = 1\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "o.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn h() -> Int {\n  a := m.g(1)\n  b := m.g(2)\n  a + b\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "b.strata"]
+
+[[step]]
+run = ["cp", "o.strata", "p/main.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "from m use f, g\n\nfn h() -> Int {\n  a := f(1)\n  b := g(2)\n  a + b\n}\n\nfn k() -> Int = 2\n"
+
+[[step]]
+strata = ["merge-file", "../o.strata", "main.strata", "../b.strata", "main.strata"]
+dir = "p"
+lacks = ["conflict", "doesn't check"]
+
+[[step]]
+strata = ["--file", ".", "view", "main"]
+dir = "p"
+has = ["  a := g(1)\n  b := g(2)\n", "fn k() -> Int {\n  2\n}"]

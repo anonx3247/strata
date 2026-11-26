@@ -2,7 +2,7 @@
 # big integer; a fault in it and a runaway loop are errors of the `derive`
 
 [[step]]
-strata = ["--file", "c.strata", "edit"]
+strata = ["--file", "c.strata", "edit", "--as-given"]
 text = '''
 from std.typing use Record
 
@@ -43,7 +43,7 @@ strata = ["--file", "c.strata", "run"]
 stdout = "[\"x!\", \"label!\"]\n199999999999999999999998\n"
 
 [[step]]
-strata = ["--file", "c.strata", "edit"]
+strata = ["--file", "c.strata", "edit", "--as-given"]
 text = '''
 from std.typing use Record
 
@@ -85,7 +85,7 @@ fails = true
 has = ["deriving `count`: `comptime len(Self.fields) / 0` failed: division by zero"]
 
 [[step]]
-strata = ["--file", "c.strata", "edit"]
+strata = ["--file", "c.strata", "edit", "--as-given"]
 text = '''
 from std.typing use Record
 
