@@ -360,6 +360,9 @@ int32_t jit_run_call(const char *ir, const char *probe, const char *fun) {
 // (std's precompiled code): 0 when loaded, else 1 after saying why.
 int32_t jit_load(const char *path) {
   if (dlopen(path, RTLD_NOW | RTLD_GLOBAL)) {
+    // (once each: a daemon loads std's for every request, c/daemon.c)
+    for (int i = 0; i < loaded_count; i++)
+      if (!strcmp(loaded_libs[i], path)) return 0;
     if (loaded_count < 64) loaded_libs[loaded_count++] = strdup(path);
     return 0;
   }
@@ -422,6 +425,10 @@ int32_t jit_fuzz_load(const char *ir) {
   fuzz_jits[fuzz_count] = fuzz_jit;
   return fuzz_count++;
 }
+
+// How many modules `jit_fuzz_load` compiled (a daemon stops before the
+// 4096 it may keep run out).
+int64_t jit_modules(void) { return fuzz_count; }
 
 const char *jit_fuzz_error(void) { return fuzz_error ? fuzz_error : ""; }
 
