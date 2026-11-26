@@ -4,6 +4,8 @@
 // a pager (`driver_pager`), and `--timings`.
 
 #include <errno.h>
+#include <pthread.h>
+#include <time.h>
 #include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -27,6 +29,32 @@ int32_t driver_chdir(const char *path) { return chdir(path) == 0 ? 0 : 1; }
 // The environment variable `name` set to `value` (for this process and
 // what it starts): 0, else 1.
 int32_t driver_setenv(const char *name, const char *value) { return setenv(name, value, 1) == 0 ? 0 : 1; }
+
+// The environment variable `name`, "" when unset (the returned text is
+// the environment's own).
+const char *driver_env(const char *name) {
+  const char *v = getenv(name);
+  return v ? v : "";
+}
+
+// This thread's CPU time in nanoseconds, to time work done on worker
+// threads (`timings` keeps only one thread's phases).
+int64_t driver_thread_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+  return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+// Appends `text` to the file at `path`, one writer at a time: 0, else 1.
+static pthread_mutex_t append_lock = PTHREAD_MUTEX_INITIALIZER;
+int32_t driver_append(const char *path, const char *text) {
+  pthread_mutex_lock(&append_lock);
+  FILE *f = fopen(path, "a");
+  int ok = f && fputs(text, f) >= 0;
+  if (f) fclose(f);
+  pthread_mutex_unlock(&append_lock);
+  return ok ? 0 : 1;
+}
 
 // This process's id.
 int64_t driver_pid(void) { return (int64_t)getpid(); }
