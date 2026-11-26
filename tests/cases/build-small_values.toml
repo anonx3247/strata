@@ -1,0 +1,36 @@
+# Small values (tuples, records, sums, `Option`, `Result` of at most 4
+# words) given back in registers (docs/internals.md, "Memory"): returned,
+# matched, taken apart, stored in lists, dicts, unions, trait values and
+# closures, given back as they were, through `?`, `??`, generics,
+# `mut` parameters and assignments; every object freed, built and run
+# alike
+
+[[step]]
+save = "small.strata"
+from = "small.st"
+
+[[step]]
+strata = ["--file", "small.strata", "build", "--no-verify", "-o", "small"]
+
+[[step]]
+run = ["./small"]
+memory = true
+stdout = "3 2\nhalf 5\n1\nnegative: -3\n8\nn7 7\n[(0, 0), (2, 1), (4, 2), (7, 0), (9, 1)]\nDict { \"k0\": Named { name: \"n0\", n: 0 }, \"k1\": Named { name: \"n1\", n: 1 }, \"k2\": Named { name: \"n2\", n: 2 }, \"k3\": Named { name: \"n3\", n: 3 }, \"k4\": Named { name: \"n4\", n: 4 } }\n2\n12\n4\nn9\nSome(Named { name: \"n1\", n: 1 })\n(\"one\", 1)\n213\nNamed { name: \"n2\", n: 2 }\nNamed { name: \"n3!\", n: 2 }\nNamed { name: \"n3\", n: 3 }\nOk(12)\nErr(\"negative: -2\")\nNone\nSome((2, 1))\nNone\ntrue\ntrue\n1\n2\n3\nP { x: 3, y: -3 }\nDot\nn1! n1\nNamed { name: \"n1!!\", n: 4 }\n(7, 2)\n"
+
+[[step]]
+strata = ["--file", "small.strata", "run"]
+stdout = "3 2\nhalf 5\n1\nnegative: -3\n8\nn7 7\n[(0, 0), (2, 1), (4, 2), (7, 0), (9, 1)]\nDict { \"k0\": Named { name: \"n0\", n: 0 }, \"k1\": Named { name: \"n1\", n: 1 }, \"k2\": Named { name: \"n2\", n: 2 }, \"k3\": Named { name: \"n3\", n: 3 }, \"k4\": Named { name: \"n4\", n: 4 } }\n2\n12\n4\nn9\nSome(Named { name: \"n1\", n: 1 })\n(\"one\", 1)\n213\nNamed { name: \"n2\", n: 2 }\nNamed { name: \"n3!\", n: 2 }\nNamed { name: \"n3\", n: 3 }\nOk(12)\nErr(\"negative: -2\")\nNone\nSome((2, 1))\nNone\ntrue\ntrue\n1\n2\n3\nP { x: 3, y: -3 }\nDot\nn1! n1\nNamed { name: \"n1!!\", n: 4 }\n(7, 2)\n"
+
+# loops calling such functions 100,000 times, and a variable assigned a
+# call's result 100,000 times, allocate nothing (750,004 objects when each
+# result was a block)
+[[step]]
+save = "loops.strata"
+from = "loops.st"
+
+[[step]]
+strata = ["--file", "loops.strata", "build", "--no-verify", "-o", "loops"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY=1 ./loops 2>&1"]
+out = "memory: 4 allocated, 4 freed, 0 live\n23204686205\n"
