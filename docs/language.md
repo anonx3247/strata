@@ -353,6 +353,21 @@ trait Empty: Combine {
 fn combine_any[T: Empty](xs: List[T]) -> T { fold(xs, T.empty(), (acc, x) -> acc.combine(x)) }
 ```
 
+**Operators are trait methods.** `a + b` is `Add.add(a, b)`, `-a` is `Neg.neg(a)`, `a == b` is `Eq.eq(a, b)`, `a < b` is `Ord.lt(a, b)` (and `Sub`, `Mul`, `Div`, `Rem`, `Ord.le`, `gt`, `ge`), all in core. Implementing the trait gives a type the operator; there are no special methods:
+
+```rust
+type Money = { cents: Int }
+impl Add for Money {
+  fn add(self, other: Money) -> Money ensures it.cents == self.cents + other.cents {
+    Money { cents: self.cents + other.cents }
+  }
+}
+impl Ord for Money { fn lt(self, other: Money) -> Bool = self.cents < other.cents }
+fn double(m: Money) -> Money ensures it.cents == 2 * m.cents { m + m }   // proven through `add`'s ensures
+```
+
+The numbers and strings have them built in, compiled and proven as plain arithmetic. `&&`, `||` and `!` stay operators of the language, since they skip their right side. See the [reference](language-reference.md#operators).
+
 ## Modules: units that meet only through contracts
 
 Each file is a module, named after its path in the package. `shop/orders.strata` is `shop.orders`, and `main.strata` is the root module. There are no `module { }` blocks.
