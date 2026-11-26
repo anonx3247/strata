@@ -170,11 +170,9 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 20 Mut(Expr)                      21 Block(list(Stmt), last:Expr)
      | 22 Mock(TypeExpr)                 23 Return(Expr)             24, 25: unused
      | 26 Interp(list(StrPart))
-     | 27 Range(lo:option(Expr), hi:option(Expr), inclusive:bool)    a..b, a..=b
-     | 28 Index(Expr, index:Expr)                                   xs[i], xs[a..b]
-     | 29 Comp(CompKind, elem:Expr, list(CompFor))                  [e for x in xs where c]
-     | 30 Dict(types:list(TypeExpr), list((Expr, Expr)))            Dict { "a": 1 }
-     | 31 Set(types:list(TypeExpr), list(Expr))                     Set { 1, 2 }
+     | 27, 28, 29: unused
+     | 30 Dict(types:list(TypeExpr), list((Expr, Expr)))            a dict value from compile-time code
+     | 31 Set(types:list(TypeExpr), list(Expr))                     a set value from compile-time code
      | 32 unused
      | 33 Comptime(Expr)                                            comptime e
      | 34 Scope(Expr)                                               scope { … }
@@ -202,7 +200,7 @@ BinOp    = 0 +  1 -  2 *  3 /  4 %  5 ==  6 !=  7 <  8 <=  9 >  10 >=  11 &&  12
 UnOp     = 0 -  1 !
 ```
 
-`x!`, `x?`, `x except e { … }`, `x or { … }`, `x !! v` and `x ?? v` are stored as the `Match` they stand for (`compiler/sugar`), with names starting with `$`, which no program can write: `x!` is `match x { Ok($v) => $v, Err($e) => return Err($e) }`, `x ?? v` is `match x { Some($v) => $v, None => v }`. `view` shows such a match as the sugar again. Tags 24, 25 and 32 are not written; a file that has them is read with each as its match, so that `diff`, `tour` and merges work across the change.
+`x!`, `x?`, `x except e { … }`, `x or { … }`, `x !! v` and `x ?? v` are stored as the `Match` they stand for (`compiler/sugar`), with names starting with `$`, which no program can write: `x!` is `match x { Ok($v) => $v, Err($e) => return Err($e) }`, `x ?? v` is `match x { Some($v) => $v, None => v }`. `view` shows such a match as the sugar again. The other sugar is stored as calls of builtins: `a..b` is `range(a, b)` (`a..=b`: `range(a, b + 1)`), `xs[i]` is `at(xs, i)`, `xs[a..b]` is `slice(xs, a, b)`, `xs[i] = v` is `xs = set_at(xs, i, v)`, `[e for x in xs where c]` is `map(filter(xs, x -> c), x -> e)`, `Dict { k: v }` is `dict([(k, v)])`, `Set { x }` is `set([x])`, and `loop { … }` is `while true { … }` (`compiler/sugar` lists every form). A module can't name a function after one of these builtins, so such a call is always the builtin. Tags 24, 25, 27, 28, 29, 32 and the statement tag 5 are not written; a file that has them is read with each as its core form, so that `diff`, `tour` and merges work across the change. 30 and 31 are written only for a dict or set value that compile-time code gives back; read, they become `dict` and `set` calls.
 
 `BigInt` is an integer literal too large for 64 bits, as its decimal digits.
 
@@ -211,7 +209,7 @@ UnOp     = 0 -  1 !
 ```text
 Stmt    = 0 Let(Pattern, option(TypeExpr), Expr)   1 Var(name:str, option(TypeExpr), Expr)
         | 2 Assign(place:Expr, Expr)               3 While(cond:Expr, body:Expr)
-        | 4 For(Pattern, Expr, body:Expr)          5 Loop(body:Expr)
+        | 4 For(Pattern, Expr, body:Expr)          5 unused
         | 6 Break   7 Continue   8 Expr(Expr)   9 Assert(Expr)   10 Comment(list(str))
         | 11 ComptimeFor(Pattern, Expr, body:Expr)          comptime for v in Self.members { … }
         | 12 Invariant(Expr)                                 a loop's `invariant e`, first in its body

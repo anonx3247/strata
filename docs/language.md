@@ -524,7 +524,7 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 - `e or { fallback }` does the same for an `Option`. There is no error to bind.
 - `e !! value` and `e ?? value` are the short forms, for a fallback that is a single value on one line, and the printer always uses them for such fallbacks. They bind tighter than comparisons and looser than arithmetic: `n ?? 0 + 1` is `n ?? (0 + 1)`, and `n ?? 0 == 1` is `(n ?? 0) == 1`. They chain: `a ?? b ?? 0`.
 - `!` and `?` chain too: `load(path)!.lines()`, `find(xs, p)?.name`.
-- Each is stored as the `match` it stands for: `r!` is `match r { Ok(v) => v, Err(e) => return Err(e) }`, `o ?? d` is `match o { Some(v) => v, None => d }`. `view` shows it as written. A `match` written out in full stays one: it is typed from the type its place wants, while a handler is typed from its value, so `!` returns only the function's own error type.
+- Each is stored as the `match` it stands for: `r!` is `match r { Ok(v) => v, Err(e) => return Err(e) }`, `o ?? d` is `match o { Some(v) => v, None => d }`. `view` shows it as written. A `match` written out in full in one of these shapes is the same program, and is shown as the handler: `match r { Ok(v) => v, Err(e) => return Err(e) }` is shown `r!`. A handler is typed from its value, so `!` returns only the function's own error type.
 
 ## Tasks: `scope`, `spawn` and `await`
 

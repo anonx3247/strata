@@ -1,14 +1,19 @@
 ---
-title: Handlers stored as matches
+title: The stored tree is the core language
 packages: compiler std core tools/check
 ---
 
 # Why
 REBUILD.md rule 7: a `.strata` file holds only core forms, sugar lives only in
-text. This PR does it for the most used sugar, the handlers `x!`, `x?`,
-`x except e { … }`, `x or { … }`, `x !! v` and `x ?? v`: the parser stores the
-`match` each stands for, the printer shows it back, and the tree no longer has
-`Try`, `Except` or `Fallback` nodes. Every `.strata` file is re-encoded.
+text. The parser stores the handlers (`x!`, `x?`, `except`, `or`, `!!`, `??`)
+as the `match` each stands for, and ranges, elements, slices, element
+assignments, comprehensions, `Dict`/`Set` literals and `loop` as calls of
+builtins and `while true`; the printer shows them back. The tree loses seven
+node kinds, the passes after parsing lose 893 lines of arms for them (323
+lines now recognise a core form's shape for a fast path or a message), and
+`desugar` loses the part that did this after reading. `check compiler`: 5.2 s
+→ 4.7 s (noisy), memory +16%. Every `.strata` file is re-encoded, and the
+round-trip law holds on all 125.
 
 # Background
 The tree had three nodes, and every pass had arms for them: walkers took their
@@ -60,6 +65,33 @@ parse.binary: `??` and `!!`
 text.prec text.short_fallback text.brace_on_spine text.handler_on_spine: precedence and layout of a handler (and `(-1).abs()` kept in parentheses)
 text.shorthand: replaced by `short_fallback`
 parse.use* text.use*: imports
+```
+
+# Calls of builtins
+`a..b` is `range(a, b)`, `xs[i]` is `at(xs, i)`, `xs[a..]` is `slice(xs, a,
+len(xs))`, `xs[i] = v` is `xs = set_at(xs, i, v)`, `[x * 2 for x in xs]` is
+`map(xs, x -> x * 2)`, `Dict { "a": 1 }` is `dict([("a", 1)])`. Each builder
+has a reader the printer uses (`range_parts`, `slice_parts`, …). A module
+can't name a function `at` or `map`, so the call is always the builtin.
+
+```strata-diff sugar.slice_of sugar.element_assigned sugar.comprehension text.sugared_text
+```
+
+```strata-also
+sugar.*: the other builders and readers
+parse.index parse.statement parse.expr parse.sym_primary parse.collection_body parse.comp_fors parse.assignable: the parser builds them
+text.stmt_text text.block_text text.expr_text text.clauses text.indexed text.while_head: the printer shows them
+capabilities.capability_errors_in: a function named after a builtin sugar calls is refused
+desugar.desugar_more desugar.unsugared: only compile-time `Dict`/`Set` values are left to lower
+binary.expr binary.stmt: older files' nodes read as their core forms
+```
+
+# A hand-written match is a handler
+`match r { Ok(v) => v, Err(e) => return Err(e) }` is stored as `r!`
+(`canonical`): the same program, shown as the handler, typed by the same
+rules.
+
+```strata-diff sugar.canonical parse.ident_primary
 ```
 
 # Passes that need more than a match
