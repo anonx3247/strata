@@ -1,0 +1,494 @@
+# Structural types: `{ id: Int, .. }`, any record with at least these
+# fields, as a parameter's type (a type parameter of its own), in a list's
+# type, or a type parameter's bound with a trait. Written and read back;
+# fields read and written through it; a value passed on as its own type; a
+# generic record; a bound passed to another bound. Run, built (one copy per
+# record type: `score[A]`, `score[B]`), and verified: proven knowing the
+# fields' refinements, a wrong contract refuted by the fuzzer with a record
+# of the program that has the fields. Then each error.
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+from std.io use Console
+
+type Order = { id: Int, total: Int, note: String }
+
+type Box[T] = { id: Int, total: T }
+
+trait Label {
+  fn label(self) -> String
+}
+
+impl Label for Order {
+  fn label(self) -> String = "order " + self.note
+}
+
+fn bump(mut x: { total: Int, .. }, by: Int) {
+  x.total = x.total + by
+}
+
+fn named[T: { id: Int, .. } + Label](x: T) -> String = to_string(x.id) + ": " + x.label()
+
+fn ids(xs: List[{ id: Int, .. }]) -> List[Int] = xs.map(x -> x.id)
+
+fn bigger[T: { total: Int, .. }](a: T, b: T) -> T {
+  if a.total >= b.total {
+    a
+  } else {
+    b
+  }
+}
+
+fn pass[T: { id: Int, total: Int, .. }](x: T) -> Int = sum_id(x) + x.total
+
+fn sum_id(x: { id: Int, .. }) -> Int = x.id
+
+fn main(mut console: Console) {
+  mut o := Order { id: 7, total: 10, note: "n" }
+  bump(mut o, 5)
+  mut console.print(to_string(o.total))
+  mut console.print(named(o))
+  mut console.print(to_string(ids([Box { id: 1, total: "a" }, Box { id: 2, total: "b" }])))
+  mut console.print(bigger(o, Order { id: 8, total: 99, note: "big" }).note)
+  mut console.print(to_string(pass(o)))
+  mut console.print(to_string(pass(Box { id: 3, total: 4 })))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "view", "main"]
+has = [
+  "fn bump(mut x: { total: Int, .. }, by: Int) {",
+  "fn named[T: { id: Int, .. } + Label](x: T) -> String {",
+  "fn ids(xs: List[{ id: Int, .. }]) -> List[Int] {",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+stdout = "15\n7: order n\n[1, 2]\nbig\n22\n7\n"
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "prog"]
+has = ["built prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "15\n7: order n\n[1, 2]\nbig\n22\n7\n"
+
+# one copy per record type, each reading its fields at their own offsets
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+type A = { id: Int, total: Int }
+
+type B = { note: String, total: Int, id: Int }
+
+fn score(x: { id: Int, total: Int, .. }) -> Int = x.id * 3 + x.total
+
+fn main() -> Int = score(A { id: 1, total: 2 }) + score(B { note: "x", total: 4, id: 5 })
+'''
+
+[[step]]
+strata = ["--file", "c.strata", "build", "--no-verify", "--emit-llvm", "-o", "c.ll"]
+
+[[step]]
+run = ["grep", "-c", "^define i64 @\"strata:score\\[[AB]\\]\"", "c.ll"]
+stdout = "2\n"
+
+# verified: the bound's fields are known, their refinements included
+[[step]]
+strata = ["--file", "v.strata", "edit"]
+text = '''
+type Cents = Int where it >= 0
+
+type Order = { id: Int, total: Cents, note: String }
+
+fn total_of(x: { total: Cents, .. }) -> Cents
+  ensures it == x.total
+= x.total
+
+fn bigger[T: { total: Cents, .. }](a: T, b: T) -> T
+  ensures it.total >= a.total && it.total >= b.total
+  ensures it.total == a.total || it.total == b.total
+{
+  if a.total >= b.total { a } else { b }
+}
+
+fn wrong[T: { total: Cents, .. }](a: T) -> Int
+  ensures it > a.total
+= a.total
+
+fn twice(o: Order) -> Int
+  ensures it == 2 * o.total
+= total_of(o) + bigger(o, o).total
+'''
+
+[[step]]
+strata = ["--file", "v.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ total_of                 proven (2 checks)",
+  "✓ bigger                   proven (3 checks)",
+  "✓ twice                    proven (4 checks)",
+  "✗ wrong",
+  "input:   Order { id: ",
+  "postcondition of `wrong` violated: ensures it > a.total",
+]
+
+# the errors
+[[step]]
+strata = ["--file", "e.strata", "edit"]
+fails = true
+text = '''
+type Cents = Int where it >= 0
+
+type Order = { id: Int, total: Cents }
+
+type Loose = { id: Int, total: Int }
+
+type Named = { id: String, total: Cents }
+
+type Shape = | Sq(Int) | Rect { total: Cents }
+
+fn total_of(x: { total: Cents, .. }) -> Cents = x.total
+
+fn id_of[T: { id: Int, .. }](x: T) -> Int = x.id
+
+fn wrong_field(x: { total: Cents, .. }) -> Int = x.id
+
+fn pass_bad[T: { id: Int, .. }](x: T) -> Int = total_of(x)
+
+fn ret() -> { id: Int, .. } = Order { id: 1, total: 2 }
+
+fn calls() -> Int {
+  a := total_of(Loose { id: 1, total: 2 })
+  b := id_of(Named { id: "x", total: 2 })
+  c := total_of(5)
+  d := total_of(Sq(2))
+  e := total_of((1, 2))
+  a + b + c + d + e
+}
+'''
+has = [
+  "error in ret: a structural type (`{ id: Int, .. }`) is only a parameter's type or a type parameter's bound",
+  "error in wrong_field: `{ total: Cents, .. }` has no field `id` (a value of a structural type has only the fields it names)",
+  "error in pass_bad: calling `total_of`: `{ id: Int, .. }` has no field `total` (the parameter must be `{ total: Cents, .. }`)",
+  "error in calls: calling `total_of`: field `total` of `Loose` is `Int`, not `Cents` (a refined field is given by a field of the same type)",
+  "error in calls: calling `id_of`: field `id` of `Named` is `String`, not `Int`",
+  "error in calls: calling `total_of`: `Int` is not a record (the parameter must be `{ total: Cents, .. }`)",
+  "error in calls: calling `total_of`: `Shape` is not a record",
+  "error in calls: calling `total_of`: `(Int, Int)` is not a record",
+]
+
+# written wrong: no field, a field twice
+
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+fails = true
+text = "fn f(x: { .. }) -> Int = 1"
+has = ["a structural type names the fields it needs: `{ id: Int, .. }`"]
+
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+fails = true
+text = "fn f(x: { id: Int, id: Int, .. }) -> Int = 1"
+has = ["field `id` is named twice"]
+
+# no values of its own: not an alias, a field's type, a variable's, a
+# structural type's field's
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+fails = true
+text = "type Row = { id: Int, .. }"
+has = ["a record type lists all its fields: `{ id: Int, .. }`, any record with at least these fields, is only a parameter's type or a type parameter's bound"]
+
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+fails = true
+text = '''
+type Holder = { r: { id: Int, .. } }
+
+fn f(x: { id: Int, .. }) -> Int {
+  let y: { id: Int, .. } = x
+  y.id
+}
+
+fn g(x: { a: { b: Int, .. }, .. }) -> Int = 1
+'''
+has = [
+  "error in Holder: a structural type (`{ id: Int, .. }`) is only a parameter's type or a type parameter's bound: it has no values of its own, so it is no result's, variable's or field's type (name a type parameter: `[T: { id: Int, .. }]`, `-> T`)",
+  "error in f: a structural type",
+  "error in g: a structural type",
+]
+
+# a type's own method with a structural parameter: run, and checked at each
+# call, on a value and on the type
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+text = '''
+type Shop = { name: String }
+
+type Order = { id: Int, total: Int }
+
+impl Shop {
+  fn line(self, x: { id: Int, .. }) -> String = self.name + to_string(x.id)
+}
+
+fn show() -> String = Shop { name: "s" }.line(Order { id: 1, total: 2 }) + Shop { name: "t" }.line(Order { id: 3, total: 4 })
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "run", "show"]
+has = ["s1t3"]
+
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+fails = true
+text = '''
+fn bad(s: Shop) -> String = s.line(5) + Shop.line(s, "x")
+'''
+has = [
+  "error in bad: calling `Shop.line`: `Int` is not a record (the parameter must be `{ id: Int, .. }`)",
+  "error in bad: calling `Shop.line`: `String` is not a record (the parameter must be `{ id: Int, .. }`)",
+]
+
+# anonymous records: `{ id: 1, total: 2 }` is a value of `{ id: Int, total: Int }`
+# (one generated record type per set of field names, its fields' types its
+# arguments): a variable's, a result's and a field's type; equal by fields;
+# printed as written; given where an open structural type is asked for
+[[step]]
+strata = ["--file", "an.strata", "edit"]
+text = '''
+from std.io use Console
+
+type Order = { id: Int, total: Int, note: String }
+
+/// A summary as an anonymous record.
+fn summary(o: Order) -> { id: Int, total: Int } = { id: o.id, total: o.total }
+
+fn total_of(x: { total: Int, .. }) -> Int = x.total
+
+type Report = { best: { id: Int, total: Int }, count: Int }
+
+fn main(mut console: Console) {
+  o := Order { id: 7, total: 10, note: "n" }
+  s := summary(o)
+  let t: { total: Int, id: Int } = { total: 10, id: 7 }
+  mut console.print(to_string(s))
+  mut console.print(to_string(s == t))
+  mut console.print(to_string(total_of(s) + total_of(o)))
+  r := Report { best: s, count: 2 }
+  mut console.print(to_string(r))
+  mut console.print(to_string(r.best.id + r.count))
+}
+'''
+
+[[step]]
+strata = ["--file", "an.strata", "view", "main"]
+has = [
+  "fn summary(o: Order) -> { id: Int, total: Int } {",
+  "  { id: o.id, total: o.total }",
+  "  let t: { id: Int, total: Int } = { total: 10, id: 7 }",
+  "type Report = { best: { id: Int, total: Int }, count: Int }",
+]
+
+[[step]]
+strata = ["--file", "an.strata", "run"]
+stdout = "{ id: 7, total: 10 }\ntrue\n20\nReport { best: { id: 7, total: 10 }, count: 2 }\n9\n"
+
+# verified: an anonymous record's refined fields are its type's arguments;
+# one given where a bound asks for a refined field is proven to meet it at
+# the call; a counterexample is written as an anonymous record
+[[step]]
+strata = ["--file", "av.strata", "edit"]
+text = '''
+type Cents = Int where it >= 0
+
+type Order = { id: Int, total: Cents, note: String }
+
+fn summary(o: Order) -> { id: Int, total: Cents }
+  ensures it.id == o.id && it.total == o.total
+= { id: o.id, total: o.total }
+
+fn bumped(s: { id: Int, total: Cents }) -> { id: Int, total: Cents }
+  ensures it.total == s.total + 1
+= { id: s.id, total: s.total + 1 }
+
+fn wrong(s: { id: Int, total: Int }) -> Int
+  ensures it > s.total
+= s.total
+
+fn total_of(x: { total: Cents, .. }) -> Cents = x.total
+
+fn use_it(o: Order) -> Int = total_of(summary(o))
+
+fn raw_total(n: Int) -> Int = total_of({ total: n, id: 1 })
+'''
+
+[[step]]
+strata = ["--file", "av.strata", "verify", "--no-race"]
+fails = true
+has = [
+  "✓ summary                  proven (2 checks)",
+  "✓ bumped                   proven (2 checks)",
+  "✓ use_it                   proven (2 checks)",
+  "✗ wrong",
+  "input:   { id: 0, total: 0 }",
+  "✗ raw_total",
+  "does not satisfy `Cents` (where it >= 0)",
+]
+
+# `{ ..x, total: 0 }` without a type's name: a new value of `x`'s type (x
+# unchanged), on a record, a structural parameter and an anonymous record
+[[step]]
+strata = ["--file", "up.strata", "edit"]
+text = '''
+from std.io use Console
+
+type Order = { id: Int, total: Int, note: String }
+
+fn zeroed[T: { total: Int, .. }](x: T) -> T = { ..x, total: 0 }
+
+fn assign(mut o: Order)
+  ensures o.total == 0 && o.id == old(o.id)
+{
+  o.total = 0
+}
+
+fn update(mut o: Order)
+  ensures o.total == 0 && o.id == old(o.id)
+{
+  o = { ..o, total: 0 }
+}
+
+fn named(mut o: Order)
+  ensures o.total == 0 && o.id == old(o.id)
+{
+  o = Order { ..o, total: 0 }
+}
+
+fn main(mut console: Console) {
+  o := Order { id: 1, total: 5, note: "n" }
+  y := { ..o, total: 9 }
+  mut console.print(to_string(y) + " " + to_string(o))
+  mut console.print(to_string(zeroed(o)))
+  s := { id: 2, total: 3 }
+  mut console.print(to_string(zeroed(s)) + " " + to_string({ ..s, id: 4 }))
+  mut a := o
+  assign(mut a)
+  mut b := o
+  update(mut b)
+  mut c := o
+  named(mut c)
+  mut console.print(to_string(a == b && b == c))
+}
+'''
+
+[[step]]
+strata = ["--file", "up.strata", "view", "main"]
+has = ["  y := { ..o, total: 9 }", "  o = { ..o, total: 0 }", "fn zeroed[T: { total: Int, .. }](x: T) -> T {"]
+
+[[step]]
+strata = ["--file", "up.strata", "run"]
+stdout = "Order { id: 1, total: 9, note: \"n\" } Order { id: 1, total: 5, note: \"n\" }\nOrder { id: 1, total: 0, note: \"n\" }\n{ id: 2, total: 0 } { id: 4, total: 3 }\ntrue\n"
+
+# `o = { ..o, total: 0 }`, `o = Order { ..o, total: 0 }` and `o.total = 0`
+# are one program: the same proof, and the same IR (the field set in place
+# when `o` is held once, `strata_unique`), but for names
+[[step]]
+strata = ["--file", "up.strata", "verify", "--no-race", "assign,update,named"]
+has = [
+  "✓ assign                   proven (1 check)",
+  "✓ update                   proven (1 check)",
+  "✓ named                    proven (1 check)",
+]
+
+[[step]]
+strata = ["--file", "up.strata", "build", "--no-verify", "--emit-llvm", "-o", "up.ll"]
+
+[[step]]
+run = ["sh", "-c", '''for f in assign update named; do awk "/^define .*\"strata:$f\"/,/^}/" up.ll | sed -E 's/%[a-z.]+[0-9]+/%r/g; s/[a-z]+\.[a-z]+\.[0-9]+/L/g; s/@\.str\.[0-9A-F]+/@s/g; s/^[a-z.]+[0-9]+:/L:/; s/strata:[a-z]+/strata:F/' > $f.norm; done; cmp assign.norm update.norm && cmp assign.norm named.norm && grep -c strata_unique assign.norm''']
+stdout = "1\n"
+
+# a spread gives a structural parameter the record itself
+[[step]]
+strata = ["--file", "sp.strata", "edit"]
+text = '''
+type Order = { id: Int, total: Int }
+
+fn takes(n: Int, x: { id: Int, .. }) -> Int = n + x.id
+
+fn spread(o: Order) -> Int = takes(5, ...o)
+'''
+
+[[step]]
+strata = ["--file", "sp.strata", "run", "spread", "Order { id: 3, total: 1 }"]
+has = ["8"]
+
+# structural bounds through a trait's method (a trait value, a bound, the
+# type), and a generic `impl`'s type arguments in a method's bound
+[[step]]
+strata = ["--file", "tr.strata", "edit"]
+fails = true
+text = '''
+type Order = { id: Int, total: Int }
+
+type Note = { text: String }
+
+type Store[K] = { name: String, key: K }
+
+trait Liner {
+  fn line[T: { id: Int, .. }](self, x: T) -> Int
+}
+
+type Shop = { name: String }
+
+impl Liner for Shop {
+  fn line[T: { id: Int, .. }](self, x: T) -> Int = x.id
+}
+
+impl[K] Store[K] {
+  fn put(self, x: { id: K, .. }) -> K = x.id
+}
+
+fn via_trait(r: Liner, n: Note) -> Int = r.line(n)
+
+fn via_bound[R: Liner](r: R, n: Note) -> Int = r.line(n)
+
+fn via_type(s: Shop, n: Note) -> Int = s.line(n)
+
+fn generic_impl(s: Store[String], o: Order) -> String = s.put(o)
+
+fn fine(r: Liner, o: Order) -> Int = r.line(o)
+'''
+has = [
+  "error in via_trait: calling `Liner.line`: `Note` has no field `id` (the parameter must be `{ id: Int, .. }`)",
+  "error in via_bound: calling `Liner.line`: `Note` has no field `id`",
+  "error in via_type: calling `Shop.line`: `Note` has no field `id`",
+  "error in generic_impl: calling `Store.put`: field `id` of `Order` is `Int`, not `String`",
+]
+lacks = ["error in fine"]
+
+# `derive Json` reaches the anonymous records a derived type holds: written
+# without "type", read back equal
+[[step]]
+strata = ["--file", "aj.strata", "edit"]
+text = '''
+from std.json use Json
+
+type Report = { best: { id: Int, total: Int }, count: Int }
+
+derive Json for Report
+
+fn out() -> Result[String, String] {
+  r := Report { best: { id: 1, total: 2 }, count: 3 }
+  j := r.to_json()!
+  back := Report.from_json(j)!
+  Ok(j.to_string() + " " + to_string(back == r))
+}
+'''
+
+[[step]]
+strata = ["--file", "aj.strata", "run", "out"]
+has = ["\\\"best\\\", Object([(\\\"id\\\", Integer(1)), (\\\"total\\\", Integer(2))])", " true"]
