@@ -95,9 +95,7 @@ Everything that keeps track of where Strata is going: open questions, ideas, wha
 
 ### Open questions for the user
 
-- **`strata history` and `strata revert`: the defaults picked** (2026-11-26, branch `strata-history`; each can change). (1) `history` shows diffs by default (`--no-patch` for one line each): it is about one definition, so the diffs are short, and the point is seeing them. (2) `history` lists the working tree's uncommitted change first. (3) `revert` overwrites the definition with its old version; it doesn't merge in the changes made since (as `git revert` would): reverting an old commit drops the later changes to that definition too. (4) `revert` refuses while the definition has uncommitted changes (`--force` overrides). (5) `revert` neither commits nor writes `strata.log` (the user commits; `strata diff` shows it as an edit outside strata), and doesn't run `check`. (6) A definition is found by its name in the module file's header (for a builtin with several signatures, the first). (7) Merges aren't listed (`git log --follow` leaves them out), so a change made while resolving a conflict isn't shown. (8) A definition moved to another module (`strata move`) isn't followed; a module file renamed is.
-
-- **A query that ran out of time vs one that gave up: the default picked** (2026-11-26, branch `solver-timeout-reason`; can change). Z3 says `canceled` at both limits, so they are told apart by the units used (`(get-info :rlimit)` after each query): fewer than the 2M budget is "the solver timed out (machine load?)", never cached; the budget used is "the solver gave up", cached. The soft time limit stays. The other way was to drop the soft time limit (`-t`) and keep the rlimit as the only per-query limit (with the hard `-T` kill as a backstop): then `canceled` always means the budget, but a slow query holds a worker until the kill.
+- **`strata history` and `strata revert`: the defaults picked** (2026-11-26, branch `strata-history`; each can change; (1) and (3) answered by the user 2026-11-26: see "Answered by the user (2026-11-26)" in Decisions). (2) `history` lists the working tree's uncommitted change first. (4) `revert` refuses while the definition has uncommitted changes (`--force` overrides). (5) `revert` neither commits nor writes `strata.log` (the user commits; `strata diff` shows it as an edit outside strata), and doesn't run `check`. (6) A definition is found by its name in the module file's header (for a builtin with several signatures, the first). (7) Merges aren't listed (`git log --follow` leaves them out), so a change made while resolving a conflict isn't shown. (8) A definition moved to another module (`strata move`) isn't followed; a module file renamed is.
 
 - **Written proofs (`lemma`, `assert … by`, `calc`; hidden proofs): the defaults picked** (2026-11-26, branch `lemmas`; each can change). (1) `lemma`, `by` and `calc` are contextual words, not reserved ones (nothing to rename). (2) A lemma call is allowed only in a proof (a lemma's body, an `assert … by`'s steps), never as a plain statement of a function body (that would make a lemma's fact join the whole function's context, against "one fact"). (3) A plain `assert` among a proof's steps is proven in the function's full context and then is a fact of the proof: it is how a proof names a fact it needs from the function. (4) The `assert … by` query keeps the path's conditions (the function's `requires`, branch conditions, earlier checks' goals), and leaves out only the function's facts (call results' `ensures`, loop invariants assumed, definitions). It also keeps the facts made while evaluating `e` itself. (5) The view's markers are `//` comments starting `⋯`, dropped by every edit. A comment of your own starting `// ⋯` would be dropped too. (6) A hidden proof is placed back by the first line of a neighbouring statement. Two statements with the same first line make it ambiguous, and then it is dropped with a warning. (7) A lemma's counterexample is reported as an `Ensures violation (found by the solver)`, with no run to confirm it. (8) `strata view` of a module hides its lemmas entirely, with no marker for them.
 
@@ -456,7 +454,7 @@ Order: (1) `find`, `refs`; (2) locations in errors, `view LOCATION`; (3) `search
 
 Left of steps 1-2: runtime faults with each frame a location (the side table from compiled checks and calls to locations: codegen works on desugared, instantiated trees whose paths differ from the stored ones, so the table needs paths carried through desugaring and instantiation), `view --last-fault` (the runtime, core.fault, would keep the last fault), `--trace`'s `from` locations, verifier refutations with their location (the place of the failing call inside `verify_file`'s report).
 
-### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below)
+### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below; JSX-like markup built, branch `std-pages`)
 
 The second place Strata should be useful, after the command line: UIs in the
 browser, written without JavaScript. The direction is the Elm architecture,
@@ -589,15 +587,28 @@ Steps:
    below), the wasm build. Capabilities in `init` / `update` (`Files`, the
    program's own), timers (`every`) and keys (`on_key`) are built (#145).
 
-**JSX-like syntax** (user: wanted at some point, for simplicity). Markup
-written directly in Strata expressions, compiled to the `Html` helpers, e.g.
-`<button on_click={Increment}>-</button>`. Helper functions come first; the
-syntax is added on top of them later. The parser checks the static markup (tag and
-attribute names, no `on…` attributes, no children in void elements) as
-syntax; only the `{…}` insertions are Strata code, and their types do the
-rest: a `String` becomes escaped text, an `Html[M]` a child, an `M` an event's
-message. The verifier has something to say only where an insertion's type is
-refined (e.g. `href={url}` with a `Url` that excludes `javascript:`).
+**JSX-like syntax** (user: wanted at some point, for simplicity; **built**, branch `std-pages`, 2026-11-26). Markup is written in Strata expressions: `<td class="num">{l.year}</td>`, `<button on_click={Inc} disabled={busy}>+</button>`, `<br />`, `<>…</>`. docs/language.md ("HTML pages") and docs/language-reference.md ("Markup") have the rules; `examples/page` is written with it and proven. Decisions and defaults (each can change):
+- **Stored as calls** (REBUILD rule 7): the parser reads markup into calls to `std.web` (`std.web.element("td", [std.web.attr("class", "num")], std.web.children([l.year]))`), and `text.markup_view` shows those calls as markup again. No new tree node, no format change: resolve, check, verify and codegen see ordinary calls. The printer recognizes the calls by name (`std.web.X`, or `web.X` after `use std.web`); a module of the user's own named `web` with functions `element`/`children` would be shown as markup and read back as `std.web` calls (not handled).
+- **The module needs an import from `std.web`** (any: `from std.web use Html` is what a typed component has anyway), since a qualified `std.web.X` needs one. The error is the resolver's ("`std.web.children` is in module `std.web`, which this module doesn't use").
+- **The lexer decides what is markup** (`lex.markup_starts`): a `<` followed at once by a letter or `>`, first on its line or after a token that can't end an operand (`a <b` compares). It keeps a stack of modes (in a start tag, in children, in a `{…}` with its brace depth), so code inside `{…}` is lexed as code and markup nests in it (`{xs.map(x -> <li>{x}</li>)}`). Text is read as JSX reads it (`lex.markup_text`). Mismatched end tags, `<br>` without `/>`, a `}` in text and `onclick` are errors at the place they are written.
+- **Children are typed by a union**, `std.web.Child[M] = Html[M] | String | Int | List[Html[M]]`, and `std.web.children` flattens them: `{name}` is text, `{row(l)}` an element, `{ls.map(row)}` a list spliced in, with no syntax to tell them apart. Attributes written `name={e}` take `std.web.AttrValue = String | Int | Bool` (`std.web.attribute`; a `Bool` is a flag, left out when `false`, a new `Absent` attribute kind). Events are `on_NAME={e}`, a call of `std.web.on_NAME(e)` (`on_click`, `on_submit`, `on_input`, `on_change`, `on_submit_form`); `every` and `on_key` take two arguments and stay functions.
+- **Escaping by construction**: text and attribute values are escaped by `render` (as before); `raw_html(s)` (new, a `Raw` node) is the one way to put HTML in unescaped. Components are plain functions called in braces; a capitalized tag is an error pointing at that (`{card(x)}`), rather than JSX's `<Card x={…} />`, since Strata's functions are lowercase.
+- **Layout in `view`**: one line when it fits; else children fill lines (`markup_lines`), an element that breaks gets lines of its own, and a long start tag has one attribute per line. Text whose edge spaces a line break would drop is written `{" more"}`, so `parse(print(t)) == t` holds (case `cli-markup_pages`).
+- Rendering stays server-side, to a string: `render`, `document`. `strata serve` went with Rust, so the page is written to a file and served by any static server (the case uses `python3 -m http.server`); the numbered handlers (`data-handle-click`) are rendered and `dispatch` finds their message, but nothing posts them back until `std-net`'s server (another branch) is connected.
+- Tree-sitter: `markup_element`, `markup_fragment`, `markup_text`, `markup_attribute`; a comparison's `<` is now an external token (`_binary_less`), which the scanner gives only when the `<` is on its expression's line and not written against a letter, so `<b` at the start of a line or after `return` is markup. Highlights: `@tag`, `@attribute`.
+
+Built on the way:
+- codegen: a type pattern with type arguments (`Html[M] =>`, `List[Html[M]] =>`) is a type test (`type_pattern`); it was taken for a constructor pattern and refused.
+- codegen: a boxed member of a union is tagged by its head alone (`List`) when no other boxed member has that head (`box_tag_in`). A generic call's arguments were boxed for the union with its type argument still open (`List[Html[?]]`) while the instance called tested for `List[Html[()]]`: different tags, so `children([xs.map(f)])` matched no arm. Left: a union converted to a wider one keeps its tags, so a wider union holding two members of one head (`List[Int] | List[String]`) would read a narrower one's list under the wrong tag.
+
+Not yet (a plan, in order):
+1. Connect to `std-net`'s HTTP server when it is merged: `examples/page` served by it, and the handler numbers posted back (the client script, `dispatch`, sessions: steps 3-4 above, rebuilt on the Strata server).
+2. Typed attributes: `href={url}` taking a `Url` that excludes `javascript:` (the verifier then has something to prove), `class={["a", "b"]}`.
+3. Components with named arguments and children (`<card title="x">…</card>` as `card(title: "x", children: […])`), once calls take named arguments.
+4. The site's highlighter (`site/common.js`), the terminal one (`compiler/highlight`) and VS Code's TextMate grammar don't know markup yet: they color it as code.
+5. `std.ast`/`std.code` (std's own Strata parser, if it is to read packages written with markup) don't know markup.
+
+Found on the way (not fixed): `strata parse FILE` exits 0 when the file doesn't parse; in compiled code a `_ =>` arm of a union match doesn't narrow (`c.x` there is "not compiled yet"); the checker refuses a pattern naming a local generic record with a type parameter (`List[B[M]] =>`: "unknown constructor `M` in pattern") though `List[Html[M]] =>` on std's `Html` passes.
 
 Questions to settle:
 - **Async first, or web first?** (user, 2026-11-20; undecided.) The web design
@@ -649,6 +660,21 @@ Not yet:
 - **Viewer**: two levels (interface/source), the code view sliced around the selection, a type map as a separate view, and no Flow view.
 
 ## Decisions
+
+### Answered by the user (2026-11-26): five open questions
+Each default stays as built.
+- **A query that ran out of time vs one that gave up** (branch `solver-timeout-reason`): told apart by the units used, as built (the user doesn't mind either way). Z3 says `canceled` at both limits: fewer units than the 2M budget is "the solver timed out (machine load?)", never cached; the budget used is "the solver gave up", cached. The soft time limit stays.
+- **A `_` left in type arguments is not a compile error**, as built.
+- **`revert` overwrites rather than merges** (branch `strata-history`): the definition is put back as it was; changes made to it since are dropped, unlike `git revert`.
+- **`history` shows diffs by default** (`--no-patch` for one line each).
+- **`--as-given`** is how an edit that doesn't check is written anyway (`--file` edits; see "A failed edit writes nothing").
+
+### `verify` reads its flags apart from running (user, 2026-11-26; built, branch `verify-split`)
+`main.verify_file` was the whole command in one 900-line function: its first 90 lines matched flags, and `build`, `run --live`, `verify-alongside` and the invariant search of `edit`/`fix` built flag lists to call it. Now:
+- `VerifyOptions` holds the settings, `verify_defaults` the defaults, and `verify_options(args)` reads the flags (`verify_flags`, one recursive match) and rejects an unknown requirement, with the same message and exit 2. `--load` libraries are kept as a list and loaded when the run starts, no longer while the flags are read.
+- `verify_program(…, options, file)` runs the pipeline and never sees the command line. Its phases are named functions: `declared_of` (traits, impls, capabilities, mocks), `impls_named`, `selected_name`, `check_roots`, `package_settings`, `cross_runs`, `drivers_planned` (which checks get a driver and why the others aren't run), `load_own_native`, `rules_broken` (the `[verify]` and `--require` rules of one check), `record_proofs`, `changed_line` (`--quiet`'s line) and `policy_lines`.
+- `verify_file` is the command: parse, then run. `search_invariants`, `build_proofs`, `live_edit_command` and `alongside_command` build a `VerifyOptions` (`with_std` adds the precompiled std) instead of flags. `verify_command` still forwards the parsed command line as flags, since the same list goes to `smt_file` and `termination_file` for the other modes.
+- No behaviour change: the same verdicts, output and exit codes (the verify, smt, cache, tasks, timings, build, edit-search and fix cases pass unchanged).
 
 ### A failed edit writes nothing; `--rm` looks in its module first (bug found in #588; built, branch `edit-rm-module`)
 `strata --file compiler edit tour --rm 'use graph'` removed the root module's `use graph`, not tour's, then printed main's errors and exited 1 with the file changed.
@@ -762,7 +788,7 @@ Shown at the Z3 level: with `(set-option :timeout 30)` and a hard query between 
 - `smt.gave_up`: `canceled` with fewer units than the proof limit (`smt.proof_units`, 2M) is "the solver timed out (machine load?)", as are `timeout` answers and the pool's hard `-T` stop (the message was "the solver ran out of time"). It is not kept (`main.write_verdict`), so the next run asks again. `canceled` at the limit is "the solver gave up", kept as before. No `(:rlimit N)` reply (cvc5, a stand-in solver) leaves the reason as it was read before.
 - A batch answer asked again alone (`smt.answers_all`) is replaced by the single's answer when that one is proven (as before), or when the batch's timed out and the single's didn't: a single that used its 2M units is a real "gave up", kept.
 - Case `cli-verify_does_not_keep_a_query_that_timed_out`: `STRATA_SOLVER_TIMEOUT_MS=N` (c/solver.c, the pool only) sets every script's soft time limit to N ms; at 1 ms `cubes`'s batch query stops at a few thousand units.
-- See "Open questions for the user" for the default.
+- Answered by the user (2026-11-26): kept as built; see "Answered by the user (2026-11-26)".
 
 ### A script the solver rejects proves nothing (soundness, found in #529; design agreed with the user 2026-11-26; built, branch `solver-errors`)
 Z3 leaves out a command it rejects (a sort mismatch, an unknown name) and answers on the rest, so an `unsat` from such a script may be vacuous. Before, only a query whose first answer line was the error went unanswered: an error in what a batch's queries share (its declarations) fell to the first query, and the others counted as proven.
@@ -1866,6 +1892,15 @@ An update in place tests at run time whether its value is held once (`strata_uni
 - **Missed**, by tests on `strata check` of the compiler. A field's own list, dict or set (`mut w.body.push(b)` tests `w`, proven, then `w.body`, not proven: 7.7M `owned` tests). The analysis follows variables, not fields. A field lent to a `mut` parameter keeps its test (`binary.w_uint`, 2.4M). Methods taking `mut self` (`Bytes.Iterator.next`, called by `for`). `Dict {}` and `Set {}` start as a shared constant, so a dict built from empty is proven only after its first insert. The `mut` parameters of functions whose callers pass a value someone else holds (`check.unify`'s `i.subst`).
 - **Left**: tracking fields (a field held once when its record is and nothing else read it out); a new table for `mut d := Dict {}` (one allocation, which the first insert's copy costs anyway); `entry` for `mut self` methods called only directly; the lent field's test.
 
+### A `mut` variable read by another argument keeps its own slot (found on branch `smt-terms-2`, 2026-11-27; built, branch `mut-arg-borrow`)
+In `f(mut v, size(v))`, `f(mut v, len(v.d))` or `f(mut v, h(mut v))`, codegen (`call_fn_want`) saw another argument name `v` and gave `f` a slot of its own holding `v` once more (`mutarg`, written back after the call). So `v` was held twice while `f` ran, and its first change in place copied: 20,000 dict inserts took 2.3 s instead of 0.07 s with the argument bound first. It was this extra hold, not a reference kept by the other argument's evaluation: those are worked out before the `mut` argument is taken.
+- **Built.** The other arguments are worked out first, so the call now gives `v`'s own slot unless another `mut` argument names `v`, and each argument that reads `v` holds its value (`hold`). A value that shares `v` or part of it (`v`, `same(v)`, `v.xs`, `part(v)`) is then counted, so `f` still copies what it shares, and the argument keeps the old value; one that shares nothing (a number) leaves `v` held once. `compiler/unique`'s `call_flow` proves such calls when every other argument reading `v` gives a number or a `Bool` (`scalar_value`: comparisons, `!`, `is`, `len`-like built-ins, functions declared to return `Int`, `Bool`, `Float` or a sized int), so the test is left out too (`unique.p`). It stays conservative for anything else, since codegen holds those values and a shared one makes the variable held twice.
+- **Measured.** The case `build-a_mut_argument_read_by_another_stays_held_once` (9,000 inserts through the three forms, plus the sharing forms): `put`'s two `unique` tests went from 0 held once of 9,000 to proven. 20,000 inserts through `put(mut c, size(c))`: 27.9G to 0.036G instructions, 2.3 s to 0.00 s user. In the compiler binary's IR (compiler and std), `mutarg` slots went from 262 to 18: 244 calls now pass the variable's own slot. `strata check` of the compiler: 71.0G instructions both (no change past noise), and `verify --no-cache` of examples/tasks: 394.2G and 394.4G instructions, the same verdicts. The compiler's hot paths don't call this pattern on large values on main; the smt-terms-2 branch does.
+- **Left.** `mut v.m(…)` (a `mut self` method) reading `v` in another argument still finds it shared (`C.add` in the case). The receiver goes another way.
+
+### A flaky "dup of a freed object" in `build-tasks` (seen once, 2026-11-27; not reproduced)
+Seen once on another branch while running a built program of `build-tasks`; reruns passed. On main 06a771bd's build: the case passed 5 runs of 5, and its three programs (`fault`, `tasks`, `shared-push`, built once) ran 300 times each under `STRATA_MEMORY=check` with the same output each time (addresses aside), also while 3 other cases ran. `shared-push` (12 tasks pushing onto one shared list past its buffer's end, `slot_taken`) is the only one where threads touch one buffer at once, so it is the first suspect if it shows again; keep the failed folder (`--keep`) and the program's output.
+
 ### Memory: small values in registers (asked by the coordinator 2026-11-26; first step built, branch `small-values`)
 A record, tuple, `Option`, `Result` or variant value is a pointer to a block: a count word, the constructor's tag, then one 64-bit slot per field. A function returning `(a, b)`, `Some(x)` or `P { x, y }` allocated the block, and its caller freed it. Values have no identity, so the compiler may pass such a value as plain words instead.
 
@@ -2006,6 +2041,32 @@ On other runs:
 What this says for the plan: small values (2) remove the per-byte and per-call `Option` / `Result` blocks at the top sites. Static uniqueness (3) covers most `unique` tests (271 of 293 sites, 97% of the tests). Releases inside `drop:` helpers, a third of all releases, are what scoped allocation (4) removes. Short strings built by appending should get room to grow.
 
 Left: the counts of core.rt's and runtime.c's own operations by site, the arena blocks they make, dups through trait tables, and a site's location for code after a nested block (the drops at a scope's end take the last statement's location).
+
+### Memory: where memory goes, measured live (asked by the coordinator 2026-11-26; built, branch `mem-profile`)
+Five programs measured on main (f4065250), on `tasks-copies` (#564, merged with main) and with `--regions` (#568), to answer two questions: why removing atomic counts cut cycles but few instructions, and why neither tasks-copies nor regions moved peak memory.
+- Built: `tools/memcurve.c` samples a command's resident size and footprint (the number Activity Monitor shows) every 10 ms with `proc_pid_rusage`, children included, into a CSV, with a text plot. `tools/memprof.sh LABEL STRATA HOME [FLAGS]` builds the workloads in `tools/memprof/` and runs them and `strata check` of compiler/ under it. `STRATA_MEMORY_LIVE` with `--memory-sites` counts the heap's live objects by the site that made them (core.rt `strata_live_start`: a `U32` per 16 bytes of the small objects' region, a table for large ones; `--memory-sites` sets the site before each allocation and runtime call, `strata_site_set`) and copies the counts each time live bytes pass the last peak by 2%. It reports the sites holding the most at the peak and, with a path, every site at the peak and at the end. Statement regions and arenas aren't counted. Off, it costs a load and a branch per allocation and free. A push in place (`strata_list_push_owned`) is now a `runtime` site, so a buffer it grows is counted for it.
+- The workloads (`tools/memprof/`): `json` (100,000 records to JSON text, 8 MB, parsed back), `serve` (300,000 requests through a bounded cache), `pipeline` (4 producers, 4 workers, 80,000 jobs over two channels), `spawns` (80 spawns capturing a 100,000-record list the parent keeps), and `check` (`strata check` of compiler/).
+- Peak footprint (MB), main / tasks-copies / regions: check 458 / 457 / 468; json 692 / 676 / 685; spawns 23 / 200 / 24; pipeline 19 / 18 / 19; serve 2.0 / 2.0 / 2.0. Curves: check climbs in steps for its whole run, to its end; json rises with the document, then by 350 MB more while it parses; serve stays flat; pipeline grows linearly to its end; spawns with copies stays at 200 MB while the tasks run.
+- What holds the heap at the peak (`STRATA_MEMORY_LIVE`, `--memory-sites` builds):
+  - check: 350 MB live. 112 MB are 444 blocks read by `std.fs` `read_bytes`. Which files they are wasn't found: the compiler/, std and core sources come to 4.3 MB. They are all still held at the end. Then the program's trees: 33 MB `box:ast.Expr`, 29 MB `map[ast.Expr, ast.Expr]` lists, 17 MB strings `std.utf8.decode_range` built, 12.5 MB `binary.expr`, and so on. 264 MB (75%) is still live at exit. Counted per site, 237 MB of the peak is held by the same sites at the end (68%). The largest short-lived parts are 19 MB of the 33 MB of `box:ast.Expr` and 17 of the 29 MB of `map[ast.Expr, ast.Expr]` (copies of trees made while checking).
+  - json: 499 MB live. 324 MB (65%) is one temporary: `parse` turns the 8 MB text into a list of one-character strings (`chars`: 8 million strings of 32 bytes each, and an 80 MB list), alive for the whole parse. The rest is the parsed tree, the `JsonValue`s made for writing, and the records.
+  - spawns: 21 MB on main, the list itself. With copies, 8 tasks each hold a copy while they run: 200 MB.
+  - serve and pipeline: under 1 MB live at any time.
+- Pipeline's footprint grows with the messages, not with live data: 80,000 jobs reach 19 MB, 320,000 reach 70 MB, while under 1 MB is ever live. Each thread frees into its own free lists, and those go back to the shared ones only when the thread ends (core.rt `strata_memory_thread_end`). A consumer frees what producers made, so producers keep carving new chunks while the consumer's lists grow. A long-running producer/consumer program grows without bound. This is true on main and on tasks-copies. To do: give a thread's free lists back past a size, or free an object to the list of the thread that made it.
+- Memory operations (`--memory-sites` totals: dups, releases, allocations, frees), with the share that is counting: check 212M dups, 441M releases, 185M allocations, 182M frees (counting 64%); json 103M, 170M, 79M, 79M (64%); serve 3.6M, 15.9M, 12.9M, 12.9M (43%); pipeline 40%; spawns 36%.
+- **Why removing atomic counts cut cycles but few instructions.** Since #519, only objects that crossed to another thread were counted atomically. In these programs almost none were: a single-threaded check runs no task at all, and the compiler's workers already kept their shared tables for good. So few atomic operations ran on main, and their removal saves almost nothing directly. What changed is the code of every count:
+  - Main's inline `dup` and `release` keep a cold path that calls the runtime (`strata_dup_word`, `strata_release_word`) for a negative word, a second test for 0, and the epoch mask on the release. In the disassembly of a count-heavy loop, main's version has the `bl _strata_dup_word` and a `cbz` on each dup, and loads `strata_slow_counts` through `nop; nop; ldr` each time. tasks-copies keeps that address in a register.
+  - On that loop (40M count operations, `cnt`), instructions fall 15% (2.02G to 1.72G) and cycles 13% (0.34G to 0.29G).
+  - On an allocation-bound loop (`alc`: 20M records), instructions fall 2.4% and cycles 7%.
+  - On real programs, count operations are a small share of instructions (check: 650M of 80G), so instructions move by about 1.5% (check `STRATA_JOBS=1`: 80.97G to 79.73G), but cycles by 4.6% (26.31G to 25.07G). json and serve run the same instructions (±0.4%) in 3 to 4% fewer cycles. The compiler's `__text` is 733 KB (1%) smaller.
+  - With workers (default jobs), a kept table object on main was a negative word, so each of its counts was a call into the runtime. On tasks-copies a frozen one is skipped inline.
+  - So the cycles come from leaner, smaller code on every count, more than from fewer instructions. Without hardware counters (no `perf` on macOS without root), the split between icache and branch effects isn't measured.
+- **Why neither tasks-copies nor regions moved peak memory.** The hypothesis (counting frees temporaries at once, so the peak is long-lived data) holds for check, with a correction for json:
+  - check: 75% of the peak heap is still live at exit. Statement regions only hold what dies in its statement, which counting frees there too. They took 23.5M of 185M allocations off the heap with the same peak (458 to 468 MB). In check, tasks-copies copies nothing (the workers' captures freeze), so its peak is the same.
+  - json: the peak is mostly a temporary (65%), but one that lives for a whole call (`parse`), not a statement. Counting frees it the moment `parse` returns, and statement regions can't hold it. Only a different `parse` lowers this peak: one reading the text by byte offsets instead of a list of one-character strings, or a function-scoped root (phase 2b), which would free it no sooner either. To do: `std.json.parse` over byte offsets.
+  - Where tasks-copies does move the peak, it raises it: spawns goes from 23 to 200 MB, a copy for each running task.
+- Found and fixed on `tasks-copies`: `tx.send(x)` copied every value, because core.channel's `Sender.send` borrows it. codegen now sends from the call site, so a fresh value moves (pipeline: 1.6M objects made, back to 1.12M as on main).
+- Not done: live objects by type, not just by site (a site names its function and statement; the type it makes isn't recorded). Region and arena bytes in the live report. Which files `read_bytes` keeps in check.
 
 ### `std.collections`: an ordered map, an ordered set, a priority queue (asked by the coordinator 2026-11-25; built, branch `std-collections`)
 Agents writing Strata each built their own sorted map and priority queue (one, a tree of dicts, was the source of a 115 s bug). Built:
@@ -2304,6 +2365,54 @@ The port to Strata had lost the colors the Rust tools had (the tag `last-rust`, 
   - Selectors split on `,`, so an impl whose name holds one (`impl Json for Dict[String, V]`) can't be named in `view` or `verify`.
   - `edit` strips the leading spaces of `///` lines, so indented list items and examples in docs are stored flush left.
   - `edit` can't delete a detached `//` section banner: giving the definition without it keeps it.
+
+- **Bugs found by the 2026-11-26 lab fleet, not fixed.** Each was seen by an agent on main (or on main and its branch) and left alone; the branch named is where it was found.
+  - Language and checker:
+    - `"\r"` in a string literal is a backslash and an `r`, not a carriage return; std.http uses `chr(13)` (std-net).
+    - A trait and a type with the same name in one module pass `check`, but codegen then can't find the type's constructor (std-net).
+    - `check` doesn't narrow what is left of a mixed union after its own variants are matched, on the path `verify` takes (std-net).
+    - The checker refuses `List[B[M]] =>` for a local generic record: "unknown constructor `M` in pattern" (std-pages).
+    - `check` doesn't report an unknown type or constructor in a definition stored before its import was added; codegen catches it later (stored-core).
+    - On a rejected edit, non-exhaustive-match errors are reported against the wrong functions (e.g. `lint.refined_by`, which has a wildcard arm) (structural-records).
+    - Errors are labelled by short name: one in `text.inline` was reported as `markdown.inline`, one in `parse.binary` as `check.binary` (stored-core).
+    - In a module with `use binary`, an unqualified `take(...)` resolves to the private `binary.take` instead of the builtin (tree-merge).
+    - A generic `List` overload and a `String` overload under one name let a call that fits neither pass `check` (`xs["a"]` on a `List[Int]`) (runtime-extern-c; fixed on branch `std-math`, #573, not on main).
+  - Codegen and runtime:
+    - The pattern `Ok(())` doesn't compile; `Ok(_)` does (std-net).
+    - A `_ =>` arm of a union match doesn't narrow in compiled code, so `c.x` there is "not compiled yet" (std-pages).
+    - Widening a union into one with two members of the same head (`List[Int] | List[String]`) reads the list under the wrong tag (std-pages).
+    - A type's own `self` method called on the type, `Shop.line(s, x)`, doesn't compile: "`Shop` without its fields" (structural-records).
+    - Compiled code doesn't check refinements inside a generic record's type arguments: a `Box[Cents]` holding a negative value doesn't fault (structural-records).
+    - A `match` giving a `U64` with a literal `0` in one arm crashed at run time; replacing the literal with a function returning `U64` avoided it. Not reduced (stable-ids).
+    - `parallel.map` with two or more workers crashes ("dup of a freed object" in check mode) when the mapped function allocates outside an `arena`; `decoded_files` doesn't crash, so it depends on what the function reads (stage-cache).
+    - Producer/consumer programs grow without bound: a consumer frees into its own thread's free lists, which go back only when the thread ends, so producers keep claiming new memory (pipeline: 19 MB for 80k jobs, 70 MB for 320k, under 1 MB live) (mem-profile).
+    - Every program linked with std counts as supervising, so it polls for cancellation after every runtime call that may panic (std-math).
+    - An integer literal of 2^62 or more is re-parsed from its digits each time it is evaluated; `to_u64`'s precondition holds one, so every `n.to_u64()` allocates (real-numbers).
+    - The JIT never frees modules (`jit_fuzz_load` keeps up to 4096), so a long-lived process grows with every `check` (compiler-server).
+    - The derived JSON decoder crashes on an integer too large for a `Float` field ("too large for a Float") instead of returning an error: `std.json.decode_as.for.Summary.10` (wasm-ts).
+  - Verify:
+    - `verify` loses the value under `x!` when `x` is a call on a capability or a trait inside std (std-net).
+    - `verify` of a `match` with nine type arms over a union (`std.agent.Chunk`) went past 8 GB within seconds; the one-arm form verifies in under a second (std-net).
+    - `verify` of `codegen.computed_value` prints LLVM "Required pass not found" errors without end, on main too (live-edits). Related to the "Function Alias Analysis Results" loop above: it showed again when verifying six functions at once (merge of #572).
+    - Once, `verify_file` called repeatedly in one long-running process reported an edit with a counterexample as proven; a rebuilt reproduction found the counterexample every time. Cause not found; `run --live` verifies each edit in its own process (live-edits).
+    - Fuzzing `std.array` passes 300 s for the whole module and for `Array.add` alone: the time goes into string concatenation inside the fuzz cases (std-math).
+    - Loops stepping an `I64` counter are reported "may not terminate" (std-math).
+  - Tools:
+    - `strata resolve core/rt.strata` stores core.rt's calls qualified (`core.str.str_concat`), so codegen leaves out every core.rt function ("leave out: strata_alloc"); fixed by hand during the merge of #564 (merge of #564).
+    - `strata --file core check` only decodes core's files; it never type-checks core's code (runtime-extern-c).
+    - Round-tripping `core/builtins` through a non-core file loses some overloads (runtime-extern-c).
+    - `strata parse FILE` exits 0 when the file doesn't parse (std-pages).
+    - `strata diff` and `strata tour --check` report about 35 `noalloc` functions in untouched core modules (fault, float, int, list, mem, run) as "signature changed" (several branches).
+    - `strata upgrade` writes core's files without their dependency lists (fixed on branch `stored-core`, #562, not on main).
+    - The `.strata` merge driver re-encoded `smt.infer_invariants` with the same code and different bytes during a merge (ensures-narrowing).
+    - In `strata edit`, giving `from m use f, g` together with `--rm 'use m'` is refused ("both given and removed"); the new import line alone replaces `use m` (tree-merge).
+  - Speed and memory (not wrong, but far off):
+    - `view --graph Status --file examples/tasks --all` goes past 4.5 GB; `cli-view_graph_follows_lists_dicts_and_calls` runs past 300 s (operators-traits, stored-core).
+    - `cli-long_list_literals_compile_in_linear_time` needs about 5 GB at 20,000 elements (stored-core).
+    - `containers` in `build-copies` is quadratic, though the case says linear (operators-traits).
+    - `std.json.parse` turns its text into one-character strings (about 40 bytes per input byte), all alive for the whole call: 65% of the peak when reading 8 MB (mem-profile).
+    - `strata check` of the compiler keeps 112 MB in 444 blocks read by `std.fs.read_bytes` until it exits, though the sources are 4.3 MB; which files is not known (mem-profile).
+  - Tests: `build-jit-tests` fails on main: `tests/data/build/expected/tests-tasks.out` expects the warning for `_ := model.run_worker(…)`, which a96adb16 removed from `examples/tasks/memory.strata`. `cli-modules_contracts_and_files` fails on main too.
 
 Decided against (not gaps):
 - **Explicit type arguments at a call** (`f[Money]()`; decided by the user, 2026-11-21): type arguments are inferred from the arguments and the expected type only.
