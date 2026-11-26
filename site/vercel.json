@@ -1,11 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": { "deploymentEnabled": false },
   "framework": null,
   "installCommand": "npm ci --prefix ../docs-site",
   "buildCommand": "npm run build --prefix ../docs-site",
   "outputDirectory": ".",
   "cleanUrls": true,
-  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ../docs-site ../docs",
   "redirects": [
     { "source": "/download/latest/:file", "destination": "https://github.com/anonx3247/strata/releases/latest/download/:file", "permanent": false },
     { "source": "/download/:version/:file", "destination": "https://github.com/anonx3247/strata/releases/download/:version/:file", "permanent": false }

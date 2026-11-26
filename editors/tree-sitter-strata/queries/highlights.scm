@@ -187,3 +187,14 @@
 
 ; a derive clause: `key code`
 (derive_clause name: (identifier) @keyword)
+
+; markup
+(tag_name) @tag
+(attribute_name) @attribute
+(markup_expression
+  "{" @punctuation.special
+  "}" @punctuation.special)
+(markup_start_tag ["<" ">"] @punctuation.bracket)
+(markup_self_closing_tag ["<" "/>"] @punctuation.bracket)
+(markup_end_tag ["</" ">"] @punctuation.bracket)
+(markup_fragment ["<" ">" "</"] @punctuation.bracket)
