@@ -29,7 +29,10 @@ fn canon(v: TomlValue) -> String {
   match v {
     Text(s) => "s:" + text(s),
     Integer(n) => f"i:{n}",
-    Number(x) => f"f:{float_bits(x)}",
+    Number(x) => match x.to_float() {
+      Some(f) => f"f:{float_bits(f)}",
+      None => "f:?",
+    },
     Boolean(b) => f"b:{b}",
     Moment(d) => "d:" + moment(d),
     Array(xs) => "[" + join(xs.map(x -> canon(x)), ",") + "]",
