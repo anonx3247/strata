@@ -171,4 +171,18 @@ fn main() {
   mut s := shape(4)
   s = shape(5)
   print(s)
+  // assigned a call's result: the old value's block reused when nothing
+  // else holds it, else a new one; a value given back as it was
+  mut m := named(1)
+  held := m
+  m = either(m, 2)
+  print(f"{m.name} {held.name}")
+  m = either(m, 4)
+  m = either(m, 5)
+  print(m)
+  mut t := divmod(10, 3)
+  for i in 0..3 {
+    t = divmod(t.0 + i * 10, 3)
+  }
+  print(t)
 }

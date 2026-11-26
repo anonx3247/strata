@@ -32,6 +32,10 @@ fn item(i: Int) -> Item {
   Item { id: i, weight: i % 7 }
 }
 
+fn step(p: Item, k: Int) -> Item {
+  Item { id: p.id + k, weight: p.weight - k }
+}
+
 fn halves(n: Int) -> Option[Int] {
   h := half(n)?
   Some(h + 1)
@@ -55,6 +59,12 @@ fn main() {
     s += item(i).id
     s += halves(i) ?? 0
   }
+  // a variable assigned the call's result: its block reused
+  mut p := Item { id: 0, weight: 0 }
+  for i in 0..100000 {
+    p = step(p, i % 3)
+  }
+  s += p.id + p.weight
   mut c := Cursor { at: 0, end: 100000 }
   for k in c {
     s += k
