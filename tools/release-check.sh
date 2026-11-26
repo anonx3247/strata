@@ -112,6 +112,12 @@ clean "$H/booksx" | grep -q '^left to read: 2$' || fail "booksx (built by \`stra
 clean "$R/bin/strata" --file letters.strata edit < "$H/letters.st" > "$H/u.out" 2>&1 || { cat "$H/u.out" >&2; fail "edit letters.strata"; }
 user --file letters.strata test
 grep -q '^1 passed, 0 failed$' "$H/u.out" || fail "--file letters.strata test"
+# the docs, offline: the pages in lib/strata/docs, and std's reference
+# (a page's text may start a line with `error`: no `said` check)
+clean "$R/bin/strata" doc language > "$H/u.out" 2>&1 || { cat "$H/u.out" >&2; fail "doc language"; }
+grep -q '^The language$' "$H/u.out" || fail "doc language"
+user doc std.json.parse
+grep -q 'fn parse(text: String)' "$H/u.out" || fail "doc std.json.parse"
 own=$H/.cache/strata
 [ -d "$own" ] || fail "no own cache at $own"
 again=$(cd "$L/cache" && find . -type f | sed 's|^\./||' | while read -r rel; do if [ -e "$own/$rel" ]; then echo "$rel"; fi; done)

@@ -730,7 +730,7 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - HTTP and HTML as values (`std.http`, `std.web`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
 
-Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
+Each module has a [reference page](std/README.md), generated from its doc comments by `strata docgen`. `strata doc std.json` shows one in the terminal.
 
 **JSON.** A type that derives `Json` can be read from and written to JSON, with every refinement checked:
 
