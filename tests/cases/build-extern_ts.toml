@@ -1,0 +1,179 @@
+# extern ts: a package's module declares TypeScript functions (worker.ts,
+# beside strata.toml) and turns them into the `Worker` capability, which
+# `main` and a test ask for. Values cross as JSON (a record through `derive
+# Json`); every failure is a `TsError` value: a thrown error, a function
+# missing, a result with no JSON form (NaN, a bigint) or beyond 2^53, one
+# that isn't the declared type or breaks its refinement, an argument beyond
+# 2^53, the worker ending (the next call starts a new one), no Node at all.
+# A promise is awaited. Calls from 20 tasks take turns on the one worker.
+# Under `strata run` and built (every object freed); `verify` takes the
+# TypeScript functions as assumed and runs none. The declarations' rules
+# are checked. Skipped without node.
+
+[[step]]
+write = "p/strata.toml"
+text = 'name = "p"'
+needs = "node"
+
+[[step]]
+write = "p/worker.ts"
+from = "worker.ts"
+
+# (an ES module, so Node doesn't guess from a package.json above)
+[[step]]
+write = "p/package.json"
+text = '{ "type": "module" }'
+
+[[step]]
+module = "m"
+into = "$TMP/p/"
+from = "m.st"
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+from = "main.st"
+
+[[step]]
+strata = ["--file", "p", "view", "m"]
+has = ['extern ts "worker" fn inc(x: Int) -> Result[Int, TsError]']
+
+[[step]]
+strata = ["run"]
+dir = "p"
+stdout = '''
+Ok(42)
+Ok(Plain { x: 3 })
+Err(BadReply { message: "the result has no JSON form: NaN is not a JSON number" })
+Err(BadReply { message: "the result can't be read: at 6: 1152921504606847000 is beyond ±(2^53 - 1), the integers a JSON number holds exactly" })
+Err(BadReply { message: "x: expected an integer, got \"not a number\"" })
+Err(BadReply { message: "-5 does not satisfy `Natural` (where it >= 0)" })
+Ok(())
+Err(BadReply { message: "the result has no JSON form: Do not know how to serialize a BigInt" })
+Ok(42)
+RangeError: out of range
+module `worker` has no function `missing`
+true
+Err(NotEncodable { message: "an argument of `huge`: 10000000000000000 is beyond ±(2^53 - 1), the integers a JSON number holds exactly" })
+Err(WorkerFailed { message: "the TypeScript worker ended (exit code 3)" })
+Ok(2)
+[Ok(1), Ok(2), Ok(3), Ok(4), Ok(5), Ok(6), Ok(7), Ok(8), Ok(9), Ok(10), Ok(11), Ok(12), Ok(13), Ok(14), Ok(15), Ok(16), Ok(17), Ok(18), Ok(19), Ok(20)]
+'''
+
+# (what the TypeScript prints goes to standard error)
+[[step]]
+strata = ["run"]
+dir = "p"
+has = ["printed by TypeScript"]
+
+[[step]]
+strata = ["build", "-o", "prog"]
+dir = "p"
+
+[[step]]
+run = ["./p/prog"]
+memory = true
+has = ["Ok(Plain { x: 3 })", "Err(WorkerFailed { message: \"the TypeScript worker ended (exit code 3)\" })", "Ok(19), Ok(20)]"]
+
+[[step]]
+strata = ["test"]
+dir = "p"
+has = ["✓ a test asks for the capability", "1 passed, 0 failed"]
+
+[[step]]
+strata = ["verify"]
+dir = "p"
+has = ["≈ m.inc", "`inc` is a TypeScript function (`extern ts`): its contracts are checked when it runs"]
+lacks = ["✗", "skipped", "incomplete"]
+
+# no Node: the worker can't start, a value too
+[[step]]
+write = "q/strata.toml"
+text = '''
+name = "q"
+
+[ts]
+executable = "no-such-node-for-strata"
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/q/"
+text = '''
+from std.ts use TsError
+
+extern ts "anything" fn f(x: Int) -> Result[Int, TsError]
+
+capability Js {
+  fn f(x: Int) -> Result[Int, TsError] {
+    f(x)
+  }
+}
+
+fn main(js: Js) {
+  print(js.f(1))
+}
+'''
+
+[[step]]
+strata = ["run"]
+dir = "q"
+stdout = "Err(WorkerFailed { message: \"can't start `no-such-node-for-strata`: No such file or directory\" })\n"
+
+# the rules on declarations, as for extern python
+[[step]]
+write = "r/strata.toml"
+text = 'name = "r"'
+
+[[step]]
+module = "m"
+into = "$TMP/r/"
+text = '''
+from std.ts use TsError
+
+type Plain = { x: Int }
+
+pub extern ts "mod" fn a(x: Int) -> Result[Int, TsError]
+
+extern ts "mod" fn b(p: Plain) -> Result[Int, TsError]
+
+extern ts "mod" fn d(x: Int) -> Int
+
+fn helper() -> Result[Int, TsError] {
+  a(1)
+}
+'''
+
+[[step]]
+strata = ["check"]
+dir = "r"
+fails = true
+has = [
+  "error in m.a: `extern ts` definitions are never `pub`",
+  "error in m.b: `extern ts fn b`, parameter `p`: `Plain` has no JSON form, so it can't cross to TypeScript: derive `Json` for it (`derive Json for Plain`, std.json)",
+  "error in m.d: `extern ts fn d`: its result is `Result[T, TsError]`",
+  "error in m.helper: calls `extern ts fn a`, which only this module's capabilities can call (`capability Name { ... }`): code that reaches TypeScript takes the capability",
+]
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+extern ts fn f(x: Int) -> Int
+'''
+fails = true
+has = ["`extern ts` needs the TypeScript module the function is in: `extern ts \"text_utils\" fn ...` (text_utils.ts)"]
+
+# the example
+[[step]]
+strata = ["run", "--file", "$ROOT/examples/ts"]
+stdout = '''
+hello-world-strata-calls-typescript
+the: 2, cat: 1
+typed-json-at-the-boundary: 11 words, "Values cross as JSON through", tags ["json", "typescript"]
+Ok(1965)
+RangeError: no year in 'no year here'
+'''
+
+[[step]]
+strata = ["--file", "$ROOT/examples/ts", "test"]
+has = ["✓ a slug, from TypeScript", "1 passed, 0 failed"]
