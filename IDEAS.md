@@ -2274,6 +2274,54 @@ The port to Strata had lost the colors the Rust tools had (the tag `last-rust`, 
   - `edit` strips the leading spaces of `///` lines, so indented list items and examples in docs are stored flush left.
   - `edit` can't delete a detached `//` section banner: giving the definition without it keeps it.
 
+- **Bugs found by the 2026-11-26 lab fleet, not fixed.** Each was seen by an agent on main (or on main and its branch) and left alone; the branch named is where it was found.
+  - Language and checker:
+    - `"\r"` in a string literal is a backslash and an `r`, not a carriage return; std.http uses `chr(13)` (std-net).
+    - A trait and a type with the same name in one module pass `check`, but codegen then can't find the type's constructor (std-net).
+    - `check` doesn't narrow what is left of a mixed union after its own variants are matched, on the path `verify` takes (std-net).
+    - The checker refuses `List[B[M]] =>` for a local generic record: "unknown constructor `M` in pattern" (std-pages).
+    - `check` doesn't report an unknown type or constructor in a definition stored before its import was added; codegen catches it later (stored-core).
+    - On a rejected edit, non-exhaustive-match errors are reported against the wrong functions (e.g. `lint.refined_by`, which has a wildcard arm) (structural-records).
+    - Errors are labelled by short name: one in `text.inline` was reported as `markdown.inline`, one in `parse.binary` as `check.binary` (stored-core).
+    - In a module with `use binary`, an unqualified `take(...)` resolves to the private `binary.take` instead of the builtin (tree-merge).
+    - A generic `List` overload and a `String` overload under one name let a call that fits neither pass `check` (`xs["a"]` on a `List[Int]`) (runtime-extern-c; fixed on branch `std-math`, #573, not on main).
+  - Codegen and runtime:
+    - The pattern `Ok(())` doesn't compile; `Ok(_)` does (std-net).
+    - A `_ =>` arm of a union match doesn't narrow in compiled code, so `c.x` there is "not compiled yet" (std-pages).
+    - Widening a union into one with two members of the same head (`List[Int] | List[String]`) reads the list under the wrong tag (std-pages).
+    - A type's own `self` method called on the type, `Shop.line(s, x)`, doesn't compile: "`Shop` without its fields" (structural-records).
+    - Compiled code doesn't check refinements inside a generic record's type arguments: a `Box[Cents]` holding a negative value doesn't fault (structural-records).
+    - A `match` giving a `U64` with a literal `0` in one arm crashed at run time; replacing the literal with a function returning `U64` avoided it. Not reduced (stable-ids).
+    - `parallel.map` with two or more workers crashes ("dup of a freed object" in check mode) when the mapped function allocates outside an `arena`; `decoded_files` doesn't crash, so it depends on what the function reads (stage-cache).
+    - Producer/consumer programs grow without bound: a consumer frees into its own thread's free lists, which go back only when the thread ends, so producers keep claiming new memory (pipeline: 19 MB for 80k jobs, 70 MB for 320k, under 1 MB live) (mem-profile).
+    - Every program linked with std counts as supervising, so it polls for cancellation after every runtime call that may panic (std-math).
+    - An integer literal of 2^62 or more is re-parsed from its digits each time it is evaluated; `to_u64`'s precondition holds one, so every `n.to_u64()` allocates (real-numbers).
+    - The JIT never frees modules (`jit_fuzz_load` keeps up to 4096), so a long-lived process grows with every `check` (compiler-server).
+    - The derived JSON decoder crashes on an integer too large for a `Float` field ("too large for a Float") instead of returning an error: `std.json.decode_as.for.Summary.10` (wasm-ts).
+  - Verify:
+    - `verify` loses the value under `x!` when `x` is a call on a capability or a trait inside std (std-net).
+    - `verify` of a `match` with nine type arms over a union (`std.agent.Chunk`) went past 8 GB within seconds; the one-arm form verifies in under a second (std-net).
+    - `verify` of `codegen.computed_value` prints LLVM "Required pass not found" errors without end, on main too (live-edits). Related to the "Function Alias Analysis Results" loop above: it showed again when verifying six functions at once (merge of #572).
+    - Once, `verify_file` called repeatedly in one long-running process reported an edit with a counterexample as proven; a rebuilt reproduction found the counterexample every time. Cause not found; `run --live` verifies each edit in its own process (live-edits).
+    - Fuzzing `std.array` passes 300 s for the whole module and for `Array.add` alone: the time goes into string concatenation inside the fuzz cases (std-math).
+    - Loops stepping an `I64` counter are reported "may not terminate" (std-math).
+  - Tools:
+    - `strata resolve core/rt.strata` stores core.rt's calls qualified (`core.str.str_concat`), so codegen leaves out every core.rt function ("leave out: strata_alloc"); fixed by hand during the merge of #564 (merge of #564).
+    - `strata --file core check` only decodes core's files; it never type-checks core's code (runtime-extern-c).
+    - Round-tripping `core/builtins` through a non-core file loses some overloads (runtime-extern-c).
+    - `strata parse FILE` exits 0 when the file doesn't parse (std-pages).
+    - `strata diff` and `strata tour --check` report about 35 `noalloc` functions in untouched core modules (fault, float, int, list, mem, run) as "signature changed" (several branches).
+    - `strata upgrade` writes core's files without their dependency lists (fixed on branch `stored-core`, #562, not on main).
+    - The `.strata` merge driver re-encoded `smt.infer_invariants` with the same code and different bytes during a merge (ensures-narrowing).
+    - In `strata edit`, giving `from m use f, g` together with `--rm 'use m'` is refused ("both given and removed"); the new import line alone replaces `use m` (tree-merge).
+  - Speed and memory (not wrong, but far off):
+    - `view --graph Status --file examples/tasks --all` goes past 4.5 GB; `cli-view_graph_follows_lists_dicts_and_calls` runs past 300 s (operators-traits, stored-core).
+    - `cli-long_list_literals_compile_in_linear_time` needs about 5 GB at 20,000 elements (stored-core).
+    - `containers` in `build-copies` is quadratic, though the case says linear (operators-traits).
+    - `std.json.parse` turns its text into one-character strings (about 40 bytes per input byte), all alive for the whole call: 65% of the peak when reading 8 MB (mem-profile).
+    - `strata check` of the compiler keeps 112 MB in 444 blocks read by `std.fs.read_bytes` until it exits, though the sources are 4.3 MB; which files is not known (mem-profile).
+  - Tests: `build-jit-tests` fails on main: `tests/data/build/expected/tests-tasks.out` expects the warning for `_ := model.run_worker(…)`, which a96adb16 removed from `examples/tasks/memory.strata`. `cli-modules_contracts_and_files` fails on main too.
+
 Decided against (not gaps):
 - **Explicit type arguments at a call** (`f[Money]()`; decided by the user, 2026-11-21): type arguments are inferred from the arguments and the expected type only.
 - **Error conversion** (decided by the user, 2026-11-21): `!` only passes an error on when it fits the function's error type (the same type, a variant into its sum, a member into a union). No conversion functions, implicit or declared: errors stay explicit as types.
