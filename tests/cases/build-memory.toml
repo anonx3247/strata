@@ -88,9 +88,11 @@ has = ["@strata_unique(ptr"]
 strata = ["build", "insert_in_place.strata", "--emit-llvm"]
 has = ["@strata_tbl_owned(ptr", "@strata_tbl_add(ptr"]
 
+# (4 in `main`; the 5th is `wrap`'s result, built on the stack and
+# returned in registers)
 [[step]]
 strata = ["build", "more_in_place.strata", "--emit-llvm"]
-counts = { " = alloca [" = 4 }
+counts = { " = alloca [" = 5 }
 has = ["@strata_tbl_remove_at(ptr"]
 
 # a chain too long to drop recursively
