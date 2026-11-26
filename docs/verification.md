@@ -493,6 +493,114 @@ fn add(xs: Sorted, x: Int) -> Sorted {
 - Nested quantified facts are encoded by polarity. An example is a conversation where every tool result answers a call in some earlier message: `all(0..len(it), i -> … any(0..i, j -> any(calls, c -> c == id)))`. An `all` that is only ever known to be true gives its fact for every position. One that is only ever proven gives only what proves it: a position where it fails, or otherwise that it holds. An `any` inside a known `all` therefore becomes a witness position for the outer `all`, never a quantifier inside a quantifier. Appending calls and their results, or appending a result for a call that a `requires` refers to, is proven in milliseconds.
 - Not supported: positions after `filter` and `sort`, where only "some element of the list" is known, and a witness shifted by a concatenation in front of it (`a + b` of two such conversations).
 
+## Lemmas and written proofs
+
+Some facts are out of the solver's reach on its own: a fact about every tree needs induction, and a query holding a whole function's facts can be too large to answer. A proof can then be written in small steps, each checked alone.
+
+A `lemma` is a function that exists only for `verify`. Its `ensures` is the fact it proves, from its `requires`, and its body holds the proof's steps. It is proven once, in a query of its own (its `requires` and its steps, nothing else), and cached like any verdict. A lemma is never compiled, and only proofs can call it. A call `name(args)` in a proof checks the lemma's `requires` where it is called and gives exactly its `ensures`, with the arguments filled in, as one fact. A lemma with no body is proven by the solver from its `requires` alone:
+
+```rust
+lemma double_le(a: Int, b: Int)
+  requires a <= b
+  ensures a + a <= b + b
+```
+
+A recursive lemma is a proof by induction: its recursive calls give its `ensures` for the smaller values. It must be shown to terminate, like any recursive function (`decreases` and measures apply). A lemma that may not terminate proves nothing, and its verdict says so:
+
+```rust
+type Tree =
+  | Leaf
+  | Node { left: Tree, value: Int where it >= 0, right: Tree }
+
+fn sum(t: Tree) -> Int {
+  match t {
+    Leaf => 0,
+    Node { left, value, right } => sum(left) + value + sum(right),
+  }
+}
+
+/// A tree's sum is never negative: by induction on the tree.
+lemma sum_natural(t: Tree)
+  ensures sum(t) >= 0 {
+  match t {
+    Leaf => (),
+    Node { left, right, .. } => {
+      sum_natural(left)
+      sum_natural(right)
+    },
+  }
+}
+```
+
+The `match` splits the proof into cases, one for each branch. In the `Node` case, the two recursive calls give `sum(left) >= 0` and `sum(right) >= 0`, and the value's refinement gives the rest.
+
+`assert e by lemma(args)` and `assert e by { steps }` use a proof inside a function or a lemma. `e` is proven in a small query of its own. That query holds the path's conditions and the facts the steps give, and none of the function's other facts. Then `e` is known from there on, as one fact. The steps can be lemma calls, `assert`s (a plain `assert` step is proven where it is, then becomes a fact of the proof), nested `assert … by`, `if` and `match` case splits, and `calc` chains. A loop that adds up the sums of trees needs the lemma: plain `verify` sees through `sum` only two levels deep.
+
+```rust
+fn total(ts: List[Tree]) -> Int where it >= 0 {
+  mut s := 0
+  mut i := 0
+  while i < len(ts)
+    invariant s >= 0 {
+    t := ts[i]
+    assert sum(t) >= 0 by sum_natural(t)
+    s += sum(t)
+    i += 1
+  }
+  s
+}
+```
+
+```text
+✓ sum_natural              proven (3 checks)
+✓ total                    proven (10 checks)
+```
+
+Without the `assert … by`, the invariant `s >= 0` isn't proven after a pass, because the solver knows nothing of `sum(ts[i])`.
+
+`calc { a == b; _ <= c }` proves a chain one step at a time, each step in its own query. Each `_` is the right side of the step before it. Inside a proof, a step sees that proof's facts. The chain then gives `a <= c`. A chain of `==`, `<=` and `<` gives `<` if any step is `<`, `<=` if any step is `<=`, and `==` otherwise. The same holds for `>=` and `>`, and a chain of `==>` and `==` gives `==>`.
+
+```rust
+fn chain(x: Int, y: Int) -> Int
+  requires x <= y {
+  assert x + x <= y + y by double_le(x, y)
+  calc {
+    x + x <= y + y
+    _ == 2 * y
+  }
+  x + x
+}
+```
+
+`std.lemmas` holds facts about the builtin collections, each proven: the frames of dicts (`frame_with`: writing `k` changes nothing outside the keys `ks` and `k`, `frame_without`, and `frame_grows`: two dicts that are the same outside `ks` are also the same outside `ks` and `k`), and `with_reads`, `with_keeps` and `with_twice`. A loop that writes some keys of a dict proves that the others are left alone:
+
+```rust
+from std.lemmas use frame_with, frame_grows
+
+fn zeroed(d: Dict[Int, Int], ks: List[Int]) -> Dict[Int, Int]
+  ensures it.excluding(set(ks)) == d.excluding(set(ks)) {
+  mut out := d
+  mut done := Set[Int] {}
+  mut i := 0
+  while i < len(ks)
+    invariant i >= 0
+    invariant out.excluding(done) == d.excluding(done)
+    invariant done == set(ks[..i]) {
+    k := ks[i]
+    assert out.with(k, 0).excluding(done.with(k)) == d.excluding(done.with(k)) by {
+      frame_with(out, k, 0, done)
+      frame_grows(out, d, done, k)
+    }
+    out = out.with(k, 0)
+    done = done.with(k)
+    i += 1
+  }
+  out
+}
+```
+
+Proofs are part of the stored code, but `strata view` hides them by default (see [Tools](tools-reference.md#proofs-in-views)). `assert … by`, `calc` and lemmas compile to nothing. A step that fails to prove is reported like any check (`not proven: assert sum(t) >= 0 by …`). A lemma is proven or it isn't: it is never fuzzed. A counterexample the solver finds is the lemma's verdict, unless the counterexample depends on something the solver doesn't model; then the lemma stays open.
+
 ## Bugs the solver finds
 
 ```rust

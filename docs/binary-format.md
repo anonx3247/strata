@@ -143,7 +143,7 @@ DeriveFnDecl = trait_name:str  function:str  derived:bool  exports:list(str str)
 ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
 ```
 
-`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`; its `flags` byte is the sum of `1` for `terminates` and `2` for `noalloc` (so a file that stored it as a `bool` reads the same), `derivable(t: Record) trait …` the trait's `derivable`. `derive Trait for function` (a lowercase name after `for`) is a `DeriveFnDecl` with `derived` set and no `exports` or `files` (what deriving makes, held only in memory: each exported symbol with its function, each file's extension with the function giving its part); its header `kind` is `8`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`; `extern python "m" fn` is an `ExternItem.Fn` with the `Lang` `Python("m")`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
+`module` is the dotted module path (`""` for the root module). A top-level function keeps its doc and comments on its `Decl`; `FnDecl.doc` / `comments` are for methods inside an `impl`. An inherent `impl Item { … }` has `trait_name = ""`. `derive Trait for Type { … }` is an `ImplDecl` with `derived` set (its `methods` are the ones written by hand); `comptime fn` and `derived fn` set those flags of `FnDecl`; its `flags` byte is the sum of `1` for `terminates`, `2` for `noalloc` and `4` for a `lemma` (so a file that stored it as a `bool` reads the same), `derivable(t: Record) trait …` the trait's `derivable`. `derive Trait for function` (a lowercase name after `for`) is a `DeriveFnDecl` with `derived` set and no `exports` or `files` (what deriving makes, held only in memory: each exported symbol with its function, each file's extension with the function giving its part); its header `kind` is `8`. `items` is none for `use m` (the module, bound to `alias` or its last name) and the names of `from m use x, y as z` otherwise. An `extern c fn` is an `ExternItem.Fn` whose `FnDecl` has no body (`()`, so it has no body part) and whose name is the C symbol; `extern c type` is `ExternItem.Type`; `extern python "m" fn` is an `ExternItem.Fn` with the `Lang` `Python("m")`. Its header `kind` is `6`. `capability Name { ... }` is a `CapabilityDecl` (its functions written without `self`; their bodies are its body part, in order), `capability trait` sets the trait's `capability`, and a test's `params` are the capabilities it asks for.
 
 ### Types
 
@@ -217,6 +217,8 @@ Stmt    = 0 Let(Pattern, option(TypeExpr), Expr)   1 Var(name:str, option(TypeEx
         | 12 Invariant(Expr)                                 a loop's `invariant e`, first in its body
         | 13 Decreases(Expr)                                 a loop's `decreases e`, first in its body (with
                                                              its invariants); a function's, its body's first
+        | 14 AssertBy(cond:Expr, proof:Expr)                 assert e by lemma(args), assert e by { steps } (verify only)
+        | 15 Calc(list(Expr))                                calc { a == b; _ <= c } (verify only; `_` is Var("_"))
 
 Pattern = 0 Wild   1 Bind(str)   2 Int(int)   3 Str(str)   4 Bool(bool)
         | 5 Ctor(name:str, CtorPat)
@@ -260,7 +262,7 @@ the definition:
 
 Code is stored in this format, so a change to the tree (a new node, a new field) changes the files of every package and script in the repository. Until the format is settled, `VERSION` stays `1`, and the files are converted in the same change:
 
-1. With the strata from before the change, write each file's text: `strata view main --file F > F.st`, or `view --split DIR` for a package.
+1. With the strata from before the change, write each file's text: `strata view main --file F --proofs > F.st` (`--proofs`: with the proof material the default view hides), or `view --split DIR` for a package.
 2. Make the change and build.
 3. Read the text back in: `strata --file F edit < F.st` for a script, or `strata --file PKG/ edit MODULE < M.st` for each module of a package. Do the standard library first; its modules are `std.io`, …, and the compiled prelude, `runtime/prelude.strata`, is module `strata.compiled`.
 4. Run `strata upgrade`, which rewrites every package and script in the repository in the current form, updating the headers' dependency lists, and prints each file it rewrites.

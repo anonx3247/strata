@@ -53,6 +53,16 @@ An invariant naming a variable's value before the loop gets a binding just befor
 
 **Verdicts.** `verify`'s verdicts are kept outside the package, in `.git/strata/verdicts`, shared by every worktree of the repository. Outside a repository, they are kept in `~/.cache/strata/verdicts`. There is one file per verdict, keyed by the hash of a definition and everything it depends on, plus the check's name and the run's settings.
 
+## Proofs in views
+
+Proof material is stored with the code, but views hide it by default. That covers a loop's `invariant` and `decreases` clauses, a function's `decreases`, `assert … by` and `calc` statements, and lemmas. Plain `assert`s stay visible: they are checks that run.
+
+- `strata view` (a module, `--level 1` and `2`, the map) and the editor `strata edit` opens put a quiet marker where proof material is hidden: `// ⋯ 2 invariants`, `// ⋯ decreases`, `// ⋯ 1 proof`. A module's lemmas are left out, and the map doesn't list them. A lemma picked by name (`strata view sum_natural`) is shown.
+- `--proofs` shows everything (`strata view main --proofs`, `strata edit --proofs` in the editor). `--split DIR` always writes everything.
+- `strata edit` of text without the proof material puts the hidden parts back from the stored definition and drops the markers. A loop's clauses go back on the loop with the same head (the k-th `while i < n`, as stored) when the text gives that loop none. The function's `decreases` comes back when the text has none. An `assert … by` or `calc` goes back after the code statement it followed, or before the one it preceded, when that statement appears once. A part whose place changed or is gone is dropped, and a warning says so: `warning: in `sum_to`: dropped 2 clauses of `while i < n` (hidden in the view): that loop changed or is gone; …`. The search for invariants that runs on edit (`--no-search` skips it) then covers that loop. `strata edit --proofs` takes the text as complete: nothing is put back, so the proofs it leaves out are removed.
+- `strata diff` reports proof changes apart from code changes: `proofs changed` versus `body changed` (for a method, `` `m`: proofs changed ``). A lemma is listed as a `lemma`.
+- To round-trip a file through text, view it with `--proofs`: `strata --file F view main --proofs > a.st; strata --file b.strata edit < a.st`.
+
 ## State graphs: how a type's values move
 
 `strata view --graph T [--all] [--html] [--trace FILE]` is implemented in `compiler/graph`. `T` is a sum type, named by its short or qualified name.
