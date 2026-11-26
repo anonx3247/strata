@@ -57,7 +57,7 @@ fn main() {
 '''
 
 [[step]]
-strata = ["--file", "t.strata", "view", "main"]
+strata = ["--file", "t.strata", "view", "main", "--proofs"]
 has = ["  while i < n\n    invariant 2 * total == i * (i + 1) {\n"]
 
 [[step]]

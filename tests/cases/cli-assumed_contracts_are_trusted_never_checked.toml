@@ -37,7 +37,7 @@ test "the total of two" {
 
 # written and read back
 [[step]]
-strata = ["--file", "assumed.strata", "view", "main"]
+strata = ["--file", "assumed.strata", "view", "main", "--proofs"]
 has = [
   "  assumed requires xs.all(x -> x >= k)",
   "  assumed ensures it == k + 7",
