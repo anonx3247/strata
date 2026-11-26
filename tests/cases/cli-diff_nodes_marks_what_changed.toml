@@ -1,0 +1,40 @@
+# `strata diff --nodes`: each changed definition before and after, with the
+# nodes that changed marked, then each change by path; `--json` has them too
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "-m", "base"]
+text = '''
+fn f(x: Int) -> Int {
+  a := x + 1
+  match a {
+    0 => 1,
+    1 => 3,
+    _ => 2,
+  }
+}
+'''
+
+[[step]]
+strata = ["edit", "-m", "changed"]
+text = '''
+fn f(x: Int) -> Int {
+  a := x - 1
+  print(a)
+  match a {
+    1 => 3,
+    0 => 1,
+    _ => 2,
+  }
+}
+'''
+
+[[step]]
+strata = ["diff", "--step", "2", "--nodes"]
+golden = "tests/data/diff/nodes.out"
+
+[[step]]
+strata = ["diff", "--step", "2", "--json"]
+has = ['"nodes": [', '"kind": "edited"', '"before": "x + 1"', '"after": "x - 1"', '"kind": "moved"']
