@@ -110,16 +110,21 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="colo
     pane('contracts.strata', hl([V.contracts.types, V.contracts.discount, V.contracts.callers].join('\n\n'))) +
     pane('~/contracts', run(V.contracts.verify.cmd, V.contracts.verify.out), { cls: 'term' });
 
+  $('#ch-laws').innerHTML =
+    pane('examples/bank.strata', hl(V.behaviour.laws)) +
+    pane('~/bank', run(V.behaviour.bank_verify.cmd, V.behaviour.bank_verify.out), { cls: 'term' });
+
   const P = V.points;
   $('#ch-points').innerHTML =
     `<div><div class="cap bad">four tests</div>${pane('points.strata', hl(P.tests))}${pane('~/points', run(P.test.cmd, P.test.out), { cls: 'term' })}</div>` +
     `<div><div class="cap ok">one line</div>${pane('points.strata', hl(P.one))}${pane('~/points', run(P.verify.cmd, P.verify.out), { cls: 'term' })}</div>`;
 
-  const s0 = D.session[0], fill = D.session.find(s => s.title === 'It fills the hole');
+  const s0 = D.session[0], fill = D.session.find(s => s.title === 'It fills the hole'), bad = D.session.find(s => s.title === 'A broken edit is refused');
   const refund = s0.graph.find(d => d.name === 'refund').text;
   $('#ch-holes').innerHTML =
     pane('refund, for now', hl(refund)) +
-    pane('~/shop', run('strata holes', D.orders.holes) + '\n' + cmdLine(fill.cmd) + piped(fill.input.trim()) + term(fill.out), { cls: 'term' });
+    pane('~/shop', run('strata holes', D.orders.holes) + '\n' + cmdLine(fill.cmd) + piped(fill.input.trim()) + term(fill.out), { cls: 'term' }) +
+    pane('~/shop', cmdLine(bad.cmd) + piped(bad.input.trim()) + term(bad.out), { cls: 'term' });
 
   $('#ch-views').innerHTML = pane('$ strata view slice:Order --level 0', term(D.orders.levels[0].trimEnd()), { cls: 'term' });
 

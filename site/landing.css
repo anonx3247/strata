@@ -101,9 +101,17 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .block .lede { color: var(--muted); font-size: 17px; max-width: 70ch; margin: 0 0 28px; }
 .block .go { display: inline-block; margin-top: 22px; font: 500 14px var(--mono); color: var(--accent); }
 
-/* the tour, in short */
-.chapter { display: grid; grid-template-columns: minmax(0, .75fr) minmax(0, 1.5fr); gap: 48px; align-items: start; padding: 48px 0; border-top: 1px solid var(--line); }
-.chapter:first-of-type { margin-top: 30px; }
+/* what Strata changes for agents: two parts, each a few chapters */
+.part { margin-top: 56px; }
+.part-head { padding: 30px 34px; border: 1px solid var(--line2); border-radius: 18px; background: linear-gradient(120deg, #8ea2ff14, transparent 60%), #13151bd9; backdrop-filter: blur(8px); }
+.part-head h3 { font: 600 clamp(26px, 2.3vw, 36px)/1.15 var(--display); letter-spacing: -.02em; margin: 0 0 12px; }
+.part-head p { font-size: 18px; color: var(--text); max-width: 90ch; margin: 0; }
+.part-head .was { display: block; color: var(--muted); margin-bottom: 6px; }
+.chapter p.agent { margin-top: 14px; padding: 10px 14px; border-left: 2px solid var(--ok); background: #5fd07a0d; border-radius: 0 8px 8px 0; color: var(--text); font-size: 15px; }
+.chapter p.agent b { color: var(--ok); }
+
+.chapter { display: grid; grid-template-columns: minmax(0, .75fr) minmax(0, 1.5fr); gap: 48px; align-items: start; padding: 44px 0; }
+.chapter + .chapter { border-top: 1px solid var(--line); }
 .chapter .text { position: sticky; top: 30px; }
 .chapter .n { font: 600 12.5px var(--mono); color: var(--accent); letter-spacing: .04em; }
 .chapter h3 { font: 600 clamp(24px, 2vw, 30px)/1.2 var(--display); letter-spacing: -.02em; margin: 10px 0 12px; }

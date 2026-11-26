@@ -67,57 +67,81 @@
   </section>
 
   <section class="block story">
-    <div class="kicker">The tour, in short</div>
-    <h2>What it is like to write code in Strata.</h2>
+    <div class="kicker">What Strata changes for agents</div>
+    <h2>Agents write code fast. Strata makes what they write checkable.</h2>
 
-    <div class="chapter">
-      <div class="text">
-        <div class="n">01 · Types as contracts</div>
-        <h3>Constraints on types, promises on functions.</h3>
-        <p>A <code>Cents</code> is never negative, a <code>Percent</code> stays between 0 and 100. <code>requires</code> says what a caller must guarantee, <code>ensures</code> what the result keeps. The solver checks both sides: <code>sale</code> calls <code>discount</code> with a price it doesn't accept.</p>
-        <a class="go" href="tour.html#contracts">In the tour →</a>
+    <div class="part">
+      <div class="part-head">
+        <h3>Contract-based programming</h3>
+        <p><span class="was">Today, an agent shows its code works with tests: many of them, kept apart from the code, covering the cases it thought of.</span> In Strata, a contract is proven for every input, so there are fewer tests to write and fewer bugs that get through.</p>
       </div>
-      <div class="visual" id="ch-contracts"></div>
+      <div class="chapter">
+        <div class="text">
+          <div class="n">Contracts</div>
+          <h3>Constraints on types, promises on functions.</h3>
+          <p>A <code>Cents</code> is never negative, a <code>Percent</code> stays between 0 and 100. <code>requires</code> says what a caller must guarantee, <code>ensures</code> what the result keeps. The solver checks both sides: <code>sale</code> calls <code>discount</code> with a price it doesn't accept.</p>
+          <p class="agent"><b>For an agent</b>: what a function needs and promises is in its signature, so it can use code it hasn't read.</p>
+          <a class="go" href="tour.html#contracts">In the tour →</a>
+        </div>
+        <div class="visual" id="ch-contracts"></div>
+      </div>
+      <div class="chapter">
+        <div class="text">
+          <div class="n">Laws</div>
+          <h3>A trait says what it means.</h3>
+          <p>A law is a property of several calls together, stated once on the trait: a transfer neither makes nor loses money, and one that fails leaves nothing half done. Every implementation of <code>Ledger</code>, in memory or over a database, is proven against them.</p>
+          <p class="agent"><b>For an agent</b>: a backend it writes is checked against what the trait means, not only against its method types.</p>
+          <a class="go" href="tour.html#behaviour">In the tour →</a>
+        </div>
+        <div class="visual" id="ch-laws"></div>
+      </div>
+      <div class="chapter">
+        <div class="text">
+          <div class="n">Fewer tests</div>
+          <h3>Four tests, or one line.</h3>
+          <p>Tests check the values someone thought of. One <code>ensures</code> says the same for every input, and the solver proves it. Where it can't, a fuzzer runs the function against the contract, and the verdict says which of the two it was.</p>
+          <p class="agent"><b>For an agent</b>: less to write and maintain, and every input covered, not only the ones it tried.</p>
+          <a class="go" href="tour.html#points">In the tour →</a>
+        </div>
+        <div class="visual two" id="ch-points"></div>
+      </div>
     </div>
 
-    <div class="chapter">
-      <div class="text">
-        <div class="n">02 · Proving over testing</div>
-        <h3>Four tests, or one line.</h3>
-        <p>Tests check the values someone thought of. One <code>ensures</code> says the same for every input, and the solver proves it. Where it can't, a fuzzer runs the function against the contract, and the verdict says which of the two it was.</p>
-        <a class="go" href="tour.html#points">In the tour →</a>
+    <div class="part">
+      <div class="part-head">
+        <h3>Editing the syntax tree, not text</h3>
+        <p><span class="was">Today, an agent edits lines in text files: it searches its way around, breaks code in files it never opened, and hands over diffs nobody can read.</span> In Strata, code is stored as its syntax tree: the program always type-checks, even unfinished, and a change reads as what it is.</p>
       </div>
-      <div class="visual two" id="ch-points"></div>
-    </div>
-
-    <div class="chapter">
-      <div class="text">
-        <div class="n">03 · What a change reaches</div>
-        <h3>Unfinished code still checks.</h3>
-        <p>In this order system, <code>refund</code> isn't written yet: its body is a hole, <code>?refund_policy</code>, and everything around it still type-checks and verifies. <code>strata holes</code> gives an agent the task: the type to produce, what is in scope, the contract to meet. It fills the hole, and the edit is checked against everything it touches before it is stored.</p>
-        <a class="go" href="tour.html#build">In the tour →</a>
+      <div class="chapter">
+        <div class="text">
+          <div class="n">Always checked</div>
+          <h3>Unfinished code still checks.</h3>
+          <p>In this order system, <code>refund</code> isn't written yet: its body is a hole, <code>?refund_policy</code>, and everything around it still type-checks and verifies. <code>strata holes</code> gives the task: the type to produce, what is in scope, the contract to meet. Each edit is checked against everything it touches before it is stored; one that doesn't check is refused.</p>
+          <p class="agent"><b>For an agent</b>: a precise task to fill, and no broken state to dig out of.</p>
+          <a class="go" href="tour.html#build">In the tour →</a>
+        </div>
+        <div class="visual" id="ch-holes"></div>
       </div>
-      <div class="visual" id="ch-holes"></div>
-    </div>
-
-    <div class="chapter">
-      <div class="text">
-        <div class="n">04 · The code is the AST</div>
-        <h3>Only what it needs.</h3>
-        <p>Code is stored as a graph of definitions, not text files. An agent asks for the part it needs, at the detail it needs: a map of what uses what, the interfaces with their contracts, or the source. Every view is rendered from the same trees.</p>
-        <a class="go" href="tour.html#views">In the tour →</a>
+      <div class="chapter">
+        <div class="text">
+          <div class="n">Structural diffs</div>
+          <h3>A rename reads as a rename.</h3>
+          <p>Changes are made to definitions, so a diff lists what happened to them, not the lines that moved.</p>
+          <p class="agent"><b>For an agent</b>: its work can be reviewed by reading what changed, not hundreds of lines of noise.</p>
+          <a class="go" href="tour.html#diffs">In the tour →</a>
+        </div>
+        <div class="visual" id="ch-diff"></div>
       </div>
-      <div class="visual" id="ch-views"></div>
-    </div>
-
-    <div class="chapter">
-      <div class="text">
-        <div class="n">05 · Structural changes</div>
-        <h3>A rename reads as a rename.</h3>
-        <p>Because changes are made to definitions, a diff is a list of what happened to them, not of lines that moved.</p>
-        <a class="go" href="tour.html#diffs">In the tour →</a>
+      <div class="chapter">
+        <div class="text">
+          <div class="n">Less noise</div>
+          <h3>Only what it needs.</h3>
+          <p>An agent asks for the part of the code it needs, at the detail it needs: a map of what uses what, the interfaces with their contracts, or the source. Every view is rendered from the same trees.</p>
+          <p class="agent"><b>For an agent</b>: no searching through files to find its way, and less to read before it can start.</p>
+          <a class="go" href="tour.html#views">In the tour →</a>
+        </div>
+        <div class="visual" id="ch-views"></div>
       </div>
-      <div class="visual" id="ch-diff"></div>
     </div>
   </section>
 
