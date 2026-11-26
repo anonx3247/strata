@@ -1707,6 +1707,7 @@ No object is ever counted from two threads, so every count is a plain load and s
   - Eight tasks building and dropping their own records (no crossing): 8.07G to 8.19G instructions, 1.98G to 1.92G cycles: the same within noise.
   - Large values crossing: 80 spawns each capturing a list of 100,000 records (a string and a list of two strings each) that the parent keeps: 0.66G to 10.06G instructions (15x), 0.21G to 2.49G cycles (12x), 24 MB to 198 MB peak. Each spawn copies about 500,000 blocks, about 117M instructions, some 230 a block. A task that takes a value on its last use pays none of it.
   - `examples/tasks`' tests: 1.04 s both.
+- `tx.send(x)` is compiled at its call site (`method_call`), not through core.channel's `Sender.send`, which borrows its value and so made every send copy it: a fresh value now moves into the channel (found by `mem-profile`: a pipeline of 80,000 jobs made 1.6M objects, now 1.12M as on main).
 - Left (a plan):
   1. Borrowing from the parent scope (REBUILD.md L7, roots): children of a `scope` read the parent's values without copies once the parent can't count them meanwhile (scoped regions).
   2. A cheaper copy: one allocation for a list buffer of only the header's range, copies of flat blocks inline, a loop instead of recursion for chains.
