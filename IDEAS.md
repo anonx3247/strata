@@ -1683,6 +1683,10 @@ Measured. Three builds of each program by the same sources: counted (C), 2b's co
 - `tasks` peaks 13 MB higher: its rows are lists in the tasks' function regions, held until each task returns.
 - Building the compiler with `--regions`: 69 s and 2.2 GB peak (B: 43 s and 2.5 GB, on a warmer cache).
 
+Decision (user, 2026-11-26): not merged, neither 2b nor lists in regions: no gain on `strata check` of the compiler. The compiler's remaining counted objects are lists and dicts the runtime grows, in recursions through closures, in folds joining lists with `+`, and through `mut` parameters. The branches `regions-2b` (#581) and `regions-lists` stay as the record.
+
+Outputs that differed from counting, during the measurements: none in the final runs, where every benchmark gives counting's output and frees every object in check mode under C, B and L. An earlier run printed nothing for `strings`, `trees` and the two adversarial programs under B and L in check mode. That was a bug, now fixed: `dest_tag` used an `I64` literal above 2^62, which compiles to a call of `strata_int_lit`, and that recursed until the stack ran out (exit 132) in every check-mode program with frame regions. Counting never calls it, so its outputs were right.
+
 Recommendation: L does not clearly speed up `strata check`. With 2b it costs 1% more instructions than counting on all threads and 3.6% with one thread, for the same cycles on all threads. Lists in regions are no reason to merge 2b now. They pay where lists are built and dropped by direct calls (`trees`, `tasks`), as 2b's destinations do.
 
 Decisions here (the user's to revisit):
