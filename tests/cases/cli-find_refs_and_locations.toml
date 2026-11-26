@@ -70,7 +70,7 @@ strata = ["--file", "p", "refs", "same_ids", "--depth", "3", "--used-by"]
 stdout = '''
 jobs.same_ids
 └─ jobs.run_worker  call body/2/cond/callee
-   └─ drain  call body/left/callee
+   └─ drain  call body/args/0/callee
       └─ main  call body/1/args/0/callee
 '''
 
@@ -124,7 +124,7 @@ fails = true
 [[step]]
 strata = ["check", "c.strata"]
 fails = true
-has = ["error in f: unknown variable `undefined_fn`\n--> f@", "/body/right/callee\n| fn f(t: T) -> Int {\n|   t.b + undefined_fn(2)\n|         ^^^^^^^^^^^^\n| }\n"]
+has = ["error in f: unknown variable `undefined_fn`\n--> f@", "/body/args/1/callee\n| fn f(t: T) -> Int {\n|   t.b + undefined_fn(2)\n|         ^^^^^^^^^^^^\n| }\n"]
 
 # on a terminal: the location dim, the code highlighted, the marks in their color
 [[step]]

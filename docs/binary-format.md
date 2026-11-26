@@ -217,6 +217,8 @@ UnOp     = 0 -  1 !
 
 `BigInt` is an integer literal too large for 64 bits, as its decimal digits.
 
+Arithmetic and comparison are stored as calls of their traits' methods (`core.ops`), never as `Bin` or `Un`: `a + b` is `Call(Var("Add.add"), [a, b])`, `a - b` `Sub.sub`, `a * b` `Mul.mul`, `a / b` `Div.div`, `a % b` `Rem.rem`, `-a` `Call(Var("Neg.neg"), [a])`, `a == b` `Eq.eq`, `a != b` `Un(!, Call(Var("Eq.eq"), [a, b]))`, `a < b` `Ord.lt`, `<=` `Ord.le`, `>` `Ord.gt`, `>=` `Ord.ge`. These callee names are never resolved: they always mean core's traits, whatever a module calls `Add`. `Bin` holds only `&& || ==> & | ^ << >>`, and `Un` only `!`; the reader still accepts the other tags, which the writer turns into calls.
+
 ### Statements and patterns
 
 ```text

@@ -1,0 +1,202 @@
+# Operators are trait methods (core.ops): `a + b` is stored as the call
+# `Add.add(a, b)` and shown as `a + b`. A type gets an operator by
+# implementing its trait; a type parameter bound by the trait has it too.
+
+[[step]]
+strata = ["--file", "o.strata", "edit"]
+text = '''
+/// A point or a move in the plane.
+type Vec2 = { x: Int, y: Int }
+
+impl Add for Vec2 {
+  fn add(self, other: Vec2) -> Vec2 = Vec2 { x: self.x + other.x, y: self.y + other.y }
+}
+
+impl Sub for Vec2 {
+  fn sub(self, other: Vec2) -> Vec2 = Vec2 { x: self.x - other.x, y: self.y - other.y }
+}
+
+impl Mul for Vec2 {
+  fn mul(self, other: Vec2) -> Vec2 = Vec2 { x: self.x * other.x, y: self.y * other.y }
+}
+
+impl Neg for Vec2 {
+  fn neg(self) -> Vec2 = Vec2 { x: -self.x, y: -self.y }
+}
+
+/// An amount of money, in cents.
+type Money = { cents: Int }
+
+impl Add for Money {
+  fn add(self, other: Money) -> Money
+    ensures it.cents == self.cents + other.cents
+  {
+    Money { cents: self.cents + other.cents }
+  }
+}
+
+impl Ord for Money {
+  fn lt(self, other: Money) -> Bool
+    ensures it == (self.cents < other.cents)
+  {
+    self.cents < other.cents
+  }
+}
+
+/// Two amounts are equal when they round to the same dollar.
+impl Eq for Money {
+  fn eq(self, other: Money) -> Bool = self.cents / 100 == other.cents / 100
+}
+
+fn double(m: Money where it.cents >= 0) -> Money
+  ensures it.cents == 2 * m.cents
+  ensures !(it < m)
+{
+  m + m
+}
+
+/// The sum of `xs`, from `zero`: any type with `+`.
+fn total[T: Add](xs: List[T], zero: T) -> T {
+  mut acc := zero
+  for x in xs {
+    acc = acc + x
+  }
+  acc
+}
+
+/// The larger of `a` and `b`: any type with `<`.
+fn larger[T: Ord](a: T, b: T) -> T = if a < b {
+  b
+} else {
+  a
+}
+
+fn main() {
+  a := Vec2 { x: 1, y: 2 }
+  b := Vec2 { x: 3, y: -1 }
+  c := a + b * b - -a
+  print(f"{c.x} {c.y}")
+  m := Money { cents: 150 } + Money { cents: 20 }
+  print(f"{m.cents} {m < Money { cents: 200 }} {m > Money { cents: 200 }} {m >= m} {m <= m}")
+  print(f"{m == Money { cents: 199 }} {m != Money { cents: 100 }} {m != Money { cents: 250 }}")
+  print(f"{double(m).cents}")
+  print(f"{total([1, 2, 3], 0)} {total([a, b], Vec2 { x: 0, y: 0 }).x} {total([m, m], Money { cents: 0 }).cents}")
+  print(larger("b", "a"))
+  print(f"{larger(3, 7)} {larger(m, Money { cents: 900 }).cents}")
+}
+'''
+
+[[step]]
+strata = ["--file", "o.strata", "run"]
+stdout = "11 5\n170 true false true true\ntrue false true\n340\n6 4 340\nb\n7 900\n"
+
+# the impls' contracts prove `double`'s
+[[step]]
+strata = ["--file", "o.strata", "verify", "--no-cache", "double", "--require", "proven"]
+has = ["✓ double                   proven (2 checks)"]
+
+# stored as calls of the traits' methods, no operator nodes
+[[step]]
+strata = ["tree", "o.strata"]
+has = ["Call { callee: Var(\"Add.add\"), args: [Var(\"a\"), Call { callee: Var(\"Mul.mul\")", "Unary { op: Not, operand: Call { callee: Var(\"Eq.eq\")", "Call { callee: Var(\"Neg.neg\"), args: [Var(\"a\")] }"]
+lacks = ["Binary { op: Add", "Binary { op: Less", "Unary { op: Neg"]
+
+# and shown as operators
+[[step]]
+strata = ["--file", "o.strata", "view", "main"]
+has = ["c := a + b * b - -a", "{m != Money { cents: 100 }}", "{m >= m}"]
+
+# an operator on a type without the trait's impl
+[[step]]
+strata = ["--file", "e.strata", "edit"]
+any_code = true
+text = '''
+type P = { x: Int }
+
+fn f(a: P, b: P) -> Bool = a < b
+
+fn g(a: P) -> P = a * a
+
+fn h(a: P, b: P) -> Bool = a == b
+'''
+has = ["error in f: `<` on `P`: it needs `impl Ord for P`", "error in g: `*` on `P`: it needs `impl Mul for P`"]
+lacks = ["error in h"]
+
+# operands of two types: an `impl` of the trait with arguments (the right
+# operand's type, the result's), one per pair of types; `3 * v` on `Int`
+[[step]]
+strata = ["--file", "mx.strata", "edit"]
+text = '''
+type Money = { cents: Int }
+
+impl Add for Money {
+  fn add(self, other: Money) -> Money = Money { cents: self.cents + other.cents }
+}
+
+impl Mul[Int, Money] for Money {
+  fn mul(self, k: Int) -> Money
+    ensures it.cents == self.cents * k
+  {
+    Money { cents: self.cents * k }
+  }
+}
+
+type Vec2 = { x: Float, y: Float }
+
+impl Mul[Float, Vec2] for Vec2 {
+  fn mul(self, k: Float) -> Vec2 = Vec2 { x: self.x * k, y: self.y * k }
+}
+
+impl Mul[Vec2, Vec2] for Int {
+  fn mul(self, v: Vec2) -> Vec2 = Vec2 { x: float(self) * v.x, y: float(self) * v.y }
+}
+
+fn triple(m: Money) -> Money
+  ensures it.cents == 3 * m.cents
+{
+  m * 3
+}
+
+fn main() {
+  m := Money { cents: 25 }
+  print((m * 4 + m).cents)
+  v := Vec2 { x: 1.0, y: 2.0 }
+  w := v * 0.5
+  u := 3 * v
+  print(f"{w.x} {w.y} {u.x} {u.y}")
+  print(triple(m).cents)
+}
+'''
+
+[[step]]
+strata = ["--file", "mx.strata", "run"]
+stdout = "125\n0.5 1.0 3.0 6.0\n75\n"
+
+# the impl is verified as the function it becomes, and `triple` through it
+[[step]]
+strata = ["--file", "mx.strata", "verify", "--no-cache", "triple,Money.*"]
+has = ["✓ $Mul$Money$Int           proven (1 check)", "✓ triple                   proven (1 check)"]
+
+# generic code on the built-in types calls core's impls, inline
+[[step]]
+strata = ["--file", "g.strata", "edit"]
+text = '''
+fn total[T: Add](xs: List[T], zero: T) -> T {
+  mut acc := zero
+  for x in xs {
+    acc = acc + x
+  }
+  acc
+}
+
+fn main() {
+  print(total([1, 2, 3], 0))
+  print(total([1.5, 2.0], 0.0))
+  print(3.add(4))
+  print(i32_add(1, 2))
+}
+'''
+
+[[step]]
+strata = ["--file", "g.strata", "run"]
+stdout = "6\n3.5\n7\n3\n"
