@@ -58,7 +58,7 @@ strata = ["--file", "dest.strata", "build", "--no-verify", "-o", "dest-plain"]
 [[step]]
 run = ["./dest-plain"]
 memory = true
-stdout = "116186 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
+stdout = "116213 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
 
 [[step]]
 strata = ["--file", "dest.strata", "build", "--no-verify", "--regions", "-o", "dest-regions"]
@@ -66,11 +66,11 @@ strata = ["--file", "dest.strata", "build", "--no-verify", "--regions", "-o", "d
 [[step]]
 run = ["./dest-regions"]
 memory = true
-stdout = "116186 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
+stdout = "116213 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
 
 [[step]]
 strata = ["--file", "dest.strata", "run", "--regions"]
-out = "116186 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
+out = "116213 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
 
 [[step]]
 strata = ["--file", "dest.strata", "build", "--no-verify", "--regions", "--emit-llvm"]

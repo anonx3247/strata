@@ -174,6 +174,25 @@ fn in_tasks(rows: List[P]) -> Int {
   sum(sums)
 }
 
+/// Gives back its argument itself on one branch: the string it is given
+/// is part of its result.
+fn label_of(path: String, message: String) -> String {
+  if path == "" {
+    message
+  } else {
+    f"{path}: {message}"
+  }
+}
+
+fn check_names(fs: List[String], path: String) -> Result[Int, String] {
+  for x in fs {
+    if x == "bad" {
+      return Err(label_of(path, f"unknown {x}"))
+    }
+  }
+  Ok(len(fs))
+}
+
 fn task_work(rows: List[P], k: Int) -> Int {
   mut s := 0
   for r in rows {
@@ -201,6 +220,12 @@ fn main() {
   total += loops(100) + gather(50) + len(build(30)) + changed(4) + lent(5)
   total += len(up(300)) + byte_len(down(300)) + deep(300)
   total += drive(50) + in_tasks(build(5))
+  for path in ["", "top"] {
+    total += match check_names(["a", "bad"], path) {
+      Ok(n) => n,
+      Err(e) => byte_len(e),
+    }
+  }
   rows := build(4)
   sums := scope {
     mut hs := []
