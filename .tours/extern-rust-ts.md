@@ -69,15 +69,19 @@ settings_at settings_stamp: `ts.path` and `rust.library`, kept out of the stamp
 
 # Rust: a crate cargo builds, loaded in the process
 `cargo.shim` writes Cargo.toml and lib.rs; `cargo.build` runs cargo;
-`rust_built` calls it from `run`, `test` and `build`. A Rust function
+`rust_built` calls it from `run`, `test` and `build`. cargo makes a shared
+library, which `run` and `test` load, and a static one, which `rust_linked`
+links into a built executable, so the executable needs nothing from
+`.strata` at run time. A Rust function
 returning `Result<T, E>` answers its `Err` as `Failed` (autoref
 specialization in the shim's head); panics are caught.
 
-```strata-diff cargo.shim cargo.build rust_built std.rust.RustError std.rust.call
+```strata-diff cargo.shim cargo.build rust_built rust_linked std.rust.RustError std.rust.call
 ```
 
 ```strata-also
-cargo.*: the crate's location, the declarations, symbols, the shim's head
+cargo.*: the crate's location, its two libraries, the declarations, symbols, the shim's head
+linked: the C compiler links a program with `extern rust`
 std.rust.*: the rest of the module, as std.python's
 run_command test_command build_command: build the crates first
 use*cargo: the root module's import
