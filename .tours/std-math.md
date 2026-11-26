@@ -74,3 +74,16 @@ Four interleaved partial sums. The bounds are clamped up front (`clamp`), so no 
 ```strata-also
 std.array.sum_run_i64 std.array.dot_run_i64 std.array.sum_run_i32 std.array.dot_run_i32: the integer copies
 ```
+
+# List.grow
+`mut xs.grow(n)` makes room for `n` more elements, and the list's value doesn't change (`ensures xs == old xs`). In core, a list held once grows its buffer where it can, and a shared one is copied with the room. Codegen does what `push_in_place` does. The prover, `eval`, the uniqueness analysis and roots each learn the name.
+
+```strata-diff codegen.grow_in_place codegen.grow_size_check smt.builtin
+```
+
+```strata-also
+codegen.update_in_place codegen.list_builtin codegen.is_list_builtin: `grow` routed
+smt.changed builtins.changing builtins.changes_as: `mut xs.grow(n)` is `xs = grow(xs, n)`
+unique.assign_flow unique.in_place_op roots.growing: an update in place
+eval.builtin eval.builtins: at compile time, the list itself
+```
