@@ -1,0 +1,51 @@
+# smt: a record stored in a dict is its constructor's term (`term_of`), an
+# empty list of a sort is one term (`empty_list`), and a term met again is
+# the same name (`share`): the same record written twice is the same entry.
+# Before, each use was a new unknown equal to the record only on its path,
+# and the two dicts were not shown equal.
+
+[[step]]
+save = "bags.strata"
+text = '''
+type Job = { id: String, n: Int }
+
+type Bag = { name: String, jobs: List[Job] }
+
+fn fresh_bag(d: Dict[String, Bag], k: String) -> Dict[String, Bag] {
+  d.with(k, Bag { name: k, jobs: [] })
+}
+
+lemma same_bags(d: Dict[String, Bag], k: String)
+  ensures fresh_bag(d, k) == d.with(k, Bag { name: k, jobs: [] })
+
+type St =
+  | Idle
+  | Busy { by: String, until: Int }
+
+type Ent = { id: String, st: St, n: Int }
+
+fn lock(
+  a: Dict[String, Ent],
+  b: Dict[String, Ent],
+  s: Set[String],
+  k: String,
+  w: String,
+) -> Dict[String, Ent]
+  requires a.excluding(s) == b.excluding(s)
+  ensures it.excluding(s.with(k)) == b.excluding(s.with(k)) {
+  match a.get(k) {
+    Some(e) => if e.st == Idle {
+      ne := Ent { ..e, st: Busy { by: w, until: e.n }, n: e.n + 1 }
+      assert a.with(k, ne).get(k) == Some(ne)
+      assert a.with(k, ne).excluding(s.with(k)) == b.excluding(s.with(k))
+      return a.with(k, ne)
+    },
+    None => (),
+  }
+  a
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$TMP\" && STRATA_CACHE=\"$TMP/cache\" perl -e \"alarm 60; exec @ARGV\" \"$STRATA\" --file bags.strata verify --no-cache 2>&1"]
+has = ["same_bags                proven", "lock                     proven"]
