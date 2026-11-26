@@ -4,112 +4,122 @@ title: strata tour, folded and drawn
 
 # Why
 Tours of real PRs showed three problems. A PR that adds methods gave pages of
-`+` lines: every added body shown whole. A change was hard to picture without
-hand-drawn diagrams. And the tour skill went straight from the objective to the
-code, with nothing on the system the change sits in or on its idea.
+`+` lines, because every added body was shown whole. A change was hard to picture
+without hand-drawn diagrams. And the tour skill went straight from the objective
+to the code, saying nothing of the system the change sits in or of its idea.
 
-Two smaller ones came with them: a body wrapped in a new `for` showed every line
-inside as changed (only its indentation moved), and added and removed lines lost
+Reading them raised more: a page embedded every helper's diff beside the key
+changes, Enter could only open the first fold on the screen, a body wrapped in a
+new `for` showed every line inside as changed, and added and removed lines lost
 their syntax colors.
 
-So: everything that can dominate a page starts folded, a tour can show graphs
-Strata computes, the skill asks for Background and Intuition pages, compiler/diff
-ignores indentation, and diff lines keep their colors on a tinted band.
+So pages start folded to their shape, a fold cursor opens any fold, a page diffs
+only the definitions that carry its point (`strata-also` names the rest), a tour
+can show graphs Strata computes, the skill asks for Background and Intuition
+pages, compiler/diff ignores indentation, and diff lines keep their colors.
 
 # Background: how a tour is drawn
 A tour file is parsed into pages of blocks. compiler/diff gives each changed
 definition as a `Change`: a header (mark, name, `what` words) and its lines, in
 which unchanged runs are already `fold` lines. A page is drawn as rows; a row may
-open and close a fold, and Enter toggles the first fold on the screen.
+open and close a fold.
 
-```strata tour.Row tour.focused
+```strata tour.Row
 ```
 
-Browsing goes through `step`, proven to keep the page and the list's cursor among
-the pages. It is unchanged here.
+Keys go through `step`, a view and a key to the next view, proven to keep the
+page and the list's cursor among the pages. Before this PR, Enter toggled the
+first fold on the screen (`focused`).
 
-```strata tour.step
+```strata tour.focused
 ```
 
 # Intuition
 A page should show its shape first. Say a PR adds `cancel` (6 lines) and changes
-one line of `ship` (40 lines). Before, the page held 6 + 40 lines. Now it holds
-`cancel`'s signature and a fold `body: 5 lines`, then `ship`'s changed line with a
-line of context around it, its 37 unchanged lines in folds. The reader opens what
-they want.
+one line of `ship` (40 lines). The page shows `cancel`'s signature and a fold
+`body: 5 lines`, then `ship`'s changed line with a line of context, its 37
+unchanged lines in folds. Tab moves a cursor from fold to fold and Enter opens the
+one selected.
 
-A fold's id now holds its page's number (`2-0:body`), so the set of open folds
-remembers each page's folds while the reader moves between pages.
-
-Where the code moves the values of a sum type, `strata-graph` draws the moves.
-This PR's own `Block` gains variants but no function moves values between them,
-so the case `cli-tour_shows_graphs_refs_and_bodies` shows one instead: adding
-`cancel` adds the move `Pending -> Cancelled`.
-
-`strata-refs` shows where a definition sits, one level each way:
+The diff of a page names few definitions: here, `change_rows` is the point of the
+folding, and what it calls are its helpers, listed in a `strata-also` block.
 
 ```strata-refs tour.change_rows
 ```
 
+Where the code moves the values of a sum type, a `strata-graph` block draws the
+moves. No sum type of this PR has such moves; the case
+`cli-tour_shows_graphs_refs_and_bodies` shows one: adding `cancel` adds the move
+`Pending -> Cancelled` to `Order`.
+
 # Folded by default
-An added or removed definition keeps its interface, as `view --level 1` prints it,
-with its doc's first sentence: compiler/diff's items have no declaration, so
-`package_changes` looks it up in the head (added) or the base (removed), as
-written, and the cache keeps it (`F` records, `tour-changes-2`).
+An added or removed definition shows its doc's first sentence and its interface,
+its body behind a fold. A changed one keeps its changed lines and their context,
+and folds unchanged runs, its doc's change and the rest of any changed run longer
+than 12 lines; past 20 changed lines, the rest of the definition is one fold.
+`full` on the fence line opens them.
 
-```strata-diff tour.Change tour.interface_of tour.code_lines tour.package_changes tour.changes_text tour.changes_from tour.test*kept*
+```strata-diff tour.change_rows tour.line_rows tour.interface_of
 ```
 
-The rows: `change_rows` folds the doc change and an added or removed body;
-`line_rows` folds unchanged runs and cuts a changed run of more than 12 lines to
-its first 6. `full` on the fence line opens them all. A `strata` block folds its body the
-same way (`code_rows`). A body of at most 3 lines is never folded.
-
-```strata-diff tour.change_rows tour.line_rows tour.code_rows tour.fold_row tour.marker tour.is_changed tour.hunk_limit tour.hunk_shown tour.short_body
+```strata-also
+tour.Change tour.code_lines tour.package_changes tour.changes_text tour.changes_from tour.test*kept*: the interface, looked up when the diff is taken, kept in the cache
+tour.code_rows tour.fold_row tour.marker tour.is_changed tour.hunk_limit tour.hunk_shown tour.changed_budget tour.short_body: drawing the folds
+tour.Look tour.page_rows tour.printed tour.browse tour.replayed tour.last_page: fold ids per page; printed, every fold closed
 ```
 
-Printed output is what a reader first sees at a terminal: every fold closed. Fold
-ids hold the page's number (`page_rows`); `Look` lost `all_open`.
+# A fold cursor
+`View` gains the fold selected. `selected` is it while it is on the screen, else
+the first fold shown, so scrolling moves the selection with the screen. Tab and
+`]` select the next fold, Shift-Tab and `[` the one before, scrolling it into
+view; Enter opens or closes it. `step` is still proven.
 
-```strata-diff tour.Look tour.block_rows tour.page_rows tour.printed tour.screen tour.browse tour.replayed tour.last_page
+```strata-diff tour.View tour.step tour.selected
+```
+
+```strata-also
+tour.next_fold tour.scrolled tour.screen tour.test*cursor*: finding, scrolling to and drawing the selected fold
+```
+
+# Supporting changes, named and not diffed
+`strata-also` takes lines like `strata-routine`'s: names, a colon, what they do for
+the page. Each line shows folded as a count; opened, each change's diff opens from
+its own line. `--check` counts its names as covered.
+
+```strata-diff tour.Block tour.problems
+```
+
+```strata-also
+tour.parse_tour tour.Names tour.names_in tour.left_out tour.graph_types tour.test*pages*: reading the new blocks and their names
+tour.block_rows: drawing each block
 ```
 
 # Graphs and refs
-Two blocks, parsed with the others; `full` is read on the fence line only.
+A graph needs the solver, which compiler/main has. So the command is split into
+`prepare` (read the tour, find the changes) and `show`. Between them, main's
+`tour_graph` computes each graph (never for `--check`), cached by the package's
+state and the type. `strata-refs` reads `store.graph` once, when a refs block is
+there.
 
-```strata-diff tour.Block tour.parse_tour tour.Names tour.names_in tour.graph_types tour.left_out tour.test*pages*
+```strata-diff tour_graph tour.graph_rows tour.refs_rows
 ```
 
-A graph needs the solver, which compiler/main has: the command is split into
-`prepare` (read the tour, find the changes) and `show`, and main's `tour_command`
-computes each graph in between (`tour_graph`, not for `--check`), cached by the
-package's state (`Side.state`) and the type. `command` is gone: main calls the two.
-
-```strata-diff tour.Side tour.side_range tour.Prepared tour.prepare tour.show tour.command tour.Model tour.GraphShown tour_command tour_graph
-```
-
-```strata-diff tour.graph_rows tour.graph_shown_text tour.graph_shown_from tour.test*graphs*
-```
-
-`strata-refs` reads `store.graph` over the tour's packages, computed once when a
-refs block is there.
-
-```strata-diff tour.refs_rows tour.wrapped_items
-```
-
-`--check` knows the new blocks: a refs name must be a definition, a graph type a
-sum type.
-
-```strata-diff tour.problems
+```strata-also
+tour.Side tour.side_range tour.Prepared tour.prepare tour.show tour.command tour.Model tour.GraphShown tour_command: prepare, main adds the graphs, show
+tour.graph_shown_text tour.graph_shown_from tour.test*graphs* tour.wrapped_items: caching graphs, wrapping refs
 ```
 
 # Indentation is not a change
 compiler/diff pairs lines by a longest common subsequence. It now compares them
-without their leading whitespace, so a line only indented anew is kept as
-unchanged and folds with its neighbours. Inside a changed line, a run of spaces is
-never a changed word, and a coarse replacement never adds spaces alone.
+without their leading whitespace, so a line indented anew is unchanged and folds
+with its neighbours. A piece of a changed line that is only spaces is never a
+change.
 
-```strata-diff diff.line_diff diff.fine_segments diff.segments diff.test*spaces*
+```strata-diff diff.line_diff diff.fine_segments
+```
+
+```strata-also
+diff.segments diff.test*spaces*: a coarse replacement never adds spaces alone
 ```
 
 # Diff colors
@@ -118,12 +128,17 @@ line keeps its syntax colors on a dark band, the mark bold green or red; plain c
 on the band is light gray, so it reads on dark and light terminals alike. Without
 color nothing changes.
 
-```strata-diff highlight.diff_line highlight.tinted highlight.test*colored*
+```strata-diff highlight.tinted highlight.diff_line
+```
+
+```strata-also
+highlight.test*colored*: the colored lines still read as the text
 ```
 
 # The skill
-The tour skill asks for Why, then Background, Intuition and the Code pages, says
-how pages read folded, and documents `full`, `strata-graph` and `strata-refs`.
+The tour skill asks for Why, then Background, Intuition and the Code pages. A Code
+page diffs the 3 or 4 definitions that carry its point and lists the rest in
+`strata-also`.
 
 ```strata-diff skill.tour_skill_text
 ```
