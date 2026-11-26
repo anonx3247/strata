@@ -26,7 +26,7 @@ changed
       }
     }
   edited body/0/value: x + 1  →  x - 1
-  added body/1
-  moved body/1/arms/0 → body/2/arms/1: 0 => 1  →  0 => 1
+  added body/1: print(a)
+  moved body/1/arms/0 → body/2/arms/1
 
 --- exit 0
