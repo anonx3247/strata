@@ -1,0 +1,29 @@
+# A program with state (a counter, a dictionary, a list of records, a
+# closure, a task with a channel, a frame that runs for a while) under
+# `strata run --live`, through 28 edits: bodies changed, helpers added and
+# changed, a record's and the state's layout (refused), a signature, a
+# check failure, `main`, a counterexample (refused), the code a running
+# frame or a task is in, a closure's maker, a lambda inside a function.
+# harness.py checks every line the program prints against a model of the
+# code running at that moment (`plain`: the same commands, no edits, so the
+# model is checked against the program first).
+needs = "python3"
+
+[[step]]
+write = "harness.py"
+from = "harness.py"
+
+[[step]]
+write = "base.st"
+from = "base.st"
+
+[[step]]
+run = ["python3", "-I", "harness.py", "$STRATA", "plain"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["plain: 72 lines as the model says, 0 wrong, exit 0"]
+
+[[step]]
+run = ["python3", "-I", "harness.py", "$STRATA", "live"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["live: 72 lines as the model says, 0 wrong, exit 0", "edit 28 (keep, step): swap"]
+lacks = ["UNEXPECTED", "MISMATCH"]
