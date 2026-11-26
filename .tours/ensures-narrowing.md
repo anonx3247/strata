@@ -46,7 +46,7 @@ into `TVariants`. `infer_call` records the call for a `match` on it
 ```
 
 ```strata-also
-check.Types check.types_of: each function's parameters and facts about its result
+check.Types check.types_of: each function's and method's parameters and facts about its result
 check.narrowed_result check.conjuncts check.result_variants check.variants_named: the narrowed type, the facts' parts
 walk.says_variant_of_it walk.tests_it walk.result_facts: which facts speak of the result's variant
 check.Inf: the last call's variants, for a match on it
@@ -81,6 +81,41 @@ later.
 check.variable_is check.narrowed_env: the variable and its variants, the branch's types
 check.unify: binds a type variable to the narrowed value's sum
 check.infer_block: a `mut` variable gets the sum
+```
+
+# Methods
+An `impl` method's facts (with its trait's) are kept under `T.m`, a trait's
+under `Tr.m`; `infer_method` narrows as `infer_call` does. Each call takes a
+number when it starts, so a match or a field read knows the record in
+`last_call` is its own call's.
+
+```strata-diff check.infer_method check.method_facts_key
+```
+
+# `Option` and `Result`
+`TVariants` keeps the sum's type arguments, so a generic sum's arms and
+`is` tests narrow it, and a narrowed value unifies as its sum.
+
+```strata-diff check.Ty check.arm_variants check.sum_variants check.fits
+```
+
+```strata-also
+check.bind_typed: a narrowed value's arguments for its arms' payloads
+check.ty_text: a narrowed value written with its arguments
+check.dropped_results: a narrowed `Result` thrown away still warns
+check.variants_named: generic sums' variants too
+```
+
+# Field reads only verify decides
+A read of a call whose facts left a condition open takes the field of the
+variants left that have it; `verify` proves the result is one of them, and
+the compiled code checks it until then.
+
+```strata-diff smt.has_field codegen.has_field_check check.with_field
+```
+
+```strata-also
+codegen.get_field: the check on a call's result
 ```
 
 # A use
