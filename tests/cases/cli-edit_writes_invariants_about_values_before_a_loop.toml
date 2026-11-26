@@ -20,7 +20,7 @@ has = [
 ]
 
 [[step]]
-strata = ["--file", "q.strata", "view", "main"]
+strata = ["--file", "q.strata", "view", "main", "--proofs"]
 has = [
   '''  mut at := from
   mut s := ""

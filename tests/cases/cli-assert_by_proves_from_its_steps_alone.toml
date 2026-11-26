@@ -1,0 +1,39 @@
+# `assert e by lemma(args)` and `assert e by { steps }`: `e` is proven in a
+# query of its own, from the path's conditions and the facts its steps
+# give (a lemma's `ensures`, a step's `assert`), none of the function's
+# other facts; then it is known, as one fact. A lemma's `requires` is
+# checked where it is called. `calc { a == b; _ <= c }` proves each step
+# alone. std.lemmas' frames prove that a loop writing some keys of a dict
+# leaves the others alone. Proofs compile to nothing.
+
+[[step]]
+strata = ["--file", "f.strata", "edit", "--no-search"]
+from = "frames.st"
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-race", "--no-cache"]
+has = [
+  "✓ zeroed ",
+  "✓ plain ",
+  "~ alone ",
+  "not proven: assert y > x by …",
+  "✓ chain ",
+  "~ bad_step ",
+  "not proven: calc step 1 + x <= x",
+  "~ outside ",
+  "not proven: precondition of `double_le`: requires a <= b",
+]
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "chain", "--no-race", "--no-cache", "--checks"]
+has = [
+  "proven:  assert x + x <= y + y by …",
+  "proven:  precondition of `double_le`: requires a <= b",
+  "proven:  calc step x + x <= y + y",
+  "proven:  calc step y + y == 2 * y",
+  "proven:  calc x + x <= 2 * y",
+]
+
+[[step]]
+strata = ["--file", "f.strata", "run"]
+has = ["0 6"]

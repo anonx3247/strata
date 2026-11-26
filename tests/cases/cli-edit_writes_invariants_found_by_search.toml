@@ -20,7 +20,7 @@ has = [
 lacks = ["in `early`: added"]
 
 [[step]]
-strata = ["--file", "q.strata", "view", "main"]
+strata = ["--file", "q.strata", "view", "main", "--proofs"]
 has = ['''  while lx.at < n && char_at(lx, lx.at) != "\"" && col >= 0
     invariant lx.at <= n {''', "  while i < 10 {"]
 

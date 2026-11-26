@@ -1,0 +1,90 @@
+# A `lemma` exists only for `verify`: its `ensures` is a fact, proven once
+# from its `requires` and its body's steps, and a call of it in a proof
+# gives exactly that fact. A recursive lemma is a proof by induction: its
+# recursive calls give the fact for the subtrees, and it must be shown to
+# terminate like any function. `sum(t) >= 0` for every tree needs that
+# induction: plain `verify` sees through `sum` two levels deep, so
+# `total_plain`'s invariant isn't proven, while `total`, with
+# `assert sum(t) >= 0 by sum_natural(t)`, is. Lemmas are never compiled:
+# the program runs without them.
+
+[[step]]
+strata = ["--file", "t.strata", "edit", "--no-search"]
+from = "trees.st"
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache"]
+has = [
+  "✓ sum_natural ",
+  "✓ total ",
+  "~ total_plain ",
+  "not proven: invariant `s >= 0` after a pass of `while i < len(ts)`",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+has = ["2"]
+
+# a false lemma: the solver's counterexample is its verdict (a lemma is
+# never run, so nothing is fuzzed)
+[[step]]
+strata = ["--file", "t.strata", "edit", "--no-search"]
+text = '''
+pub lemma wrong(a: Int)
+  ensures a * a > a
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "wrong", "--no-race", "--no-cache"]
+has = ["✗ wrong ", "Ensures violation (found by the solver)", "not proven: ensures a * a > a"]
+lacks = ["fuzz"]
+code = 1
+
+# an empty body: proven from the `requires` alone
+[[step]]
+strata = ["--file", "t.strata", "edit", "--no-search"]
+text = '''
+pub lemma double_le(a: Int, b: Int)
+  requires a <= b
+  ensures a + a <= b + b
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "double_le", "--no-race", "--no-cache"]
+has = ["✓ double_le "]
+
+# a recursion not shown to end proves nothing
+[[step]]
+strata = ["--file", "t.strata", "edit", "--no-search"]
+text = '''
+pub lemma circular(x: Int)
+  ensures x > 0 {
+  circular(x)
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "circular", "--no-race", "--no-cache"]
+has = ["○ circular ", "a lemma is proven only once it is shown to terminate"]
+
+# a lemma is called in proofs only, never by code that runs
+[[step]]
+strata = ["--file", "t.strata", "edit", "--no-search"]
+text = '''
+pub fn uses(t: Tree) -> Int {
+  sum_natural(t)
+  sum(t)
+}
+'''
+has = ["`sum_natural` is a lemma: it exists only for `verify`, so call it in a proof"]
+any_code = true
+
+# and returns nothing
+[[step]]
+strata = ["--file", "u.strata", "edit", "--no-search"]
+text = '''
+pub lemma gives(x: Int) -> Int
+  ensures x == x
+'''
+has = ["a lemma returns nothing"]
+any_code = true

@@ -20,5 +20,5 @@ run = ["grep", "-c", '"by":"edit"', "strata.log"]
 has = ["1"]
 
 [[step]]
-strata = ["view", "main"]
+strata = ["view", "main", "--proofs"]
 has = ["    invariant lx.at <= n {"]

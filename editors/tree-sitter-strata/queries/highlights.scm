@@ -99,6 +99,7 @@
 ] @keyword.storage.type
 
 "fn" @keyword.function
+"lemma" @keyword.function
 
 [
   (visibility_modifier)
@@ -113,6 +114,8 @@
   "is"
   "in"
   "assert"
+  "by"
+  "calc"
   "invariant"
 ] @keyword
 

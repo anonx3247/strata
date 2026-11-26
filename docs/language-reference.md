@@ -275,6 +275,23 @@ An `extern c fn` can be marked `noalloc`. Like `terminates`, that is the C code'
 
 core's own `strata.toml` declares its runtime modules (core.rt, the allocator, and the modules it uses) and core.mem this way.
 
+## Lemmas and proofs: `lemma`, `assert … by`, `calc`
+
+A `lemma` states a fact for `verify` to prove once and for proofs to use. It is written like a function with no result: its `requires` are its hypotheses, its `ensures` is the fact, and its body (optional) holds the proof's steps. It is never compiled, and only proofs call it. A recursive lemma is a proof by induction, so it must be shown to terminate.
+
+```rust
+lemma double_le(a: Int, b: Int)
+  requires a <= b
+  ensures a + a <= b + b
+```
+
+The statements of a proof:
+
+- `assert e by lemma(args)` and `assert e by { steps }`: `e` is proven from the steps alone, and is then known. The steps are lemma calls, `assert`s, nested `assert … by`, `if` and `match` case splits, and `calc`s.
+- `calc { a == b; _ <= c }`: a chain of steps, each proven alone. Each `_` is the right side of the step before it. The chain gives `a <= c`.
+
+`lemma`, `by` and `calc` are contextual keywords: `lemma` before a definition's name, `by` after an `assert`'s condition, and `calc` before `{` at the start of a statement. Proofs compile to nothing, and views hide them by default. See [Verification](verification.md#lemmas-and-written-proofs).
+
 ## Errors
 
 - Each operator works only on its own type. `except` and `!!` on an `Option`, or `or` and `??` on a `Result`, is an error. A `Result[Option[T], E]` therefore reads one way: `(load(k) !! None) ?? default` handles the error, then the missing value.

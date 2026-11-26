@@ -111,7 +111,7 @@ fn main() {
 '''
 
 [[step]]
-strata = ["--file", "t.strata", "view", "main"]
+strata = ["--file", "t.strata", "view", "main", "--proofs"]
 has = [
   "  while a + b > 0\n    decreases (a, b) {\n",
   "  loop\n    invariant n >= 0\n    decreases n {\n",

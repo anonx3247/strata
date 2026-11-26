@@ -105,6 +105,7 @@ module.exports = grammar({
         $.type_declaration,
         $.mock_declaration,
         $.function_declaration,
+        $.lemma_declaration,
         $.trait_declaration,
         $.impl_declaration,
         $.derive_declaration,
@@ -210,6 +211,16 @@ module.exports = grammar({
         'fn',
         $._function_signature,
         optional($._function_body),
+      ),
+
+    // `lemma name(params) requires … ensures … { steps }`: a fact `verify`
+    // proves once, for proofs; with no body, proven from its `requires`
+    lemma_declaration: ($) =>
+      seq(
+        optional($.visibility_modifier),
+        'lemma',
+        $._function_signature,
+        optional(field('body', $.block)),
       ),
 
     // (`prec.right`: an `ensures` after a method without a body is the
@@ -502,6 +513,7 @@ module.exports = grammar({
         $.binding,
         $.assignment,
         $.assert_statement,
+        $.calc_statement,
         $.loop_statement,
         $.while_statement,
         $.for_statement,
@@ -545,7 +557,25 @@ module.exports = grammar({
         field('right', $._expression),
       ),
 
-    assert_statement: ($) => seq('assert', $._expression),
+    // `assert e`, `assert e by lemma(args)`, `assert e by { steps }`
+    assert_statement: ($) =>
+      prec.right(seq(
+        'assert',
+        field('condition', $._expression),
+        optional(seq('by', field('proof', choice(prec(1, $.block), $._expression)))),
+      )),
+
+    // `calc { a == b; _ <= c }`: each step proven alone
+    calc_statement: ($) =>
+      seq('calc', '{', repeat(choice(field('step', choice($._expression, $.calc_step)), ';')), '}'),
+
+    // `_ <= c`: a step after the first, `_` the step before's right side
+    calc_step: ($) =>
+      prec.right(seq(
+        '_',
+        field('operator', choice('==', '!=', '<', '<=', '>', '>=', '==>')),
+        field('right', $._expression),
+      )),
 
     break_statement: (_) => 'break',
 
