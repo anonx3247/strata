@@ -14,12 +14,12 @@ Design:
 
 - **A header inside the module file.** Like a C header, it comes first and lists every definition: its id, name, kind, visibility, three hashes, its dependencies and its size in bytes. Listing a module, building the dependency graph or finding what changed reads only the header: 14 µs for all of `examples/tasks`, against about 170 µs to decode everything.
 - **Interface first, bodies after.** Each definition's bytes start with its interface (types, signatures, contracts, laws), with each body written as `()`. The bodies follow. Checking code against a module needs only the interfaces, so a reader can stop there.
-- **Self-contained definitions.** Each definition carries its own strings, so its bytes mean the same in any file that names the same ids.
-- **References by id** (see [References by id](#references-by-id)). Every definition and variant has a stable id, a random 63-bit number given when it is first stored. A definition refers to another by that id, and the module file's header says which name each id has. Renaming a definition changes one name in its module's header: no definition that uses it changes.
+- **Definitions with their own strings.** Each definition carries its own strings. Its references are indices into its file's id table, so its bytes mean the same only next to that table.
+- **References by id** (see [References by id](#references-by-id)). Every definition and variant has a stable id, a random 64-bit number given when it is first stored. A definition refers to another by that id, and the module file's header says which name each id has. Renaming a definition changes one name in its module's header: no definition that uses it changes.
 - **Qualified names in memory.** In memory, and in every pass of the compiler, a reference is its qualified name (`orders.Line`), however it was written (`Line` under `from orders use Line`, or `orders.Line` under `use orders`). A call to another module's function is a call of that name: `orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`. Locals, fields, method calls (resolved from their receiver), and names that resolve to nothing are kept as written. When code is shown, each reference is written as short as the module's `use`s allow, so text is normalized: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) uses its own `use` lines. The conversions are `stored` and `written` in `compiler/resolve`; the encoder turns each qualified name into its id, and the decoder back.
 - **Exact.** Decoding returns exactly the tree that was encoded, including comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
 - **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A header's dependency lists can go stale when another module changes outside strata, or when an edit changes what an untouched definition would now depend on, because an edit writes only the files it changes and keeps each untouched definition's bytes and entry. `strata upgrade` rewrites every file.
-- **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed the rest of the file, nesting deeper than 10,000 levels is refused, a reference to an id the header doesn't name is refused, and a definition that isn't in the file's module, or doesn't match the kind and visibility in its header entry, is rejected. Hashes are computed when a definition is stored and trusted when it is read, so reading doesn't rehash. `binary.read_checked` also encodes each definition again in the named form and checks it against its hash, which catches any change inside a definition or to a name in the header (`compiler-bad_input`). An id that nothing refers to (an `impl`'s, a test's) isn't checked.
+- **Safe to read.** A truncated or corrupt file is an error, never a crash. Lengths can't exceed the rest of the file, nesting deeper than 10,000 levels is refused, a reference to an id the header doesn't name is refused, and a definition that isn't in the file's module, or doesn't match the kind and visibility in its header entry, is rejected. Hashes are computed when a definition is stored and trusted when it is read, so reading doesn't rehash. `binary.read_checked` also encodes each definition again in the named form and checks it against its hash, which catches any change inside a definition or to a name in the header (`compiler-bad_input`). The ids in the header aren't checked: a damaged one reads as another id (references find their names by index, so the tree reads the same but for that id).
 
 A file of another format version is rejected. See [Changing the format](#changing-the-format).
 
@@ -45,7 +45,8 @@ Entry  = id  name:str  kind:byte  public:bool  hash:32 bytes  interface_hash:32 
 - The header's strings are its own table (names, the module path, dependencies). They are all text.
 - `module` is the dotted module path (`""` for the root module).
 - `variants`: the id and qualified name (`shop.Paid`) of each variant of the module's sums that is stored by id, in the order of the definitions.
-- `refs`: the id and qualified name of each definition or variant of another module that the definitions refer to by id, in increasing order of id. The name is the one it had when the file was written: the module that has the id is what names it (see [References by id](#references-by-id)).
+- `refs`: the id and qualified name of each definition or variant of another module that the definitions refer to by id, in increasing order of id (unsigned). The name is the one it had when the file was written: the module that has the id is what names it (see [References by id](#references-by-id)).
+- The file's **id table** is the entries' ids in order, then the `variants`' ids, then the `refs`' ids. A definition refers to an id by its index in this table. Each id is written once, here.
 - `id` is a definition's stable id.
 - `name` is what `strata` calls the definition: `total`, `Order`, `test "totals"`, `impl Show for Order`, `use orders`. Its qualified name (`shop.total`, bare in the root module) is the name of its id.
 - `kind` is the `DeclKind` tag below.
@@ -69,12 +70,13 @@ The named bytes are the definition encoded with every reference as its name inst
 ```text
 definition = interface-strings:list(Item)  Decl     (each body written as Unit)
              body-strings:list(Item)       bodies:list(Expr)
-Item       = 0 raw-string | 1 id
+Item       = 2·n:uint  n bytes of UTF-8          a text of n bytes
+           | 2·k+1:uint                         the id at index k of the file's id table
 ```
 
 The interface part comes first: its strings, then the `Decl` with each body replaced by `()` (`Unit`, one byte). The body part follows: the strings the bodies add, with indices continuing after the interface's, then the bodies. `interface_size` in the header is the size of the interface part.
 
-An item of a string table is a text, or a reference by id. A `str` that is a reference reads as the qualified name the header gives its id. Where a definition's or variant's own name is (a `TypeDecl`'s, a top-level `FnDecl`'s, a `TraitDecl`'s, a `CapabilityDecl`'s, an extern type's), or a name of `from m use x`, it reads short: without its module (without `m.`).
+An item of a string table is a text, or a reference by id: one `uint`, whose lowest bit says which. A reference costs one byte for the first 64 ids of the file's table and two up to 8,192. A `str` that is a reference reads as the qualified name the header gives its id. Writing a module file again rewrites the string tables of the definitions it keeps for the new id table; the rest of their bytes is copied. Where a definition's or variant's own name is (a `TypeDecl`'s, a top-level `FnDecl`'s, a `TraitDecl`'s, a `CapabilityDecl`'s, an extern type's), or a name of `from m use x`, it reads short: without its module (without `m.`).
 
 The bodies, in order, are:
 
@@ -94,9 +96,9 @@ Types and `use` have none. Everything else is interface: signatures, `requires` 
 | `int` | a 64-bit signed integer, zigzag-encoded then written as a `uint`: `0, -1, 1, -2, 2, …` become `0, 1, 2, 3, 4, …` (`(n << 1) ^ (n >> 63)`). |
 | `float` | the 8 bytes of the IEEE 754 double, little-endian. |
 | `bool` | one byte, `0` or `1`. |
-| `id` | 8 bytes, least significant first: a positive 63-bit integer (the top bit clear), never 0. |
+| `id` | 8 bytes, least significant first: an unsigned 64-bit integer, never 0 (a `U64` in memory). |
 | `char` | a Unicode scalar value, as a `uint`. |
-| `raw-string` | length in bytes (`uint`), then the UTF-8 bytes. Only in string tables (and a bundle's manifest). |
+| `raw-string` | length in bytes (`uint`), then the UTF-8 bytes. Only in a header's string table (and a bundle's manifest); a definition's table has `Item`s. |
 | `raw-bytes` | length (`uint`), then the bytes. |
 | `str` | a `uint`: the string's index in the current table (from 0). |
 | `list(T)` | the number of items (`uint`), then each item. |
@@ -242,7 +244,7 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ## An example
 
-`fn one() -> Int { 1 }`, a script, is stored as a 169-byte file:
+`fn one() -> Int { 1 }`, a script, is stored as a 159-byte file:
 
 ```text
 53 54 52 41 54 41   "STRATA"
@@ -253,20 +255,20 @@ header:
    00                   no variants
    00                   no references to other modules
    01                   1 entry:
-      6c 3f … 64 (8)       id
+      02 d3 … 59 (8)       id (index 0 of the file's id table)
       01 01 00             name "one", a function, private
-      e0 90 15 … (32)      hash (of the named bytes)
-      84 37 e8 … (32)      interface_hash
-      e0 90 15 … (32)      code_hash (the same as hash: no comments)
+      f1 c8 b0 … (32)      hash (of the named bytes)
+      e8 95 15 … (32)      interface_hash
+      f1 c8 b0 … (32)      code_hash (the same as hash: no comments)
       00                   no dependencies
-      29 25                41 bytes, 37 of them interface
+      1f 1b                31 bytes, 27 of them interface
 the definition:
    03                              3 strings:
-      00 00                           "" (text)
-      01 6c 3f … 64                   the id of `one` (its own name)
-      00 03 49 6e 74                  "Int"
+      00                              "" (a text of 0 bytes)
+      01                              the id at index 0: `one` (its own name)
+      06 49 6e 74                     "Int" (a text of 3 bytes)
    00 00 00 00 01                  no comments or doc, module "", private; a function:
-   00 00 01 00 00 00               no doc, no comments, name: the id of `one`, no type parameters, bounds, parameters
+   00 00 01 00 00 00               no doc, no comments, name: string 1 (the id of `one`), no type parameters, bounds, parameters
    00 02 00                        returns Named("Int", [])
    00 00 00                        no requires, no ensures, no flags (not `terminates`, not `noalloc`)
    06                              its body, left out: ()
@@ -279,7 +281,7 @@ the definition:
 
 ## References by id
 
-Every definition and every variant of a sum has an id: 63 random bits (`arc4random_buf`, `binary.new_id`), given by the encoder to a definition that has none (`binary.assign_ids`) and kept in `Decl.id` and `Variant.id` in memory. Writing a module file again keeps each definition's id: one without an id (just parsed from text) takes the id of the definition of the same module, name and kind in the previous version or in the file, else a new one. So `edit` keeps a definition's id when it replaces it, and `rename` and `move` keep it as they change the name or the module. A definition deleted and written again under another name with `edit` is a new definition with a new id; only `rename` and `move` keep one across names.
+Every definition and every variant of a sum has an id: 64 random bits, never 0 (`arc4random_buf`, `binary.new_id`), a `U64`, given by the encoder to a definition that has none (`binary.assign_ids`) and kept in `Decl.id` and `Variant.id` in memory. Writing a module file again keeps each definition's id: one without an id (just parsed from text) takes the id of the definition of the same module, name and kind in the previous version or in the file, else a new one. So `edit` keeps a definition's id when it replaces it, and `rename` and `move` keep it as they change the name or the module. A definition deleted and written again under another name with `edit` is a new definition with a new id; only `rename` and `move` keep one across names.
 
 What is written by id. In every place that can name a definition (a variable, a constructor, a type's name, a pattern's constructor, an `is` variant, an impl's trait, a derive's trait and function, a definition's own name, a variant's name, a name of `from m use x`), a qualified name that is the name of a known id is written as a reference to that id. The ids known are the program's (every module of the package) and the ones std and other packages give the names the file already refers to. Three cases stay text:
 
