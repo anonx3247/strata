@@ -1,6 +1,5 @@
 // Values a statement makes that a call or an f-string gives back as they
-// are: they outlive the statement through the variable, so they stay
-// counted (`--regions`).
+// are: they outlive the statement through the variable.
 
 /// Gives back a string it was given.
 fn either(a: String, b: String) -> String {
