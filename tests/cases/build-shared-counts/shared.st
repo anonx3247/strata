@@ -2,8 +2,8 @@
 // integers, unions, closures, trait values) while the main thread keeps
 // counting them too: passed on channels, returned through `await` (a
 // handle awaited on two threads), held by tasks a race cancels or that
-// panic. What crosses to another thread is marked shared and counted
-// atomically, the rest plainly; every object is freed once.
+// panic. What crosses to another thread is moved or copied, so no object
+// is counted by two threads; every object is freed once.
 
 type Person = { name: String, tags: List[String], _born: Int }
 
