@@ -9,7 +9,7 @@ name = "json"
 '''
 
 [[step]]
-strata = ["--file", "json/", "edit", "main"]
+strata = ["--file", "json/", "edit", "main", "--as-given"]
 text = '''
 pub fn parse(s: String) -> Int { 1 }
 '''
@@ -22,7 +22,7 @@ run = ["sh", "-c", "cd json && git -c user.name=t -c user.email=t@t -c init.defa
 run = ["sh", "-c", "printf 'name = \"app\"\\n[deps]\\njson = \"file://%s/json.git\"\\n' \"$PWD\" > app/strata.toml || (mkdir -p app && printf 'name = \"app\"\\n[deps]\\njson = \"file://%s/json.git\"\\n' \"$PWD\" > app/strata.toml)"]
 
 [[step]]
-strata = ["--file", "app/", "edit", "main"]
+strata = ["--file", "app/", "edit", "main", "--as-given"]
 text = '''
 from json use parse
 fn main() { print(parse("x")) }

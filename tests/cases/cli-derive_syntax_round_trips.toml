@@ -3,7 +3,7 @@
 # stored as written (a derive with no block shown on the type it derives
 # for); it doesn't check (`Point` and `Pair` aren't records), as the edit says
 [[step]]
-strata = ["--file", "d.strata", "edit"]
+strata = ["--file", "d.strata", "edit", "--as-given"]
 text = '''
 /// Show a record as its field names.
 pub derivable(Record) trait Named
@@ -38,7 +38,7 @@ fn derive(derive: Int) -> Int {
 }
 '''
 fails = true
-has = ["written: ", "`Point` isn't one"]
+has = ["written as given: ", "`Point` isn't one"]
 
 [[step]]
 write = "d.st"
@@ -81,7 +81,7 @@ out_file = "d.st"
 
 # the derive written on `Pair` reads back as the same derive definition
 [[step]]
-run = ["sh", "-c", "$STRATA --file e.strata edit < d.st"]
+run = ["sh", "-c", "$STRATA --file e.strata edit --as-given < d.st"]
 fails = true
 
 [[step]]

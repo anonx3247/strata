@@ -12,7 +12,7 @@ This page covers what `strata verify` reports and how to tune it. It adds detail
 - **incomplete** (`○`): the function still has a hole.
 - **assumed** (`≈`): trusted, not checked. This covers code that calls the system: a capability's own code (`capability ...`, such as std's `Terminal`, `Disk` and `Process`, or a program's own), C reached through `extern c`, and Python functions (`extern python`, never run, with contracts checked at run time). It also covers functions whose only unproven checks are `assumed` contracts (below).
 
-The contracts of assumed code are taken as true where it is called, and the surrounding code is checked as usual. A function that calls C or takes a capability is proven from those contracts. Compiled code still checks a C function's `ensures` at each call, since nothing proves it. Only running differs: code that takes a capability isn't fuzzed, because only `strata run` provides one, and checks the solver doesn't prove are reported as skipped, with the reason.
+The contracts of assumed code are taken as true where it is called, and the surrounding code is checked as usual. A function that calls C or takes a capability is proven from those contracts. Compiled code still checks a C function's `ensures` at each call, since nothing proves it. Only running differs: code that takes a capability isn't fuzzed, because only `strata run` provides one, and checks the solver doesn't prove are reported as skipped, with the reason. Nothing `verify` runs gets a real capability: a function generic over a capability trait (`[F: Files]`) is fuzzed with an implementation that isn't a capability (`MemFiles`, never `Disk`) or with the trait's mock, and one that would make a capability (a type holding a `Disk`) isn't fuzzed. C called through `extern c` is still run for real.
 
 Derived code is checked too. `derive Json for Signup` generates `Signup.to_json` and the other methods, plus copies of `std.json`'s helpers specialized for `Signup`'s fields (`std.json.encode_as.for.Signup.4`). These are listed and checked with it, so a fault that only some field types can cause is reported there. An example is an `Int` field that may exceed what JSON holds exactly, with `integers = "proven"` under `[json]`.
 
@@ -222,7 +222,7 @@ Fuzz drivers are compiled only for definitions with a check to run.
 `strata verify` runs the verifier in `compiler/main` (`compiler verify`) on a script (`--file`) or on the package around the current folder.
 
 - The program is checked first, as `strata check` checks it. If it has errors, they are printed and nothing is verified.
-- A selection (`verify NAME`, `prefix*`, `module:m`, `slice:NAME`, or a module's name) chooses which definitions are checked, and the package's `[verify]` rules apply.
+- A selection (`verify NAME`, `prefix*`, `module:m`, `slice:NAME`, a module's name, or a method's: `memory.MemQueue.claim` checks only that method of its implementation) chooses which definitions are checked, and the package's `[verify]` rules apply.
 - It checks functions, a type's inherent methods, implementations' methods (through wrappers that call them), laws, and the copies a `derive` generates.
 - Proofs come from `compiler/smt`, and fuzz drivers from `compiler/codegen`, run in the compiler's own JIT.
 - `build` verifies first (`compiler verify --quiet`), printing one line on stderr about the checks not verified before.

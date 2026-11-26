@@ -9,7 +9,7 @@ write = "app/strata.toml"
 text = "name = \"app\"\nnoalloc = [\"fast\"]\n"
 
 [[step]]
-strata = ["--file", "app/", "edit", "fast"]
+strata = ["--file", "app/", "edit", "fast", "--as-given"]
 text = '''
 pub fn total(xs: List[I64]) -> I64 {
   mut acc: I64 = 0.to_i64()
@@ -26,7 +26,7 @@ pub fn twice(n: I64) -> I64 {
 any_code = true
 
 [[step]]
-strata = ["--file", "app/", "edit", "main"]
+strata = ["--file", "app/", "edit", "main", "--as-given"]
 text = '''
 use fast
 
@@ -66,7 +66,7 @@ has = [
 
 # written all the same (`--file`), `check`, `verify` and `build` refuse it
 [[step]]
-strata = ["--file", "app/", "edit", "fast"]
+strata = ["--file", "app/", "edit", "fast", "--as-given"]
 text = '''
 pub fn pair(n: I64) -> List[I64] {
   [n, n]

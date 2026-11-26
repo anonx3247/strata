@@ -6,15 +6,6 @@ A pending order can be cancelled.
 Intuition  (2/5)
 ────────────────
 
-how `Order` values move  (strata view --graph Order)
-    Order = Pending | Shipped | Cancelled
-      (new)     -> Shipped    by ship (unknown)
-      Pending   -> Cancelled  by cancel (possible)
-      any       -> any        by OneOrder.save (possible) (nothing proven impossible: --all lists their moves)
-    proven impossible: 15 more (in 3 functions; --all lists them)
-  this change:
-  + `cancel` now makes `Pending -> Cancelled` too (as `OneOrder.save` did)
-
 cancel  (strata refs cancel)
   uses       Order
   used by    nothing in the package

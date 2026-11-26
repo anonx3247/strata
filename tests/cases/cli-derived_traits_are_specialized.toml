@@ -74,14 +74,14 @@ Err("x: `three` is not a number")
 '''
 
 [[step]]
-strata = ["--file", "bad0.strata", "edit"]
+strata = ["--file", "bad0.strata", "edit", "--as-given"]
 text = '''
 trait Plain { fn p(self) -> Int }
 type A = { x: Int }
 derive Plain for A
 '''
 fails = true
-has = ["`Plain` can't be derived: only a `derivable` trait can", "written: "]
+has = ["`Plain` can't be derived: only a `derivable` trait can", "written as given: "]
 
 [[step]]
 strata = ["--file", "bad0.strata", "check"]
@@ -89,7 +89,7 @@ fails = true
 has = ["`Plain` can't be derived: only a `derivable` trait can"]
 
 [[step]]
-strata = ["--file", "bad1.strata", "edit"]
+strata = ["--file", "bad1.strata", "edit", "--as-given"]
 text = '''
 from std.typing use Record
 derivable(Record) trait Sized { derived fn n(self) -> Int { comptime len(Self.fields) } }
@@ -99,7 +99,7 @@ type S =
 derive Sized for S
 '''
 fails = true
-has = ["`Sized` can only be derived for a `Record`, and `S` isn't one", "written: "]
+has = ["`Sized` can only be derived for a `Record`, and `S` isn't one", "written as given: "]
 
 [[step]]
 strata = ["--file", "bad1.strata", "check"]
@@ -107,7 +107,7 @@ fails = true
 has = ["`Sized` can only be derived for a `Record`, and `S` isn't one"]
 
 [[step]]
-strata = ["--file", "bad2.strata", "edit"]
+strata = ["--file", "bad2.strata", "edit", "--as-given"]
 text = '''
 from std.typing use Record
 derivable(Record) trait Sized
@@ -116,7 +116,7 @@ type A = { x: Int }
 derive Sized for A
 '''
 fails = true
-has = ["`A` doesn't meet what `Sized` requires: len(Self.fields) > 1", "written: "]
+has = ["`A` doesn't meet what `Sized` requires: len(Self.fields) > 1", "written as given: "]
 
 [[step]]
 strata = ["--file", "bad2.strata", "check"]

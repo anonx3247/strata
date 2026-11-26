@@ -122,6 +122,30 @@ Rules for `old`:
 
 Callers rely on the contract using the argument values before and after the call. `verify` does the same, including in a generic function that calls a trait's `mut self` method. A broken contract shows both values: `before: len(xs) = 2, after: len(xs) = 2`.
 
+**What a function or method says of its result's variant narrows its calls.** A result type `-> Order where it is Shipped`, or an `ensures` saying which variant the result is, gives the call that type where it is made:
+
+```rust
+fn ship(o: Order) -> Order
+  ensures (it is Shipped) == (o is Paid || o is Shipped) { ... }
+
+fn label(o: Order) -> String {
+  match o {
+    Paid => ship(o).tracking,               // a `Shipped`: no match needed
+    Pending => match ship(o) {              // not a `Shipped`: two arms cover it
+      Pending => "pending",
+      Paid => "paid",
+    },
+    Shipped => ship(o).tracking,
+  }
+}
+```
+
+- `strata check` narrows a call when its function's facts about `it` are `it is V` (with `!`, `&&`, `||`), `A ==> it is V`, or `(it is V) == A`, and the arguments' types decide `A`: `o is Paid` where `o` is narrowed to `Paid` (by a `match` arm or an `if o is Paid`). The narrowed result can read a field only those variants have, and a `match` on the call covers only them; an arm for a variant ruled out is an error.
+- When `A` is something else (`d.contains(k)`, a comparison), the checker leaves the match's coverage to `verify`, which proves that some arm matches from the callee's contract and the facts at the call (`if d.contains(k) { match lookup(d, k) { Some(v) => v } }`). Until it is proven, the compiled match faults with `no match arm` for a value no arm takes.
+- Methods narrow the same way, `self` being the receiver; a trait method's facts hold of every implementation. `Option`, `Result` and other generic sums keep their type arguments when narrowed (`match same(o) { Some(v) => v }` where `o` is a `Some`).
+- A field read of such a call (`find(d, k).tracking`) under a condition only `verify` decides reads the field of the variants left that have it. `verify` proves the result is one of them (`field `tracking` of a call's result`), and until it is proven the compiled code checks it there. A variable bound from such a call keeps the strict rule.
+- The callee's contract is taken as given, as for every call. `verify` proves it in the callee; while it isn't proven, the callee checks it when it returns, so the caller never sees another variant.
+
 ## Records and defaults
 
 A record field can have a default, written after its type:
@@ -242,7 +266,7 @@ type Command =
 - alternatives that bind the same names: `Square | Triangle =>`, `0 | 1 | 2 =>`, `(0, x) | (x, 0) =>`
 - `_`
 
-**Narrowing.** Inside an arm, the matched variable has the arm's type, so `s` above is a `Square` with no new name needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. Matching on a field narrows the field too (`match t.status { Closed => t.status.why, … }`). Assigning to a narrowed `mut` variable ends the narrowing.
+**Narrowing.** Inside an arm, the matched variable has the arm's type, so `s` above is a `Square` with no new name needed. `if s is Square { s.side }` narrows `s` in the branch taken (and to the other variants in the `else`). To match the result of an expression, name it: `match lines(text) as ls { … }`. Matching on a field narrows the field too (`match t.status { Closed => t.status.why, … }`). Assigning to a narrowed `mut` variable ends the narrowing. A field that not every variant has can be read only where the value is narrowed to variants that have it; a call is narrowed by what its function ensures of its result (see "What a function or method says of its result's variant").
 
 **Exhaustiveness and reachability.** The checker reports values that no arm matches (`` `where 3 <= it && it <= 5` is not covered``) and arms that earlier arms already cover (`unreachable match arm `Positive``). The matched value's refinement is taken into account: with `fn f(n: Positive)`, `match n { 1 => …, where it > 1 => … }` is exhaustive.
 
