@@ -157,6 +157,42 @@ A compiled program behaves like `strata run`: the same output, and the same run-
 
 `strata run` compiles the program in memory and runs it with a JIT, at native speed without a build step. If the program changed since it was last verified, it starts immediately while being verified alongside, and the proven code (without the proven checks) is swapped in while it runs ([verification](verification.md#what-is-proven-isnt-checked-again); see `--no-verify`, `--verify-alongside`, `--wait-for-proofs`). `strata test` compiles tests the same way. A fault ends the test, not the run, and what a test prints is shown only if it fails. [Internals](internals.md#compiling) describes how the compiler and the JIT work.
 
+### Live edits: `strata run --live`
+
+With `--live`, a running program takes edits. When its module files change (a `strata edit`, or any write; `strata edit` writes an edit that doesn't check only with `--as-given`), and the program as it is now checks and verifies, the changed functions are swapped in: new calls run the new code, and a call already running finishes in the old code. A note on stderr says what happened to each edit:
+
+```text
+$ strata run srv.strata --live
+note: live edits: when the program's files change, and they check and verify, the changed functions are swapped in
+hello
+note: live edit 1: `message` swapped in (verified 2 changed: 2 proven, 0 fuzzed), 230 ms after the change
+world
+note: live edit 2 refused: it doesn't check:
+  error in message: unknown variable `greeting`
+note: the program goes on with its code as it was
+```
+
+What can change live, and what can't (tested by `cli-run_live_state`, 28 edits of a program with state, and `cli-run_live_frames`):
+
+| Change | Live |
+|---|---|
+| A function's or impl method's body, its signature and contracts unchanged | swapped in |
+| New functions, types and impls, used by the changed bodies | swapped in with them |
+| A string literal | swapped in: values made before keep the old text |
+| A lambda | swapped in with the function that makes it: closures made before keep running the old lambda |
+| A function a frame is running in (a loop that doesn't return, a task's body) | swapped in, but that frame finishes in the old code: only calls made after the swap run the new one. The functions it calls change. |
+| A function's signature or contracts (`requires`, `ensures`, refinements of its parameters or result) | refused: callers were compiled for the old ones |
+| A type, trait, capability or `extern` (a record gaining a field) | refused: the program holds values made with the old one |
+| `main` | refused: its frame lasts the whole run |
+| An edit that doesn't check, or has a counterexample | refused |
+
+- A check `verify` doesn't prove stays in the new code, as in any run.
+- The files are the program: an edit is judged with everything in the files at that moment, against the definitions running. A refused change stays refused until the files no longer hold it.
+- State is never converted: the counter, dictionaries, lists and records the program holds stay as they are, and a task keeps its own. A global's state is kept (the lab's programs have none of their own: only the runtime's).
+- A `--live` run compiles each function from its own code alone, because a frame running old code calls new code, and the reverse. Nothing is taken from what other functions do. No argument goes on the caller's stack, since an edited callee may keep it. No update in place is proven ahead (each tests the count at run time). An entry check stays even when every call proves it, since an old frame's call may not. This costs some speed against a plain run.
+- It takes about 0.3 s to 0.8 s from the file being written to the new code running: up to 0.13 s to see the change (the files are read every 100 ms, and must be the same twice), then 0.2 s to 0.7 s to check, verify and compile the program in a process of its own, and swap it in.
+- No verifier runs alongside a `--live` run: the program starts with the checks the last `verify` proved, and each edit's code leaves out what its own verify proved.
+
 ## Structural diffs
 
 `strata diff` shows changes by definition rather than by line. This example follows four changes to `examples/orders.strata` made through strata: a variant renamed with `strata rename`, a stronger `ensures`, a new variant, and a body rewritten as a loop.
