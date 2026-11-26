@@ -149,7 +149,7 @@ stdout = '''
 ✓ count_up                 proven (4 checks)
 ✓ seen_while               proven (2 checks)
 ✓ spin                     proven (1 check)
-    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order)
+    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order); write an `invariant` or a `decreases` for it, or run `strata fix spin` to search for an invariant
 ✓ uses_spin                proven (1 check)
     may not terminate: it calls `spin`, which may not terminate
 ✓ first_loop               proven (1 check)
@@ -302,7 +302,7 @@ strata = ["--file", "step4.strata", "verify", "--no-cache", "--cases", "50"]
 env = { "STRATA_CACHE" = "$TMP/cache" }
 any_code = true
 stdout = '''
-✓ sum_to                   proven (7 checks)
+✓ sum_to                   proven (5 checks)
 ✓ count_down               proven (3 checks)
 ✗ bad_loop                 Refinement violation (found by the solver)
     input:   0
@@ -321,7 +321,7 @@ stdout = '''
 ✗ divide_all               Runtime violation (found by the solver)
     input:   [0], 0
     division by zero (stack: divide_all)
-✓ ensures_loop             proven (8 checks)
+✓ ensures_loop             proven (6 checks)
 '''
 
 [[step]]
@@ -377,9 +377,9 @@ env = { "STRATA_CACHE" = "$TMP/cache" }
 any_code = true
 stdout = '''
 ✓ count_down               proven (4 checks)
-✓ search                   proven (4 checks)
+✓ search                   proven (3 checks)
 ✓ spin                     proven (1 check)
-    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order)
+    may not terminate: the loop `while i != 0`: no bound was shown to go down (tried `i - 0`, `0 - i`, singly and in pairs compared in order); write an `invariant` or a `decreases` for it, or run `strata fix spin` to search for an invariant
 ✓ forever                  proven (1 check)
     may not terminate: it has a `loop` without a `decreases` clause (only `for` loops, `while` loops whose bound goes down, and loops whose `decreases` measure goes down, are shown to end)
 ✓ fact                     proven (1 check)
@@ -434,7 +434,7 @@ stdout = '''
     input:   -999.2508503161262
     postcondition of `wrong` violated: ensures it > x (it = -1998.5017006322523) (stack: wrong)
 ✓ checked                  proven (nothing to check)
-✓ sum_to                   proven (7 checks)
+✓ sum_to                   proven (5 checks)
 ✓ fact                     proven (2 checks)
 ✓ spin                     proven (1 check)
     may not terminate: it has a `loop` without a `decreases` clause (only `for` loops, `while` loops whose bound goes down, and loops whose `decreases` measure goes down, are shown to end)
