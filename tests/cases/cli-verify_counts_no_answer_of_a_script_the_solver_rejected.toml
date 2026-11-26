@@ -1,0 +1,27 @@
+# A solver that rejects part of a script (here: a declaration every query
+# shares) leaves it out and answers on the rest, so its `unsat` proves
+# nothing. Z3 does so on a script the prover wrote wrong (sorts mixed
+# between a generic and its instance): before, every query after the error
+# counted as proven. Now no check of such a script is, and the verdict says
+# it is a bug in the prover.
+[[step]]
+write = "rejecting-solver"
+text = '''
+#!/bin/sh
+if [ "$1" = "--version" ]; then echo fake 1.0; exit 0; fi
+echo '(error "line 5 column 20: unknown constant valid7 (Int)")'
+awk '/\(check-sat\)/ { print "unsat" } /@@answered/ { print "@@answered" }'
+'''
+
+[[step]]
+run = ["chmod", "755", "rejecting-solver"]
+
+[[step]]
+save = "b.strata"
+text = "type Quantity = Int where 1 <= it && it <= 99\nfn keep(x: Quantity) -> Quantity { x }\nfn halve(q: Quantity) -> Quantity { keep(q / 2 + 1) + 0 }\n"
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--no-race", "--no-cache"]
+env = { STRATA_SOLVER = "$TMP/rejecting-solver" }
+has = ["~ halve", "0 of", "the solver rejected the script (line 5 column 20: unknown constant valid7 (Int))", "this is a bug in the prover"]
+lacks = ["✓ halve", "proven (", "1 of", "2 of"]
