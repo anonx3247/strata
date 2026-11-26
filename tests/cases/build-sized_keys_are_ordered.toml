@@ -1,0 +1,28 @@
+# sized integers as keys of dicts and sets, and sorted: ordered as integers
+# of their width (U64 above 2^63 too), so a key not put in is not found
+
+[[step]]
+save = "keys.strata"
+text = '''
+fn main() {
+  let a: U64 = 6469793432042147091
+  let b: U64 = 18446744073709551615
+  let c: U64 = 5
+  mut d := Dict[U64, String] {}
+  mut d.insert(a, "a")
+  print(contains(d, b))
+  print(contains(d, a))
+  print(get(d, c))
+  mut s := Set[I64] {}
+  let x: I64 = -3
+  let y: I64 = 4
+  mut s.insert(x)
+  print(contains(s, y))
+  print([b, a, c].sorted())
+  print([y, x].sorted())
+}
+'''
+
+[[step]]
+strata = ["run", "--file", "keys.strata"]
+stdout = "false\ntrue\nNone\nfalse\n[5, 6469793432042147091, 18446744073709551615]\n[-3, 4]\n"
