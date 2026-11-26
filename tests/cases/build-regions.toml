@@ -15,6 +15,14 @@
 # `!`, `break`, `continue`), values changed in place or lent `mut`, tasks
 # (a function starting tasks reading what it is given), and recursions
 # copying their results.
+#
+# Lists: `lists.st`'s lists are built in their frame regions and grow
+# there: pushes onto a list the variable holds alone (in place, its header
+# kept) or shares (a new header, the buffer extended past its end), `+=`
+# and `+`, a parameter's counted list copied in, a buffer over 1 MB, early
+# exits (`return`, `!`, `break`, `continue`), a list per loop pass kept by
+# a dict, a recursion whose results its result holds, and tasks reading
+# lists of the parent's region.
 
 [[step]]
 save = "regions.strata"
@@ -79,3 +87,35 @@ has = ["@\"strata:make#dest\"(", "call ptr @strata.dest_alloc(", "call void @str
 [[step]]
 strata = ["--file", "dest.strata", "build", "--no-verify", "--emit-llvm"]
 lacks = ["#dest", "strata.dest_"]
+
+[[step]]
+save = "lists.strata"
+from = "lists.st"
+
+[[step]]
+strata = ["--file", "lists.strata", "build", "--no-verify", "-o", "lists-plain"]
+
+[[step]]
+run = ["./lists-plain"]
+memory = true
+stdout = "356436 72 [\"w\", \"w0\", \"x0\", \"y\", \"w1\", \"w2\", \"w3\", \"x3\", \"y\", \"end\"] [Row { name: \"n0\", tags: [] }, Row { name: \"n1\", tags: [\"t0\"] }, Row { name: \"n2\", tags: [\"t0\", \"t1\"] }]\n"
+
+[[step]]
+strata = ["--file", "lists.strata", "build", "--no-verify", "--regions", "-o", "lists-regions"]
+
+[[step]]
+run = ["./lists-regions"]
+memory = true
+stdout = "356436 72 [\"w\", \"w0\", \"x0\", \"y\", \"w1\", \"w2\", \"w3\", \"x3\", \"y\", \"end\"] [Row { name: \"n0\", tags: [] }, Row { name: \"n1\", tags: [\"t0\"] }, Row { name: \"n2\", tags: [\"t0\", \"t1\"] }]\n"
+
+[[step]]
+strata = ["--file", "lists.strata", "run", "--regions"]
+out = "356436 72 [\"w\", \"w0\", \"x0\", \"y\", \"w1\", \"w2\", \"w3\", \"x3\", \"y\", \"end\"] [Row { name: \"n0\", tags: [] }, Row { name: \"n1\", tags: [\"t0\"] }, Row { name: \"n2\", tags: [\"t0\", \"t1\"] }]\n"
+
+[[step]]
+strata = ["--file", "lists.strata", "build", "--no-verify", "--regions", "--emit-llvm"]
+has = ["call ptr @strata_list_new_in(", "call ptr @strata_list_push_in(", "call void @strata_list_push_in_owned(", "call ptr @strata_list_extend_in(", "call ptr @strata_list_concat_in("]
+
+[[step]]
+strata = ["--file", "lists.strata", "build", "--no-verify", "--emit-llvm"]
+lacks = ["_in("]
