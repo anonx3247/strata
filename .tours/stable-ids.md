@@ -16,23 +16,29 @@ A module file is a header (each definition's name, kind, hashes, dependencies, s
 `shop.strata` defines `area` (id `#7857…`) and `square`, which calls it; `main.strata` calls `shop.square` (id `#70f1…`). On disk `square`'s bytes hold `#7857…`, not `shop.area`, and `main.strata`'s header says `#70f1… = shop.square`. `strata rename shop.area rect_area` changes the name of `#7857…` in shop's header: `square`'s bytes stay as they are, and `main.strata` doesn't change at all. A branch that adds `shop.square(2)` while another renames `square` stores `#70f1…`, which reads as the new name after the merge.
 
 # Ids in the tree and the format
-`Decl.id` and `Variant.id` hold the id in memory (`0`: none yet). The header gets each entry's id, the module's variants' ids, and the ids of what it refers to in other modules with their names. A string table item is a text or an id; the decoder reads an id as its name, so every pass still sees qualified names.
+`Decl.id` and `Variant.id` hold the id in memory, an `ast.Id`: a `U32`, 32 random bits, unique within the module (`0`: none yet). A reference names a module and an id, an `ast.Key`. The header gets each entry's id, the module's variants' ids, and the module, id and name of what it refers to in other modules: together, in that order, the file's id table, where each 4-byte id is written once. A string table item is one `uint`: twice a text's length, or twice an index into that table plus one. The decoder reads an id as its name, so every pass still sees qualified names.
 
-```strata-diff ast.Decl ast.Variant binary.Header binary.Entry binary.read_header binary.table_items binary.own_name
+```strata-diff ast.Decl ast.Variant ast.Id ast.Key binary.Header binary.Entry binary.read_header binary.table_items binary.own_name
 ```
 
 ```strata-also
-binary.Reader binary.id_of binary.id_hex binary.named_ids binary.renamed binary.owned binary.read_named binary.read_with binary.module_with binary.entry_with binary.definition_at binary.decl binary.type_decl binary.variants binary.fn_decl binary.trait_decl binary.use_items binary.decode_interface binary.entry_strings binary.decode_module binary.decode_definition binary.read_checked binary.decode_module_checked: reading ids, and the definitions' own names short
+binary.Reader binary.Part binary.named_keys binary.w_named_keys binary.no_key binary.id_bytes binary.byte_id binary.id_of binary.id_hex binary.named_ids binary.renamed binary.owned binary.read_named binary.read_with binary.module_with binary.entry_with binary.definition_at binary.decl binary.type_decl binary.variants binary.fn_decl binary.trait_decl binary.use_items binary.decode_interface binary.entry_strings binary.decode_module binary.decode_definition binary.read_checked binary.decode_module_checked: reading ids, and the definitions' own names short
 ```
 
 # Writing by id
-The encoder writes a definition twice: once named (every reference as its name), for the hashes and to collect the names it binds, then by id. A name that may refer to a definition is written as its id when one is known, unless it is bare and the definition binds a local of that name. The hashes stay those of the named form, so every cache keyed by them keeps its meaning.
+The encoder writes a definition twice: once named (every reference as its name), for the hashes and to collect the names it binds, then by id, as two parts (interface, bodies) whose tables hold ids; `part_bytes` writes them with the file's id table, once every definition is written. A kept definition's parts are read back (`stored_parts`) and written again with the new table. A name that may refer to a definition is written as its id when one is known, unless it is bare and the definition binds a local of that name. The hashes stay those of the named form, so every cache keyed by them keeps its meaning.
 
-```strata-diff binary.encode_module_kept binary.encode_stored binary.w_ref binary.w_own
+```strata-diff binary.encode_module_kept binary.encode_stored binary.part_bytes binary.w_ref
 ```
 
 ```strata-also
-binary.Writer binary.put_decl binary.put_fn binary.put_type binary.put_expr binary.put_pattern binary.put_stmt binary.put_select_arms binary.w_fields binary.w_bounds binary.w_params binary.w_fn_decls binary.w_str binary.w_id_ref binary.w_use_item binary.w_bind binary.w_binds binary.w_opt_bind binary.w_named_ids binary.w_id binary.id_to binary.flush binary.flush_header binary.parts_with binary.blank binary.implicit binary.encode_definition binary.encode_parts binary.encode_module binary.encode_bundle binary.entry_ids binary.raw_items binary.qualify binary.stored_bytes binary.ref_ids: writing ids and the header's tables
+binary.Writer binary.w_own binary.cut binary.parts_of binary.stored_parts binary.part_at binary.no_id binary.without_ids binary.put_decl binary.put_fn binary.put_type binary.put_expr binary.put_pattern binary.put_stmt binary.put_select_arms binary.w_fields binary.w_bounds binary.w_params binary.w_fn_decls binary.w_str binary.w_id_ref binary.w_use_item binary.w_bind binary.w_binds binary.w_opt_bind binary.w_named_ids binary.w_id binary.id_to binary.flush binary.flush_header binary.blank binary.implicit binary.encode_definition binary.encode_parts binary.encode_module binary.encode_bundle binary.qualify binary.stored_bytes binary.ref_ids: writing ids and the header's tables
+```
+
+# Sized integers are ordered
+Ids as dict keys showed that `cmp_helper` took a sized integer for a record with no fields: any two compared equal, so a `Dict[U64, _]` found every key and `sorted()` did nothing. They are now ordered as integers of their width, unsigned for `U…`.
+
+```strata-diff codegen.cmp_helper
 ```
 
 # Keeping ids
@@ -42,7 +48,7 @@ A definition without an id (parsed from text) takes the one of the definition it
 ```
 
 ```strata-also
-binary.variants_of binary.id_key binary.fresh binary.new_id binary.binary_new_id: new ids
+binary.variants_of binary.id_key binary.fresh binary.new_id binary.binary_new_id binary.rerolled: new ids, unique per module, and which were drawn again
 codebase.encode_files codebase.encode_again script_bytes upgrade_command write_found store_check encode_at: callers that write whole files, with std's ids
 resolve.union_members: a union member folded into a variant keeps the type's id
 ```
@@ -50,7 +56,7 @@ resolve.union_members: a union member folded into a variant keeps the type's id
 # Reading a package: the owner names an id
 A file has its own copy of every name it refers to, so it reads alone. A package reads every header first and each reference as the module that has its id names it: after git merges a rename and a new use without the driver, the use shows the new name.
 
-```strata-diff decoded_files
+```strata-diff decoded_files binary.owner_names
 ```
 
 # diff and merge by id

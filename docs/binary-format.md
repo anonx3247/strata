@@ -245,7 +245,7 @@ CtorPat = 0 None | 1 Positional(list(Pattern)) | 2 Record(list((str, Pattern)), 
 
 ## An example
 
-`fn one() -> Int { 1 }`, a script, is stored as a 159-byte file:
+`fn one() -> Int { 1 }`, a script, is stored as a 155-byte file:
 
 ```text
 53 54 52 41 54 41   "STRATA"
@@ -256,7 +256,7 @@ header:
    00                   no variants
    00                   no references to other modules
    01                   1 entry:
-      02 d3 … 59 (8)       id (index 0 of the file's id table)
+      99 e9 81 f2          id (key 0 of the file's id table: module "", this id)
       01 01 00             name "one", a function, private
       f1 c8 b0 … (32)      hash (of the named bytes)
       e8 95 15 … (32)      interface_hash
