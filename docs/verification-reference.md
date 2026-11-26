@@ -222,7 +222,7 @@ Fuzz drivers are compiled only for definitions with a check to run.
 `strata verify` runs the verifier in `compiler/main` (`compiler verify`) on a script (`--file`) or on the package around the current folder.
 
 - The program is checked first, as `strata check` checks it. If it has errors, they are printed and nothing is verified.
-- A selection (`verify NAME`, `prefix*`, `module:m`, `slice:NAME`, or a module's name) chooses which definitions are checked, and the package's `[verify]` rules apply.
+- A selection (`verify NAME`, `prefix*`, `module:m`, `slice:NAME`, a module's name, or a method's: `memory.MemQueue.claim` checks only that method of its implementation) chooses which definitions are checked, and the package's `[verify]` rules apply.
 - It checks functions, a type's inherent methods, implementations' methods (through wrappers that call them), laws, and the copies a `derive` generates.
 - Proofs come from `compiler/smt`, and fuzz drivers from `compiler/codegen`, run in the compiler's own JIT.
 - `build` verifies first (`compiler verify --quiet`), printing one line on stderr about the checks not verified before.
