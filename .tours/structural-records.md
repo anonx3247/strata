@@ -132,6 +132,33 @@ smt.literal_of: a structural parameter's counterexample written as an anonymous 
 tree.type_slots tree.type_rebuilt: the structural type node in node diffs
 ```
 
+# Updates without a type's name, spreads, trait methods
+`{ ..x, total: 0 }` is a constructor with no name. The spreads' pass types
+it as its base and writes in the base type's name. A type parameter's name
+is read by codegen as the record it stands for in each instance.
+`x = { ..x, f: v }` is written by desugar as `x.f = v` (the values
+computed first), so both forms are one tree: the same IR and the same proof.
+
+```strata-diff parse.nameless_update desugar.updates_assigned check.infer_update check.updates_named
+```
+
+A spread gives a structural parameter the record itself, and a trait's
+methods' structural bounds are checked like a type's own, with a generic
+impl's type arguments.
+
+```strata-diff check.structural_param check.method_rows_at
+```
+
+```strata-also
+desugar.self_update desugar.head_name: helpers
+check.spread_in check.ctor_name check.spread_bound check.spread_body check.spread_filled check.infer_untagged: the update during the spreads' pass
+check.infer_method check.methods_of: trait methods' bounds
+codegen.construct_want: a type parameter's record
+text.expr_text: printed as written
+desugar.anon_types: derives for anonymous records
+desugar.desugar_more: the import of `walk.decl_exprs`
+```
+
 # Every pass that walks a type
 The rest is the new node in each exhaustive match over types: mapped like
 a union's members where the pass rewrites types, its fields' types where it
@@ -143,5 +170,5 @@ ast.bare_type check.self_is check.mentions_any check.mentions_self check.type_he
 capabilities.json_error contracts.refined_errors declarations.type_names derive.subst derive.unwhere derive.ty derive.type_value_in derive.kind_of derive.mentions_name desugar.subst_type diff.type_head: the new node in a match over types
 eval.type_head eval.fits eval.substitute eval.mentions_param eval.has_unknown locate.type_expr_kids locate.replaced_type refined_in takes_raw parse.type_head refactor.type_renamed resolve.type_head: the new node in a match over types
 smt.structured smt.subst smt.shape smt.unfold smt.sort_of smt.sort_type smt.from_term smt.refined_by smt.refined_walk smt.erased smt.check_type_at smt.sx_ok smt.self_written smt.refined_types smt.sx_literal store.ty termination.refinements_in unused.type_names: the new node in a match over types
-cache.Cache codebase.merge_parsed derive.pairs derive.remember desugar.inline_refinements diff.members_words docgen.titled graph.Shape merge.tokens resolve.walk resolve.union_members  termination.call_name termination.struct_call finding.untagged diff.node_lines tour.Names: stored again by the package-wide edit, the same text
+cache.Cache codebase.merge_parsed derive.pairs derive.remember desugar.inline_refinements diff.members_words docgen.titled graph.Shape merge.tokens resolve.walk resolve.union_members  termination.call_name termination.struct_call finding.untagged diff.node_lines tour.Names checked.keys_of: stored again by the package-wide edit, the same text
 ```

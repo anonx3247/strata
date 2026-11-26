@@ -338,3 +338,157 @@ has = [
   "✗ raw_total",
   "does not satisfy `Cents` (where it >= 0)",
 ]
+
+# `{ ..x, total: 0 }` without a type's name: a new value of `x`'s type (x
+# unchanged), on a record, a structural parameter and an anonymous record
+[[step]]
+strata = ["--file", "up.strata", "edit"]
+text = '''
+from std.io use Console
+
+type Order = { id: Int, total: Int, note: String }
+
+fn zeroed[T: { total: Int, .. }](x: T) -> T = { ..x, total: 0 }
+
+fn assign(mut o: Order)
+  ensures o.total == 0 && o.id == old(o.id)
+{
+  o.total = 0
+}
+
+fn update(mut o: Order)
+  ensures o.total == 0 && o.id == old(o.id)
+{
+  o = { ..o, total: 0 }
+}
+
+fn named(mut o: Order)
+  ensures o.total == 0 && o.id == old(o.id)
+{
+  o = Order { ..o, total: 0 }
+}
+
+fn main(mut console: Console) {
+  o := Order { id: 1, total: 5, note: "n" }
+  y := { ..o, total: 9 }
+  mut console.print(to_string(y) + " " + to_string(o))
+  mut console.print(to_string(zeroed(o)))
+  s := { id: 2, total: 3 }
+  mut console.print(to_string(zeroed(s)) + " " + to_string({ ..s, id: 4 }))
+  mut a := o
+  assign(mut a)
+  mut b := o
+  update(mut b)
+  mut c := o
+  named(mut c)
+  mut console.print(to_string(a == b && b == c))
+}
+'''
+
+[[step]]
+strata = ["--file", "up.strata", "view", "main"]
+has = ["  y := { ..o, total: 9 }", "  o = { ..o, total: 0 }", "fn zeroed[T: { total: Int, .. }](x: T) -> T {"]
+
+[[step]]
+strata = ["--file", "up.strata", "run"]
+stdout = "Order { id: 1, total: 9, note: \"n\" } Order { id: 1, total: 5, note: \"n\" }\nOrder { id: 1, total: 0, note: \"n\" }\n{ id: 2, total: 0 } { id: 4, total: 3 }\ntrue\n"
+
+# `o = { ..o, total: 0 }`, `o = Order { ..o, total: 0 }` and `o.total = 0`
+# are one program: the same proof, and the same IR (the field set in place
+# when `o` is held once, `strata_unique`), but for names
+[[step]]
+strata = ["--file", "up.strata", "verify", "--no-race", "assign,update,named"]
+has = [
+  "✓ assign                   proven (1 check)",
+  "✓ update                   proven (1 check)",
+  "✓ named                    proven (1 check)",
+]
+
+[[step]]
+strata = ["--file", "up.strata", "build", "--no-verify", "--emit-llvm", "-o", "up.ll"]
+
+[[step]]
+run = ["sh", "-c", '''for f in assign update named; do awk "/^define .*\"strata:$f\"/,/^}/" up.ll | sed -E 's/%[a-z.]+[0-9]+/%r/g; s/[a-z]+\.[a-z]+\.[0-9]+/L/g; s/@\.str\.[0-9A-F]+/@s/g; s/^[a-z.]+[0-9]+:/L:/; s/strata:[a-z]+/strata:F/' > $f.norm; done; cmp assign.norm update.norm && cmp assign.norm named.norm && grep -c strata_unique assign.norm''']
+stdout = "1\n"
+
+# a spread gives a structural parameter the record itself
+[[step]]
+strata = ["--file", "sp.strata", "edit"]
+text = '''
+type Order = { id: Int, total: Int }
+
+fn takes(n: Int, x: { id: Int, .. }) -> Int = n + x.id
+
+fn spread(o: Order) -> Int = takes(5, ...o)
+'''
+
+[[step]]
+strata = ["--file", "sp.strata", "run", "spread", "Order { id: 3, total: 1 }"]
+has = ["8"]
+
+# structural bounds through a trait's method (a trait value, a bound, the
+# type), and a generic `impl`'s type arguments in a method's bound
+[[step]]
+strata = ["--file", "tr.strata", "edit"]
+fails = true
+text = '''
+type Order = { id: Int, total: Int }
+
+type Note = { text: String }
+
+type Store[K] = { name: String, key: K }
+
+trait Liner {
+  fn line[T: { id: Int, .. }](self, x: T) -> Int
+}
+
+type Shop = { name: String }
+
+impl Liner for Shop {
+  fn line[T: { id: Int, .. }](self, x: T) -> Int = x.id
+}
+
+impl[K] Store[K] {
+  fn put(self, x: { id: K, .. }) -> K = x.id
+}
+
+fn via_trait(r: Liner, n: Note) -> Int = r.line(n)
+
+fn via_bound[R: Liner](r: R, n: Note) -> Int = r.line(n)
+
+fn via_type(s: Shop, n: Note) -> Int = s.line(n)
+
+fn generic_impl(s: Store[String], o: Order) -> String = s.put(o)
+
+fn fine(r: Liner, o: Order) -> Int = r.line(o)
+'''
+has = [
+  "error in via_trait: calling `Liner.line`: `Note` has no field `id` (the parameter must be `{ id: Int, .. }`)",
+  "error in via_bound: calling `Liner.line`: `Note` has no field `id`",
+  "error in via_type: calling `Shop.line`: `Note` has no field `id`",
+  "error in generic_impl: calling `Store.put`: field `id` of `Order` is `Int`, not `String`",
+]
+lacks = ["error in fine"]
+
+# `derive Json` reaches the anonymous records a derived type holds: written
+# without "type", read back equal
+[[step]]
+strata = ["--file", "aj.strata", "edit"]
+text = '''
+from std.json use Json
+
+type Report = { best: { id: Int, total: Int }, count: Int }
+
+derive Json for Report
+
+fn out() -> Result[String, String] {
+  r := Report { best: { id: 1, total: 2 }, count: 3 }
+  j := r.to_json()!
+  back := Report.from_json(j)!
+  Ok(j.to_string() + " " + to_string(back == r))
+}
+'''
+
+[[step]]
+strata = ["--file", "aj.strata", "run", "out"]
+has = ["\\\"best\\\", Object([(\\\"id\\\", Integer(1)), (\\\"total\\\", Integer(2))])", " true"]

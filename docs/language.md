@@ -210,7 +210,7 @@ larger(invoice, other_invoice)      // an Invoice, returned as one
 - **A parameter's type is a type parameter of its own.** `fn due(x: { id: OrderId, .. })` is `fn due[X: { id: OrderId, .. }](x: X)`. Name the type parameter when the same type comes back out (`-> T`) or must be shared (`a: T, b: T`).
 - **Only the named fields can be used.** `x.id` and `x.total` read the record's fields, `x.total = 5` changes a `mut` one, and `x` can be passed on to another function whose bound asks for no more. Anything else on `x` is an error. An open type (with `..`) has no values of its own: it can't be a result's, a variable's or a field's type. An anonymous record (below) can.
 - **A record fits when it has every field, of a type that fits.** A field whose type is refined (`Cents`, `Int where it > 0`) must be given by a field of that same type, since the function is proven knowing the refinement. An unrefined one takes what fits it the usual way. A record's other fields don't matter, nor their order. Records stay nominal otherwise: an `Invoice` is never a `Quote`, whatever their fields.
-- **Only records fit**, generic ones included (`Box[T]`). Variants, tuples, unions and other types don't, even with fields of those names.
+- **Only records fit**, generic ones included (`Box[T]`). Variants, tuples, unions and other types don't, even with fields of those names. The bound is checked at every call: of a function, of a type's own method (on a value or on the type), and of a trait's method (through a trait value or a bound). A generic `impl`'s type parameters in a method's bound are the receiver's type arguments (`Store[String]`'s `put(x: { id: K, .. })` takes an `id: String`).
 - **Compiled once per record type.** A call with an `Invoice` compiles `due[Invoice]`, which reads `x.total` at the offset `Invoice` keeps it at, as if `due` had been written for `Invoice`. There is no cost at run time. The cost is code size: one copy of the function per record type it is called with.
 - **Verified once, for every record.** `verify` proves the function on a record holding exactly the named fields. The function can only read those fields, so what it proves holds for every record that has them. The fuzzer runs it with the first record type of the program that has the fields.
 
@@ -234,7 +234,13 @@ total_of(s)                         // fits `{ total: Cents, .. }`
 - **Equality and printing** are a record's: field by field, printed as written, with no type name.
 - **verify** sees an ordinary generic record. A refined field's type is a type argument, so `-> { id: Int, total: Cents }` is proven to give a non-negative `total`. An anonymous record given where a bound asks for a refined field (`total_of({ total: n, id: 1 })` against `{ total: Cents, .. }`) is proven to meet it at the call. The checker can't see the refinement of a type argument, so it leaves that to `verify`. A nominal record's field must be written with the same type instead.
 - **A nominal record is not an anonymous one.** An `Order { id, total, note }` fits `{ id: Int, total: Int, .. }`, but is not a `{ id: Int, total: Int }`, even with exactly those fields. Anonymous records with the same field names are the same type, wherever they are written.
-- **Not yet:** `derive Json` doesn't reach them (a record holding one can't derive `Json`), and `{ ..x, total: 0 }` doesn't update one.
+- **`derive Json`** reaches them: a type deriving `Json` that holds one derives it for the anonymous record too. Its JSON has no `"type"` key, since it has no name: `{"id": 1, "total": 2}`.
+
+### Updating a record without naming its type
+
+`{ ..x, total: 0 }` is `x` with `total` changed, of `x`'s type: a record, a structural parameter's type (`T` in `[T: { total: Int, .. }]`), or an anonymous record's. `x` itself is unchanged. On a `mut` variable, `x.total = 0` changes the field in place, and `x = { ..x, total: 0 }` (or `x = Order { ..x, total: 0 }`) is the same statement. `desugar` writes the assignment of an update of the same place as assignments to its fields, with each new value computed first from `x` as it was. So both forms compile to the same code: the field is set in place when `x` is held once, and copied otherwise. They also have the same proof.
+
+A spread into a structural parameter gives it the record itself, when no field has the parameter's name: `takes(5, ...o)` with `fn takes(n: Int, x: { id: Int, .. })` is `takes(5, o)`.
 
 ## Unions, variants and patterns
 
