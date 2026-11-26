@@ -87,17 +87,6 @@ A trait's `invariant` refines the model of every implementing type. A value of t
 
 Contracts that name a model are assumed contracts (`(assumed: not checked when the program runs)`), because computing the abstraction at run time is what the implementation exists to avoid. One that `verify` neither proves nor refutes makes its function assumed (`≈`).
 
-## State graphs
-
-`strata view --graph T` uses the solver to find how values of the sum type `T` move between variants. For each function that takes and returns a value holding `T`, it asks whether the function can move a value from one variant to another, and draws the moves that may happen. The result is the type's pipeline, generated from the code instead of declared.
-
-- Each question is an `ensures !(x is A && it is B)` on a copy of the function.
-- Through a list, the question is `!(graph_i < len(old xs) && graph_i < len(xs) && old xs[graph_i].status is A && xs[graph_i].status is B)`, with the position as a parameter of the copy. Through a dict, it is the same at a key `graph_key`.
-- Questions settled by the body's shape are skipped: a list returned unchanged, or a call to a function that moves the type.
-- Questions the solver leaves unknown are run on generated inputs.
-
-Moves proven impossible are left out, so the graph shows what the code can do. [The tools](tools.md#state-graphs-how-a-types-values-move) page shows the graph, along with the moves of a run and of a diff.
-
 ## Laws of statements and shared traits
 
 A law can be a sequence of calls that ends in the condition that must hold ([the reference](language-reference.md#traits)). `verify` checks it for each implementation as a function whose body is the law and whose result must be `true`. Its `Self` parameters are assumed to meet the trait's invariants, and the calls go through the implementation's methods.

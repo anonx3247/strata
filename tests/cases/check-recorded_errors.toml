@@ -677,7 +677,7 @@ name = "p"
 '''
 
 [[step]]
-strata = ["--file", "sn/", "edit", "util"]
+strata = ["--file", "sn/", "edit", "util", "--as-given"]
 text = '''
 fn report(a: Int) -> Int { a }
 pub fn other(x: Int) -> Int { report(x, 2) }
@@ -685,7 +685,7 @@ pub fn other(x: Int) -> Int { report(x, 2) }
 any_code = true
 
 [[step]]
-strata = ["--file", "sn/", "edit", "main"]
+strata = ["--file", "sn/", "edit", "main", "--as-given"]
 text = '''
 use util
 fn report(a: Int, b: Int, c: Int) -> Int { a + b + c }
@@ -708,7 +708,7 @@ name = "p"
 '''
 
 [[step]]
-strata = ["--file", "ue/", "edit", "util"]
+strata = ["--file", "ue/", "edit", "util", "--as-given"]
 text = '''
 pub fn shown(x: Int) -> Int { x }
 fn secret() -> Int { 1 }
@@ -718,7 +718,7 @@ pub extern c fn strlen(s: String) -> U64
 any_code = true
 
 [[step]]
-strata = ["--file", "ue/", "edit", "main"]
+strata = ["--file", "ue/", "edit", "main", "--as-given"]
 text = '''
 from nothere use x
 from util use shown, missing, secret, Fake
