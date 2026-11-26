@@ -45,29 +45,37 @@
     <h2>Test-driven and proof-driven development</h2>
     <p>Since I wasn't looking at the code, I cared about the functionality: that it does what it's supposed to do. With test-driven development you'd write tests for that. Here I wanted proof-driven development: state what must be true, and have the built-in proof system prove it for every input, with the built-in fuzzer covering what it can't prove. Then you don't need all sorts of tests. As I put it to one of the agents:</p>
     <blockquote><p>Ideally we don't actually use tests and we just have verifications and constraints within the Strata code. Tests should only be there for things that depend on the outside or cannot be proven, which should be a very small number of things.</p></blockquote>
-    <p>In practice it looks like this. A refinement type and two small functions:</p>
-<pre class="strata"><code>/// A decimal digit.
-type Digit = Int
-  where 0 &lt;= it &amp;&amp; it &lt;= 9
+    <p>Here is what that looks like in the compiler itself. <code>compiler/unique</code> decides when the compiler may update a value in place: only when a single variable holds it. It tracks, at each point of a function, which variables hold their value alone. This is how I want to read it, with <code>strata view --level 1</code>, which shows the types, docs and contracts and leaves the bodies out:</p>
+<pre class="strata"><code>/// The state at a point of a function: `live` is false where control never
+/// comes. `s` holds the variables whose value only they hold (held once,
+/// and for a list, dict or set, with buffers of its own). `a` is the part
+/// of `s` that holds only if the `mut` parameter of that name was held once
+/// at the call (`entry`).
+type St = { live: Bool, s: Set[String], a: Set[String] }
 
-fn next_digit(d: Digit) -&gt; Digit {
-  d + 1
-}
+/// Where two paths meet: held once on both.
+fn merged(x: St, y: St) -&gt; St
+  ensures it.live == (x.live || y.live)
+  ensures !x.live ==&gt; it == y
+  ensures x.live &amp;&amp; !y.live ==&gt; it == x
 
-fn isqrt(n: Natural) -&gt; Natural
-  ensures it * it &lt;= n {
-  mut r: Natural = 0
-  while (r + 1) * (r + 1) &lt;= n {
-    r += 1
-  }
-  r
-}</code></pre>
-    <p>There are no tests for either, and <code>strata verify</code> reports:</p>
-<pre class="term"><code>✓ isqrt                    proven (6 checks)
-✗ next_digit               Refinement violation (found by the solver)
-    input:   9
-    result of `next_digit`: 10 does not satisfy `Digit` (where 0 &lt;= it &amp;&amp; it &lt;= 9) (stack: next_digit)</code></pre>
-    <p><code>isqrt</code> is proven for every natural number, loop included. <code>next_digit</code> has a bug, and the solver found an input that shows it: 9.</p>
+/// `st` with `x` no longer known held once.
+fn spoil(st: St, x: String) -&gt; St
+  ensures !contains(it.s, x)
+  ensures !contains(it.a, x)
+  ensures it.live == st.live
+
+/// `st` with variable `x` given a new value, held once when `held`
+/// (unconditionally).
+fn set_var(st: St, x: String, held: Bool) -&gt; St
+  ensures !contains(it.a, x)
+  ensures contains(it.s, x) == (held &amp;&amp; st.live)
+  ensures it.live == st.live</code></pre>
+    <p>The contracts say what each step means: after <code>spoil</code>, <code>x</code> is no longer known to hold its value alone; at a join, unreachable paths don't count. The bodies are the agent's work, and I don't need to read them, because <code>strata verify</code> proves each one meets its contract for every input:</p>
+<pre class="term"><code>✓ unique.merged            proven (9 checks)
+✓ unique.spoil             proven (6 checks)
+✓ unique.set_var           proven (6 checks)</code></pre>
+    <p>No test calls these functions. One end-to-end case, <code>build-static_uniqueness</code>, checks the full analysis on a sample program.</p>
     <p>The more of the language we had, and the faster it ran, the more the agents could work correctly without me looking at the code, and the fewer bugs came up along the way. This makes me comfortable starting on the next steps.</p>
     <h2>How I worked</h2>
     <h3>Design by conversation</h3>
