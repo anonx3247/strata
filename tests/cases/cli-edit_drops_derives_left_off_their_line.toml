@@ -107,7 +107,7 @@ fn origin() -> Point {
   Point { x: 0, y: 0 }
 }
 '''
-lacks = ["warning"]
+lacks = ["warning: removed derive"]
 
 [[step]]
 strata = ["view", "Point"]

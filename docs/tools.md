@@ -408,6 +408,9 @@ integers = "proven"                    # integer fields must be proven to fit a 
 
 [toml]                                 # how `std.toml`'s derived `Toml` reads TOML here
 unknown_keys = "error"                 # `from_toml` refuses keys a record doesn't have (default: "ignore")
+
+[check]                                # what `strata check` reports here
+unused = "error"                       # unused definitions, fields, variants and variables are errors (default: "warn")
 ```
 
 **Dependencies.** `[deps]` names other packages by local path (`json = { path = "../json" }`) or by git URL, pinned to a commit in `strata.lock`. A dependency's modules are prefixed with its package name, as std's are with `std`: its root module is `json`, and its module `text` is `json.text`. They are reached only through `use`, and only for what its `exports` lists. Packages can't depend on each other in a cycle.
