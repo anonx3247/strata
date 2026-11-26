@@ -1973,6 +1973,9 @@ The port to Strata had lost the colors the Rust tools had (the tag `last-rust`, 
   - A verify run naming only some functions doesn't analyse the termination of their callees in other modules, so those callees are seen only through their contracts (`model.locked` from a lemma in `memory`). Name them too (`verify 'memory.x,model.locked'`), or run the whole package.
   - `len(s) == 0` doesn't make a set empty in the encoding (its size isn't tied to its members): a lemma `requires len(s) == 0 ensures s == set([])` got a false counterexample, so `ids_none` requires `s == Set[String] {}` instead.
   - A function whose result type is `Set[TaskId]` isn't seen through: the result's refinement isn't proven for `set(xs.map(f))` (`list_set` doesn't restate the elements' refinements). The proof helpers return `Set[String]`.
+  - Spec functions are only those a lemma names (examples/tasks' model has `locked_none`, `held_none`, `settled_none`, `unlocked_none` for that). With every contract-only quantifying helper a symbol, proofs that rely on seeing through such a helper without lemmas failed: `cli-smt_quantifies_over_dict_entries`' `read_one` (`requires all_positive(d)`) and `cli-smt_proves_nested_quantifiers`.
+  - `cli-smt_tracks_list_elements_through_loops`: `fill_wrong` is refuted by the fuzzer now, where the solver refuted it before; the case accepts either. Not looked into.
+  - `strata diff --graph Status origin/main` on examples/tasks runs past 300 s: it builds the old revision's graph cold (main's 130 s CPU). `view --graph Status` on this branch's tasks takes 1 s when cached, and `cli-view_graph_follows_lists_dicts_and_calls` passes.
   - Memory: a fuzzed method with 150 checks peaks at 1.5-2 GB in strata, mostly the fuzzer's run after the solver. Proven functions aren't fuzzed.
 
 - **Open follow-ups from the docs and dead-code work (2026-11-26).**
