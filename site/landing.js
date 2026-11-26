@@ -127,6 +127,26 @@ const rustDiff = d => d.split('\n').filter(l => !/^(diff --git|index )/.test(l))
   return c === 'd-file' || c === 'd-hunk' ? `<span class="${c}">${esc(l)}</span>` : `<span class="${c}">${esc(l[0] || ' ')}${hlRust(l.slice(1)) || ' '}</span>`;
 }).join('');
 
+/** What strata printed, with the code in it coloured: the map of `view --level 0`
+ *  (kind, name, what it uses), renames, and a hole's goal and context. Other lines as `term` colours them. */
+function strataOut(out) {
+  const name = (n, kind) => /^impl /.test(n) ? hl(n) : `<span class="${kind === 'fn' || kind === 'test' ? 'f' : 't'}">${esc(n)}</span>`;
+  const names = list => list.split(', ').map(n => /^[A-Z]/.test(n) ? `<span class="t">${esc(n)}</span>` : `<span class="f">${esc(n)}</span>`).join('<span class="o-dim">, </span>');
+  return out.split('\n').map(l => {
+    let m;
+    // a line of the map: `fn     ship  → Db, Order  // [holes: ?x]`
+    if ((m = l.match(/^(trait|type|fn|impl|test)(\s+)(.+?)(?:(\s+→ )(.+?))?(\s+\/\/ .*)?$/)) && !/\b(changed|added|removed)\b/.test(l))
+      return `<span class="term-line"><span class="k">${m[1]}</span>${m[2]}${name(m[3], m[1])}${m[4] ? `<span class="o-dim">${m[4]}</span>${names(m[5])}` : ''}${m[6] ? `<span class="c">${esc(m[6]).replace(/(\?[a-z_0-9]+)/, '<span class="h">$1</span>')}</span>` : ''}</span>`;
+    if ((m = l.match(/^renamed (\S+) → (\S+)$/)))
+      return `<span class="term-line">renamed <span class="o-bad">${esc(m[1])}</span> <span class="o-dim">→</span> <span class="o-ok">${esc(m[2])}</span></span>`;
+    if ((m = l.match(/^(updated \d+ definitions? that refer to it: )(.*)$/)))
+      return `<span class="term-line">${esc(m[1])}${names(m[2])}</span>`;
+    if ((m = l.match(/^(\s+)(goal|context|was):(\s+)(.*)$/)))
+      return `<span class="term-line">${m[1]}<span class="o-dim">${m[2]}:</span>${m[3]}${hl(m[4])}</span>`;
+    return `<span class="term-line">${termLine(l)}</span>`;
+  }).join('');
+}
+
 {
   const D = STRATA, L = D.landing, S = D.session;
   const pane = (title, body, { cls = '' } = {}) =>
@@ -151,11 +171,11 @@ const rustDiff = d => d.split('\n').filter(l => !/^(diff --git|index )/.test(l))
   const holes = at('The agent asks what is left to do'), fill = at('It fills the hole'), bug = at('Verification finds the bug'), fix = at('It fixes it, and proves it');
   const broke = at('A breaking change becomes holes'), closed = at('It fills them, and closes the change'), renamed = at('A rename is one change');
   const every = [...new Map(S.flatMap(s => s.graph).map(d => [d.name, d])).values()];
-  const strataRun = s => cmdLine(s.cmd) + (s.input ? piped(s.input.trim()) : '') + term(s.out);
+  const strataRun = s => cmdLine(s.cmd) + (s.input ? piped(s.input.trim()) : '') + strataOut(s.out);
   const steps = [
     { tab: 'Read it', say: 'To find its way, an agent working in Rust reads the files. In Strata it asks for a view of the part it needs, at the level of detail it needs.',
       rust: [`${R.read.lines} lines`, pane('cat src/*.rs', hlRust(R.read.text), { cls: 'rust' })],
-      strata: ['9 lines', pane('~/shop', run('strata view slice:Order --level 0', D.orders.levels[0].trimEnd()), { cls: 'term' })],
+      strata: ['9 lines', pane('~/shop', cmdLine('strata view slice:Order --level 0') + strataOut(D.orders.levels[0].trimEnd()), { cls: 'term' })],
       graph: g => g.set(S[0].graph, { layout: every, focus: 'Order' }) },
     { tab: 'Fill a gap', say: 'A Rust <code>todo!()</code> compiles and says nothing about what is missing. A Strata hole is a task: the type to produce, what is in scope, the contract to meet. The edit that fills it is checked before it is stored.',
       rust: [`${R.fill.lines} lines changed`, pane('~/shop', run(R.fill.find.cmd, R.fill.find.out), { cls: 'term rust' }) + pane('git diff', rustDiff(R.fill.diff), { cls: 'rust' })],
@@ -171,7 +191,7 @@ const rustDiff = d => d.split('\n').filter(l => !/^(diff --git|index )/.test(l))
       graph: g => g.set(closed.graph, { layout: every, changed: changedBetween(fix.graph, closed.graph) }) },
     { tab: 'Rename', say: 'Rust renames by search and replace, read back as a diff. Strata renames in the tree: names are resolved, so the change is one rename, and every use follows it.',
       rust: [`${R.rename.lines} lines changed`, pane('~/shop', run(R.rename.cmd, ''), { cls: 'term rust' }) + pane('git diff', rustDiff(R.rename.diff), { cls: 'rust' })],
-      strata: ['1 change', pane('~/shop', strataRun(renamed), { cls: 'term' }) + pane('strata diff', structural(renamed.changes[renamed.changes.all.steps.at(-1).id]).html, { cls: 'term' })],
+      strata: ['1 change', pane('~/shop', strataRun(renamed), { cls: 'term' })],
       graph: g => g.set(renamed.graph, { layout: every, changed: changedBetween(closed.graph, renamed.graph) }) },
   ];
   const root = $('#ch-session'), tabs = $('.vtabs', root), graph = new Graph($('.graph', root), { legend: false });
