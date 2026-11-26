@@ -1,18 +1,19 @@
 # cli.rs: modules_contracts_and_files: a folder of files is a set of modules, one per file
 
+# `--split` writes everything, so each module's view shows its proofs too
 [[step]]
 strata = ["--file", "$ROOT/examples/tasks", "view", "--split", "split"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "view", "model"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "model", "--proofs"]
 out_file = "split/model.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "view", "memory"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "memory", "--proofs"]
 out_file = "split/memory.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "view", "print"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "print", "--proofs"]
 out_file = "split/print.st"
 
 [[step]]
@@ -83,7 +84,7 @@ run = ["test", "-f", "pkg/print.strata"]
 [[step]]
 strata = ["edit", "model"]
 dir = "pkg"
-text = "fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool ensures it ==> len(reported) == len(claimed) { len(claimed) == len(reported) && unique(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"
+text = "fn same_ids(claimed: List[TaskId], reported: List[TaskId]) -> Bool ensures it ==> len(reported) == len(claimed) && reported.unique() { len(claimed) == len(reported) && unique(reported) && all(claimed, c -> count(reported, r -> r == c) == 1) && all(reported, r -> contains(claimed, r)) }"
 has = ["model.same_ids", "implementation only"]
 
 [[step]]

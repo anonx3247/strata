@@ -1,0 +1,114 @@
+# strata history NAME: the commits that changed one definition, newest
+# first, each with its structural diff; commits that changed only other
+# definitions of the module are skipped. A module file renamed is followed.
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+run = ["git", "config", "user.name", "t"]
+
+[[step]]
+run = ["git", "config", "user.email", "t@example.com"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "shapes", "-m", "shapes"]
+text = '''
+pub fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+pub fn other() -> Int {
+  1
+}
+'''
+
+[[step]]
+strata = ["edit", "shapes", "-m", "document area"]
+text = '''
+/// The area of a rectangle.
+pub fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+'''
+
+[[step]]
+strata = ["edit", "shapes", "-m", "other is 2"]
+text = '''
+pub fn other() -> Int {
+  2
+}
+'''
+
+[[step]]
+strata = ["edit", "shapes", "-m", "areas are never negative"]
+text = '''
+/// The area of a rectangle.
+pub fn area(w: Int, h: Int) -> Int requires w >= 0 && h >= 0 {
+  w * h
+}
+'''
+
+[[step]]
+strata = ["history", "shapes.area", "--no-patch"]
+has = ["areas are never negative  (stricter precondition)", "document area  (doc changed)", "shapes  (added)"]
+lacks = ["other is 2"]
+counts = { "  t  " = 3 }
+
+# diffs are shown by default
+[[step]]
+strata = ["history", "shapes.area", "-n", "2"]
+has = ["~ shapes.area  (stricter precondition)", "requires w >= 0 && h >= 0", "doc: {+The area of a rectangle.+}"]
+lacks = ["shapes  (added)", "VERIFICATION"]
+
+[[step]]
+strata = ["history", "shapes.other", "--no-patch"]
+has = ["other is 2  (body changed)", "shapes  (added)"]
+lacks = ["document area"]
+
+# an uncommitted change comes first
+[[step]]
+strata = ["edit", "shapes", "--no-commit"]
+text = '''
+pub fn other() -> Int {
+  3
+}
+'''
+
+[[step]]
+strata = ["history", "shapes.other"]
+has = ["working tree  uncommitted changes", "-   2", "+   3"]
+
+[[step]]
+run = ["git", "commit", "-qam", "other is 3"]
+
+# the module's file moved by hand, then edited through strata (which
+# stores the new module name in every definition): still one history,
+# and `area` didn't change
+[[step]]
+run = ["sh", "-c", "mkdir geo && git mv shapes.strata geo/shapes.strata && git commit -qm 'shapes into geo'"]
+
+[[step]]
+strata = ["edit", "geo.shapes", "-m", "other is 4"]
+text = '''
+pub fn other() -> Int {
+  4
+}
+'''
+
+[[step]]
+strata = ["history", "geo.shapes.other", "--no-patch"]
+has = ["other is 4  (body changed)", "other is 3  (body changed)", "other is 2  (body changed)", "shapes  (added)"]
+lacks = ["added; removed"]
+
+[[step]]
+strata = ["history", "geo.shapes.area", "--no-patch"]
+has = ["areas are never negative"]
+lacks = ["other is 4", "shapes into geo"]
+
+[[step]]
+strata = ["history", "nothing"]
+has = ["no changes to `nothing`", "qualified name"]

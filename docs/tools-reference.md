@@ -4,7 +4,7 @@ This page holds the detailed rules of [the tools](tools.md). Each section adds t
 
 ## What the tools tell you
 
-**Editing a script.** Outside a package, `strata --file F edit < text` writes a script, or a folder's module, as given, then checks it. Text that doesn't check is still written, and the command reports `written: F doesn't check (N errors; --file edits are kept as given, unlike a package's edit, which is rejected):` with the errors and exits with code 1. A single module file of a folder isn't checked alone, since its neighbours may not be written yet.
+**Editing a script.** Outside a package, `strata --file F edit < text` changes a script, or a folder's module: the result is checked, then written, each file in one step (a temporary file renamed over it). Text that doesn't check writes nothing: the command reports `rejected: F doesn't check (N errors; nothing was written; ...)` with the errors and exits with code 1. `--as-given` writes it all the same (a script written in steps), reporting `written as given: F doesn't check (N errors):` and exiting with code 1. A single module file of a package isn't checked alone, since its neighbours may not be written yet.
 
 **Editing a package.** A package's `strata edit` rejects an edit that doesn't check by itself. Uses that it breaks elsewhere (a changed return type, parameter list or parameter type) become holes of a pending change instead. The text of a rejected edit is saved in the package's `.strata/rejected/edit-N.st`, and the rejection message gives the path. This applies to an edit from standard input and to an editor session that gives up.
 
@@ -64,38 +64,6 @@ Proof material is stored with the code, but views hide it by default. That cover
 - `strata diff --nodes` shows each changed definition as it was and as it is, with the nodes that changed marked (`^^^` under them, as `view LOCATION` marks a node), then each change by path: `edited body/0/value: x + 1  →  x - 1`, `added body/1`, `moved body/1/arms/0 → body/2/arms/1`, `replaced`, `removed`. `--json` gives the same changes in each item's `nodes` (`kind`, `old` and `new` paths, `before` and `after` texts). The changes come from comparing the two trees node by node (`compiler/tree`): an `edited` node's head changed (an operator, a name, a literal) and its children are compared on their own; a list is lined up by its equal items, then by items of the same form and head. Cost: one walk down the parts that differ: 0 to 5 ms for all the definitions a compiler commit changes.
 - `strata diff` reports proof changes apart from code changes: `proofs changed` versus `body changed` (for a method, `` `m`: proofs changed ``). A lemma is listed as a `lemma`.
 - To round-trip a file through text, view it with `--proofs`: `strata --file F view main --proofs > a.st; strata --file b.strata edit < a.st`.
-
-## State graphs: how a type's values move
-
-`strata view --graph T [--all] [--html] [--trace FILE]` is implemented in `compiler/graph`. `T` is a sum type, named by its short or qualified name.
-
-**Where the type is found** in a value:
-
-- record fields, including through type arguments
-- a trait's models (`queue.entries` for `queue: Queue` with `model entries: Dict[TaskId, Entry]`)
-- the payloads of `Option`'s `Some` and `Result`'s `Ok`
-- tuple items
-- one list or dict along the way
-
-List elements are paired by position: element `i` before with element `i` after. Elements past the old length are entries. Dict values are paired by key: the value at `k` before with the value at `k` after. A key absent before is an entry.
-
-**Pairs compared:** a `mut` parameter with itself (`old x` and `x`), and each other parameter with the result when both go through the same lists and dicts. A result that no parameter holds the type for is an entry; a value read out of a parameter is not.
-
-**How a move is decided**, in order:
-
-1. **The body's shape.**
-   - A value that is a parameter as it came in makes no move. That includes a list kept by `filter`, `take`, `drop`, slices or `sorted`, a dict's `without` (`Jobs { jobs: q.jobs.filter(…) }`), and `xs + [x]` or `mut xs.push(x)`, which keep `xs`, through `if`s and loops whose passes keep it too.
-   - A loop whose passes keep a dict, or put values written as specific variants into it (`mut self.table.insert(id, Entry { ..e, status: Running { … } })`), makes no move or entry to any other variant.
-   - An element added as written (`Entry { status: Pending, … }`) is an entry in that variant (possible) and in no other (impossible).
-   - A value a call makes from the parameter (`self = mem_claim(self, limit)`, `(next, n) := f(q)`, `mut q.start(id)` on a parameter of known type, `f(mut q)`) moves as the callee moves its own, using the callee's verdicts, followed through nested calls.
-2. **The solver.** Each move becomes an `ensures` saying it doesn't happen, on a copy of the function (`graph_moves_N`, with a parameter `graph_i` for the position or `graph_key` for the key), encoded by `compiler/smt` with the function's `requires`. If proven, the move is impossible. If the solver returns a model, the move is possible when the encoding is exact (no loop, and nothing left for the solver to choose except a type parameter's value or a trait method's result within its contract), and unknown otherwise. A trait method with models is asked through a call on a value of the trait, so its contract determines its moves (`ensures self.jobs == old self.jobs.with(id, …)`), and the same goes for code that calls it.
-3. **Runs.** Moves still unknown are run on 1,000 generated inputs. The fuzzer's driver, `NAME_fuzz`, calls a copy of the function and records which moves each run made. The function's `requires`, including `assumed` ones, are checked, and a run that breaks them shows nothing. A run that makes a move shows it is possible.
-
-Any move left after that is unknown. A function the encoder doesn't support is listed as left out, with the reason. Answers are cached per function, keyed by the program's text and the copy's (`verify-strata/graphs/` in the cache), so a second run only asks about what changed.
-
-**From a trace,** a call counts when its function's arguments and result hold the type, in the same places as above. A `mut` parameter's new value isn't traced, so such functions are listed as left out.
-
-**`strata diff --graph T`** computes the graph at both ends of the range (the log's, or git's with `--file`) and reports what changed: a move or entry new to the type, a function making a move another function already made (`` `cancel` now makes `Pending -> Cancelled` too (as `OneOrder.save` did) ``), a move no longer made, and a function that no longer reaches a variant or no longer moves the type. A version without the type has no moves.
 
 ## Finding code: `find`, `refs`, locations
 
