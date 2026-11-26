@@ -107,6 +107,10 @@
         <p>The solver (Z3, or cvc5) showed that a check holds for every input, under Strata's encoding of the program. What you trust is the solver, that encoding, the compiler and the C runtime. Code the solver can't reason about, such as a disk behind a capability or an <code>extern c</code> function, is assumed, and reported as assumed. Termination is proven, or reported as unproven. <a href="/docs/verification/">How verification works →</a></p>
       </details>
       <details>
+        <summary>Is this the Strata from strata-org?</summary>
+        <p>No. <a href="https://github.com/strata-org/Strata">strata-org/Strata</a> is a separate project: a platform built on Lean 4 for formalizing language syntax and semantics and building automated reasoning tools, through dialects of intermediate representations. The two are unrelated. I didn't know the name was already in use in the formal verification space when I picked it.</p>
+      </details>
+      <details>
         <summary>How does an agent learn to use it?</summary>
         <p><code>strata skill install</code> writes a short skill into the folders where coding agents look for them. It says that <code>.strata</code> files are binary, that code is read and changed through <code>strata</code>, and lists the commands. <a href="/docs/learn-strata/">Learn Strata in Y minutes</a> is the whole language as one valid file, written to be given to an agent.</p>
       </details>
