@@ -1,6 +1,5 @@
 ---
 title: JSX-like pages
-packages: compiler, std, examples/page
 ---
 
 # Why
@@ -97,5 +96,5 @@ codegen.member_tags codegen.holds_member codegen.read_slot: tags through `box_ta
 
 ```strata-also
 test*: the page's tests in markup, and new ones for escaping, raw HTML, flags and lists
-use std.web: the names the page imports
+use*: the names the page imports
 ```
