@@ -10,10 +10,12 @@ contracts that are the trusted base under every proof. Before this PR,
 codegen held a table of 203 hand-written `declare` lines and called runtime
 functions by name everywhere, and nothing said what any of them does.
 
-This PR is step 1: every runtime function is declared in core, codegen takes
-the declarations from there, six string builtins are compiled through the
-declaration instead of by name, `verify --assumed` lists what proofs trust,
-and `verify` fuzzes the C against its contracts. The IR is the same as before.
+This PR declares every runtime function in core with the types compiled code
+passes, gives 57 of the 196 declarations contracts, takes codegen's
+declarations and its list of panicking functions from them, compiles eight
+builtins through the declaration instead of by name, lists what proofs trust
+(`verify --assumed`), and fuzzes the C against its contracts (50 functions).
+The IR is the same as before.
 
 # Background
 Codegen lowers a builtin call by name (`string_builtin`'s cases) to
@@ -54,6 +56,28 @@ runtime.*: the 188 declarations, the strings group with contracts
 core_files: core/runtime.strata read with core
 ```
 
+# Contracts, and the C checking its own
+Each declaration is typed with the values compiled code passes. A contract
+calls another runtime function where it can, so fuzzing checks the C against
+the C: `strata_int_add` ensures `it - b == a`.
+
+```strata runtime.strata_int_add
+```
+
+A plain `requires` is one the C checks and panics outside; `panicking` takes
+the set of functions that may panic from that, where codegen had a list.
+
+```strata runtime.strata_div
+```
+
+```strata-diff codegen.panicking codegen.call codegen.after_builtin
+```
+
+```strata-also
+codegen.soft_faults: the list, gone
+codegen.Gen codegen.new_gen: the two sets
+```
+
 # Builtins with a body
 A `builtin fn` may have a body: one call of a core.runtime function with the
 builtin's parameters as arguments. `builtin_links` collects them by name,
@@ -66,10 +90,10 @@ call; `string_builtin` lost the six cases.
 ```strata-also
 codegen.Link codegen.body_call codegen.link_args codegen.runtime_symbols: the link table
 codegen.link_errors codegen.new_gen codegen.Gen: a malformed body is an error
-codegen.string_builtin: the moved cases removed
+codegen.string_builtin codegen.number_builtin: the moved cases removed
 parse.decl_kind: a builtin's body is accepted
 text.decl_body_text: and shown
-builtins.*: trim, ord, chr, byte_at, byte_len, byte_slice get bodies
+builtins.*: trim, ord, chr, byte_at, byte_len, byte_slice, float, sqrt get bodies
 ```
 
 # What proofs trust, and fuzzing the C
