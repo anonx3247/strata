@@ -1,0 +1,37 @@
+# `mut a := empty()` doesn't say `P`; only the later `add(mut a, "x")`
+# does. The checker fixes it through the `mut` argument, so `a` is a
+# `List[Box[String]]` and `==` compares the payloads (it once treated them
+# as `_` and printed `true`)
+
+[[step]]
+save = "boxes.strata"
+text = '''
+type Box[P] = { payload: P, n: Int }
+
+fn empty[P]() -> List[Box[P]] {
+  []
+}
+
+fn add[P](mut xs: List[Box[P]], p: P) {
+  mut xs.push(Box { payload: p, n: 0 })
+}
+
+fn same[P](xs: List[Box[P]], ys: List[Box[P]]) -> Bool {
+  xs == ys
+}
+
+fn main() {
+  mut a := empty()
+  add(mut a, "x")
+  mut b := empty()
+  add(mut b, "y")
+  print(a == b)
+  print(same(a, b))
+  print(a == [Box { payload: "x", n: 0 }])
+  print(a[0].payload + b[0].payload)
+}
+'''
+
+[[step]]
+strata = ["run", "boxes.strata"]
+has = ["false\nfalse\ntrue\nxy\n"]
