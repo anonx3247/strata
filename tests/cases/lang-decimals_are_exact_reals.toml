@@ -169,6 +169,10 @@ fn main() {
   print(twice(0.25))
   let r: Real = 3
   print(r / 4)
+  // an integer literal with no `Real` asked for is an `Int`, next to Real code
+  n := 5
+  print([n / 2, n % 2])
+  print(r * Real.from(n))
   p := Price { amount: 0.1 + 0.2, rate: 0.5 }
   print(stringify(p.to_json() !! std.json.Null))
   print(Price.from_json(parse("{\"amount\": 12345678901234567890.123456789, \"rate\": 0.25}") !! std.json.Null))
@@ -182,7 +186,7 @@ strata = ["--file", "p.strata", "build", "-o", "prog2"]
 
 [[step]]
 run = ["sh", "-c", "./prog2 2>&1; echo exit $?"]
-stdout = "[\"half\", \"half\", \"two\", \"big\", \"other\", \"minus\"]\n1.5\n0.75\n{\"type\":\"Price\",\"amount\":0.3,\"rate\":0.5}\nOk(Price { amount: 12345678901234567890.123456789, rate: 0.25 })\n[0.1,1e-30,1e+300,3]\nfault (Runtime): division by zero\n    stack: main\nexit 101\n"
+stdout = "[\"half\", \"half\", \"two\", \"big\", \"other\", \"minus\"]\n1.5\n0.75\n[2, 1]\n15.0\n{\"type\":\"Price\",\"amount\":0.3,\"rate\":0.5}\nOk(Price { amount: 12345678901234567890.123456789, rate: 0.25 })\n[0.1,1e-30,1e300,3]\nfault (Runtime): division by zero\n    stack: main\nexit 101\n"
 
 [[step]]
 strata = ["--file", "w.strata", "edit"]
@@ -229,6 +233,11 @@ pub fn b(r: Real) -> Real {
   x
 }
 
+pub fn d(x: Real) -> Real {
+  n := 5
+  x * n
+}
+
 pub fn c(r: Real) -> Int {
   r.num + r.den
 }
@@ -245,4 +254,5 @@ fails = true
 has = [
   "error in a: a `Real` is made by a literal (`0.5`, `2`), `Real.from(n)`, `Real.parse(s)` or arithmetic, not from its parts (`num` and `den` are kept in lowest terms)",
   "error in b: `x.num`: a `Real`'s `num` and `den` can't be assigned (it is kept in lowest terms): make a new one with arithmetic",
+  "error in d: `*` operands: expected `Real`, found `Int`",
 ]

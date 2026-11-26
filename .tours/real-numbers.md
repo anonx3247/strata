@@ -92,6 +92,57 @@ smt.Val smt.shape smt.sort_of smt.from_term smt.term_of smt.eq smt.eval_expr smt
 smt.real_term smt.real_const smt.int_of_lit smt.real_literal smt.real_parts smt.real_gcd
 ```
 
+# Speed
+The first build was 45 times slower than `Float` on a loop adding `0.1`.
+Each change below was measured on its own (IDEAS.md has the table):
+
+- A literal is now a constant block, so it allocates nothing.
+- `t = t + x` puts its words into `t`'s own block. A nested operator's
+  result stays on the stack.
+- core.real has no call-stack frames.
+- `Int` `==` calls the runtime only when both sides are big.
+- The GCD uses Euclid's algorithm on machine words.
+
+```strata-diff codegen.real_constant codegen.held_apply codegen.equal real.real_gcd
+```
+
+```strata-also
+codegen.binary codegen.flags_for codegen.assigned_call codegen.block_expr codegen.stack_let codegen.function: the flags through `binary`, no frames for `real_…`
+real.real_add real.real_mul real.real_reduced: fast paths, a division only by a GCD above 1
+```
+
+# Integer literals, patterns, division by zero, private parts
+In a function that names `Real` or holds a decimal literal, each integer
+literal is marked too (`$int`), so `x * 2` gets a `Real` 2. A decimal
+pattern parses as `where it == 0.5` and prints back as `0.5`. A division
+checks its divisor unless `verify` proved it nonzero. A `Real` can't be
+built from its parts.
+
+```strata-diff check.int_literal check.real_context codegen.real_op check.real_errors
+```
+
+```strata-also
+check.dec_marked check.int_mark check.int_inner check.real_in check.is_int_lit check.int_value check.dec_unmarked check.infer_untagged: integer marks
+parse.pattern_one parse.dec_pattern text.pattern_text codegen.matches smt.pattern: literal patterns
+check.infer_block main.check_errors_in: the parts are never assigned
+codegen.as_type smt.real_term eval.real_pair: an integer constant beside a `Real`
+```
+
+# core.real proven, exact data
+Inside core.real, smt sees a `Real` as its record (`real_record`), so its
+own functions are proven. Everywhere else a `Real` is an SMT real, and a
+part's refinement (`den: Positive`) is core.real's to keep. std.json's and
+std.toml's `Number` now hold the number's digits as they were read.
+
+```strata-diff smt.real_record smt.refined real.Real
+```
+
+```strata-also
+smt.real_key smt.shape smt.sort_of smt.from_term smt.check_type smt.check_type_at smt.in_type smt.shape_test smt.plain_real
+std.json.* std.toml.* std.sqlite.* std.orm.*: Number(String), Json/Toml/Sql for Real, Row.real, TEXT columns
+real.real_of real.real_mod real.real_text real.real_to_float real.real_pow10: guards and bounded loops for the proofs
+```
+
 # Routine
 ```strata-routine
 main.core_files main.shared_at main.pack_command check.code_module codegen.shown_name smt.shown_name graph.ensures_text: core/real.strata listed with the other code modules

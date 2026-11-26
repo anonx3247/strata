@@ -8,7 +8,7 @@ true
 Err("unknown field \"extra\"")
 Err("expected a `Signup`, got a `Address`")
 Err("at 5: expected `,` or `]` in an array")
-[1,-2500.0,"aé\n😀",true,null,{"k":[]}]
+[1,-2.5e3,"aé\n😀",true,null,{"k":[]}]
 Err("at 0: 99999999999999999999 is beyond ±(2^53 - 1), the integers a JSON number holds exactly")
 Ok(Integer(9007199254740991))
 Err("at 0: -9007199254740992 is beyond ±(2^53 - 1), the integers a JSON number holds exactly")
