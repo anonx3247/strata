@@ -124,7 +124,13 @@ impl Db for MemDb {
 }
 ```
 
-`d.with(k, v)` and `d.without(k)` on a dict, and `s.with(x)` and `s.without(x)` on a set, build new values for use in contracts.
+`d.with(k, v)` and `d.without(k)` on a dict, and `s.with(x)` and `s.without(x)` on a set, build new values for use in contracts. Three more state common contracts directly:
+
+- `d.excluding(keys)`: `d` without the entries of `keys` (a list or a set). "Nothing but these entries changed" is `self.orders.excluding(ids) == (old self.orders).excluding(ids)`.
+- `d.key_set()`: the keys of `d` as a set (`d.key_set().contains(k) == d.contains(k)`).
+- `xs.unique()`: no element twice (`len(set(xs)) == len(xs)`).
+
+`verify` reads them as the solver's own operations: `excluding` is the dict's array with those keys masked, so a frame needs no quantifier over the entries; `key_set` is the array of the keys whose entry is present; `set(xs)` of a list holds exactly its elements, and `unique` says position to element is one to one.
 
 `verify` proves each implementation's methods against the trait's contracts, reading the model through the `model` definition. Code that takes the trait is proven through the model alone ([verification](verification.md#trait-models)). A contract that names a model is assumed by default: `verify` proves it, but it is not checked at run time, since that would compute the model on every call. `run --check-assumed` and `test --check-assumed` check it.
 
