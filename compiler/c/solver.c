@@ -4,7 +4,8 @@
 //
 // A script runs after `(reset)` (assertions and declarations gone) with the
 // limits it was given set again (`:timeout`, `:rlimit`: they outlive a
-// reset), then `(echo "@@strata-done")` marks the end of its answers.
+// reset) and `:print-success` off, then `(echo "@@strata-start")` marks the
+// start of its answers and `(echo "@@strata-done")` their end.
 // Z3's resource limit counts per `check-sat`, so a script gets the answers
 // it gets in a process of its own (the verdict cache relies on that); the
 // line numbers of error messages are told from the script's first line, as
@@ -30,6 +31,7 @@
 
 #define POOL_MAX 64
 #define DONE "@@strata-done"
+#define START "@@strata-start"
 
 typedef struct {
   pid_t pid;      // 0: not running
@@ -304,6 +306,23 @@ static void memo_put(uint64_t h1, uint64_t h2, size_t n, const char *answer) {
   pthread_mutex_unlock(&memo_lock);
 }
 
+// The first line of `out` that isn't `success` (a reply `:print-success`
+// asks for): its start in `*at`, its length returned.
+static size_t first_answer(const char *out, size_t len, size_t *at) {
+  size_t i = 0;
+  while (out && i < len) {
+    size_t j = i;
+    while (j < len && out[j] != '\n') j++;
+    if (!(j - i == 7 && memcmp(out + i, "success", 7) == 0)) {
+      *at = i;
+      return j - i;
+    }
+    i = j + 1;
+  }
+  *at = 0;
+  return 0;
+}
+
 // STRATA_SOLVER_LOG=FILE: each script's time, flags, size, hash and first
 // answer, a line each (`again`: answered before, not asked).
 static void solver_log(const char *flags, size_t n, uint64_t h, double secs, const char *out, size_t len, const char *note) {
@@ -311,9 +330,9 @@ static void solver_log(const char *flags, size_t n, uint64_t h, double secs, con
   if (!log || !*log) return;
   FILE *lf = fopen(log, "a");
   if (!lf) return;
-  size_t first = 0;
-  while (first < len && out[first] != '\n') first++;
-  fprintf(lf, "%.4f\t%s\t%zu\t%016llx\t%.*s%s\n", secs, flags, n, (unsigned long long)h, (int)(first < 60 ? first : 60), out ? out : "", note);
+  size_t at;
+  size_t first = first_answer(out, len, &at);
+  fprintf(lf, "%.4f\t%s\t%zu\t%016llx\t%.*s%s\n", secs, flags, n, (unsigned long long)h, (int)(first < 60 ? first : 60), out ? out + at : "", note);
   fclose(lf);
 }
 
@@ -327,9 +346,9 @@ static void solver_dump(const char *script, size_t n, uint64_t h, const char *ou
   FILE *f = fopen(path, "w");
   if (!f) return;
   fwrite(script, 1, n, f);
-  size_t first = 0;
-  while (out && first < len && out[first] != '\n') first++;
-  fprintf(f, "\n; answer: %.*s\n", (int)first, out ? out : "");
+  size_t at;
+  size_t first = first_answer(out, len, &at);
+  fprintf(f, "\n; answer: %.*s\n", (int)first, out ? out + at : "");
   // and each error the solver reported (compiler/smt's `solver_error`)
   for (size_t i = 0; out && i < len;) {
     size_t j = i;
@@ -367,8 +386,10 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
     while (*f && *f != ' ') f++;
   }
   if (p->pid == 0 && !proc_start(p, solver)) return;
-  char head[256];
-  snprintf(head, sizeof head, "(reset)\n(set-option :timeout %ld)\n(set-option :rlimit %ld)\n", timeout_ms, rlimit);
+  // (`:print-success` outlives a reset: the head's own replies end at the
+  // START mark, and are dropped, so the script's replies are its own)
+  char head[320];
+  snprintf(head, sizeof head, "(reset)\n(set-option :timeout %ld)\n(set-option :rlimit %ld)\n(set-option :print-success false)\n(echo \"" START "\")\n", timeout_ms, rlimit);
   long base = p->lines + count_lines(head, strlen(head));
   Buf in = {0};
   buf_str(&in, head);
@@ -423,9 +444,19 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
       }
     }
   }
-  if (out.len) fix_lines(result, out.buf, out.len, base);
-  solver_log(flags, script_len, h1, now_s() - started, out.buf, out.len, "");
-  solver_dump(script, script_len, h1, out.buf, out.len);
+  size_t from = 0;
+  {
+    size_t m = strlen(START) + 1;
+    for (size_t i = 0; i + m <= out.len; i++) {
+      if ((i == 0 || out.buf[i - 1] == '\n') && memcmp(out.buf + i, START "\n", m) == 0) {
+        from = i + m;
+        break;
+      }
+    }
+  }
+  if (out.len > from) fix_lines(result, out.buf + from, out.len - from, base);
+  solver_log(flags, script_len, h1, now_s() - started, out.buf + from, out.len - from, "");
+  solver_dump(script, script_len, h1, out.buf + from, out.len - from);
   if (!done && dead == 2) buf_str(result, "timeout\n");
   if (has_word(flags, "budget")) {
     // (a search: how long it took, kept with its answer, so a later ask

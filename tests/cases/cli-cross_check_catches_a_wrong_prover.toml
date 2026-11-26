@@ -5,8 +5,7 @@ write = "fake-solver"
 text = '''
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo fake 1.0; exit 0; fi
-cat > /dev/null
-echo unsat
+awk '/^\(check-sat/ { print "unsat"; next } /^\(echo/ { print "@@answered"; next } /^\(get-info/ { print "(:reason-unknown \"\")"; next } /^\(get-(value|model)/ { print "(error \"model is not available\")"; next } /^\(/ { print "success" }'
 '''
 
 [[step]]
