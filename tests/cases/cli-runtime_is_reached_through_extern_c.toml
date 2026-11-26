@@ -10,12 +10,16 @@ has = ["extern c fn strata_str_trim(s: String) -> String\n  assumed ensures len(
 
 [[step]]
 strata = ["--file", "$ROOT/core", "verify", "--assumed"]
-has = ["core: ", "core.runtime.strata_str_trim (C)", "ensures len(it) <= len(s)"]
+has = ["core: ", "core.runtime.strata_str_trim (C)", "ensures len(it) <= len(s)", "requires b != 0  (checked: panics outside it)"]
 
 # the C, fuzzed against its contracts
 [[step]]
 strata = ["--file", "$ROOT/core", "verify", "core.runtime.strata_str_byte_slice"]
 has = ["core.runtime.strata_str_byte_slice fuzzed"]
+
+[[step]]
+strata = ["--file", "$ROOT/core", "verify", "core.runtime.strata_int_add"]
+has = ["core.runtime.strata_int_add fuzzed"]
 
 [[step]]
 save = "p.strata"
@@ -30,12 +34,13 @@ fn next(x: Int) -> Int
 fn main() {
   print(next(byte_len(trim("  ab "))))
   print(byte_slice("héllo", 0, 3))
+  print(sqrt(float(16)))
 }
 '''
 
 [[step]]
 strata = ["--file", "p.strata", "run"]
-stdout = "3\nhé\n"
+stdout = "3\nhé\n4.0\n"
 
 # the program's own trusted contracts, then std's and core's
 [[step]]
