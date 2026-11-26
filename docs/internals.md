@@ -38,6 +38,8 @@ The `strata` command is the `compiler/` package, written in Strata. A previous `
 - `core.values`: reads a compiled value back from memory, read-only, on top of `core.mem`. `Raw` is a value's address as compiled code hands it over. `r.word(i)` reads its 64-bit slot `i` (a block's tag and fields, a list's header), `r.at(i)` reads slot `i` as a value, and `r.byte(k)` reads a byte. Core's modules can name `Raw`, and so can a package whose strata.toml sets `read = true` under `[values]`, which the compiler does to read back the values of compile-time code. Anywhere else, `Raw` is an error, reported once per definition. `verify` never runs a function that takes one.
 - `core.rt`: the runtime written in Strata. It holds the allocator and reference counting (`strata_alloc`, `strata_dup`, `strata_release`, `strata_free`) and every `strata_...` entry point. It calls the topic modules `core.str` (strings), `core.int` (integers), `core.list` (lists), `core.fmt` (format specs), `core.float` (floats), `core.gen` (generated values), `core.fault` (the call stack and faults) and `core.run` (running tests and fuzz cases), which only it uses. None of these modules may allocate. The checker rejects lists, records and closures built at run time, `Int` arithmetic, and calls to anything other than the runtime's functions, `core.mem`'s, and the integer conversions.
 
+- `core.runtime`: the runtime's functions that compiled code calls (runtime.c's, and core.rt's `strata_...` entry points), each an `extern c` declaration with `assumed` contracts. Their types are the values as compiled code holds them: a `String` or a list is its pointer, an `Int` its word, a `Ptr` a raw pointer, so a call passes them as they are. Codegen takes each function's IR declaration from here (`codegen.runtime_declarations`; `assumed ensures false` is `noreturn`), and a call of a function it declares nowhere is an error. Its own list (`codegen.declarations`) holds only LLVM's intrinsics, the C library's `free` and `memcmp`, two globals, and the counts (`strata_dup`, `strata_release` and their word and `Int` forms), which it writes inline with their fast path. Only core's modules see `core.runtime`.
+
 `strata --file core test` runs core's tests, except those of the runtime modules (core.rt and the rest), which compile only together into the runtime.
 
 Whatever the compiler itself provides is declared with `builtin`, which only `core` may use. A builtin is a type with its parameters (`builtin type Dict[K, V]`) or a function signature. A function has a `requires` where it fails on some arguments, so a builtin's precondition is a contract like any other, and a builtin without `requires` always returns:
@@ -53,6 +55,12 @@ builtin fn chr(c: Int) -> String
 ```
 
 A name can have several signatures (`len` of a list, dict or set). A call uses the first whose parameters fit the arguments.
+
+A builtin may have a body: a call of one of core.runtime's functions with the builtin's parameters as arguments. Compiled code calls that function directly (`codegen.linked`), and `verify` still models the builtin by its name. Codegen names none of these runtime functions. Built so: `trim`, `ord`, `chr`, `byte_at`, `byte_len`, `byte_slice`.
+
+```rust
+builtin fn byte_len(s: String) -> Int = strata_str_byte_len(s)
+```
 
 - `strata --file core view builtins` shows them all, and `strata builtins` lists them briefly.
 - `strata --file core/ edit MODULE < text` stores a module of core as written. An edited builtin replaces the one with the same name and parameter types, and other overloads stay. Builtin names are global, not module-scoped.
