@@ -100,6 +100,8 @@ The prover lives in `compiler/smt`. It executes the body symbolically, with valu
 
 A written loop `invariant` sees through helpers the same way (`invariant head_first(steps, orders)`).
 
+A function given to `all`, `any`, `filter` and the like is read as a contract would read it, so the helpers it calls are seen through. A call of the function being checked is the exception: in the function's own code it is known by its contract, as a recursive call made directly is (`if ms.all(m -> refn(types, m, lit, fuel - 1) == Plain)` in `compiler/contracts`). Seen through, its body would be seen through again at each element the function is applied to, nested.
+
 A recursive helper that calls only itself, terminates and can't otherwise fail (`fn count(t: Tree) -> Natural`, `find` down a search tree) becomes an SMT function of its arguments inside a contract. Its body is stated once in each query that uses it, as an SMT definition whose recursive calls are applications of the function. At each use, the application is said equal to that definition's, and so are the recursive calls inside it, two levels deep, each with the helper's contract. The same arguments therefore give the same result wherever it is called. A contract about the helper is then proven using the helper's own contract at its recursive calls. For example, `ensures count(it.0) == count(t) + if it.1 { 1 } else { 0 }` is proven for an AVL tree's insertion, rotations included. std's `SortedDict` and `SortedSet` state their sizes and what `insert` and `remove` find this way.
 
 **Lists in contracts.**
