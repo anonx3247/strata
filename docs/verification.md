@@ -493,6 +493,25 @@ fn add(xs: Sorted, x: Int) -> Sorted {
 - Nested quantified facts are encoded by polarity. An example is a conversation where every tool result answers a call in some earlier message: `all(0..len(it), i -> … any(0..i, j -> any(calls, c -> c == id)))`. An `all` that is only ever known to be true gives its fact for every position. One that is only ever proven gives only what proves it: a position where it fails, or otherwise that it holds. An `any` inside a known `all` therefore becomes a witness position for the outer `all`, never a quantifier inside a quantifier. Appending calls and their results, or appending a result for a call that a `requires` refers to, is proven in milliseconds.
 - Not supported: positions after `filter` and `sort`, where only "some element of the list" is known, and a witness shifted by a concatenation in front of it (`a + b` of two such conversations).
 
+## Floats
+
+A `Float` is a double that is never NaN or infinite, so each `+`, `-`, `*`, `/` and `%` on floats is a check that its result is finite. The solver proves or refutes it:
+
+```rust
+type Small = Float where abs(it) <= 1000000.0
+
+fn sq(x: Small) -> Float where it >= 0.0 = x * x      // proven: finite, and not negative
+
+fn grow(x: Float) -> Float = x * x                     // refuted: x = 1.7976931348623157e308
+```
+
+- A float is an SMT real: the double's exact value, at most the largest double (about 1.8e308) either way. A literal is its double's exact value (`0.1` is 3602879701896397/2^55).
+- Each operation is an SMT function of its operands, so the same operation on the same values is the same value. Its result is the exact one rounded: within 2^-53 of it, relatively (plus 2^-1075 for `*` and `/`, which can round into the subnormals), with the exact result's sign, and on its side of each operand's magnitude (rounding is monotone). The floating-point theory is not used: it bit-blasts each operation, which costs far more than the 2M budget of a query.
+- The check that a result is finite is exact: a result overflows when the exact one reaches 2^1024 - 2^970 in magnitude (to nearest, ties to even). `x + 1.0` is proven for any `x`; `x * x` is refuted.
+- `float(n)` is exact up to 2^53; `abs`, `min`, `max`, `floor`, `ceil` and `round` are exact; `sqrt` is known by bounds (0 at 0, between `x` and 1, at least 1 from 1 on).
+- Not known: exact results. `0.1 + 0.2 > 0.3 - 0.0000001` is proven, `x + 0.0 == x` is not.
+- Code that adds many floats proves its sums finite with a bound on the elements and a loop invariant that grows with the count (`std.array`'s `sum_run`: `abs(s) <= float(2 * a) * sum_bound()`).
+
 ## Lemmas and written proofs
 
 Some facts are out of the solver's reach on its own: a fact about every tree needs induction, and a query holding a whole function's facts can be too large to answer. A proof can then be written in small steps, each checked alone.
