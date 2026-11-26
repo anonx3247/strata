@@ -307,10 +307,6 @@ uint64_t binary_new_id(void) {
   return x;
 }
 
-/* TEMPORARY: compiler/binary reads the format whose string tables held
-   8-byte ids when this is set. */
-int32_t binary_read_v1(void) { return getenv("STRATA_READ_V1") != NULL; }
-
 // Whether the process `pid` is running (another user's too), for `strata
 // cache clean`: a scratch folder named by a running process's id is in use.
 int32_t cache_pid_running(int64_t pid) {
