@@ -1,0 +1,33 @@
+# `verify m.Type.method` checks that method of the implementation only,
+# not its other methods (an impl is one definition).
+[[step]]
+write = "strata.toml"
+text = "name = \"one_method\"\n"
+
+[[step]]
+module = "a"
+into = "$TMP/"
+text = '''
+pub trait Counter {
+  fn bump(self, n: Int) -> Int
+    ensures result > n
+  fn drop_one(self, n: Int) -> Int
+    ensures result < n
+}
+
+pub type C = { k: Int }
+
+impl Counter for C {
+  fn bump(self, n: Int) -> Int {
+    n + 1
+  }
+  fn drop_one(self, n: Int) -> Int {
+    n - 1
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", ".", "verify", "--no-race", "a.C.bump"]
+has = ["a.C.bump"]
+lacks = ["drop_one", "names no definition"]
