@@ -409,6 +409,12 @@ static void run_fresh(Proc *p, const char *solver, const char *flags, const char
     else if (strncmp(f, "rlimit=", 7) == 0) rlimit = atol(f + 7);
     while (*f && *f != ' ') f++;
   }
+  // STRATA_SOLVER_TIMEOUT_MS=N: every script's soft time limit (`:timeout`)
+  // is N ms, its resource limit unchanged, so a case can make a query stop
+  // by time well within its units (compiler/smt's `gave_up` tells the two
+  // apart).
+  const char *soft = getenv("STRATA_SOLVER_TIMEOUT_MS");
+  if (soft && *soft) timeout_ms = atol(soft);
   // (a process left with a global parameter set starts again)
   if (p->dirty) proc_stop(p);
   if (p->pid == 0 && !proc_start(p, solver)) return;
