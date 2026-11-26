@@ -430,6 +430,8 @@ Discarding a `Result` with `_ := e` is allowed, since the program may not care w
 
 A variable that is never read produces a warning, since code may be half-written. This covers parameters, `x := e`, `mut x := e`, pattern bindings and lambda parameters. `check`, `run`, `build` (when it verifies) and `edit` print one line per variable, naming the function. A name starting with `_` (`_x`, `_`) marks the value as unused on purpose. The parameters of `impl` methods are exempt, since the trait or type dictates them. An unread variable whose value has no effect (a literal, a variable, a lambda, a field, or a tuple or list of these) is not compiled at all.
 
+`check` also warns of what the whole program never uses: a private function, type or trait that nothing reaches from `main`, the tests, the `pub` and `extern` definitions and what contracts name, a field of a private record that is never read, and a variant of a private sum that is never built. `strata fix` removes the unused definitions. `[check] unused = "error"` in strata.toml makes all of these errors, unused variables included, so `check`, `run` and `build` refuse the program and `edit` rejects a change that leaves something unused. The rules are in [the tools reference](tools-reference.md).
+
 ## Values and copying
 
 Values never change. `ys := xs + [x]` is a new list, and `xs` is unchanged. A `mut` variable changes by assignment or through a `mut` method (`mut d.insert(k, v)`), and a copy held elsewhere keeps the old value.
