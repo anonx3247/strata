@@ -1,0 +1,26 @@
+# `mut xs.grow(n)`: room for n more elements, the list's value unchanged:
+# in place when held once (a variable, a record's field), a copy with the
+# room when shared; built and run with every object freed, and under
+# `strata run`; verify proves callers from `ensures xs == old xs` and
+# refutes a negative size, which faults at run time
+
+[[step]]
+save = "grow.strata"
+from = "grow.st"
+
+[[step]]
+strata = ["build", "grow.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "[0, 1, 2, 3, 4]\n([1, 2, 3], [1, 2, 3, 4])\nBox { items: [\"x\", \"y\"] }\n([], [7])\n"
+
+[[step]]
+strata = ["run", "grow.strata"]
+stdout = "[0, 1, 2, 3, 4]\n([1, 2, 3], [1, 2, 3, 4])\nBox { items: [\"x\", \"y\"] }\n([], [7])\n"
+
+[[step]]
+strata = ["verify", "grow.strata"]
+code = 1
+has = ["✓ filled                   proven (7 checks)", "✓ same                     proven (2 checks)", "✗ negative                 Runtime violation (found by the solver)", "`grow` by a negative size: -1"]

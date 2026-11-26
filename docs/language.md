@@ -500,6 +500,7 @@ These updates happen in place when nothing else holds the value:
 - `xs[i] = v` (`xs = set_at(xs, i, v)`) on a list: O(1).
 - `x.f = v` and `x.a.b = v`: a record or tuple field at any depth. The exception is a `distinct` record, or a record with its own refinement, where the check runs on the new record.
 - `mut xs.push(e)`, `mut xs.pop()`, `xs += ys`, `xs = xs + ys`, `xs = xs + [e]` on a list: O(1) average per element added, **even when `xs` is shared**. The list's buffer is extended past its end if no other list built from it has used those slots, and copied otherwise. A copy reserves room for as many elements again, so a list grown repeatedly is copied O(log n) times.
+- `mut xs.grow(n)` makes room for `n` more elements past the end (`n >= 0`), so the next `n` pushes copy nothing. The list's value doesn't change (`ensures xs == old xs`: capacity is not part of it), so `verify` sees through it. Held once, the buffer grows in place, or moves once into a buffer of the new size. Shared, `xs` becomes a copy with the room, as any change would make it. Before a loop of `n` pushes it saves the O(log n) copies and the buffers they leave.
 - `s += t` and `s = s + t` on a string: in place when only `s` holds the string (and, for a field, only one owner holds each record on the path to it). Otherwise the string is copied, with room to grow.
 - Containers and records with refined element types (`Dict[Int, Word]`): an update checks only what it adds (`insert`'s key and value, `push`'s element), not every element.
 
