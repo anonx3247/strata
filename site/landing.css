@@ -107,6 +107,16 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .part > h3 { font: 600 clamp(30px, 2.8vw, 44px)/1.1 var(--display); letter-spacing: -.02em; margin: 0; color: var(--accent2); }
 .part > .sub { color: var(--muted); font-size: 18px; margin: 8px 0 8px; }
 .chapter h4 { font: 600 22px/1.25 var(--display); letter-spacing: -.01em; margin: 0 0 10px; }
+.part .flow { color: var(--text); font-size: 17px; max-width: 95ch; margin: 18px 0 26px; }
+.part .flow.caption { color: var(--muted); min-height: 3.2em; margin: 18px 0 18px; }
+.part > .go { margin-top: 20px; }
+.session .vtabs button b { color: var(--accent2); margin-right: 4px; }
+.session .vtabs .next { margin-left: auto; color: var(--accent); }
+.session .vs { align-items: start; }
+.session .side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.session .side .pane .body { max-height: 460px; font-size: 12.5px; }
+.session .side .graph { height: 330px; }
+.part .visual .vs .pane .body { max-height: none; }
 .astpair { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 16px; }
 .astpair .pane .body { height: 440px; max-height: 440px; }
 .astpair .graph { height: 485px; }
@@ -130,8 +140,9 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .visual .vs .side .pane { height: auto; display: block; }
 .visual .vs .pane .body { max-height: 420px; }
 .visual .vs .pane.long .body { max-height: 300px; }
-.visual .vs .side h4 .big-n { font: 600 24px var(--display); letter-spacing: -.02em; margin-left: auto; text-transform: none; }
-.visual .vs .side.old h4 .big-n { color: var(--bad); } .visual .vs .side.new h4 .big-n { color: var(--ok); }
+.story .vs .side h4 { display: flex; align-items: baseline; }
+.story .vs .side h4 .big-n { font: 600 24px var(--display); letter-spacing: -.02em; margin-left: auto; text-transform: none; }
+.story .vs .side.old h4 .big-n { color: var(--bad); } .story .vs .side.new h4 .big-n { color: var(--ok); }
 .visual .headline .hl-big { font-size: 18px; }
 
 /* try it */

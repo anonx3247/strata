@@ -70,60 +70,24 @@
 
     <div class="part">
       <h3>Contracts</h3>
-      <p class="sub">Tests check the inputs someone thought of. A contract is proven for all of them.</p>
-      <div class="chapter">
-        <div class="text">
-          <h4>Tests miss inputs</h4>
-          <p>These three tests pass. One line of contract says what they were checking, and <code>verify</code> finds a bill they never tried: 58 cents between 13 people loses 6.</p>
-          <a class="go" href="tour.html#shares">In the tour →</a>
-        </div>
-        <div class="visual" id="ch-shares"></div>
-      </div>
-      <div class="chapter">
-        <div class="text">
-          <h4>Rules that are checked</h4>
-          <p>In most languages, the rules a type follows are comments. In Strata they are code: a refinement type (<code>Cents</code>), a contract on each method, and laws on the trait. <code>verify</code> proves every implementation against them.</p>
-          <a class="go" href="tour.html#behaviour">In the tour →</a>
-        </div>
-        <div class="visual" id="ch-ledger"></div>
-      </div>
+      <p class="sub">One ledger, written twice. A transfer must never make or lose money.</p>
+      <p class="flow">In Rust, that rule is a comment, and three tests check it on the accounts someone picked. They pass. In Strata, the rule is a law on the trait, next to a refinement type (<code>Cents</code>, never negative) and a contract on <code>transfer</code>. <code>verify</code> checks the implementation against all of them, and finds the transfer the tests never tried: from account 100 to itself, which adds 9 cents to it.</p>
+      <div class="visual" id="ch-ledger"></div>
+      <a class="go" href="tour.html#behaviour">Contracts in the tour →</a>
     </div>
 
     <div class="part">
       <h3>Editing the syntax tree</h3>
-      <p class="sub">Code is stored as a graph of definitions, not as text files.</p>
-      <div class="chapter">
-        <div class="text">
-          <h4>A graph of definitions</h4>
-          <p>Each definition is a syntax tree with a hash, linked to what it uses. Text is how it is shown, not how it is stored.</p>
-          <a class="go" href="tour.html#tree">In the tour →</a>
+      <p class="sub">One order system, in Rust and in Strata, through the same edits.</p>
+      <div class="session" id="ch-session">
+        <div class="vtabs"></div>
+        <p class="flow caption"></p>
+        <div class="vs">
+          <div class="side old"><h4>Rust: text files <span class="big-n"></span></h4><div class="rust"></div></div>
+          <div class="side new"><h4>Strata: the tree <span class="big-n"></span></h4><div class="strata"></div><div class="graph"></div></div>
         </div>
-        <div class="visual" id="ch-graph"></div>
       </div>
-      <div class="chapter">
-        <div class="text">
-          <h4>Views</h4>
-          <p>So an agent reads only the part it needs: a map of what uses what, instead of every file.</p>
-          <a class="go" href="tour.html#views">In the tour →</a>
-        </div>
-        <div class="visual" id="ch-views"></div>
-      </div>
-      <div class="chapter">
-        <div class="text">
-          <h4>Typed holes</h4>
-          <p>Code can be unfinished and still check. A hole is a task with a type and a context. Filling it is checked against everything it touches, and an edit that doesn't check is refused.</p>
-          <a class="go" href="tour.html#build">In the tour →</a>
-        </div>
-        <div class="visual" id="ch-holes"></div>
-      </div>
-      <div class="chapter">
-        <div class="text">
-          <h4>Structural diffs</h4>
-          <p>A change is a change to definitions, so a rename reads as one rename.</p>
-          <a class="go" href="tour.html#diffs">In the tour →</a>
-        </div>
-        <div class="visual" id="ch-diff"></div>
-      </div>
+      <a class="go" href="tour.html#ast">The syntax tree in the tour →</a>
     </div>
   </section>
 
@@ -149,6 +113,7 @@
 <script src="data/session.js"></script>
 <script src="data/rename.js"></script>
 <script src="data/orders.js"></script>
+<script src="data/landing.js"></script>
 <script src="common.js"></script>
 <script src="landing.js"></script>
 </body>
