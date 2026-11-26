@@ -60,6 +60,26 @@ its pipe and waits for the run's answer, so it knows which code runs.
 LiveEdit: how an edit went
 live_refused text_or_empty: the run told why; reading a note
 start_live jit_live jit_live_tell jit_live_now jit_live_sleep: starting the watcher, and its C side (c/jit.c)
-run_command: `--live` starts the watcher instead of a verifier alongside
+run_command: `--live` starts the watcher instead of a verifier alongside, and compiles with `--live`
 strata_command: the `live-edits` and `live-edit` commands
+```
+
+# Each function from its own code alone
+A frame running old code calls new code, and an edited caller can change
+what codegen concludes about a callee it never touched. Tested on a
+program with state through 28 edits (`cli-run_live_state`), three ways
+this went wrong showed up (`cli-run_live_frames`): an argument an old frame
+put on its stack, kept by an edited callee; an entry check left out once
+every call proved it, though the old frame's call doesn't; and a lambda
+changed alone, whose maker's IR didn't change (fixed in c/jit.c's
+`live_own`, which follows references). `--live` compiles every function
+from its own code: every parameter kept, no proven updates in place, no
+regions, entry checks kept.
+
+```strata-diff codegen.Gen codegen.generate codegen.proven_entry
+```
+
+```strata-also
+codegen_with: `--live` read anywhere in codegen's arguments
+core_rt_text computed_value repl_eval: `generate`'s new `live` argument, false
 ```
