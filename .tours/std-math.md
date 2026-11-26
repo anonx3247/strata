@@ -1,84 +1,76 @@
 ---
-title: std.array, NumPy-like arrays of floats
+title: std.array, NumPy-like arrays of floats and integers, with sized-int loops that compile tight
 packages: std compiler
 ---
 
 # Why
-std had no numeric arrays. This PR adds `std.array`: an n-dimensional array of
-`Float`s with views, broadcasting, reductions, `dot` and `matmul`. Shapes are
-contracts, so `verify` proves or refutes them where the shapes are known.
+std had no numeric arrays. This PR adds `std.array` with three array types: `Array` (float64), `ArrayI64` and `ArrayI32`. They have views, broadcasting, reductions, `dot` and `matmul`, and shapes are contracts that `verify` proves at call sites.
 
-It also measures the inner loops against C. On this machine, `strata build
---release`: a sum of 10M floats takes 9.4 ms (C: 2.0 ms for the same algorithm),
-and a 256×256 matmul takes 36 ms (C: 7.6 ms for the same algorithm, 2.3 ms
-vectorized). Before the codegen change on the last page, they took 19 ms and 97 ms.
+There is no `Int` in the module: shapes, strides, offsets and indices are `I64`. Getting those loops to compile to plain machine code needed changes in core, codegen, the prover and the checker. Measured against C and NumPy (IDEAS.md, "std.array"): a sum of 10M float64 went from 9.4 ms (first version, `Int` indices) to 3.5 ms. C takes 2.0 ms and NumPy 1.4 ms. An int64 matmul 256 takes 12 ms, against NumPy's 9.8 ms.
 
 # Background
-A `List[Float]` is a header (its length, buffer and offset) over a buffer of
-64-bit slots, and a float sits in its slot unboxed. `xs[i]` is checked against
-`len(xs)` unless `verify` proved it. Every float operation's result must be
-finite, and before this PR that test was a call into the C runtime:
+A list is a header (length, buffer, offset) over 64-bit slots. `xs[i]` took an `Int`, and every `Int` `+` or `<` has a big-integer path that calls the runtime. A float operation's finiteness check called the runtime too, and that call came back into the loop. LLVM must assume such a call writes memory, so it reloaded the header on every element.
 
 ```strata codegen.finite_test
 ```
 
 # Intuition
-A 2×3 array `arange(6).reshape([2, 3])` is the list `[0, 1, 2, 3, 4, 5]` with
-shape `[2, 3]` and strides `[3, 1]`. Its transpose is the same list with shape
-`[3, 2]` and strides `[1, 3]`, made in O(1). An operation first makes each operand
-row-major (`to_list`: free for compact data, else one `gather`), then loops over
-flat lists. Each index read is guarded by its loop's condition, so every bounds
-check is proven.
+`for i: I64 in 0..n { s += xs[i] }` should be `ldr d2, [x11], #8; fadd; …`. That needs no call anywhere on the loop's cycle. So the index is an `I64` that reads the slot directly, conversions take their small case inline, and the code doesn't come back from a fault's call.
 
-```strata-refs std.array.gather
+```strata-refs std.array.sum_run_f64
 ```
 
-# The array and its views
-The type, with `len(shape) == len(strides)` as its refinement, and the views that
-share its data.
+# A list indexed by an I64
+Core gets a second signature of `at` (`core/builtins.strata`: `builtin fn at[A](xs: List[A], i: I64) -> A requires 0 <= i.to_int() && i.to_int() < len(xs)`). The checker picks it by the argument's type, and the prover reads its `requires` through `to_int`. The checker now also reports a call that fits no signature once the argument types are all known (`xs["a"]`), which a generic signature had hidden.
 
-```strata-diff std.array.Array std.array.Matrix std.array.gather
+```strata-diff check.builtin_call check.settled
 ```
 
-```strata-also
-std.array.count std.array.row_major std.array.dense std.array.repeated std.array.as_float: shapes, strides and filled lists
-std.array.full std.array.zeros std.array.ones std.array.arange std.array.from_list std.array.from_rows: construction
-std.array.in_bounds std.array.without_axis: shape predicates used in contracts
+```strata-routine
+check.basic: replaced by `settled`
 ```
 
-# Broadcasting and elementwise operations
-NumPy's rule: lengths compared from the last axis, a 1 stretches. The stretched
-axis gets stride 0, and both sides are gathered to the broadcast shape. Equal
-shapes skip that. `add`, `sub`, `mul`, `div` and `neg` take `self` and another
-`Array`, so `impl Add for Array` forwards to them once operators are trait methods.
+# Codegen: no call left in the loop
+`finite` ends its slow path with `unreachable` where the runtime never returns, or at the supervised task's cancel point. The conversions between `Int` and the sized types test the small case inline. `int_bits`'s test (`a + 2^62 < 2^63` unsigned) is one LLVM folds for a widened `I32`.
 
-```strata-diff std.array.broadcast_shape std.array.stretched
+```strata-diff codegen.finite codegen.word_to_int codegen.conversion codegen.int_bits
 ```
 
 ```strata-also
-std.array.broadcasts: the predicate the operations require
+codegen.as_type: uses `int_bits`
+codegen.lit_here: the bounds of a range check, made and dropped in the slow block
+codegen.declarations: `strata_finite` declared `cold`
 ```
 
-# Reductions, dot and matmul
-Sums add in four interleaved partial sums (`sum_run`, `dot_run`), so the additions
-don't wait on each other. Reductions along an axis move the axis last (`lanes`)
-and reduce each run. `matmul` makes one dot product per element, over a row of `a`
-and a row of `b`'s transpose, so it never writes into the result list inside the
-loop. Its `requires a.shape[1] == b.shape[0]` and `ensures it.shape == [a.shape[0],
-b.shape[1]]` are what callers are checked against.
+# Prover and fuzzer: sized values stay sized
+`mut i: I64 = 0` used to bind an `Int`, so `to_int` of every sized loop counter was "not modelled". Now an integer at a sized type is a value of that type: in a `let`, an assignment and an `if`. It compares with one, and a list's length is below 2^62, so `len(xs).to_i64()` is proven. The fuzzer generated a refined alias of a sized type (`Length = I64 where it >= 0`) as a plain `I64`, and then blamed the prover.
 
-```strata-diff std.array.matmul std.array.dot_run std.array.sum_run
+```strata-diff smt.eval_as smt.merge smt.eq codegen.produce
 ```
 
 ```strata-also
-std.array.dot: the 1-axis dot product
+smt.assign smt.as_word_of: an integer assigned to a sized variable
+smt.builtin: `len` below 2^62
 ```
 
-# Float tests inline
-`finite` now tests the result inline (`fabs` against infinity) and calls
-`strata_finite` only on the failing path, which `declarations` marks `cold`. Before,
-each float `+`/`*` was a call, followed in any program linked with std's library by
-a cancellation poll. That alone halved the time of float loops.
+# The arrays
+`Length`, the float array, and the layout code the three types share. The integer types are the same template with wrapping arithmetic, and `ArrayI32`'s sums are 64-bit.
 
-```strata-diff codegen.finite codegen.declarations
+```strata-diff std.array.Array std.array.Length std.array.gather
+```
+
+```strata-also
+std.array.ArrayI64 std.array.ArrayI32: the integer arrays
+std.array.count std.array.row_major std.array.repeated std.array.broadcast_shape std.array.broadcasts std.array.without_axis std.array.in_bounds std.array.position std.array.stretched std.array.lanes std.array.inside std.array.floats std.array.as_float std.array.clamp std.array.max_i64 std.array.min_i64: layout helpers
+std.array.full std.array.zeros std.array.ones std.array.arange std.array.from_list std.array.from_rows: float shorthands
+```
+
+# Sums and dot products
+Four interleaved partial sums. The bounds are clamped up front (`clamp`), so no index arithmetic can wrap and every index is proven.
+
+```strata-diff std.array.sum_run_f64 std.array.dot_run_f64
+```
+
+```strata-also
+std.array.sum_run_i64 std.array.dot_run_i64 std.array.sum_run_i32 std.array.dot_run_i32: the integer copies
 ```
