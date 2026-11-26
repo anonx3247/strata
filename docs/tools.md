@@ -263,7 +263,7 @@ smt.*: renamed `not_modelled` to `unmodelled`
 ````
 
 - `# Heading` starts a page.
-- ```` ```strata-diff NAME… ```` shows each definition's structural diff, as `strata diff` finds it between the base and the working tree. Names are qualified (`check.Inf`); a root module's definitions go by their name alone.
+- ```` ```strata-diff NAME… ```` shows each definition's structural diff, as `strata diff` finds it between the base and the working tree. Names are qualified (`check.Inf`); a root module's definitions go by their name alone. A glob (`tour.test*`) shows every change it matches, which is how tests (`test "…"`) and imports (`use x`) are named.
 - ```` ```strata NAME ```` shows a definition's code as it is now.
 - ```` ```strata-routine ```` lists mechanical changes, one line each: names or globs (`*` matches any run of characters), a colon, the reason. Each line shows as a count, folded: `16 definitions: unused parameter removed`.
 - The renderer adds a last page, "Not in the tour": every changed definition that no page names, and the files changed outside Strata code.

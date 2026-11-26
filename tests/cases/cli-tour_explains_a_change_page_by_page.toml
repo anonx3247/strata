@@ -90,6 +90,19 @@ text = "---\nbase: HEAD~1\n---\n\n# All\n```strata-diff a.area a.third\n```\n\n`
 strata = ["tour", "--check"]
 has = ["the tour names all 4 changed definitions"]
 
+# a glob in `strata-diff` shows every change it matches
+[[step]]
+write = ".tours/main.md"
+text = "---\nbase: HEAD~1\n---\n\n# All\n```strata-diff a.*\n```\n"
+
+[[step]]
+strata = ["tour"]
+has = ["~ a.area  (stricter precondition)", "~ a.perimeter  (body changed)", "+ a.third  (added)", "~ a.steps  (body changed)", "Every changed definition is on a page of the tour."]
+
+[[step]]
+strata = ["tour", "--check"]
+has = ["the tour names all 4 changed definitions"]
+
 [[step]]
 strata = ["tour", "--nope"]
 code = 2
