@@ -1,0 +1,26 @@
+# Static uniqueness (compiler/unique, docs/internals.md "Memory"): which
+# updates in place are proven to find their value held once. With
+# `--memory-sites` a proven test still runs and is counted as `unique.p` or
+# `owned.p`, so this lists, per site, the tests made, the times the value was
+# held once, and whether the site was proven. A proven site must never find
+# its value shared. Then the program built as usual runs in check mode,
+# where a proven site still checks its value.
+
+[[step]]
+save = "unique.strata"
+from = "unique.st"
+
+[[step]]
+strata = ["--file", "unique.strata", "build", "--no-verify", "--memory-sites", "-o", "prog"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./prog 2>/dev/null; cut -f1,2,3,4,6 sites.tsv | grep -E '\t(unique|owned)'"]
+out = "[5, 5, 4, 105, 5, 5, 0, 7, 5, 6, 5, 3, 6, 5]\n30\t30\tunique.p\tstep\tc.n + 1\n30\t30\towned\tstep\tpush(c.seen, x)\n30\t30\tunique.p\tstep\tpush(c.seen, x)\n30\t30\tunique.p\tstep\tpush(c.seen, x)\n8\t8\towned.p\tsquares\tpush(out, i * i)\n5\t5\towned.p\thistogram\tinsert(d, x % 3, (get(d, x % 3) ?? 0) + 1)\n1\t0\tunique\tshared\tc.n + 100\n1\t0\tunique\tstored\t0\n1\t0\tunique\tkept\t7\n1\t0\towned\tfield_kept\tpush(c.seen, 99)\n1\t1\tunique.p\tfield_kept\tpush(c.seen, 99)\n1\t1\tunique.p\tfield_kept\tpush(c.seen, 99)\n1\t0\towned\tcaptured\tpush(out, f(1))\n1\t0\towned\thistogram\tinsert(d, 0, 0)\n1\t0\tunique\tbump\tc.n + 1\n"
+
+[[step]]
+strata = ["--file", "unique.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["./plain"]
+memory = true
+stdout = "[5, 5, 4, 105, 5, 5, 0, 7, 5, 6, 5, 3, 6, 5]\n"
