@@ -3,10 +3,12 @@
 # it): a candidate invariant naming that variable, where a pass ends with
 # it so, is dropped without asking the solver. `words`' loop ends a pass
 # after `word(mut r)`, so `r.at <= n`, `r.at >= 0`, ... are dropped
-# there, and the search (`edit`'s, here `fix`'s) finds nothing. `word`
+# there: its search asks only whether they hold on entry (under 1k units,
+# against 9k before; `lex.lex`'s outer loop: 4M before, none now). `word`
 # has a `requires`, so the call is seen through its contract: with no
-# `ensures` naming `r`, what comes back is any value too. `verify` says
-# which loop the failing index is in, and that `strata fix` searches.
+# `ensures` naming `r`, what comes back is any value too (the entry query
+# is 134 units, shown `0k`; asking whether `r.at <= n` lasts a pass would
+# add 1035, shown `1k`).
 
 [[step]]
 save = "w.strata"
@@ -39,13 +41,4 @@ fn words(text: List[String]) -> List[String] {
 
 [[step]]
 strata = ["--file", "w.strata", "verify", "--no-race", "--no-cache", "--show-searches"]
-has = [
-  "~ words ",
-  "in `while r.at < n`, no invariant bounds `r`: write one, or run `strata fix words` to search for one",
-  "no bound was shown to go down (tried `n - r.at`); write an `invariant` or a `decreases` for it, or run `strata fix words` to search for an invariant",
-]
-lacks = ["search `"]
-
-[[step]]
-strata = ["--file", "w.strata", "fix", "words"]
-has = ["warning: in `words`: not proven: index in range", "nothing to fix"]
+has = ["search `words` `while r.at < n`: 0k, 0.0 s: nothing"]
