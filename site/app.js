@@ -528,19 +528,34 @@ feature('contracts', {
       say: '<code>strata verify</code> passes the contracts to an SMT solver. It proves that <code>discount</code> meets its postcondition for every price and percentage, and checks every call against the precondition. <code>checkout</code> only calls it from 1.00 up, so it is proven. <code>sale</code> calls it with any price, and the solver gives the price that breaks it: 0.' },
   ],
 });
+feature('behaviour', {
+  kicker: 'Contracts on behaviour', title: 'A trait says what it means.',
+  steps: [
+    { file: 'examples/bank.strata', code: V.behaviour.model, hot: /^\s*(model|ensures len)/,
+      say: 'Contracts don\'t stop at numbers. <code>Ledger</code> is the trait for anywhere accounts are kept, in memory or in a database. Its <code>model</code> says what any implementation is: each account\'s balance. The <code>ensures</code> under it holds after every method: accounts are never removed. Each method says what it does to the model, with <code>old</code> for its value before the call. <code>withdraw</code> takes the amount off if there is enough, and changes nothing otherwise.' },
+    { title: 'Laws say how operations combine.', file: 'examples/bank.strata', code: V.behaviour.laws, hot: /^\s*law /,
+      say: 'A law is a property of several calls together, stated once on the trait. A transfer neither makes nor loses money, and a transfer that fails leaves nothing half done. Every implementation of <code>Ledger</code> has to satisfy both.' },
+    { title: 'Code over any backend, proven from the model.', file: 'examples/bank.strata', code: V.behaviour.sweep, hot: /mut l: Ledger|^\s*ensures/, where: '~/bank', outs: [V.behaviour.bank_verify],
+      say: '<code>sweep</code> takes any <code>Ledger</code>, and its contract talks only about balances. The solver proves it from <code>Ledger</code>\'s contracts alone, without knowing which backend it will be given. It also proves the in-memory backend against the trait, and both laws for it.' },
+    { title: 'A backend that breaks the trait is caught.', file: 'examples/orders.strata', code: V.behaviour.db + '\n\n' + V.behaviour.lossy, hot: /save|model orders/, where: '~/orders', outs: [V.behaviour.lossy_verify],
+      say: 'The order system works the same way: <code>Db</code>\'s model is the orders it holds, and <code>save</code> adds one and keeps the rest. This <code>MemDb</code> keeps only the last order saved. It type-checks, and a test that saves a single order would pass. <code>verify</code> runs it on random stores against the contract and refutes it. (The counterexample, a store of random orders, is left out here.)' },
+    { title: 'The contracts draw the state machine.', file: 'examples/orders.strata', code: V.behaviour.moves, hot: /^type Order|^\s*ensures|Pending|Shipped|Cancelled/, where: '~/orders', outs: [V.behaviour.graph],
+      say: '<code>strata view --graph Order</code> reads the contracts of every function that takes an order and gives one back, and lists how an order moves between its variants: a pending order can be shipped or cancelled, and 16 other moves are proven impossible, such as cancelling a shipped order. The graph isn\'t drawn by hand: it comes from the contracts, so it stays true as the code changes.' },
+    { title: 'A real queue.', file: 'examples/tasks · model', code: V.behaviour.queue, hot: /^\s*(law |ensures self.policy|ensures tasks_kept|ensures it\.map)/, where: '~/tasks', outs: [V.behaviour.queue_verify],
+      say: 'The task queue in <code>examples/tasks</code> is meant for many workers at once, over SQLite, SQS or Redis. The trait keeps the policy fixed and never loses a task; <code>claim</code> never hands out the same task twice (<code>unique</code>), and <code>excluding</code> says every other entry stays as it was. The laws are what workers rely on. <code>verify</code> proves two of them for the in-memory queue; where it can\'t yet, the fuzzer checks the law on 200 runs and says so.' },
+  ],
+});
 feature('loops', {
   kicker: 'Loops and termination', title: 'Functions, and whether they end.',
   steps: [
     { file: 'examples/math.strata', code: V.loops.ackermann.code, hot: /ackermann\(/, where: '~/math', outs: [V.loops.ackermann.verify],
       say: '<code>verify</code> also checks that functions finish. For a recursive function it looks for a measure that goes down on every call and is never negative. For Ackermann\'s function, that is the pair <code>(m, n)</code>, compared in order.' },
-    { title: 'Loops, and the invariants they keep.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /^\s*(while|ensures)/, where: '~/math', outs: [V.loops.isqrt.verify],
-      say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition needs a fact that holds on every pass, <code>r * r &lt;= n</code>: a loop invariant. Nobody wrote it. The verifier guesses candidates from the loop\'s condition, the contract and the body, keeps those that every pass preserves, and proves the postcondition from them. <code>--checks</code> lists the ones it found.' },
-    { title: 'And an invariant it can\'t guess is written.', file: 'examples/math.strata', code: V.loops.triangle.code, hot: /^\s*(invariant|ensures)/, where: '~/math', outs: [V.loops.triangle.verify],
-      say: 'A sum\'s closed form is not among the guesses. An <code>invariant</code> clause states it, between the loop\'s header and its body. It is proven on entry and after every pass, then used with the inferred ones to prove the contract.' },
+    { title: 'Loops, and the invariants they keep.', file: 'examples/math.strata', code: V.loops.isqrt.code, hot: /^\s*(while|invariant|ensures)/, where: '~/math', outs: [V.loops.isqrt.verify],
+      say: 'A <code>while</code> loop ends when a bound goes down on every pass, and here it does. The postcondition needs a fact that holds on every pass, <code>r * r &lt;= n</code>: a loop invariant. When the function was written, <code>strata edit</code> searched for one, found it, and wrote it into the code (views hide it unless asked, with <code>--proofs</code>). Simpler facts, such as <code>r</code> never going down, <code>verify</code> derives from the code on every run.' },
+    { title: 'And one the search can\'t find is written by hand.', file: 'examples/math.strata', code: V.loops.triangle.code, hot: /^\s*(invariant|ensures)/, where: '~/math', outs: [V.loops.triangle.verify],
+      say: 'A sum\'s closed form is out of the search\'s reach. An <code>invariant</code> clause states it, between the loop\'s header and its body. It is proven on entry and after every pass, then used with the derived facts to prove the contract.' },
     { title: 'Most of what a loop keeps is a type.', file: 'examples/math.strata', code: V.loops.collatz.code, hot: /mut|while/, where: '~/math', outs: [V.loops.collatz.verify],
       say: 'A variable\'s type is checked at every assignment and holds on every pass, so <code>x</code> stays positive through the loop without an invariant. Whether the Collatz sequence always reaches 1 is an open problem: the verifier proves every assignment, and reports that the loop may not end, with the bounds it tried.' },
-    { title: 'Types can say what a list keeps.', file: 'records', code: V.loops.sorted.code, hot: /^type|best\[/, where: '~/records', outs: [V.loops.sorted.verify],
-      say: 'The prover knows each element of a list by its position. So a type can say that a list is sorted, and <code>verify</code> proves that <code>record</code> keeps it sorted. <code>record_wrong</code> compares with the first record instead of the last, and the solver gives the readings that break it.' },
   ],
 });
 feature('shares', {
@@ -561,6 +576,14 @@ feature('points', {
       say: 'To pin down a range with tests, you test each edge: under a euro, one point per euro, the cap, never negative. Each test checks one value.' },
     { file: 'points', code: V.points.one, hot: /ensures/, where: '~/points', outs: [V.points.verify],
       say: 'One <code>ensures</code> says the same for every order, and the solver proves it. The four tests can go.' },
+  ],
+});
+
+feature('proofs', {
+  kicker: 'Proving over testing', title: 'Proofs, written where the solver needs help.',
+  steps: [
+    { file: 'trees', code: V.behaviour.proofs, hot: /^lemma|sum_natural|assert .* by/, where: '~/trees', outs: [V.behaviour.proofs_verify],
+      say: 'Some facts need induction, which the solver doesn\'t do by itself: a tree\'s sum is never negative because each subtree\'s isn\'t. A <code>lemma</code> states it and proves it by recursion on the tree, and <code>assert … by</code> uses it inside a loop. <code>total</code> is proven; <code>total_plain</code>, the same loop without the proof, is not. A lemma is never compiled, and views hide proofs unless asked for.' },
   ],
 });
 
