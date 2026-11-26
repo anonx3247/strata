@@ -53,5 +53,17 @@ unique.no_fn: a stand-in for a missing key
 codegen.generate: timings for its phases
 ```
 
+# Toward under a second
+A profile of `check` after an edit showed whole-package work the few checked definitions don't need. The checked definitions now have in scope what they reach (with every non-function definition), and the whole package only when that finds an error. The package is read once for errors, summary, lint and `RunMode`. The headers' rows are kept per file by its hash. For `build`, `too_long` no longer counts code points of short texts (the uniqueness analysis renders site keys), `kept_by` revisits only callers of what changed, and `own_decls` decodes on the workers.
+
+```strata-diff main.loaded_check main.package_checked checked.rows_of codegen.kept_by text.too_long
+```
+
+```strata-also
+checked.Row checked.Graph checked.reach_of checked.kept_rows checked.header_rows: the rows and the dependency graph
+main.check_keys main.check_command main.run_mode_in main.own_decls: reading once
+codegen.calls_in: what kept_by revisits
+```
+
 # Test
 `tests/cases/check-keeps_verdicts_by_definition.toml`: a package checked, then a signature change (the caller's error found), then a refinement predicate's body change (the probe's error found), with a cache of its own; the warning of a definition not checked again is still given.
