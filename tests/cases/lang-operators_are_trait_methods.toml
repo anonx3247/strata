@@ -121,3 +121,82 @@ fn h(a: P, b: P) -> Bool = a == b
 '''
 has = ["error in f: `<` on `P`: it needs `impl Ord for P`", "error in g: `*` on `P`: it needs `impl Mul for P`"]
 lacks = ["error in h"]
+
+# operands of two types: an `impl` of the trait with arguments (the right
+# operand's type, the result's), one per pair of types; `3 * v` on `Int`
+[[step]]
+strata = ["--file", "mx.strata", "edit"]
+text = '''
+type Money = { cents: Int }
+
+impl Add for Money {
+  fn add(self, other: Money) -> Money = Money { cents: self.cents + other.cents }
+}
+
+impl Mul[Int, Money] for Money {
+  fn mul(self, k: Int) -> Money
+    ensures it.cents == self.cents * k
+  {
+    Money { cents: self.cents * k }
+  }
+}
+
+type Vec2 = { x: Float, y: Float }
+
+impl Mul[Float, Vec2] for Vec2 {
+  fn mul(self, k: Float) -> Vec2 = Vec2 { x: self.x * k, y: self.y * k }
+}
+
+impl Mul[Vec2, Vec2] for Int {
+  fn mul(self, v: Vec2) -> Vec2 = Vec2 { x: float(self) * v.x, y: float(self) * v.y }
+}
+
+fn triple(m: Money) -> Money
+  ensures it.cents == 3 * m.cents
+{
+  m * 3
+}
+
+fn main() {
+  m := Money { cents: 25 }
+  print((m * 4 + m).cents)
+  v := Vec2 { x: 1.0, y: 2.0 }
+  w := v * 0.5
+  u := 3 * v
+  print(f"{w.x} {w.y} {u.x} {u.y}")
+  print(triple(m).cents)
+}
+'''
+
+[[step]]
+strata = ["--file", "mx.strata", "run"]
+stdout = "125\n0.5 1.0 3.0 6.0\n75\n"
+
+# the impl is verified as the function it becomes, and `triple` through it
+[[step]]
+strata = ["--file", "mx.strata", "verify", "--no-cache", "triple,Money.*"]
+has = ["✓ $Mul$Money$Int           proven (1 check)", "✓ triple                   proven (1 check)"]
+
+# generic code on the built-in types calls core's impls, inline
+[[step]]
+strata = ["--file", "g.strata", "edit"]
+text = '''
+fn total[T: Add](xs: List[T], zero: T) -> T {
+  mut acc := zero
+  for x in xs {
+    acc = acc + x
+  }
+  acc
+}
+
+fn main() {
+  print(total([1, 2, 3], 0))
+  print(total([1.5, 2.0], 0.0))
+  print(3.add(4))
+  print(i32_add(1, 2))
+}
+'''
+
+[[step]]
+strata = ["--file", "g.strata", "run"]
+stdout = "6\n3.5\n7\n3\n"
