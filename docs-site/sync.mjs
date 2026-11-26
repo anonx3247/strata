@@ -3,7 +3,7 @@
 // Strata code fences are marked `strata` (they say `rust` so GitHub colours
 // them), the tools' output `strata-output`, links between the docs point at their pages, and links to other files
 // of the repository go to GitHub. The standard library's reference,
-// ../docs/std/ (written by `strata --file std doc -o docs/std`), becomes the
+// ../docs/std/ (written by `strata --file std docgen -o docs/std`), becomes the
 // pages under std/, its README.md their index. src/content/docs/ is
 // generated: edit ../docs/.
 import { readFileSync, writeFileSync, rmSync, mkdirSync, cpSync, readdirSync } from 'node:fs';

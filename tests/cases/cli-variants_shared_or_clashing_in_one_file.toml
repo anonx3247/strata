@@ -29,7 +29,7 @@ fn main() {
   print("hi")
 }
 '''
-lacks = ["warning"]
+lacks = ["same name", "`Aa`"]
 
 [[step]]
 strata = ["--file", "shared.strata", "run"]

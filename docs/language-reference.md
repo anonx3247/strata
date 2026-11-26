@@ -184,7 +184,7 @@ type Options = { count: Int, loud: Bool, name: String = "world" }
 ```
 
 - This is only syntax. Each trait's derive is stored as its own definition (`derive CommandLine for Options`, `derive Json for Options`), exactly as the separate form `derive Json for Options` stores it. `derive A, B for T`, where `T` is a type, a function or `module`, also gives one definition per trait.
-- `strata view`, the text `strata edit` opens, and `strata doc` show a derive on its declaration when it has no hand-written block of methods, no type parameters or trait arguments, and no comments of its own, and the declaration is in the same module. All of a declaration's such derives go on one line, in their order in the module.
+- `strata view`, the text `strata edit` opens, and `strata docgen` show a derive on its declaration when it has no hand-written block of methods, no type parameters or trait arguments, and no comments of its own, and the declaration is in the same module. All of a declaration's such derives go on one line, in their order in the module.
 - Other derives stay on lines of their own: one with a block (`derive Json for Point { ... }`), one for a type in another module, and `derive C for module`. A derive with a block names a single trait.
 - An edit replaces and adds derives by name, like any definition. A declaration given in an edit brings its derive line. A stored derive that would be shown on that line but whose trait the line no longer names, or whose line is missing, is removed with a warning (`warning: removed derive std.toml.Toml for Options (no longer on its derive line)`).
 - A declaration the edit doesn't give keeps its derives. Derives with a block, derives for another module's declaration, and `for module` derives are removed only with `strata edit --rm 'derive std.json.Json for Options'`.
@@ -480,7 +480,7 @@ extern c fn cbrt(x: Float) -> Float
 
 /// The fewest single-character edits that turn `a` into `b`.
 pub fn distance(a: String, b: String) -> Natural {
-  edit_distance(a, b)
+  edit_distance(a, b).to_int()
 }
 ```
 
@@ -628,7 +628,7 @@ Not supported: `derive TypeScript` and `derive Rust` (the same `NAME_json` expor
 
 ## The standard library
 
-The standard library is the `std/` package. It is written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. `strata doc` generates a reference page for each module from its doc comments ([the index](std/README.md)), listing its types, methods, traits and functions with their signatures, contracts and docs.
+The standard library is the `std/` package. It is written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. `strata docgen` generates a reference page for each module from its doc comments ([the index](std/README.md)), listing its types, methods, traits and functions with their signatures, contracts and docs. `strata doc MODULE` shows the same page in the terminal.
 
 | Module | |
 |---|---|
