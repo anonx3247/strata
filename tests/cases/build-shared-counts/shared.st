@@ -5,13 +5,13 @@
 // panic. What crosses to another thread is marked shared and counted
 // atomically, the rest plainly; every object is freed once.
 
-type Person = { name: String, tags: List[String], born: Int }
+type Person = { name: String, tags: List[String], _born: Int }
 
 type Kind = Lead { since: Int } | Member | Guest(String)
 
-type Team = { name: String, people: List[Person], kinds: List[Kind], lead: Option[Person] }
+type Team = { name: String, people: List[Person], kinds: List[Kind], _lead: Option[Person] }
 
-type Note = { who: Person, text: String, n: Int }
+type Note = { who: Person, _text: String, _n: Int }
 
 trait Labelled {
   fn label(self) -> String
@@ -31,7 +31,7 @@ fn team(t: Int) -> Team {
       Person {
         name: f"p{t}-{i}",
         tags: [f"t{i % 3}", f"team {t}", "x"],
-        born: 1000000000000000000000 + i,
+        _born: 1000000000000000000000 + i,
       },
     )
     mut kinds.push(
@@ -42,7 +42,7 @@ fn team(t: Int) -> Team {
       },
     )
   }
-  Team { name: f"team {t}", people, kinds, lead: get(people, 0) }
+  Team { name: f"team {t}", people, kinds, _lead: get(people, 0) }
 }
 
 /// Copies and drops parts of the shared teams over and over: each copy and
@@ -69,7 +69,7 @@ fn churn(teams: List[Team], id: Int, rounds: Int) -> List[Person] {
 fn produce(tx: Sender[Note], teams: List[Team], id: Int) {
   for t in teams {
     for p in t.people {
-      tx.send(Note { who: p, text: f"from {id}", n: len(p.tags) })
+      tx.send(Note { who: p, _text: f"from {id}", _n: len(p.tags) })
     }
   }
 }

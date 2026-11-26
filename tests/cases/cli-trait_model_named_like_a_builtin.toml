@@ -1,0 +1,39 @@
+# A trait's model may have a builtin's name (`items`): the trait's methods'
+# contracts and its invariant read it as the model, so code over the trait
+# is proven through them (the invariant is each method's precondition).
+# An f-string is its parts joined, so its text parts give its length.
+[[step]]
+strata = ["--file", "b.strata", "edit"]
+text = '''
+trait Bounded {
+  model items: List[Int]
+  model room: Positive
+  invariant len(self.items) <= self.room
+
+  fn size(self) -> Natural
+    ensures it == len(self.items)
+  fn capacity(self) -> Positive
+    ensures it == self.room
+}
+
+fn room_left(q: Bounded) -> Natural {
+  q.capacity() - q.size()
+}
+
+fn label(n: Int, s: String) -> String where it != "" {
+  f"{n}{s}!"
+}
+
+fn same(s: String) -> String
+  ensures it == s + "?" {
+  f"{s}?"
+}
+'''
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--no-race"]
+has = [
+  "✓ room_left                proven (3 checks)",
+  "✓ label                    proven (1 check)",
+  "✓ same                     proven (1 check)",
+]

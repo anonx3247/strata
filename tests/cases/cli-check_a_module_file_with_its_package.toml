@@ -22,4 +22,4 @@ fails = true
 strata = ["check", "p/main.strata"]
 fails = true
 has = ["in b"]
-lacks = ["no module", "broken"]
+lacks = ["no module", "error in util"]

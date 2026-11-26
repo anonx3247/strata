@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -60,6 +61,18 @@ int32_t driver_has_error_line(const char *ir) {
 
 static pid_t pager_pid = -1;
 
+// The terminal's width when standard output went to a pager, else 0.
+static int64_t paged_columns = 0;
+
+static int64_t columns_of(int fd) {
+  struct winsize w;
+  return isatty(fd) && ioctl(fd, TIOCGWINSZ, &w) == 0 ? (int64_t)w.ws_col : 0;
+}
+
+// The width in columns of the terminal standard output shows on, through a
+// pager or not. 0 when it is not a terminal.
+int64_t driver_columns(void) { return paged_columns > 0 ? paged_columns : columns_of(1); }
+
 // At exit: the pager gets the end of its input, and is waited for (it
 // keeps the terminal until it is quit).
 static void pager_done(void) {
@@ -92,6 +105,7 @@ int32_t driver_pager(const char *cmd) {
     return 1;
   }
   fflush(stdout);
+  paged_columns = columns_of(1);
   dup2(fds[1], 1);
   close(fds[1]);
   strata_host_paged();

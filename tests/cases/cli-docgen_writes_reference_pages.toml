@@ -1,4 +1,4 @@
-# `strata doc`: a package's reference from its `///` docs: a Markdown page
+# `strata docgen`: a package's reference from its `///` docs: a Markdown page
 # for each module with public definitions (its doc, then its types, methods,
 # traits, functions: signatures with their contracts, and docs) and an
 # index; `--man`: man pages (std's with the `strata` command's own)
@@ -81,7 +81,7 @@ fn main() {
 
 # the root module has nothing public: no page
 [[step]]
-strata = ["--file", "shop/", "doc", "-o", "out"]
+strata = ["--file", "shop/", "docgen", "-o", "out"]
 out = "wrote 2 pages to out\n"
 
 [[step]]
@@ -89,7 +89,7 @@ run = ["cat", "out/README.md"]
 stdout = '''
 # shop
 
-The modules of `shop`, each with its types, traits and functions: their signatures, contracts and docs. Generated from the code's `///` docs by `strata doc`.
+The modules of `shop`, each with its types, traits and functions: their signatures, contracts and docs. Generated from the code's `///` docs by `strata docgen`.
 
 | Module | |
 |---|---|
@@ -182,7 +182,7 @@ Half of `n`, rounded down.
 
 # man pages: `man -M man shop.orders`
 [[step]]
-strata = ["--file", "shop/", "doc", "--man", "-o", "man"]
+strata = ["--file", "shop/", "docgen", "--man", "-o", "man"]
 out = "wrote 1 page to man\n"
 
 [[step]]
@@ -197,7 +197,7 @@ lacks = ["helper", "fn main"]
 
 # std's, one module: its page and the command's, from its help
 [[step]]
-strata = ["--file", "$ROOT/std", "doc", "--man", "-o", "stdman", "std.io"]
+strata = ["--file", "$ROOT/std", "docgen", "--man", "-o", "stdman", "std.io"]
 out = "wrote 2 pages to stdman\n"
 
 [[step]]
@@ -208,15 +208,15 @@ has = [
   ".TH \"STRATA\" 1 ",
   ".SH NAME\nstrata \\- an experimental language for working with agents\n.SH SYNOPSIS\n",
   ".SS Documentation\n",
-  "  doc [MODULE].. [-o DIR] [--man]\n",
+  "  docgen [MODULE].. [-o DIR] [--man]\n",
 ]
 
 [[step]]
-strata = ["--file", "shop/", "doc", "nowhere"]
+strata = ["--file", "shop/", "docgen", "nowhere"]
 fails = true
 has = ["no module `nowhere` in shop/"]
 
 [[step]]
-strata = ["--file", "shop/", "doc", "--html"]
+strata = ["--file", "shop/", "docgen", "--html"]
 fails = true
-has = ["`strata doc` takes no option `--html`"]
+has = ["`strata docgen` takes no option `--html`"]

@@ -19,32 +19,35 @@ type Order =
   | Cancelled { id: OrderId, reason: NonEmptyString }
 
 trait Db {
+  model orders: Dict[OrderId, Order]     // what any store holds; contracts are written over it
+
   fn load(self, id: OrderId) -> Option[Order]
-  fn save(mut self, o: Order)        // `mut self`: saving changes the store
+    ensures it == self.orders.get(id)
+  fn save(mut self, id: OrderId, o: Order)        // `mut self`: saving changes the store
+    ensures self.orders == (old self.orders).with(id, o)
 }
 
-fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString)
-  -> Result[Order, ShipError] where match it { Ok(o) => o is Shipped, Err(_) => true }
+fn ship(mut db: Db, id: OrderId, tracking: NonEmptyString) -> Result[Order, ShipError]
+  ensures match old db.orders.get(id) {
+    Some(Pending { lines, .. }) => it == Ok(Shipped { id, lines, tracking })
+      && db.orders == (old db.orders).with(id, Shipped { id, lines, tracking }),
+    Some(_) => it == Err(NotPending) && db.orders == old db.orders,
+    None => it == Err(NotFound) && db.orders == old db.orders,
+  }
 {
   order := db.load(id) or { return Err(NotFound) }
   match order {
-    Pending { id, lines } => {
+    Pending { lines, .. } => {
       o := Shipped { id, lines, tracking }
-      mut db.save(o)
+      mut db.save(id, o)
       Ok(o)
-    }
+    },
     _ => Err(NotPending),
   }
 }
 
 fn refund(o: Order) -> Cents
   = ?refund_policy          // a typed hole: callers still check
-
-test "a mocked store never breaks ship's contract" {
-  mut db := mock Db
-  r := ship(mut db, "ord_zzz999", "TRK9")
-  assert r is Ok || r is Err
-}
 ```
 
 ## Refinements: named, inline, and structural
@@ -220,7 +223,7 @@ type Command =
 A trait describes what a type can do. The implementation is chosen by the type of the value. A type can implement any number of traits, so traits form a graph rather than a hierarchy.
 
 ```rust
-trait Describe { fn describe(self) -> String  ensures len(it) > 0 }
+trait Describe { fn describe(self) -> NonEmptyString }   // a fact about the result: its type
 trait Summary: Describe + Priced {                       // supertraits
   fn summary(self) -> String { f"{self.describe()}: {self.price()}c" }   // default method
 }
@@ -238,6 +241,35 @@ fn combine_all[T: Combine](first: T, rest: List[T]) -> T { fold(rest, first, (ac
 - A law can be a sequence of calls ending in the condition that must hold, one statement per line: `law enqueue_once(q: Self, id: Int) { mut r := q; mut r.enqueue(id); (mut r.enqueue(id)) == 0 }`. A counterexample lists the values and the steps.
 - A `shared trait` (`shared trait Queue { … }`) is used by many workers at once, with its state outside the program. Each method is one atomic step. Callers keep no facts about its models from one call to the next. An implementation's method must change the outside state with a single call; a read followed by a write is a race and is rejected.
 - Generic functions are fuzzed with a type that implements their bounds.
+
+**Models: what a trait's values mean.** A trait can state what its values hold as abstract state, with `model`, and write its contracts over it. Each implementation defines the model from its own fields. `verify` proves each implementation against the contracts, and proves code that takes the trait through the model alone. From `examples/traits.strata`:
+
+```rust
+trait Bounded {
+  model items: List[Int]
+  model room: Positive
+  invariant len(self.items) <= self.room        // holds for every value: each method may assume it and must keep it
+  ensures self.room == old self.room            // holds after every `mut self` method
+
+  fn size(self) -> Natural  ensures it == len(self.items)
+  fn capacity(self) -> Positive  ensures it == self.room
+  fn put(mut self, x: Int) -> Bool
+    ensures it == (old len(self.items) < self.room)
+    ensures self.items == if it { old self.items + [x] } else { old self.items }
+}
+
+impl Bounded for Slots {
+  model items = self.held
+  model room = self.limit
+  ...
+}
+
+fn room_left(q: Bounded) -> Natural { q.capacity() - q.size() }   // proven by the invariant
+```
+
+- Contracts name a model as a field (`self.items`, `q.items`). Code never reads one: it calls the trait's methods.
+- A contract that names a model is proven by `verify` but not checked at run time, since that would compute the model on every call.
+- `examples/bank.strata` (a ledger with a law about transfers) and `examples/orders.strata` (a store of orders) are larger examples. The [reference](language-reference.md#traits) has the rules.
 
 **Capabilities are traits.** Strata has no separate effect system. A backend such as a database, queue, console or clock is a trait. Code that uses one takes an implementation as a parameter or stores it in a field: `fn ship(mut db: Db, ...)`, `type PrintWorker = { console: Console }`. A trait used as a type means "any implementation": `db: Db` is shorthand for `fn ship[D: Db](db: D, ...)`. Name the type parameter only when it must link several types, as in `combine_all[T: Combine](first: T, rest: List[T]) -> T`. A method that changes its receiver takes `mut self` (`fn save(mut self, o: Order)`). Tests pass a `mock Db`. Iterators and tasks are separate language features (see Iterators and Tasks).
 
@@ -429,6 +461,8 @@ A `mut` method call that returns `()` (`mut q.claim(2)`), a `spawn` (its task be
 Discarding a `Result` with `_ := e` is allowed, since the program may not care whether the operation failed. The error is lost, so `check`, `run`, `build` and `verify` always warn (`warning: in `main`: `_ := parse_age("")` throws away a `Result`: an error from it is ignored`). Handle it with `match`, propagate it, or leave the warning as a reminder. Discarding any other kind of value with `_ :=` produces no warning.
 
 A variable that is never read produces a warning, since code may be half-written. This covers parameters, `x := e`, `mut x := e`, pattern bindings and lambda parameters. `check`, `run`, `build` (when it verifies) and `edit` print one line per variable, naming the function. A name starting with `_` (`_x`, `_`) marks the value as unused on purpose. The parameters of `impl` methods are exempt, since the trait or type dictates them. An unread variable whose value has no effect (a literal, a variable, a lambda, a field, or a tuple or list of these) is not compiled at all.
+
+`check` also warns of what the whole program never uses: a private function, type or trait that nothing reaches from `main`, the tests, the `pub` and `extern` definitions and what contracts name, a field of a private record that is never read, and a variant of a private sum that is never built. `strata fix` removes the unused definitions. `[check] unused = "error"` in strata.toml makes all of these errors, unused variables included, so `check`, `run` and `build` refuse the program and `edit` rejects a change that leaves something unused. The rules are in [the tools reference](tools-reference.md).
 
 ## Values and copying
 
@@ -730,7 +764,7 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - HTTP and HTML as values (`std.http`, `std.web`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
 
-Each module has a [reference page](std/README.md), generated from its doc comments by `strata doc`.
+Each module has a [reference page](std/README.md), generated from its doc comments by `strata docgen`. `strata doc std.json` shows one in the terminal.
 
 **JSON.** A type that derives `Json` can be read from and written to JSON, with every refinement checked:
 
