@@ -1905,39 +1905,50 @@ The tools read `strata.toml` and `strata.lock` through it (compiler/deps, commit
 ### `std.array`: NumPy-like arrays (asked for by the user, REBUILD.md 4c/4d; built, branch `std-math`)
 
 Decisions (each can change):
-- **One type, `Array`, of `Float`s**: `{ data: List[Float], shape: List[Natural], strides: List[Int], offset: Natural } where len(it.shape) == len(it.strides)`, and `Matrix = Array where len(it.shape) == 2`. Element `(i, j, …)` is `data[offset + i*strides[0] + …]`. `Int` and sized-int arrays are left out: methods can't be written once for both without numeric traits (branch `operators-traits`, #558) or overloads of user functions.
-- **Views, then row-major loops**: `transpose`, `slice`, `row` and `reshape` (of compact data) share the data in O(number of axes). Arithmetic, reductions and `matmul` first make each operand row-major (`to_list`: O(1) when `is_compact`, else one `gather`), then run plain index loops over flat lists. A changed element (`mut a.set`) copies the data when it is shared, as any list does.
-- **Broadcasting is NumPy's rule** (`broadcast_shape`, `broadcasts`): stretched axes get stride 0 and both sides are gathered to the broadcast shape. Equal shapes skip that and zip the two lists.
-- **Shapes are contracts**: `matmul(a: Matrix, b: Matrix) requires a.shape[1] == b.shape[0] ensures it.shape == [a.shape[0], b.shape[1]]`; `add`/`sub`/`mul`/`div` require `broadcasts`; reductions along an axis require `axis < len(self.shape)` and ensure `without_axis`. `verify` proves these at call sites with known shapes and refutes mismatches (case `build-std_array`). Out-of-range indices are values: `get` gives `Option`, `set` gives `Bool`. Every index read inside the module is guarded by its loop condition, so all bounds checks are proven.
-- **Operators**: `add`, `sub`, `mul`, `div`, `neg` are methods with the shape `fn add(self, other: Array) -> Array`, so `impl Add for Array` (after #558) is a one-line forward each. `scale(k)` and `shift(k)` take a scalar.
-- **Sums add in four interleaved partial sums** (`sum`, `dot`, `matmul`'s dot products), so additions don't wait on each other. The result can differ from a left-to-right sum in the last bits (NumPy's pairwise sum differs too).
-- **`matmul` is one dot product per element** over `a`'s rows and the columns of `b` (a row-major copy of `b.transpose()`). The i-k-j order would read better but writes the result in the inner loop, and an element write costs a uniqueness test, a count increment and a release per element today.
-- **`argmax_axis` returns `List[Natural]`** (the result's positions in row-major order), since there is no integer array.
-- **A codegen change for speed**: a float operation's finiteness test is inline (`fabs` against infinity, `codegen.finite`), `strata_finite` declared `cold` and called only on the failing path. Before, every `+`/`*` on floats was a call into the C runtime followed, in any program linked with std's library (`supervises`), by a cancellation poll. That halved the time of float loops (sum of 10M: 19 → 10 ms; matmul 256: 97 → 43 ms before the four partial sums).
+- **Three array types**: `Array` (64-bit floats, NumPy's `float64`), `ArrayI64` and `ArrayI32`. Each is `{ data: List[T], shape: List[Length], strides: List[I64], offset: I64 } where len(it.shape) == len(it.strides)`. Element `(i, j, …)` is `data[offset + i*strides[0] + …]`. The types share the layout code (`gather`, `broadcast_shape`, `stretched`, `count`), which is generic over the element type. Each has its own copy of the arithmetic. The copies are generated from one template, since there are no numeric traits yet (#558). A generic `Array[T: Number]` was tried: every element operation became a call with its own frame (`strata_enter`/`strata_leave`), 30 ns per element.
+- **No `Int` anywhere** (user, 2026-11-26): shapes, strides, offsets, indices and loop counters are `I64`, and `Length = I64 where it >= 0`. `I64` rather than `U32`/`U64` for three reasons. Strides and the differences of positions can be negative (NumPy's `intp` is signed for the same reason). Positions (`offset + i * stride`) then stay in one type, since mixing sized types goes through `Int`. `U32` would cap an array at 2^32 elements. `count(shape)` saturates at 2^62 rather than wrapping, so no product is ever silently small.
+- **A list indexed by an `I64`**: core gets `at[A](xs: List[A], i: I64)` (`xs[i]` with `i: I64`). It is the same element read as with an `Int` index, with no `Int` made. `verify` proves it in range through `to_int`. Lengths come in as `len(xs).to_i64()`, proven to fit because the prover now knows a list has fewer than 2^62 elements.
+- **Integer semantics follow NumPy**: `I64`/`I32` arithmetic wraps. `ArrayI32.sum` and `sum_axis` are 64-bit (`I64`, `ArrayI64`), as NumPy's `sum` of `int32` is. There is no integer `div` and no integer `mean` (`to_float().mean()`). `argmax_axis` gives an `ArrayI64`.
+- **Views, then row-major loops**: `transpose`, `slice`, `row` and `reshape` of compact data share the data in O(axes). Every operation first makes its operands row-major (`to_list`), then loops over flat lists. Broadcasting is NumPy's rule: stretched axes get stride 0. A layout reaching past its data (`inside`), which no constructor makes, gives empty results.
+- **Shapes are contracts**, as in the first version: `a.matmul(b)` requires two axes each and `a.shape[1] == b.shape[0]`, and ensures `[a.shape[0], b.shape[1]]`. `verify` proves them at call sites with literal shapes (`[2, 3]`), and refutes a mismatch.
+- **Sums use four interleaved partial sums** (`sum_run_*`, `dot_run_*`). `matmul` makes one dot product per element over a row-major copy of `b.transpose()`.
 
-Speed, measured 2026-11-26 on this Mac (M-series), `strata build --release`, against C at `clang -O2` (NumPy is not installed):
+Changes to the compiler this needed, each found while making the loops tight:
+1. **Finiteness inline** (`codegen.finite`): `fabs` against infinity. `strata_finite` is declared `cold` and called only to write the fault. After it, the code doesn't return to the loop: `unreachable` where the runtime never returns, or the supervised task's cancel point, which leaves the function.
+2. **`I64`/`U64` to `Int`** (`codegen.word_to_int`), **`Int` to a sized type** (`int_bits`, `conversion`'s range check): the small case is inline, the runtime is called only for a big integer. The small test for `int_bits` is `a + 2^62 < 2^63` unsigned, which LLVM folds away for a widened `I32`.
+3. **Prover**: an integer at a sized type is a value of that type, in `mut i: I64 = 0` (also through an alias such as `Length`), in `i = 0`, and in `if c { 0 } else { x }`. An integer compares with a sized value (a literal `[2, 3]` for a `List[Length]`). Before, every sized loop counter started as an `Int`, and `to_int` of it was "not modelled".
+4. **Fuzzing**: a refined alias of a sized type (`Length`) was generated as a plain `I64`, so its refinement didn't hold and proven code was reported as "a bug in the prover" (`codegen.produce`).
 
-| | Strata `std.array` | the same loop compiled in the program | C, same algorithm | C, best |
-|---|---|---|---|---|
-| sum of 10M floats | 9.3 ms | 7.2 ms | 2.0 ms (4 accumulators) | 1.3 ms (`-O3 -ffast-math`, vectorized) |
-| matmul 256×256 | 36 ms | | 7.6 ms (dot form, one accumulator) | 2.3 ms (i-k-j, vectorized) |
+**Why the list's header was reloaded on every read** (point 3 of the first version), read from `sum_run`'s disassembly before and after. Two things in the loop called the runtime, and the call returned into the loop. LLVM must then assume the call wrote memory, so the header's fields (length, buffer, offset) were loaded again after it on each pass:
+- each `Int` `+` and `<`, whose big-integer path is a call (`strata_int_add`, `strata_int_cmp`), plus `int_drop` tests;
+- the finiteness check's call (before change 1 it was always a call; after it, only on the slow path, but that path still came back).
 
-Why the inner loops are 3-5x off C (read in the disassembly of `std.array.dot_run`):
-1. **`Int` index arithmetic**: each `a + 1`, `a + 3 < end` and `a < len(xs)` tests whether the operands are small integers (shift, xor, branch) and has a call to the big-integer path; the old value gets an `int_drop` test. A loop counter bounded by `len(xs)` is always small; nothing uses that fact yet.
-2. **Bounds checks kept in std's precompiled library**: `verify` proves every index of `dot_run` and `sum_run`, and a copy of the same function in a program has them left out (7.2 ms against 9.3 ms for the sum), but the library's code keeps a compare and branch per read.
-3. **The list's header is reloaded on every read** (buffer, offset, length), because the slow-path calls of point 1 may write memory.
-4. **No vectorization**: floats are strict IEEE (no reassociation), so even C's sequential sum doesn't vectorize; with points 1-3 in the loop, LLVM doesn't vectorize the four-accumulator form either.
+With `I64` counters, `at(List, I64)` and changes 1 and 2, the loop has no call on its cycle. LLVM keeps the header in registers and walks the buffer with a post-incremented pointer. A program-local loop (`t2` in the case of this PR's measurements) is `ldr d2, [x11], #8; fadd; fmov; ubfx; cmp; b.hs; …` per element. In std's precompiled copy, the bounds checks are kept, because the function is unproven (floats aren't modelled). The buffer and offset loads then stay inside the loop, below a bounds check that may exit: LLVM doesn't hoist a load past a possible exit. Marking list parameters `dereferenceable(24) align 8` didn't change that, and was left out.
 
-`--require proven`: 40 of the module's 52 functions are proven. The 12 others (`add`, `sub`, `mul`, `div`, `neg`, `scale`, `shift`, `mean`, `sum_axis`, `mean_axis`, `dot_run`, `sum_run`) are fuzzed only because "`+` gives a finite number" can't be proven: the prover doesn't model floats. Every other check in them is proven. So std's "every function proven" rule can't hold for float arithmetic until floats are modelled (SMT-LIB's FP theory), or until a float overflow is a value.
+Measured 2026-11-26 on this Mac, best of 5 runs, under a load average of 18-30 from other agents (`tests/data/array-bench/`: `bench.st`, `bench.c` at `clang -O2`, `bench.py` with NumPy 2.x, whose matmul is BLAS, Accelerate). In µs:
 
-Left, in order:
-1. Kept checks: compile std's library with the checks `verify` proved left out, as programs are (point 2 above).
-2. Small-integer facts for loop counters bounded by a length (point 1), in codegen: plain `i64` arithmetic where the solver proved the range.
-3. Operators: `impl Add/Sub/Mul/Div/Neg for Array` once #558 lands, so `a + b` works.
-4. Integer arrays (`Array` generic over its element, with numeric traits), and `argmax_axis` returning one.
-5. More of NumPy: `exp`, `log`, `pow` and the trigonometric functions (core has none yet: `sqrt` only), `concatenate`/`stack`, boolean masks, `where`, `cumsum`, `linspace`, a 1-D × 2-D `matmul`, `inv`/`solve`.
-6. `count(shape)` in the prover: it is recursive, so `reshape`'s `requires count(shape) == count(self.shape)` is only fuzzed at call sites (`gram` in the case).
-7. Vectorized loops: once points 1-3 are gone, test whether LLVM vectorizes the four-accumulator loops, else write them over `F64x4` lanes.
+| | std.array, first version (`Int` indices) | std.array now | the same loop in the program (checks proven away) | C, same algorithm | C, best | NumPy |
+|---|---|---|---|---|---|---|
+| float64 sum of 10M | 9,400 (19,000 before inline finiteness) | 3,480 | 2,480 | 2,010 | 1,270 (`-ffast-math`, vectorized) | 1,370 |
+| int64 sum of 10M | (none) | 1,970 | | 1,190 | | 1,050 |
+| int32 sum of 10M (into int64) | (none) | 2,090 (4,510 before the `int_bits` test) | | 720 | | 1,750 |
+| float64 add of 10M | ~58,000 (from 65,536 elements) | 46,000 | | 1,650 | | 2,310 |
+| int64 add of 10M | (none) | 46,100 | | 1,650 | | 2,330 |
+| int32 add of 10M | (none) | 46,100 | | 890 | | 1,170 |
+| float64 matmul 256 | 36,000 (97,000 before) | 17,200 | | 7,500 (dot form) | 2,330 (i-k-j, vectorized) | 88 (BLAS) |
+| int64 matmul 256 | (none) | 12,200 | | 4,880 | 4,150 (i-k-j) | 9,770 |
+| int32 matmul 256 | (none) | 12,200 | | 1,020 | 1,170 | 9,690 |
+
+What is left, and why:
+1. **`add` is 25-50x off: building the result costs ~4.6 ns per element in `push`.** In `ArrayI64.add`'s disassembly, each `mut out.push(x)` calls `strata_list_arena_pushable` and `strata_list_push_owned`, plus `strata_list_owned`, and increments then drops the list's count. Next: an inline fast path for `push` in codegen (capacity check, store, length + 1), or a builtin that makes a list of n elements for a loop to fill.
+2. **matmul**: each output element is a call of `dot_run_*`, with a frame (`strata_enter`/`strata_leave`) and two calls of `clamp`. Inline small std functions, or block the loop (4 columns per pass). Even then it is 100x off NumPy's BLAS for floats. Only SIMD and cache blocking close that.
+3. **Kept checks in std's copy**: `sum_run_f64` and `dot_run_f64` are unproven only because floats aren't modelled (branch `smt-floats`). Once they are proven, std's library leaves their checks out, as the program-local loop does (3,480 → 2,480 µs).
+4. **SIMD**: LLVM vectorizes none of these loops. For floats, IEEE order forbids reassociation, and each element still has its finiteness test. For integers, the bounds checks and the four-accumulator shape stop it. Two ways forward:
+   - **SIMD types**: `F64x4`, `I64x2`, `I32x8` and the like as core builtin types lowered to LLVM vectors (`<4 x double>`), with loads and stores from a list at an `I64` offset, lane-wise `+ - *`, a horizontal sum, and a finiteness test on the whole vector (one `fcmp` and a reduction). The prover sees them as tuples of their lanes, and an index range covers four slots.
+   - **Opt-in vectorization**: `@vectorize` on a loop, or a `reassoc` mode for a block, allowing LLVM's `reassoc` fast-math flag on its float operations, with the finiteness test hoisted to the end of the loop (one check of the result: an infinity or NaN in the middle propagates to the end).
+5. **Termination of sized loops**: `while n > 0 && p < total { …; p += n }` and `gather`'s inner loop are reported "may not terminate". The bound `total - p` over `I64`s isn't shown to go down, apparently because the termination encoding has no range facts for sized values.
+6. **Fuzzing two-array operations is slow**: `verify std.array.Array.add` doesn't finish in 300 s at the default 200 cases (guard kills). The time goes into `strata_concat` inside the fuzz case. With `--cases 5` every non-float check is proven, and the float arrays' only unproven checks are "`+` gives a finite number". `ArrayI64.*` verifies in full (37 proven). `ArrayI32.*` needed `--cases 5 --cross-check 2` to finish (38 proven).
+7. Not built yet: `exp`, `log` and the trigonometric functions (core has `sqrt` only), `concatenate`, masks, `cumsum`, `linspace`, `solve`, and operators after #558.
 
 ### Doc comments on union members (2026-11-23; built, branch `variant-docs`)
 A member a union declares takes a `///` doc comment above its `|`, as a field does (`Variant.doc`, a format change: every file with a union re-encoded). Docs are left out of the hashes, printed by `render`, and given to derived traits (`std.typing`'s member `Type.doc`): needed for `std.cli` commands, whose help is their members' docs. A `///` after the last member is the next definition's. Not done: a type shown inside a union (`render`'s inlining) still keeps its own doc out of it (it stays separate when it has one).
