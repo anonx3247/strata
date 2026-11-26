@@ -964,6 +964,7 @@ Bugs and rough edges reported while working through `strata`, each with a case:
 4. Integer literals as `Real`s where one is wanted (`x * 2`), if the inference cost is small.
 5. Patterns on `Real` literals (`match x { 0.5 => … }`), and `Real` in `check`'s refinement probes (`CReals` are `Float` intervals).
 6. With operators as traits (branch `operators-traits`): `impl Add for Real` etc. calling `real_add` …, and desugar keeping a `Real` operator a `Binary` node so smt and codegen stay as they are.
+8. core.real's own functions are fuzzed, not proven (`verify 'core.real.*'`): smt reads a `Real` as an SMT real, so inside them its fields `num` and `den` are unknown values and `den > 0` is never known. They need the record view there (a `Real` as its two `Int`s within core.real), or the invariant as a refinement.
 7. Speed: a small-value fast path (both parts machine words, no GCD when one denominator divides the other), or a C `real_add`.
 
 **The idea as raised:**
