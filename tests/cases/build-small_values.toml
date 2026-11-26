@@ -34,3 +34,19 @@ strata = ["--file", "loops.strata", "build", "--no-verify", "-o", "loops"]
 [[step]]
 run = ["sh", "-c", "STRATA_MEMORY=1 ./loops 2>&1"]
 out = "memory: 4 allocated, 4 freed, 0 live\n23204686205\n"
+
+# a call's result kept on the stack (`s := f(…)`), passed to calls that
+# hold their arguments (a `mut` argument after it): its fields are dropped
+# once, when `s` ends (dropped at each call, they were freed while `s`
+# still held them)
+[[step]]
+save = "shared.strata"
+from = "shared.st"
+
+[[step]]
+strata = ["--file", "shared.strata", "build", "--no-verify", "-o", "shared"]
+
+[[step]]
+run = ["./shared"]
+memory = true
+stdout = "6000 2000\nSome([3, 4, 9, 3, 4, 9])\n"
