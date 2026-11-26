@@ -11,8 +11,7 @@ text = '''
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo 'This is cvc5 version 1.4.2'; exit 0; fi
 echo "$@" >> $TMP/cvc5.log
-cat > /dev/null
-echo unsat
+awk '/^\(check-sat/ { print "unsat"; next } /^\(echo/ { print "@@answered"; next } /^\(get-info/ { print "(:reason-unknown \"\")"; next } /^\(get-(value|model)/ { print "(error \"model is not available\")"; next } /^\(/ { print "success" }'
 '''
 
 [[step]]
@@ -21,8 +20,7 @@ text = '''
 #!/bin/sh
 if [ "$1" = "--version" ]; then echo 'Z3 version 4.15.0 - 64 bit'; exit 0; fi
 echo "$@" >> $TMP/z3.log
-cat > /dev/null
-echo unsat
+awk '/^\(check-sat/ { print "unsat"; next } /^\(echo/ { print "@@answered"; next } /^\(get-info/ { print "(:reason-unknown \"\")"; next } /^\(get-(value|model)/ { print "(error \"model is not available\")"; next } /^\(/ { print "success" }'
 '''
 
 [[step]]
