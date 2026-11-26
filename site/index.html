@@ -8,6 +8,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<meta property="og:title" content="Strata: contracts proven as you write, for code written with agents">
+<meta property="og:description" content="An experimental language: types carry contracts that an SMT solver proves or a fuzzer tests, code is stored as its syntax tree, and every edit is checked before it is stored.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://strata-lang.dev/">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="landing.css">
 </head>
@@ -38,7 +43,7 @@
           <code id="install-cmd"></code>
           <button id="copy" title="Copy to the clipboard">Copy</button>
         </div>
-        <div class="install-note"><span class="stage">pre-alpha</span><span>This is the prototype, for macOS on Apple silicon: expect breaking changes, rough edges and bugs. A rebuild is under way. <a href="about.html">How it was built →</a></span></div>
+        <div class="install-note"><span class="stage">pre-alpha</span><span>This is the prototype, for macOS on Apple silicon only (no Linux build yet): expect breaking changes, rough edges and bugs. A rebuild is under way. <a href="about.html">How it was built →</a></span></div>
       </div>
 
       <div class="ctas rise" style="--d:1s">
@@ -61,25 +66,51 @@
     </div>
   </section>
 
-  <section class="ideas">
-    <a class="idea" href="tour.html#contracts">
-      <div class="n">01</div>
-      <h3>Types as contracts</h3>
-      <p>Types carry constraints, and functions say what they need and what they promise. Both are part of the signature, and both are checked wherever the code is used.</p>
-      <span class="go">See it in the tour →</span>
-    </a>
-    <a class="idea" href="tour.html#shares">
-      <div class="n">02</div>
-      <h3>Proving over testing</h3>
-      <p>An SMT solver proves each contract for every input, or finds the input that breaks it. A fuzzer covers what it can't prove. Most tests become a line in a signature.</p>
-      <span class="go">See it in the tour →</span>
-    </a>
-    <a class="idea" href="tour.html#ast">
-      <div class="n">03</div>
-      <h3>The code is the AST</h3>
-      <p>Code is stored as its syntax tree. Text is rendered when someone wants to read it, and edits are parsed back in, so diffs, merges and views work on definitions instead of lines.</p>
-      <span class="go">See it in the tour →</span>
-    </a>
+  <section class="block problem" id="why">
+    <div class="kicker">Why a new language</div>
+    <h2>Agents work on text files. Strata gives them something better to work on.</h2>
+    <div class="fixes">
+      <a href="tour.html#views"><span class="p">It searches files to find its way</span><span class="f">a view of just what it needs</span></a>
+      <a href="tour.html#contracts"><span class="p">Hundreds of tests, apart from the code</span><span class="f">contracts, proven or fuzzed</span></a>
+      <a href="tour.html#travel"><span class="p">A change breaks code far away</span><span class="f">changes follow the graph</span></a>
+      <a href="tour.html#diffs"><span class="p">Diffs too long to read</span><span class="f">changes you can read</span></a>
+    </div>
+  </section>
+
+  <section class="block loop" id="agent-loop">
+    <div class="kicker">The agent loop</div>
+    <h2>A hole is a task. Every edit is checked before it is stored.</h2>
+    <p class="lede">An order system with one function left as a hole. Each step below is what the CLI printed, recorded from a real run.</p>
+    <div class="steps" id="loop"></div>
+    <a class="go" href="tour.html#build">See the whole session in the tour →</a>
+  </section>
+
+  <section class="block diffs" id="changes">
+    <div class="kicker">The code is the AST</div>
+    <h2>Code is stored as its syntax tree, so a change is one change.</h2>
+    <div class="vsrow" id="rename"></div>
+    <a class="go" href="tour.html#diffs">More on structural changes →</a>
+  </section>
+
+  <section class="block proven" id="proven">
+    <div class="kicker">What "proven" means</div>
+    <h2>Every verdict says where it came from.</h2>
+    <div class="verdicts">
+      <div><b class="o-ok">✓ proven</b><p>The SMT solver (Z3) showed the contract holds for every input.</p></div>
+      <div><b class="o-warn">~ fuzzed</b><p>The solver could not decide, so the fuzzer ran the function on random inputs against the contract. The verdict says which checks were left unproven.</p></div>
+      <div><b class="o-bad">✗ refuted</b><p>An input breaks the contract, found by the solver or the fuzzer, and printed with the verdict.</p></div>
+    </div>
+    <p class="fine">Termination is checked on its own: a loop or recursion with no bound shown is reported as <code>may not terminate</code>, never assumed to end. What is trusted: the solver, Strata's encoding of the program for it, the compiler and the C runtime. <a href="/docs/verification/">How verification works →</a></p>
+  </section>
+
+  <section class="block start">
+    <div class="kicker">Try it</div>
+    <div class="links">
+      <a href="tour.html"><b>The tour →</b><span>The ideas on real programs, every output recorded from the CLI.</span></a>
+      <a href="/docs/learn-strata/"><b>Learn Strata in Y minutes →</b><span>The language on one page, as one valid file. Give it to an agent before it writes Strata.</span></a>
+      <a href="/docs/verification/"><b>Verification →</b><span>What <code>strata verify</code> proves, and how it says so.</span></a>
+      <a href="about.html"><b>How it was built →</b><span>Built with agents in a week, and how the agents did with it.</span></a>
+    </div>
   </section>
 
   <footer>
@@ -90,6 +121,9 @@
 
 <script>window.STRATA = {};</script>
 <script src="data/math.js"></script>
+<script src="data/verify.js"></script>
+<script src="data/session.js"></script>
+<script src="data/rename.js"></script>
 <script src="common.js"></script>
 <script src="landing.js"></script>
 </body>

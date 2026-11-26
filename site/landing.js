@@ -53,21 +53,25 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="colo
     let j = i + 1; while (j < verify.length && /^\s/.test(verify[j])) j++;
     return verify.slice(i, j);
   };
+  const V = STRATA.verify;
+  const fromMath = names => ({ code: names.map(src).join('\n\n'), lines: names.flatMap(said) });
   const shows = [
-    { tab: 'Proven', names: ['is_prime', 'primes'], badge: ['ok', 'proven'],
-      note: 'The promise in each signature holds for every input.' },
-    { tab: 'A broken promise', names: ['Digit', 'next_digit'], badge: ['bad', 'refuted'],
+    { tab: 'Tests passed', file: 'shares.strata', code: V.shares.contract, lines: V.shares.verify.out.split('\n'), badge: ['bad', 'refuted'],
+      note: 'Three tests of this function passed. One line of contract, and verify finds the bill they missed: 58 cents between 13 people loses 6.' },
+    { tab: 'A broken promise', ...fromMath(['Digit', 'next_digit']), badge: ['bad', 'refuted'],
       note: 'The solver finds the input that breaks the type, before anything runs.' },
-    { tab: 'A crash', names: ['average'], badge: ['bad', 'refuted'],
-      note: 'A division by zero, found without a single test.' },
+    { tab: 'Proven', ...fromMath(['is_prime', 'primes']), badge: ['ok', 'proven'],
+      note: 'The promise in each signature holds for every input.' },
+    { tab: 'May not end', ...fromMath(['collatz_steps']), badge: ['warn', 'termination unproven'],
+      note: 'The contract is proven, but nobody knows whether this loop always ends. verify says so instead of guessing.' },
   ];
   $('#tabs').innerHTML = shows.map((s, i) => `<button data-i="${i}">${s.tab}</button>`).join('');
   let run = 0, cur = 0;
   async function show(i, typing = true) {
     const me = ++run; cur = i;
     $$('#tabs button').forEach((b, j) => b.classList.toggle('on', j === i));
-    const s = shows[i], code = s.names.map(src).join('\n\n');
-    const lines = s.names.flatMap(said);
+    const s = shows[i], code = s.code, lines = s.lines;
+    $('#file').textContent = s.file || 'math.strata';
     const body = $('#code'), out = $('#out'), badge = $('#badge');
     out.innerHTML = ''; badge.className = 'count'; badge.textContent = '';
     if (typing) {
@@ -85,9 +89,41 @@ $('#title').innerHTML = [...'Strata'].map((c, i) => `<span class="l" style="colo
     }
     out.insertAdjacentHTML('beforeend', `<span class="term-line note in">${esc(s.note)}</span>`);
     badge.className = `count ${s.badge[0]}`; badge.textContent = s.badge[1];
-    await sleep(6500); if (me !== run) return;
+    if (!typing) return;
+    await sleep(7500); if (me !== run) return;
     show((i + 1) % shows.length);
   }
   $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) show(+b.dataset.i); });
-  setTimeout(() => show(0), 900);
+  // with reduced motion: no typing, no rotation
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (still) show(0, false); else setTimeout(() => show(0), 900);
+}
+
+// ───────── the agent loop: steps of the recorded session (data/session.js) ─────────
+{
+  const S = STRATA.session, md = t => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>');
+  const at = t => S.find(s => s.title === t);
+  const steps = [
+    ['The agent asks what is left', at('The agent asks what is left to do')],
+    ['It fills the hole; the edit is checked', at('It fills the hole')],
+    ['Verification finds the bug the test missed', at('Verification finds the bug')],
+    ['It fixes it, and it is proven', at('It fixes it, and proves it')],
+    ['An edit that doesn\'t check never gets in', at('A broken edit is refused')],
+  ];
+  $('#loop').innerHTML = steps.map(([h, s], i) => `
+    <div class="step${s.code ? ' bad' : ''}">
+      <div class="n">${i + 1}</div><h3>${esc(h)}</h3><p>${md(s.say)}</p>
+      <div class="pane"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">~/shop</span></div>
+        <div class="body wrap">${cmdLine(s.cmd)}${s.input ? piped(s.input.trim()) : ''}${term(s.out)}</div></div>
+    </div>`).join('');
+}
+
+// ───────── a rename: lines of text, or one change (data/rename.js) ─────────
+{
+  const R = STRATA.rename, n = diffCount(R.diff);
+  $('#rename').innerHTML = `
+    <div class="side old"><div class="big"><b>${n}</b> changed lines</div><p>A text diff of renaming a type: every file and line that mentions it.</p>
+      <div class="pane"><div class="bar"><span class="title">git diff</span><span class="count bad">${n} lines</span></div><div class="body">${diffHtml(R.diff)}</div></div></div>
+    <div class="side new"><div class="big"><b>1</b> change</div><p>The same change in Strata: a rename, with the definitions it reached.</p>
+      <div class="pane"><div class="bar"><span class="title">~/tasks</span><span class="count ok">1 change</span></div><div class="body wrap">${cmdLine(R.cmd)}${term(R.out)}</div></div></div>`;
 }
