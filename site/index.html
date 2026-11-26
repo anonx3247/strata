@@ -8,6 +8,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<meta property="og:title" content="Strata: contracts proven as you write, for code written with agents">
+<meta property="og:description" content="An experimental language: types carry contracts that an SMT solver proves or a fuzzer tests, code is stored as its syntax tree, and every edit is checked before it is stored.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://strata-lang.dev/">
+<meta name="twitter:card" content="summary">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="landing.css">
 </head>
@@ -19,7 +24,6 @@
   <nav>
     <a href="tour.html">Tour</a>
     <a href="/docs/">Docs</a>
-    <a href="/docs/learn-strata/">Learn</a>
     <a href="about.html">About</a>
     <a class="gh" href="https://github.com/anonx3247/strata">GitHub →</a>
   </nav>
@@ -38,7 +42,7 @@
           <code id="install-cmd"></code>
           <button id="copy" title="Copy to the clipboard">Copy</button>
         </div>
-        <div class="install-note"><span class="stage">pre-alpha</span><span>This is the prototype, for macOS on Apple silicon: expect breaking changes, rough edges and bugs. A rebuild is under way. <a href="about.html">How it was built →</a></span></div>
+        <div class="install-note"><span class="stage">pre-alpha</span><span>This is the prototype, for macOS on Apple silicon only (no Linux build yet): expect breaking changes, rough edges and bugs. A rebuild is under way. <a href="about.html">How it was built →</a></span></div>
       </div>
 
       <div class="ctas rise" style="--d:1s">
@@ -61,25 +65,78 @@
     </div>
   </section>
 
-  <section class="ideas">
-    <a class="idea" href="tour.html#contracts">
-      <div class="n">01</div>
-      <h3>Types as contracts</h3>
-      <p>Types carry constraints, and functions say what they need and what they promise. Both are part of the signature, and both are checked wherever the code is used.</p>
-      <span class="go">See it in the tour →</span>
-    </a>
-    <a class="idea" href="tour.html#shares">
-      <div class="n">02</div>
-      <h3>Proving over testing</h3>
-      <p>An SMT solver proves each contract for every input, or finds the input that breaks it. A fuzzer covers what it can't prove. Most tests become a line in a signature.</p>
-      <span class="go">See it in the tour →</span>
-    </a>
-    <a class="idea" href="tour.html#ast">
-      <div class="n">03</div>
-      <h3>The code is the AST</h3>
-      <p>Code is stored as its syntax tree. Text is rendered when someone wants to read it, and edits are parsed back in, so diffs, merges and views work on definitions instead of lines.</p>
-      <span class="go">See it in the tour →</span>
-    </a>
+  <section class="block story">
+    <h2>What Strata changes for agents</h2>
+
+    <div class="part">
+      <h3>Contracts</h3>
+      <p class="sub">One ledger, written twice. A transfer must never make or lose money.</p>
+      <p class="flow">In Rust, that rule is a comment, and three tests check it on the accounts someone picked. They pass. In Strata, the rule is a law on the trait, next to a refinement type (<code>Cents</code>, never negative) and a contract on <code>transfer</code>. <code>verify</code> checks the implementation against all of them, and finds the transfer the tests never tried: from account 100 to itself, which adds 9 cents to it.</p>
+      <div class="visual" id="ch-ledger"></div>
+      <a class="go" href="tour.html#behaviour">Contracts in the tour →</a>
+    </div>
+
+    <div class="part">
+      <h3>Editing the syntax tree</h3>
+      <p class="sub">One order system, in Rust and in Strata, through the same edits.</p>
+      <div class="session" id="ch-session">
+        <div class="vtabs"></div>
+        <p class="flow caption"></p>
+        <div class="vs">
+          <div class="side old"><h4>Rust: text files <span class="big-n"></span></h4><div class="rust col"></div></div>
+          <div class="side new"><h4>Strata: the tree <span class="big-n"></span></h4><div class="strata col"></div><div class="graph"></div></div>
+        </div>
+      </div>
+      <a class="go" href="tour.html#ast">The syntax tree in the tour →</a>
+    </div>
+  </section>
+
+  <section class="block faq">
+    <h2>FAQ</h2>
+    <div class="qs">
+      <details>
+        <summary>How is this different from Dafny, F* or Liquid Haskell?</summary>
+        <p>The contracts are the same idea: refinement types, <code>requires</code> and <code>ensures</code>, checked by an SMT solver. Strata differs around them. Where the solver can't decide, a fuzzer runs the function against the contract, and the verdict says which of the two it came from. Code is stored as a syntax tree, so unfinished code with holes still checks, and every edit is checked before it is stored. And it is built to be used by agents, through a command line.</p>
+      </details>
+      <details>
+        <summary>And from Lean?</summary>
+        <p>Lean is a proof assistant and a programming language: it can prove nearly anything, with proofs that someone writes, usually with tactics. Strata aims lower and stays automatic. Its types are refinement types, not dependent types. The solver proves what it can without help, the fuzzer tests the rest, and a <code>lemma</code> or an <code>assert … by</code> is the hint you give when it needs one.</p>
+      </details>
+      <details>
+        <summary>And from Unison?</summary>
+        <p>Unison also stores code as definitions identified by a hash of their content. Strata adds contracts and verification to that, and keeps text as a view: agents and people read and write ordinary text, which <code>strata edit</code> parses back into the tree.</p>
+      </details>
+      <details>
+        <summary>What exactly does "proven" mean?</summary>
+        <p>The solver (Z3, or cvc5) showed that a check holds for every input, under Strata's encoding of the program. What you trust is the solver, that encoding, the compiler and the C runtime. Code the solver can't reason about, such as a disk behind a capability or an <code>extern c</code> function, is assumed, and reported as assumed. Termination is proven, or reported as unproven. <a href="/docs/verification/">How verification works →</a></p>
+      </details>
+      <details>
+        <summary>Is this the Strata from strata-org?</summary>
+        <p>No. <a href="https://github.com/strata-org/Strata">strata-org/Strata</a> is a separate project: a platform built on Lean 4 for formalizing language syntax and semantics and building automated reasoning tools, through dialects of intermediate representations. The two are unrelated. I didn't know the name was already in use in the formal verification space when I picked it.</p>
+      </details>
+      <details>
+        <summary>How does an agent learn to use it?</summary>
+        <p><code>strata skill install</code> writes a short skill into the folders where coding agents look for them. It says that <code>.strata</code> files are binary, that code is read and changed through <code>strata</code>, and lists the commands. <a href="/docs/learn-strata/">Learn Strata in Y minutes</a> is the whole language as one valid file, written to be given to an agent.</p>
+      </details>
+      <details>
+        <summary>Which platforms does it run on?</summary>
+        <p>macOS on Apple silicon. There is no Linux build yet. Building from source needs an existing <code>strata</code>, because the compiler is written in Strata.</p>
+      </details>
+      <details>
+        <summary>Can I use it for real work?</summary>
+        <p>Not yet. This is a pre-alpha prototype: expect breaking changes, rough edges and bugs. A rebuild is under way. <a href="about.html">How it was built →</a></p>
+      </details>
+    </div>
+  </section>
+
+  <section class="block start">
+    <div class="kicker">Try it</div>
+    <div class="links">
+      <a href="tour.html"><b>The tour →</b><span>The ideas on real programs, every output recorded from the CLI.</span></a>
+      <a href="/docs/learn-strata/"><b>Learn Strata in Y minutes →</b><span>The language on one page, as one valid file. Give it to an agent before it writes Strata.</span></a>
+      <a href="/docs/verification/"><b>Verification →</b><span>What <code>strata verify</code> proves, and how it says so.</span></a>
+      <a href="about.html"><b>How it was built →</b><span>Built with agents in a week, and how the agents did with it.</span></a>
+    </div>
   </section>
 
   <footer>
@@ -90,6 +147,11 @@
 
 <script>window.STRATA = {};</script>
 <script src="data/math.js"></script>
+<script src="data/verify.js"></script>
+<script src="data/session.js"></script>
+<script src="data/rename.js"></script>
+<script src="data/orders.js"></script>
+<script src="data/landing.js"></script>
 <script src="common.js"></script>
 <script src="landing.js"></script>
 </body>

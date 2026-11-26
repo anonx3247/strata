@@ -93,3 +93,111 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .install-note .stage { flex: none; font: 600 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent2); border: 1px solid #f0b45c55; border-radius: 999px; padding: 4px 8px; }
 .install-note a { color: var(--text); border-bottom: 1px solid var(--line2); }
 .install-note a:hover { text-decoration: none; border-color: var(--accent); }
+
+/* ───────── the sections under the hero ───────── */
+.block { padding: 70px 5vw 40px; }
+.block .kicker { font: 600 12.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--accent2); }
+.block h2 { font: 600 clamp(28px, 2.6vw, 40px)/1.15 var(--display); letter-spacing: -.02em; max-width: 30ch; margin: 12px 0 14px; }
+.block .lede { color: var(--muted); font-size: 17px; max-width: 70ch; margin: 0 0 28px; }
+.block .go { display: inline-block; margin-top: 22px; font: 500 14px var(--mono); color: var(--accent); }
+
+/* what Strata changes for agents: two parts, each a few chapters */
+.story > h2 { margin-bottom: 0; }
+.part { margin-top: 64px; }
+.part > h3 { font: 600 clamp(30px, 2.8vw, 44px)/1.1 var(--display); letter-spacing: -.02em; margin: 0; color: var(--accent2); }
+.part > .sub { color: var(--muted); font-size: 18px; margin: 8px 0 8px; }
+.chapter h4 { font: 600 22px/1.25 var(--display); letter-spacing: -.01em; margin: 0 0 10px; }
+.part .flow { color: var(--text); font-size: 17px; max-width: 95ch; margin: 18px 0 26px; }
+.part .flow.caption { color: var(--muted); min-height: 3.2em; margin: 18px 0 18px; }
+.part > .go { margin-top: 20px; }
+.session .vtabs { display: flex; gap: 8px; margin-top: 22px; }
+.session .vtabs button { position: relative; overflow: hidden; flex: 1; text-align: left; padding: 9px 14px; border-radius: 10px; }
+.session .vtabs button b { color: var(--accent2); margin-right: 6px; }
+.session .vtabs .fill { position: absolute; left: 0; bottom: 0; height: 2px; width: 0; background: var(--accent); }
+.session.playing .vtabs button.on .fill { animation: fill var(--every) linear forwards; }
+@keyframes fill { to { width: 100%; } }
+.session .flow.caption { min-height: 3.4em; margin: 16px 0 14px; }
+.session .vs { align-items: stretch; }
+.session .side { display: flex; flex-direction: column; gap: 12px; min-width: 0; height: 820px; }
+.session .side .col { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
+.session .side .col .pane { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
+.session .side .col .pane:last-child { flex: 1 1 0; min-height: 220px; }
+.session .side .col .pane:only-child { min-height: 0; }
+.session .side .col .pane .body { flex: 1; min-height: 0; max-height: none; overflow: auto; font-size: 12.5px; }
+.session .side .graph { height: 300px; flex: none; }
+
+/* the ledger: both sides the same height; the code scrolls, the terminal shows all of its output */
+.vs.ledger { align-items: stretch; }
+.vs.ledger .side { display: flex; flex-direction: column; gap: 12px; }
+/* the Strata side sets the height (all of it shown), the Rust side takes the same and scrolls its code */
+.vs.ledger .side.old { height: 0; min-height: 100%; }
+.vs.ledger .col { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
+.visual .vs.ledger .side .pane { display: flex; flex-direction: column; min-height: 0; flex: none; height: auto; }
+.visual .vs.ledger .side.old .pane:first-child { flex: 1 1 0; }
+.vs.ledger .pane .body { flex: 1; min-height: 0; overflow: auto; }
+
+/* Rust, in Rust's orange: the same shapes as Strata, another colour */
+.pane.rust { border-color: #f74c0070; box-shadow: 0 0 0 1px #f74c001f, 0 30px 80px -40px #000; }
+.pane.rust .bar { background: #1b1513; border-bottom-color: #f74c0040; color: #d9a58a; }
+.pane.rust .k { color: #ff8a3d; } .pane.rust .t { color: #ffb072; } .pane.rust .f { color: #ffd3a8; }
+.pane.rust .nm { color: #ffc48a; } .pane.rust .s { color: #e9d38a; }
+.pane.rust .prompt { color: #ff8a3d; }
+.story .vs .side.old > h4 { color: #ff8a3d; }
+.part .visual .vs .pane .body { max-height: none; }
+.astpair { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 16px; }
+.astpair .pane .body { height: 440px; max-height: 440px; }
+.astpair .graph { height: 485px; }
+.visual .pane.plain .body { color: #cfcec8; }
+
+.chapter { display: grid; grid-template-columns: minmax(0, .5fr) minmax(0, 1.8fr); gap: 40px; align-items: start; padding: 44px 0; }
+.chapter + .chapter { border-top: 1px solid var(--line); }
+.chapter .text { position: sticky; top: 30px; }
+.chapter p { color: var(--muted); font-size: 16px; margin: 0; }
+.chapter .go { margin-top: 16px; }
+.visual { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.visual.two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.visual.two > div { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.visual .cap { font: 600 12px var(--mono); letter-spacing: .12em; text-transform: uppercase; }
+.visual .cap.bad { color: var(--bad); } .visual .cap.ok { color: var(--ok); }
+.visual .pane { background: #171a21ee; }
+.visual .pane .body { font-size: 12.5px; max-height: none; }
+.visual .vs { margin-top: 0; }
+.visual .vs .side { display: flex; flex-direction: column; gap: 12px; }
+.visual .vs { align-items: start; }
+.visual .vs .side .pane { height: auto; display: block; }
+.visual .vs .pane .body { max-height: 420px; }
+.visual .vs .pane.long .body { max-height: 300px; }
+.story .vs .side h4 { display: flex; align-items: baseline; }
+.story .vs .side h4 .big-n { font: 600 24px var(--display); letter-spacing: -.02em; margin-left: auto; text-transform: none; }
+.story .vs .side.old h4 .big-n { color: var(--bad); } .story .vs .side.new h4 .big-n { color: var(--ok); }
+.visual .headline .hl-big { font-size: 18px; }
+
+/* faq */
+.faq .qs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 22px; align-items: start; }
+.faq details { border: 1px solid var(--line); border-radius: 14px; background: #13151bd9; backdrop-filter: blur(8px); padding: 0 22px; transition: border-color .25s; }
+.faq details[open] { border-color: var(--line2); }
+.faq summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 16px; padding: 18px 0; font: 600 17px var(--display); color: var(--text); }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; color: var(--accent2); font: 500 20px var(--mono); line-height: 1; transition: transform .25s; }
+.faq details[open] summary::after { transform: rotate(45deg); }
+.faq details p { color: var(--muted); font-size: 15.5px; margin: 0 0 18px; }
+.faq details a { color: var(--accent); }
+
+/* try it */
+.start { padding-bottom: 80px; }
+.start .links { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 18px; }
+.start .links a { display: flex; flex-direction: column; gap: 8px; padding: 20px 22px; border: 1px solid var(--line); border-radius: 14px; background: #13151bd9; color: var(--text); transition: border-color .25s; }
+.start .links a:hover { text-decoration: none; border-color: var(--accent); }
+.start .links span { color: var(--muted); font-size: 14.5px; }
+.count.warn { background: #ffb05c1f; color: var(--warn); }
+
+@media (max-width: 1050px) {
+  .start .links, .chapter, .visual.two, .visual .vs, .astpair, .faq .qs { grid-template-columns: 1fr; }
+  .chapter .text { position: static; }
+}
+
+/* with reduced motion, everything is simply there */
+@media (prefers-reduced-motion: reduce) {
+  .rise, #title .l { animation: none; opacity: 1; transform: none; }
+  .tour-btn::after, .caret { animation: none; }
+}
