@@ -166,7 +166,7 @@ has = [
 
 # the errors
 [[step]]
-strata = ["--file", "e.strata", "edit"]
+strata = ["--file", "e.strata", "edit", "--as-given"]
 fails = true
 text = '''
 type Order = { id: Int, qty: Int, price: Int }

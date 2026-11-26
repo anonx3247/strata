@@ -1,0 +1,128 @@
+# An edit that fails writes nothing: it is checked before any file is
+# written, and the module files stay byte for byte as they were. Through
+# `--file DIR`, `--file SCRIPT` and in a package. `--as-given` writes a
+# script that doesn't check all the same.
+
+[[step]]
+write = "f/strata.toml"
+text = "name = \"f\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "util"]
+dir = "f"
+text = "pub fn helper() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "f"
+text = "use util\n\nfn main() {\n  print(util.helper())\n}\n"
+
+[[step]]
+run = ["shasum", "f/main.strata", "f/util.strata"]
+capture = "f-before.txt"
+
+# removing the import main uses breaks main: rejected
+[[step]]
+strata = ["--file", ".", "edit", "main", "--rm", "use util"]
+dir = "f"
+code = 1
+has = ["rejected: . doesn't check (1 error; nothing was written", "error in main:"]
+lacks = ["written as given", "changed"]
+
+# a new module that doesn't check isn't created
+[[step]]
+strata = ["--file", ".", "edit", "extra"]
+dir = "f"
+text = "fn x() -> Int {\n  \"no\"\n}\n"
+code = 1
+has = ["nothing was written"]
+
+[[step]]
+run = ["ls", "f"]
+stdout = "main.strata\nstrata.toml\nutil.strata\n"
+
+[[step]]
+run = ["shasum", "f/main.strata", "f/util.strata"]
+out_file = "f-before.txt"
+
+# a script: not created, then not changed
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = "fn f() -> Int {\n  true\n}\n"
+code = 1
+has = ["rejected: s.strata doesn't check"]
+
+[[step]]
+run = ["ls"]
+stdout = "f\nf-before.txt\n"
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = "fn f() -> Int {\n  1\n}\n"
+
+[[step]]
+run = ["shasum", "s.strata"]
+capture = "s-before.txt"
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = "fn f() -> Int {\n  true\n}\n"
+code = 1
+
+[[step]]
+run = ["shasum", "s.strata"]
+out_file = "s-before.txt"
+
+# `--as-given`: written all the same, with its errors
+[[step]]
+strata = ["--file", "s.strata", "edit", "--as-given"]
+text = "fn f() -> Int {\n  true\n}\n"
+code = 1
+has = ["written as given: s.strata doesn't check (1 error):", "error in f:"]
+
+[[step]]
+strata = ["--file", "s.strata", "view", "main"]
+has = ["true"]
+
+# a package's edit
+[[step]]
+run = ["mkdir", "p"]
+
+[[step]]
+strata = ["init"]
+dir = "p"
+
+[[step]]
+strata = ["edit", "util"]
+dir = "p"
+text = "pub fn helper() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["edit", "main"]
+dir = "p"
+text = "use util\n\nfn main() {\n  print(util.helper())\n}\n"
+
+[[step]]
+run = ["shasum", "p/main.strata", "p/util.strata", "p/strata.log"]
+capture = "p-before.txt"
+
+[[step]]
+strata = ["edit", "main", "--rm", "use util"]
+dir = "p"
+code = 1
+has = ["error in main:", "rejected"]
+
+[[step]]
+strata = ["edit", "extra"]
+dir = "p"
+text = "fn x() -> Int {\n  \"no\"\n}\n"
+code = 1
+has = ["rejected"]
+
+[[step]]
+run = ["shasum", "p/main.strata", "p/util.strata", "p/strata.log"]
+out_file = "p-before.txt"
+
+[[step]]
+run = ["ls", "p/extra.strata"]
+fails = true

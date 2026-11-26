@@ -235,6 +235,33 @@ Changes are ordered types, then interfaces, then implementations, then tests.
 - `--json` prints the same for other tools.
 - In a git repository, `strata --file F diff [BASE]` compares a file with a commit (`HEAD` by default). After `strata setup-git`, `git diff` shows `.strata` files the same way.
 
+## One definition's history: `strata history`, `strata revert`
+
+Module files are binary and every change made through strata is a commit, so git's history can be read one definition at a time.
+
+```
+$ strata history shapes.area
+f76eb8e3  2026-01-02  t  areas are never negative
+    ~ shapes.area  (stricter precondition)
+      ~ pub fn area(w: Int, h: Int) -> Int[- {-]
+      +   requires w >= 0 {    ◀ stricter precondition
+          w * h
+        }
+
+0ba6e35c  2026-01-02  t  document area
+    ~ shapes.area  (doc changed)
+        doc: {+The area of a rectangle.+}
+        ...
+```
+
+- `strata history NAME` lists each change to the definition `NAME`, newest first: an uncommitted change in the working tree, then each commit that changed it, with its hash, date, author and subject, and its structural diff as `strata diff` shows it. A commit that changed only other definitions is skipped, and so is one that only re-encoded the file. A doc comment's change counts. `-n N` shows the last N changes. `--no-patch` shows one line per change, with what changed in words (`body changed`, `doc changed`, `added`). Diffs are shown by default.
+- `NAME` is qualified (`codegen.lower`), or bare in the root module. With `--file F`, it is found in F: a package's folder or a module file.
+- It follows the module's file across a rename (`git log --follow`), and a definition whose stored module name changed with it isn't shown as changed. It doesn't follow a definition moved to another module (`strata move`). Merge commits aren't listed, so a change made only while resolving a merge conflict isn't shown.
+- `strata revert NAME [COMMIT]` puts `NAME` back as it was before `COMMIT` changed it, by default its last change. If `COMMIT` added it, it is removed. Only that definition changes, in the working tree: its other definitions keep their bytes, as with `strata edit`. It prints the diff of what it did. It doesn't commit, and it isn't written to `strata.log`, so `strata diff` shows it as an edit made outside strata. It doesn't check the program: run `strata check` after it. A COMMIT that didn't change `NAME` is refused.
+- `revert` refuses while `NAME` has uncommitted changes, because it would lose them. `--force` reverts anyway.
+
+How it is built, and what it costs: one `git log --follow --raw` lists the commits that changed the module's file, with the file's blob before and after each. `git cat-file --batch` reads the blobs, in rounds of 8, 16, then up to 64 commits, so `-n 1` and `revert` read few. Of each blob only the header is copied out and read, for the definition's hash. Only where the hash before and after differ is the definition decoded, alone, with its module's imports and the other definitions' interfaces, so its references are written short. On `compiler/codegen.strata` (198 commits, 640 KB a version), the 16 changes to `codegen.lower` take about 2 s with diffs or without, `-n 1` under 1 s, and scanning all 198 versions for a name none has about 1.3 s (on a loaded machine).
+
 ## Tours of a pull request: `strata tour`
 
 A tour explains a pull request page by page. The PR's author writes it in Markdown at `.tours/BRANCH.md` and commits it with the PR:

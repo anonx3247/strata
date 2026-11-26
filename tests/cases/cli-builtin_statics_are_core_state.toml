@@ -1,7 +1,7 @@
 # cli.rs: builtin_statics_are_core_state
 
 [[step]]
-strata = ["--file", "x.strata", "edit"]
+strata = ["--file", "x.strata", "edit", "--as-given"]
 text = "builtin static mine: 8\n\nfn main() {\n  print(1)\n}\n"
 any_code = true
 has = ["`builtin` definitions are only in `core`: `mine`"]

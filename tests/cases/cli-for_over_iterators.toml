@@ -107,7 +107,7 @@ lacks = ["Count.map", "Count.fold", "recursive through", "bug in the prover"]
 
 # written, and reported as not checking
 [[step]]
-strata = ["--file", "bad.strata", "edit"]
+strata = ["--file", "bad.strata", "edit", "--as-given"]
 text = '''
 type P = { x: Int }
 
@@ -130,7 +130,7 @@ fn c[I](it: I) {
 }
 '''
 any_code = true
-has = ["written: bad.strata doesn't check"]
+has = ["written as given: bad.strata doesn't check"]
 
 [[step]]
 strata = ["--file", "bad.strata", "check"]
