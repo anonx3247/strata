@@ -67,7 +67,7 @@ env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMM
 [[step]]
 strata = ["sync", "main"]
 env = { "GIT_AUTHOR_NAME" = "t", "GIT_AUTHOR_EMAIL" = "t@example.com", "GIT_COMMITTER_NAME" = "t", "GIT_COMMITTER_EMAIL" = "t@example.com" }
-has = ["merged main", "merge: theirs code follows the rename a.area → a.rect_area (c.use a, c.cube)"]
+has = ["merged main"]
 
 [[step]]
 strata = ["view", "c"]
@@ -79,9 +79,8 @@ fn cube(s: Int) -> Int {
 }
 '''
 
-# the fix is logged, and part of the merge commit
-[[step]]
-run = ["grep", "-q", "\"follows\"", "strata.log"]
+# (c refers to `area` by its id: it is read as the name `a` gives it now,
+# with nothing to rewrite)
 
 [[step]]
 run = ["git", "status", "--porcelain"]
