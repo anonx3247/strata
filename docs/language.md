@@ -208,11 +208,33 @@ larger(invoice, other_invoice)      // an Invoice, returned as one
 ```
 
 - **A parameter's type is a type parameter of its own.** `fn due(x: { id: OrderId, .. })` is `fn due[X: { id: OrderId, .. }](x: X)`. Name the type parameter when the same type comes back out (`-> T`) or must be shared (`a: T, b: T`).
-- **Only the named fields can be used.** `x.id` and `x.total` read the record's fields, `x.total = 5` changes a `mut` one, and `x` can be passed on to another function whose bound asks for no more. Anything else on `x` is an error, as is constructing one: a structural type has no values of its own. It can't be a result's, a variable's or a field's type.
+- **Only the named fields can be used.** `x.id` and `x.total` read the record's fields, `x.total = 5` changes a `mut` one, and `x` can be passed on to another function whose bound asks for no more. Anything else on `x` is an error. An open type (with `..`) has no values of its own: it can't be a result's, a variable's or a field's type. An anonymous record (below) can.
 - **A record fits when it has every field, of a type that fits.** A field whose type is refined (`Cents`, `Int where it > 0`) must be given by a field of that same type, since the function is proven knowing the refinement. An unrefined one takes what fits it the usual way. A record's other fields don't matter, nor their order. Records stay nominal otherwise: an `Invoice` is never a `Quote`, whatever their fields.
 - **Only records fit**, generic ones included (`Box[T]`). Variants, tuples, unions and other types don't, even with fields of those names.
 - **Compiled once per record type.** A call with an `Invoice` compiles `due[Invoice]`, which reads `x.total` at the offset `Invoice` keeps it at, as if `due` had been written for `Invoice`. There is no cost at run time. The cost is code size: one copy of the function per record type it is called with.
 - **Verified once, for every record.** `verify` proves the function on a record holding exactly the named fields. The function can only read those fields, so what it proves holds for every record that has them. The fuzzer runs it with the first record type of the program that has the fields.
+
+### Anonymous records
+
+`{ id: 7, total: 10 }` is a record without a declared type. Its type is written without `..`: `{ id: Int, total: Int }`. That type can be a variable's, a result's or a field's type:
+
+```rust
+fn summary(o: Order) -> { id: Int, total: Cents } = { id: o.id, total: o.total }
+
+type Report = { best: { id: Int, total: Cents }, count: Int }
+
+let t: { id: Int, total: Int } = { total: 10, id: 7 }
+s == t                              // equal field by field
+to_string(s)                        // "{ id: 7, total: 10 }"
+total_of(s)                         // fits `{ total: Cents, .. }`
+```
+
+- **How a literal is told apart.** After `{`, a field's name followed by `:` starts an anonymous record. No statement starts that way: a typed variable is `let x: T = …`. A dict literal is always `Dict { … }`.
+- **One record type per set of field names.** `{ id: …, total: … }` is the generic record `type $rec:id:total[$id, $total] = { id: $id, total: $total }`, made by `desugar` once per program for each set of names it meets. Fields are laid out in order of name, so `{ total: 1, id: 2 }` has the same type, and the type prints in that order. Its fields' types are its type arguments: `{ id: Int, total: Cents }` is `$rec:id:total[Int, Cents]`. It costs what a declared generic record costs: one allocation, and fields read at fixed offsets.
+- **Equality and printing** are a record's: field by field, printed as written, with no type name.
+- **verify** sees an ordinary generic record. A refined field's type is a type argument, so `-> { id: Int, total: Cents }` is proven to give a non-negative `total`. An anonymous record given where a bound asks for a refined field (`total_of({ total: n, id: 1 })` against `{ total: Cents, .. }`) is proven to meet it at the call. The checker can't see the refinement of a type argument, so it leaves that to `verify`. A nominal record's field must be written with the same type instead.
+- **A nominal record is not an anonymous one.** An `Order { id, total, note }` fits `{ id: Int, total: Int, .. }`, but is not a `{ id: Int, total: Int }`, even with exactly those fields. Anonymous records with the same field names are the same type, wherever they are written.
+- **Not yet:** `derive Json` doesn't reach them (a record holding one can't derive `Json`), and `{ ..x, total: 0 }` doesn't update one.
 
 ## Unions, variants and patterns
 

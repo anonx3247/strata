@@ -109,6 +109,29 @@ the fields.
 ```strata-diff smt.rows_as_records smt.function codegen.fitting_record codegen.fuzz_instance
 ```
 
+# Anonymous records
+`{ id: 7, total: 10 }` is a value of `{ id: Int, total: Int }`, the closed
+form. The parser writes the type as the generic record `$rec:id:total[Int,
+Int]` and the literal as its constructor; `desugar` generates one such
+record per set of field names. So the checker, codegen and verify see
+ordinary generic records. Because the checker erases a type argument's
+refinement, a refined field that an anonymous record gives to a bound is
+proven at the call by verify.
+
+```strata-diff parse.anon_record parse.closed_row desugar.anon_types smt.row_arguments
+```
+
+```strata-also
+parse.anon_name parse.row_open parse.row_type parse.sym_primary: telling a record from a block, a closed type from an open one
+text.ctor_open text.type_text text.expr_text text.inline check.shown codegen.debug_body: printed as written
+declarations.body_errors declarations.type_errors_in: the generated types are known
+desugar.desugar_more: adds them
+check.field_met: leaves an anonymous record's refined field to verify
+smt.call_contract: proves it at each call
+smt.literal_of: a structural parameter's counterexample written as an anonymous record
+tree.type_slots tree.type_rebuilt: the structural type node in node diffs
+```
+
 # Every pass that walks a type
 The rest is the new node in each exhaustive match over types: mapped like
 a union's members where the pass rewrites types, its fields' types where it
@@ -120,5 +143,5 @@ ast.bare_type check.self_is check.mentions_any check.mentions_self check.type_he
 capabilities.json_error contracts.refined_errors declarations.type_names derive.subst derive.unwhere derive.ty derive.type_value_in derive.kind_of derive.mentions_name desugar.subst_type diff.type_head: the new node in a match over types
 eval.type_head eval.fits eval.substitute eval.mentions_param eval.has_unknown locate.type_expr_kids locate.replaced_type refined_in takes_raw parse.type_head refactor.type_renamed resolve.type_head: the new node in a match over types
 smt.structured smt.subst smt.shape smt.unfold smt.sort_of smt.sort_type smt.from_term smt.refined_by smt.refined_walk smt.erased smt.check_type_at smt.sx_ok smt.self_written smt.refined_types smt.sx_literal store.ty termination.refinements_in unused.type_names: the new node in a match over types
-cache.Cache codebase.merge_parsed derive.pairs derive.remember desugar.inline_refinements diff.members_words docgen.titled graph.Shape merge.tokens resolve.walk resolve.union_members smt.infer_invariants termination.call_name termination.struct_call finding.untagged: stored again by the package-wide edit, the same text
+cache.Cache codebase.merge_parsed derive.pairs derive.remember desugar.inline_refinements diff.members_words docgen.titled graph.Shape merge.tokens resolve.walk resolve.union_members  termination.call_name termination.struct_call finding.untagged diff.node_lines tour.Names: stored again by the package-wide edit, the same text
 ```
