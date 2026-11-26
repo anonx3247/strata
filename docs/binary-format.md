@@ -202,7 +202,7 @@ BinOp    = 0 +  1 -  2 *  3 /  4 %  5 ==  6 !=  7 <  8 <=  9 >  10 >=  11 &&  12
 UnOp     = 0 -  1 !
 ```
 
-`x!`, `x?`, `x except e { … }`, `x or { … }`, `x !! v` and `x ?? v` are stored as the `Match` they stand for (`compiler/sugar`), with names starting with `$`, which no program can write: `x!` is `match x { Ok($v) => $v, Err($e) => return Err($e) }`, `x ?? v` is `match x { Some($v) => $v, None => v }`. `view` shows such a match as the sugar again. A reader refuses tags 24, 25 and 32.
+`x!`, `x?`, `x except e { … }`, `x or { … }`, `x !! v` and `x ?? v` are stored as the `Match` they stand for (`compiler/sugar`), with names starting with `$`, which no program can write: `x!` is `match x { Ok($v) => $v, Err($e) => return Err($e) }`, `x ?? v` is `match x { Some($v) => $v, None => v }`. `view` shows such a match as the sugar again. Tags 24, 25 and 32 are not written; a file that has them is read with each as its match, so that `diff`, `tour` and merges work across the change.
 
 `BigInt` is an integer literal too large for 64 bits, as its decimal digits.
 
