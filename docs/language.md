@@ -569,7 +569,7 @@ squares := scope { await [spawn x * x for x in xs] }
 - `await h` waits for the task and returns its result. `await (a, b)` returns a tuple of results, and `await hs` a list. `await` binds like unary `-`, so `(await hs).len()` needs the parentheses.
 - There are no `async` functions. Any function can run in a task, and a call that waits (a read, a long computation) is an ordinary call. Nothing in a function's signature says whether tasks run it.
 
-Tasks share no mutable state, so results don't depend on timing. `scope { a := spawn f(); b := spawn g(); await (a, b) }` equals `(f(), g())`, and `verify` treats it that way. A task captures what it uses as a copy at `spawn` time, like a lambda. It can't change outer variables (`spawn { n += 1 }` is an error), and `return`, `!` and `?` can't leave it. Handle errors inside the task, or make them its result.
+Tasks share no mutable state, so results don't depend on timing. `scope { a := spawn f(); b := spawn g(); await (a, b) }` equals `(f(), g())`, and `verify` treats it that way. A task captures what it uses as a copy at `spawn` time, like a lambda, and a value sent on a channel is the receiver's copy. The copy is real: a value the sender keeps is copied, block by block, and one it gives up on its last use moves for free (see [Values and copying](#values-and-copying)). It can't change outer variables (`spawn { n += 1 }` and `spawn f(mut xs)` are errors), and `return`, `!` and `?` can't leave it. Handle errors inside the task, or make them its result.
 
 A fault in a task ends the program, as anywhere else. [Supervised tasks](#supervised-tasks) are the exception. A deadlock, where every task waits and none can proceed, is reported as a panic instead of hanging.
 
