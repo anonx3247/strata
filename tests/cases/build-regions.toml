@@ -7,6 +7,14 @@
 # it held), with early exits, tasks, big integers, an arena, and a function
 # keeping what an argument holds, a list slice joined to a literal, on the
 # JIT too.
+#
+# Destinations: `dest.st`'s functions make their results in the regions
+# their callers give them (a hidden argument), a statement's, a loop
+# body's, a block's or a function body's: records, lists and strings,
+# small results boxed in a region, nested calls, early exits (`return`,
+# `!`, `break`, `continue`), values changed in place or lent `mut`, tasks
+# (a function starting tasks reading what it is given), and recursions
+# copying their results.
 
 [[step]]
 save = "regions.strata"
@@ -39,3 +47,35 @@ has = ["call ptr @strata_region_alloc(", "call i64 @strata_region_route()", "cal
 [[step]]
 strata = ["--file", "regions.strata", "build", "--no-verify", "--emit-llvm"]
 lacks = ["strata_region"]
+
+[[step]]
+save = "dest.strata"
+from = "dest.st"
+
+[[step]]
+strata = ["--file", "dest.strata", "build", "--no-verify", "-o", "dest-plain"]
+
+[[step]]
+run = ["./dest-plain"]
+memory = true
+stdout = "116186 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
+
+[[step]]
+strata = ["--file", "dest.strata", "build", "--no-verify", "--regions", "-o", "dest-regions"]
+
+[[step]]
+run = ["./dest-regions"]
+memory = true
+stdout = "116186 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
+
+[[step]]
+strata = ["--file", "dest.strata", "run", "--regions"]
+out = "116186 90 [\"b0bt0\", \"b1bt1\", \"b2bt2\"]\n"
+
+[[step]]
+strata = ["--file", "dest.strata", "build", "--no-verify", "--regions", "--emit-llvm"]
+has = ["@\"strata:make#dest\"(", "call ptr @strata.dest_alloc(", "call void @strata.dest_hold(", "call void @strata.dest_free(", "call ptr @\"rbox:", "call i64 @strata_dest_route("]
+
+[[step]]
+strata = ["--file", "dest.strata", "build", "--no-verify", "--emit-llvm"]
+lacks = ["#dest", "strata.dest_"]
