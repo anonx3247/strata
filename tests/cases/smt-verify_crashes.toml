@@ -117,8 +117,9 @@ run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file db.strata 
 fails = true
 has = ["input:   Db { tables: Dict[String, Table] {} }, 0"]
 
-# a crash while a function runs for `verify` (here a bad pointer given to
-# C) ends that run, not `verify` or `build`: the function is left unproven
+# a bad pointer given to C crashed the run of `bad` (the crash ended that
+# run, not `verify`). Code reaching C isn't run by `verify` now, so it is
+# left unproven without running it
 [[step]]
 save = "crash.strata"
 text = '''
@@ -135,7 +136,7 @@ fn main() {
 
 [[step]]
 run = ["sh", "-c", "perl -e 'alarm 60; exec @ARGV' \"$STRATA\" --file crash.strata verify --no-cache"]
-has = ["- bad                      skipped: running it crashed (SIGSEGV)"]
+has = ["- bad                      skipped: not run: reaches `extern c` `strlen`"]
 
 [[step]]
 run = ["sh", "-c", "perl -e 'alarm 120; exec @ARGV' \"$STRATA\" --file crash.strata build -o crash && ./crash"]
