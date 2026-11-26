@@ -152,7 +152,7 @@ function strataOut(out) {
   const pane = (title, body, { cls = '' } = {}) =>
     `<div class="pane ${cls}"><div class="bar"><span class="dots"><i></i><i></i><i></i></span><span class="title">${esc(title)}</span></div><div class="body${cls.includes('term') ? ' wrap' : ''}">${body}</div></div>`;
   const run = (cmd, out) => cmdLine(cmd) + (out ? term(out) : '');
-  const side = (cls, label, n, html) => `<div class="side ${cls}"><h4>${esc(label)} <span class="big-n">${esc(n)}</span></h4>${html}</div>`;
+  const side = (cls, label, n, html) => `<div class="side ${cls}"><h4>${esc(label)} <span class="big-n">${esc(n)}</span></h4><div class="col">${html}</div></div>`;
 
   // ── contracts: the ledger ──
   // the Strata ledger as `strata view` printed it, in reading order: types, the trait (one law in full), the implementation's transfer
@@ -162,7 +162,7 @@ function strataOut(out) {
   // the Rust file with its implementation folded the same way
   const rust = L.ledger.rust.replace(/impl Ledger for MemLedger \{[\s\S]*?\n\}\n/, 'impl Ledger for MemLedger { … }\n');
   const V = L.ledger.verify;
-  $('#ch-ledger').innerHTML = `<div class="vs">` +
+  $('#ch-ledger').innerHTML = `<div class="vs ledger">` +
     side('old', 'Rust: rules in comments', '3 tests pass', pane('ledger.rs', hlRust(rust), { cls: 'rust' }) + pane('~/ledger', run(L.ledger.test.cmd, L.ledger.test.out), { cls: 'term rust' })) +
     side('new', 'Strata: rules in code', '1 bug found', pane('ledger.strata', hl(ledger)) + pane('~/ledger', run(V.cmd, V.out), { cls: 'term' })) + `</div>`;
 
