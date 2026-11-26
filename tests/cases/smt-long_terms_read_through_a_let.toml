@@ -1,0 +1,27 @@
+# smt: a refined value looked up in a dict has its validity defined once,
+# its long term read through one `let` name (`let_term`), and calls seen
+# through at equal arguments compared by names (`share_deep`): proven
+
+[[step]]
+save = "lookup.strata"
+text = '''
+type AnEntryWithALongNameSoItsTermIsLong = { n: Natural, max: Positive }
+  where it.n <= it.max
+
+fn room(
+  d: Dict[String, AnEntryWithALongNameSoItsTermIsLong],
+  ks: List[String],
+  i: Int,
+) -> Int
+  requires 0 <= i && i < len(ks)
+  ensures it >= 0 {
+  match d.get(ks[i]) {
+    Some(e) => e.max - e.n,
+    None => 0,
+  }
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$TMP\" && mkdir -p dump && STRATA_SOLVER_DUMP=\"$TMP/dump\" STRATA_CACHE=\"$TMP/cache\" perl -e \"alarm 60; exec @ARGV\" \"$STRATA\" --file lookup.strata verify --no-cache 2>&1 && grep -l -F '(let ((|t!| ' dump/* > /dev/null && echo 'a let in the query'"]
+has = ["proven", "a let in the query"]
