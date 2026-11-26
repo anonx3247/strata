@@ -213,8 +213,9 @@ fn total[T: Add](xs: List[T], zero: T) -> T = xs.fold(zero, (a, b) -> a + b)
 print((Vec2 { x: 1, y: 2 } + Vec2 { x: 3, y: 4 }).x)   // 4
 ```
 
-- The numbers have every operator built in, `String` has `+` and the orders (by code points), `List` has `+`. Core's `impl`s for them (`impl Add for Int`) let generic code take them (`total([1, 2], 0)`). On a built-in type an operator compiles to the instruction it always did, and `verify` reads it as integer or real arithmetic.
+- The numbers have every operator built in, `String` has `+` and the orders (by code points), `List` has `+`. Core's `impl`s for them call intrinsics (`impl Add for I64 { fn add(self, other: I64) -> I64 = i64_add(self, other) }`; `integer_*` for `Int`, `float_*`, `i8_*` … `u64_*`, `string_*`, `bool_eq`, `list_add`). An intrinsic compiles to its instruction inline (with `Int`'s overflow check), and `verify` reads it as integer or real arithmetic; so does an operator on a built-in type, and `x.add(y)` from generic code on one (`total([1, 2], 0)`).
 - On another type, `a + b` is the call `a.add(b)` of the type's `impl`. Without one it is an error: `` `<` on `P`: it needs `impl Ord for P` ``. `verify` proves such a call through the `impl`'s contracts (its `ensures`).
+- Operands of two types: an `impl` names the right operand's type and the result's: `impl Mul[Int, Money] for Money { fn mul(self, k: Int) -> Money { … } }` gives `m * 3`, `impl Mul[Vec2, Vec2] for Int` gives `3 * v`. The checker types both operands, then picks the `impl` that joins their types; one per pair of types and operator (`+ - * / %` only).
 - Every type has `==` built in, comparing values part by part. `impl Eq for T` replaces it where `==` compares two `T`s, or two values of a type parameter bound by `Eq`; inside a list, a dictionary, `contains` or `sort`, values still compare part by part.
 - `&&`, `||`, `==>` and `!` are not methods: they evaluate their right side only when needed. Nor, yet, are the bit operators (`& | ^ << >>`).
 - The stored tree holds the call (`Add.add(a, b)`); `strata view` shows `a + b`, and `!Eq.eq(a, b)` (written `a != b` or `!(a == b)`) as `a != b`.
