@@ -72,7 +72,9 @@ check_file() {
 
 for p in "$@"; do
   if [ -d "$p" ]; then
-    find "$p" -name '*.strata' -not -path '*/target/*' -not -path '*/.claude/*' -not -path '*/.strata/*' | sort > "$tmp/list"
+    # (paths under `$p` only: the repository itself may be in a worktree
+    # under .claude/)
+    (cd "$p" && find . -name '*.strata' -not -path '*/target/*' -not -path '*/.claude/*' -not -path '*/.strata/*') | sed "s|^\.|${p%/}|" | sort > "$tmp/list"
     while read -r f; do check_file "$f"; done < "$tmp/list"
   else
     check_file "$p"
