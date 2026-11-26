@@ -107,3 +107,7 @@ lib_dirs = ["/opt/homebrew/opt/llvm/lib", "../target/lld"]
 # from memory by its type (codegen's `read_back`, core.values' `Raw`)
 [values]
 read = true
+
+# unused definitions, fields, variants and variables are errors
+[check]
+unused = "error"

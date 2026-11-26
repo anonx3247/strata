@@ -7,10 +7,10 @@ from std.memory use arena
 
 type Point = { x: Int, y: Int }
 
-type Path = { name: String, points: List[Point], steps: Int }
+type Path = { _name: String, points: List[Point], steps: Int }
 
 fn grow(n: Int) -> Path {
-  mut p := Path { name: "p", points: [], steps: 0 }
+  mut p := Path { _name: "p", points: [], steps: 0 }
   for i in 0..n {
     mut p.points.push(Point { x: i, y: i * i })
     p.steps += 1

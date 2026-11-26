@@ -14,3 +14,7 @@ auto_commit = false
 # the raw memory they are built on (its `builtin` functions: the compiler's
 # promise).
 noalloc = ["rt", "str", "int", "list", "fmt", "float", "gen", "fault", "run", "mem"]
+
+# unused definitions, fields, variants and variables are errors
+[check]
+unused = "error"

@@ -15,6 +15,7 @@ fn next(i: Int) -> Int
 fn quoted_end(src: String, from: Natural, tab: Int) -> Int
   requires from <= byte_len(src)
   ensures it <= byte_len(src)
+  ensures it >= from
 {
   n := byte_len(src)
   mut at := from
@@ -45,11 +46,15 @@ fn start(src: String) -> Natural
 
 fn quoted_after(src: String, tab: Int) -> Int
   ensures it <= byte_len(src)
+  ensures it >= start(src)
 {
   n := byte_len(src)
   mut at := start(src)
   mut s := ""
   mut start_at := 0
+  if tab > 100 {
+    s = "wide"
+  }
   while at < n && char_at(src, at) != "\"" {
     ch := char_at(src, at)
     if ch == "\\" && at + 1 < n {

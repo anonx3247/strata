@@ -1,6 +1,6 @@
 # std
 
-The modules of `std`, each with its types, traits and functions: their signatures, contracts and docs. Generated from the code's `///` docs by `strata doc`.
+The modules of `std`, each with its types, traits and functions: their signatures, contracts and docs. Generated from the code's `///` docs by `strata docgen`.
 
 | Module | |
 |---|---|

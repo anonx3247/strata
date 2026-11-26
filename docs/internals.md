@@ -157,7 +157,7 @@ A fault prints the call stack as `strata run` does (`    stack: main -> inner ->
 
 **Swapping in proven code** (`compiler/c/jit.c`). A `strata run` with a verifier alongside compiles the program so that functions can be swapped.
 
-- The verifier runs as a separate process (`strata verify-alongside`): `verify --quiet --no-write`, then, if it proved something new while the run continues, a recompile of the program without those checks, written to its folder under the cache's `alongside/`.
+- The verifier runs as a separate process (`strata verify-alongside`): `verify --quiet`, then, if it proved something new while the run continues, a recompile of the program without those checks, written to its folder under the cache's `alongside/`.
 - In the running program, each of the program's own functions (`strata:NAME`, except `main`) is renamed `NAME.checked`. `NAME` becomes a stub that atomically loads the slot `NAME.slot` and tail-calls what it holds. The module's private globals are made visible.
 - When the verifier finishes, a thread in the run reads the new module. A function whose printed code matches the first compilation is declared, reusing the main module's copy, and so is every global and helper the main module defines. A changed function is compiled as `NAME.proven.N`. Once all are compiled, each slot is pointed at its new body with one atomic store.
 - A call already running the checked body finishes in it. A task on another thread runs one body or the other, never a mix.

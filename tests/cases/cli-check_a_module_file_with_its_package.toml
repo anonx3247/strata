@@ -1,0 +1,25 @@
+# `strata check FILE` on a module file of a package checks it with its
+# package, so its imports of the package's other modules resolve; only that
+# module's errors are reported
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "util"]
+dir = "p"
+text = "pub fn helper() -> Int {\n  1\n}\n\nfn broken() -> Int {\n  \"no\"\n}\n"
+fails = true
+
+[[step]]
+strata = ["--file", ".", "edit", "main", "--no-commit"]
+dir = "p"
+text = "from util use helper\n\nfn a() -> Int {\n  helper()\n}\n\nfn b() -> Int {\n  true\n}\n"
+fails = true
+
+[[step]]
+strata = ["check", "p/main.strata"]
+fails = true
+has = ["in b"]
+lacks = ["no module", "error in util"]
