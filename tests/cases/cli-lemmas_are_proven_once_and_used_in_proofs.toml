@@ -69,7 +69,7 @@ has = ["○ circular ", "a lemma is proven only once it is shown to terminate"]
 
 # a lemma is called in proofs only, never by code that runs
 [[step]]
-strata = ["--file", "t.strata", "edit", "--no-search"]
+strata = ["--file", "t.strata", "edit", "--no-search", "--as-given"]
 text = '''
 pub fn uses(t: Tree) -> Int {
   sum_natural(t)
@@ -81,7 +81,7 @@ any_code = true
 
 # and returns nothing
 [[step]]
-strata = ["--file", "u.strata", "edit", "--no-search"]
+strata = ["--file", "u.strata", "edit", "--no-search", "--as-given"]
 text = '''
 pub lemma gives(x: Int) -> Int
   ensures x == x
