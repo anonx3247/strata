@@ -2,8 +2,9 @@
 // them (`compiler/parse.strata`):
 //
 // - a call's `(` is written against what it calls: `f(x)` (`f (x)` is no call);
-// - an index's `[`, a binary `-`, a postfix `!` or `?` are on the line of
-//   what they follow (a line starting with one begins a new statement).
+// - an index's `[`, a binary `-` or `<`, a postfix `!` or `?` are on the
+//   line of what they follow (a line starting with one begins a new
+//   statement: `<div>` there is markup).
 //
 // Strata allows spaces before an index's `[` or a postfix `!`, but nobody
 // writes them, and taking them as written against the value tells
@@ -21,6 +22,7 @@ enum TokenType {
   TRY_BANG,
   TRY_QUESTION,
   BINARY_MINUS,
+  BINARY_LESS,
   ERROR_SENTINEL,
 };
 
@@ -45,7 +47,8 @@ bool tree_sitter_strata_external_scanner_scan(void *payload, TSLexer *lexer, con
     lexer->result_symbol = CALL_LPAREN;
     return true;
   }
-  if (!(valid[INDEX_LBRACKET] || valid[TRY_BANG] || valid[TRY_QUESTION] || valid[BINARY_MINUS])) {
+  if (!(valid[INDEX_LBRACKET] || valid[TRY_BANG] || valid[TRY_QUESTION] || valid[BINARY_MINUS] ||
+        valid[BINARY_LESS])) {
     return false;
   }
   // spaces, but no newline
@@ -89,6 +92,18 @@ bool tree_sitter_strata_external_scanner_scan(void *payload, TSLexer *lexer, con
         return false;
       }
       lexer->result_symbol = BINARY_MINUS;
+      return true;
+    case '<':
+      if (!valid[BINARY_LESS]) return false;
+      lexer->advance(lexer, false);
+      lexer->mark_end(lexer);
+      // `<=`, `<<` are other symbols, and `<b` or `<>` is markup (as
+      // printed, a comparison has a space after its `<`)
+      if (lexer->lookahead == '=' || lexer->lookahead == '<' ||
+          lexer->lookahead == '>' || is_word_start(lexer->lookahead)) {
+        return false;
+      }
+      lexer->result_symbol = BINARY_LESS;
       return true;
     default:
       return false;
