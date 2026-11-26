@@ -234,13 +234,12 @@ The loop named is the latest one before the check (or around it) that changes a 
 **The search runs where code is written.** `strata edit` searches the loops of the functions it changes, and `strata fix NAME` searches on demand, for code written some other way (by `edit --no-search`, a merge, another tool). The search runs only in a function with a check failing in or after a loop with the derived invariants (or a loop not shown to end), and writes what it finds into the code as `invariant` clauses, with a warning (`fixed:` from `fix`):
 
 ```text
-warning: in `isqrt`: added `invariant r * r <= n`, `invariant r <= n` to `while (r + 1) * (r + 1) <= n` (found by search)
+warning: in `isqrt`: added `invariant r * r <= n` to `while (r + 1) * (r + 1) <= n` (found by search)
 ```
 
 ```rust
   while (r + 1) * (r + 1) <= n
-    invariant r * r <= n
-    invariant r <= n {
+    invariant r * r <= n {
     r += 1
   }
 ```
@@ -252,7 +251,7 @@ warning: in `isqrt`: added `invariant r * r <= n`, `invariant r <= n` to `while 
 - its `requires`
 - each integer the loop changes, compared with its value on entry, with 0, with the integer parameters, and with the other integers the loop changes
 
-At first only the candidates that name a variable of the failing checks or of the loop's condition are tried. All of them are tried only if a check still fails. Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates, the derived invariants and the condition hold. Candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass. Facts already given by the declared types are omitted.
+At first only the candidates that name a variable of the failing checks or of the loop's condition are tried. All of them are tried only if a check still fails. Candidates that can be false on entry are dropped. Then one pass runs from any state where the remaining candidates, the derived invariants and the condition hold. Candidates that can be false after the pass (at the end of the body or at a `continue`) are dropped. This repeats until a pass drops nothing. The remaining candidates hold on entry and after every pass. Facts already given by the declared types are omitted. Of those, only the fewest that prove as much are written: each is left out while the function proves as many checks without it. And they are written only if, once written, `verify` proves them without a search (else a note says they aren't written).
 
 An invariant that nothing derives and no candidate states, such as the closed form of a sum, isn't found. The check stays fuzzed, unless the loop states the invariant. An `invariant e` clause goes on its own line between the loop's header and its body, like a function's `requires`. It is proven on entry and after every pass, including at each `continue`, and then assumed at the head together with the derived invariants, since each may depend on the others:
 
@@ -287,7 +286,7 @@ fn triangle_closed(n: Natural) -> Natural
 
 How the invariants found are written:
 
-- All of a run's invariants are written in one change. Only the module files of the changed definitions are re-encoded, since an `invariant` clause changes no signature and the search has just proven it. Only clauses that print as Strata and read back as the same tree are written. A function's loops and an implementation's methods' are written; a `for` over a list is searched with an index the code doesn't have, so what its search finds can't be written.
+- All of a run's invariants are written in one change. Only the module files of the changed definitions are re-encoded, since an `invariant` clause changes no signature and the search has just proven it. Only clauses that print as Strata and read back as the same tree are written. A function's loops and an implementation's methods' are written; a `for` over a list is searched with an index the code doesn't have, so what its search finds can't be written: its checks say so, and suggest a `while` over the indexes, which `strata fix` can search.
 - In a package opened from its folder, the change is logged in `strata.log` as made by `edit` or `fix` (`"by":"edit"`) and committed, like the edit. With `--file`, it is written the way `--file F edit` writes.
 - Only the program being edited is written. std and core are never written when they are dependencies.
 - An invariant that refers to a variable's value before the loop (`x₀`) is written without new syntax. If neither the loop nor the statements since change the variables of the expression the variable was last set to, that expression is used: with `mut end := n` before the loop, the invariant is `invariant end <= n`. Otherwise a binding is added just before the loop, with a name distinct from the function's names (`start_i := i`, then `invariant i >= start_i`). The warning says so: ``added `invariant i >= start_i` to `while …` and `start_i := i` before it``.

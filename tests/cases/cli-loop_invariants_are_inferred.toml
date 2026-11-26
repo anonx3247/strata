@@ -41,4 +41,4 @@ fn wrong(n: Natural) -> Int
 [[step]]
 strata = ["--file", "t.strata", "verify", "--checks", "--no-race"]
 fails = true
-has = ["✓ early ", "invariant of `while i < 10`: i <= 10 (derived)", "✓ search ", "proven:  invariant `lo <= hi` after a pass of `while lo < hi`", "✗ wrong", "found by the solver"]
+has = ["✓ early ", "invariant of `while i < 10`: i <= 10 (derived)", "✓ search ", "proven:  invariant `hi >= lo` after a pass of `while lo < hi`", "✗ wrong", "found by the solver"]
