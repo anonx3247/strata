@@ -1,0 +1,85 @@
+# In a proof (an `assert … by`, a lemma), a call of a helper a contract
+# sees through equals the helper's body at its arguments, which are valid
+# there as a lemma's parameters are. So `assert ran(d, n, k) by { … }`
+# follows from the steps' facts about `ran`'s body, with no lemma stating
+# `ran`'s definition, and `ran(before, after, k)` proven so is the fact
+# `ran_push`'s `requires` asks for. The bodies stay out of the function's
+# other queries.
+
+[[step]]
+save = "h.strata"
+text = '''
+/// A job: its state and how many times it ran.
+pub type Job = { done: Bool, runs: Int }
+
+/// Job `k` ran once more and is done.
+pub fn ran(before: Dict[String, Job], after: Dict[String, Job], k: String) -> Bool {
+  match before.get(k) {
+    Some(j) => after.get(k) == Some(Job { done: true, runs: j.runs + 1 }),
+    None => false,
+  }
+}
+
+/// Every job of `ks` ran.
+pub fn all_ran(
+  before: Dict[String, Job],
+  after: Dict[String, Job],
+  ks: List[String],
+) -> Bool {
+  all(ks, k -> ran(before, after, k))
+}
+
+/// One more job ran.
+pub lemma ran_push(
+  before: Dict[String, Job],
+  after: Dict[String, Job],
+  ks: List[String],
+  k: String,
+)
+  requires all_ran(before, after, ks)
+  requires ran(before, after, k)
+  ensures all_ran(before, after, ks + [k])
+
+/// `d` with job `k` run: `ran` by its definition, no lemma stating it.
+pub fn run_one(d: Dict[String, Job], k: String, j: Job) -> Dict[String, Job]
+  requires d.get(k) == Some(j)
+  ensures ran(d, it, k) {
+  n := d.with(k, Job { done: true, runs: j.runs + 1 })
+  assert ran(d, n, k) by {
+    assert n.get(k) == Some(Job { done: true, runs: j.runs + 1 })
+  }
+  n
+}
+
+/// Every job ran, by its definition at the new one.
+pub fn ran_more(
+  before: Dict[String, Job],
+  after: Dict[String, Job],
+  ks: List[String],
+  k: String,
+  j: Job,
+) -> Bool
+  requires all_ran(before, after, ks)
+  requires before.get(k) == Some(j)
+  requires after.get(k) == Some(Job { done: true, runs: j.runs + 1 })
+  ensures it {
+  assert all_ran(before, after, ks + [k]) by {
+    assert ran(before, after, k) by {
+      assert before.get(k) == Some(j)
+    }
+    ran_push(before, after, ks, k)
+  }
+  true
+}
+'''
+
+[[step]]
+strata = ["--file", "h.strata", "verify", "--no-race", "--no-cache", "--checks"]
+has = [
+  "✓ run_one ",
+  "✓ ran_more ",
+  "proven:  assert ran(d, n, k) by …",
+  "proven:  assert ran(before, after, k) by …",
+  "proven:  precondition of `ran_push`: requires ran(before, after, k)",
+]
+lacks = ["not proven"]
