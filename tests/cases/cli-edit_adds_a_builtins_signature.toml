@@ -1,0 +1,18 @@
+# An edit that adds a signature to a builtin that has one already (`all` of a
+# dict next to `all` of a list) keeps both, each as written: a module file
+# keeps an unchanged definition's stored bytes by name, which gave the new
+# signature the old one's
+
+[[step]]
+run = ["sh", "-c", "cp -R $ROOT/core core && chmod -R u+w core"]
+
+[[step]]
+run = ["sh", "-c", "printf '/// Every entry passes.\\nbuiltin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool\\n' | $STRATA --file core edit builtins"]
+
+[[step]]
+strata = ["--file", "core", "view", "builtins"]
+has = [
+  "builtin fn all[A](xs: List[A], ok: (A) -> Bool) -> Bool",
+  "builtin fn all[K, V](d: Dict[K, V], ok: (K, V) -> Bool) -> Bool",
+]
+counts = { "builtin fn all[A](xs: List[A]" = 1 }
