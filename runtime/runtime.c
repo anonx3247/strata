@@ -58,9 +58,11 @@ static int64_t allocated, freed;
 static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-// While a task runs (`spawn`), threads may hold the same objects, so counts
-// change atomically; with none alive, they don't. Either way a count of 1
-// means only this thread can see the object. Set before the first task's
+// While a task runs (`spawn`), threads may hold the same objects. With
+// core.rt, only objects marked shared between threads (its `shared_bit`:
+// what crossed to another thread, and what that reaches) count atomically;
+// with this file's own counting, every object does. Either way a count of
+// 1 means only this thread can see the object. Set before the first task's
 // thread starts and cleared after the last one is joined, so it never
 // changes while another thread reads it.
 static int threaded;
@@ -73,23 +75,52 @@ static int live_tasks;
 static _Bool checking;
 #define FREED INT64_MIN
 
-// Whether counts must go through `strata_dup` / `strata_release`: while
-// tasks run (atomic counts) or in check mode. The compiled code reads it and
-// otherwise updates counts itself (`strata.dup`, `strata.release` in the IR).
+// Whether counts must go through `strata_dup` / `strata_release`: in check
+// mode, and while tasks run when every object counts atomically
+// (`all_atomic`; with this file's own counting, always while tasks run).
+// The compiled code reads it and otherwise updates counts itself
+// (`strata.dup`, `strata.release` in the IR), sending only objects marked
+// shared to the runtime.
 int32_t strata_slow_counts = 0;
 
+// Whether every object counts atomically while tasks run, shared or not
+// (core.rt's `strata_memory_all_atomic`): a task was started by code that
+// doesn't mark what it captures (`strata_spawn`), or a value of a type the
+// compiled code can't walk crossed to another thread
+// (`strata_share_unknown`). Cleared when the last task ends.
+static int all_atomic;
+
 void strata_memory_threaded(_Bool on);
+void strata_memory_all_atomic(_Bool on);
 
 static void set_threaded(int v) {
+  if (!v) __atomic_store_n(&all_atomic, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&threaded, v, __ATOMIC_RELAXED);
-  __atomic_store_n(&strata_slow_counts, v || checking, __ATOMIC_RELAXED);
 #ifdef STRATA_CORE_RT
+  __atomic_store_n(&strata_slow_counts, checking || (v && __atomic_load_n(&all_atomic, __ATOMIC_RELAXED)), __ATOMIC_RELAXED);
   strata_memory_threaded(v);
+#else
+  __atomic_store_n(&strata_slow_counts, v || checking, __ATOMIC_RELAXED);
+#endif
+}
+
+// A value crossed to another thread unmarked: every object counts
+// atomically until the last task ends (`all_atomic`).
+void strata_share_unknown(void) {
+  __atomic_store_n(&all_atomic, 1, __ATOMIC_RELAXED);
+#ifdef STRATA_CORE_RT
+  strata_memory_all_atomic(1);
+  if (THREADED) __atomic_store_n(&strata_slow_counts, 1, __ATOMIC_RELAXED);
 #endif
 }
 
 // The count word of an object.
 static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
+
+// The bit of a count word saying the object is shared between threads
+// (core.rt's `shared_bit`): the sign bit. A live object's count word is
+// positive unless it is shared; a freed one in check mode is this bit alone.
+#define SHARED INT64_MIN
 
 // A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
 // memory ends the program, as for any allocation.
@@ -223,12 +254,12 @@ void strata_dup(void *p) {
   int64_t *c = count_of(p);
   if (THREADED) {
     int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
-    if (v > 0) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
-    else if (v == FREED) freed_again("dup");
+    if (v == FREED) freed_again("dup");
+    else if (v) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
     return;
   }
-  if (*c > 0) ++*c;
-  else if (*c == FREED) freed_again("dup");
+  if (*c == FREED) freed_again("dup");
+  else if (*c) ++*c;
 }
 
 // One holder fewer: whether that was the last one, in which case the caller
@@ -238,10 +269,10 @@ _Bool strata_release(void *p) {
   if (THREADED) {
     int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
     if (v == FREED) freed_again("drop");
-    return v > 0 && __atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) == 0;
+    return v && (__atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) & ~SHARED) == 0;
   }
   if (*c == FREED) freed_again("drop");
-  return *c > 0 && --*c == 0;
+  return *c && (--*c & ~SHARED) == 0;
 }
 
 // Frees an object whose contents are already dropped.
@@ -261,14 +292,41 @@ void strata_free(void *p) {
   free(c);
 }
 
-// Whether `p` has a single holder, so it may be changed in place.
-_Bool strata_unique(void *p) { return THREADED ? __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE) == 1 : *count_of(p) == 1; }
+// Whether `p` has a single holder, so it may be changed in place (its
+// shared bit cleared: this thread is the one holder).
+_Bool strata_unique(void *p) {
+  int64_t v = __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE);
+  if ((v & ~SHARED) != 1) return 0;
+  if (v & SHARED) *count_of(p) = 1;
+  return 1;
+}
+
+// `strata_dup` / `strata_release` of `p` whose count word the compiled code
+// read already (core.rt's take it, to read it once).
+void strata_dup_word(void *p, int64_t v) {
+  (void)v;
+  strata_dup(p);
+}
+
+_Bool strata_release_word(void *p, int64_t v) {
+  (void)v;
+  return strata_release(p);
+}
+
+// Marks `p` shared between threads: whether it wasn't yet.
+_Bool strata_share(void *p) {
+  int64_t v = __atomic_load_n(count_of(p), __ATOMIC_RELAXED);
+  if (v == 0 || (v & SHARED)) return 0;
+  __atomic_fetch_add(count_of(p), SHARED, __ATOMIC_RELAXED);
+  return 1;
+}
 #else
 void *strata_alloc(int64_t n);
 void strata_dup(void *p);
 _Bool strata_release(void *p);
 void strata_free(void *p);
 _Bool strata_unique(void *p);
+_Bool strata_share(void *p);
 // core.rt's tallies and the objects made in check mode (count words)
 int64_t strata_memory_allocated(void);
 int64_t strata_memory_freed(void);
@@ -1043,6 +1101,7 @@ typedef struct Task {
   char *origin;               // the call stack where it was spawned
   Run *run_of;                // the run it belongs to
   Waiter w;                   // its place in that run's list
+  _Bool shared;               // its handle crossed to another thread: an `await` marks the result shared
   struct Task *next;
 } Task;
 
@@ -1328,7 +1387,17 @@ void *strata_scope_begin(void) {
 // A task of the innermost scope open on this thread: the checker allows a
 // `spawn` only inside a `scope` (a lambda's included, as a comprehension's
 // body, which runs there).
+// `strata_spawn_shared` for code that doesn't mark what a task captures:
+// every object counts atomically until the last task ends.
+void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares);
 void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
+  strata_share_unknown();
+  return strata_spawn_shared(clo, run, drop, fail, shares, nshares);
+}
+
+// The compiled code marked the closure shared between threads (and what it
+// captures) before this call.
+void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
   TaskScope *s = open_scopes;
   if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
   Task *t = calloc(1, sizeof *t);
@@ -1468,6 +1537,35 @@ void strata_scope_end(TaskScope *s) {
   }
   release_scope(s);
 }
+
+// The handle of `t` crosses to another thread (captured, sent): from now
+// on each `await` of it marks the result shared (`strata_task_shared`), as
+// more than one thread may hold it. The result, when some `await` may
+// already hold it (`t` joined, with a result), for the caller to mark now;
+// else NULL.
+void *strata_task_share(Task *t) {
+  pthread_mutex_lock(&chan_lock);
+  t->shared = 1;
+  void *r = t->joined && !t->faulted && !t->unwound ? &t->out : NULL;
+  pthread_mutex_unlock(&chan_lock);
+  return r;
+}
+
+// Whether the handle of `t` crossed to another thread (`strata_task_share`).
+_Bool strata_task_shared(Task *t) {
+  pthread_mutex_lock(&chan_lock);
+  _Bool r = t->shared;
+  pthread_mutex_unlock(&chan_lock);
+  return r;
+}
+
+// Held while a task's result is marked shared: more than one thread may
+// await the same task, and two marking one object at once would set its
+// bit twice. Recursive: a result may hold a handle whose result is marked
+// in turn.
+static pthread_mutex_t results_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
+void strata_results_lock(void) { pthread_mutex_lock(&results_lock); }
+void strata_results_unlock(void) { pthread_mutex_unlock(&results_lock); }
 
 // The task's result, once it has finished; NULL if this task was cancelled
 // while it waited (the compiled code then leaves: `cancel_point`).
@@ -1903,6 +2001,11 @@ void strata_int_dup(int64_t v) {
 
 void strata_int_drop(int64_t v) {
   if (is_big(v) && strata_release(big_at(v))) strata_free(big_at(v));
+}
+
+// A big integer marked shared between threads.
+void strata_int_share(int64_t v) {
+  if (is_big(v)) strata_share(big_at(v));
 }
 #endif
 
@@ -2750,7 +2853,7 @@ List *strata_list_push(List *xs, int64_t x, int64_t counted) {
   Buf *b = xs->buf;
   int64_t end = xs->off + xs->len;
   List *l = strata_alloc(sizeof(List));
-  if (end == b->used && end < b->cap) {
+  if (end == b->used && end < b->cap && !(*count_of(b) & SHARED)) {
     // nothing else has used the slot after this list's end
     b->data[end] = x;
     b->used++;
@@ -2807,6 +2910,12 @@ int64_t strata_list_remove_at(List *xs, int64_t i) {
   xs->len--;
   return old;
 }
+
+// Whether `x = push(x, e)` may push onto `xs` in place: it is owned.
+_Bool strata_list_pushable(List *xs) { return strata_list_owned(xs); }
+
+// In an owned list: `x` (handed over) after its elements, its header kept.
+void strata_list_push_owned(List *xs, int64_t x) { strata_list_insert(xs, xs->len, x); }
 #else
 // (core.rt's: the list functions, below too; `append` is the host
 // functions')

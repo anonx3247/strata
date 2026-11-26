@@ -35,7 +35,7 @@ module core.builtins: 131 definitions
 /// `x` as an `Int` (ours).
 builtin fn to_int(x: I8) -> Int
 --
-/// `x` as an `Int`.
+
 builtin fn to_int(x: I16) -> Int
 --
 /// `x` as an `Int` (theirs).

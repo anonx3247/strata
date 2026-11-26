@@ -43,8 +43,7 @@ stdout = '''
 ✓ implied                  proven (2 checks)
 ✓ named                    proven (1 check)
 ✓ joined                   proven (1 check)
-~ formatted                fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
-    not proven: result of `formatted`: Name: the solver found a possible counterexample: n = 0 (depends on f-strings (only their parts are checked)), but running it did not fail
+✓ formatted                proven (1 check)
 ~ floats                   fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
     not proven: `+` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
 ✓ lits                     proven (nothing to check)

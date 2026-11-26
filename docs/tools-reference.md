@@ -115,9 +115,19 @@ top sites:
 
 With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts) and the code. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
 
-## Reference docs: `strata doc`
+## Docs in the terminal: `strata doc`
 
-`strata doc [MODULE]... [-o DIR] [--man]` (`compiler/docgen`) reads the package around the current folder, or the one given with `--file`, as `view` does. It writes names as the module's code writes them.
+`strata doc [TOPIC]` (`compiler/markdown` renders, `compiler/docgen` finds definitions) looks TOPIC up in this order:
+
+1. A page: `NAME.md` in the `docs` folder of Strata's home. The home is the release's `lib/strata`, where `tools/release.sh` puts `docs/*.md`, or a source checkout's root (`STRATA_HOME`). `docs/std/` is left out of a release: `doc MODULE` makes those pages from the code. `PAGE#SECTION` shows the section under the heading whose anchor is SECTION (`values-and-copying`, or the heading's words), else the sections whose anchors hold it. Several matches are listed.
+2. A module of the program around the current folder (or `--file`'s), of std or of core: the page `docgen` writes for it.
+3. A definition. A name is qualified (`std.json.parse`), short (`parse`), its last parts (`json.parse`), or a method (`Order.total`, `Console.print`, `Dict.insert`: a builtin whose first parameter has that type). The program's definitions come first, then core's, then std's public ones. A name defined in several modules of the first that has it is listed with each definition's first sentence. Several signatures in one module (a builtin's) are shown together.
+
+The renderer reads the Markdown the docs use: headings (bold; `#` and `##` underlined without color), paragraphs and list items wrapped to the width, fenced code indented by 4 (`rust` and `strata` fences highlighted by `compiler/highlight`, other languages as written), inline code colored (its backquotes kept without color), tables aligned, quotes, rules, and links shown by their text, with the target after it for a web address. HTML comments are left out. The width is the terminal's, through the pager too (`driver_columns`, c/driver.c), at most 100 columns, and 80 when the output is not a terminal. The output depends only on the text, the color setting and the width.
+
+## Reference pages: `strata docgen`
+
+`strata docgen [MODULE]... [-o DIR] [--man]` (`compiler/docgen`) reads the package around the current folder, or the one given with `--file`, as `view` does. It writes names as the module's code writes them.
 
 - **A module's doc** is the comment above its first import, or else above its first definition, up to a blank line. A leading `name — ` on the first line is dropped, since the title already gives the name. A section rule (`// ---- …`) is not part of the doc.
 - **Docs are read as prose.** Adjacent lines form a paragraph. A line starting with `- ` is a list item, and its indented following lines continue it. Lines indented by two or more spaces, after a blank line or a line ending in `:`, are an example, shown as code.
@@ -125,7 +135,7 @@ With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separa
 - With MODULEs given, only their pages are written, with no index.
 - **Man pages** are man(7) roff: NAME (the module and its doc's first sentence), SYNOPSIS (`use MODULE`), DESCRIPTION, then a section per kind of definition. `strata(1)` is `strata help`, with its one-line headings as subsections and its command lines as written.
 
-The site's std pages are `docs/std/`, written by `strata --file std doc -o docs/std`. `docs-site/sync.mjs` turns them into the pages under `/docs/std/`.
+The site's std pages are `docs/std/`, written by `strata --file std docgen -o docs/std`. `docs-site/sync.mjs` turns them into the pages under `/docs/std/`.
 
 ## Packages
 
@@ -162,7 +172,7 @@ Dependencies are handled by `compiler/deps` and `compiler/main`, whose `package 
 **`strata merge-file %O %A %B %P`** is a git merge driver. It pairs each side's definitions with the base's.
 
 - A definition that only one side changed comes from that side, so edits to two functions never conflict, even on neighbouring lines.
-- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again.
+- When both sides changed the same definition, its canonical text is merged line by line, and the result is kept only if it parses back into that one definition. Otherwise, conflict markers go around that definition alone and the file is left as text. Fix it, then run `strata resolve FILE` to store it as a module file again. `resolve` names the module as its package does: core's `list.strata` is `core.list`, std's `json.strata` is `std.json`.
 - A rename on one side (a definition removed, and a new one equal to the base's after `strata rename`) is applied to the other side, so new calls to the old name follow it.
 - The merged file is then type-checked inside its package. An error that neither side had alone fails the merge, for example when one side changed a signature and the other added a call using the old one.
 - A side that isn't a module file isn't merged, and ours is kept.
