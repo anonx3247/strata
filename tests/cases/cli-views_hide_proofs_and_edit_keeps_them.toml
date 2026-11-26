@@ -1,0 +1,111 @@
+# Proof material (loops' `invariant` and `decreases` clauses, a function's
+# `decreases`, `assert … by`, `calc`, and lemmas) is stored with the code
+# but hidden by `strata view` and the editor, a quiet `// ⋯` marking each
+# place; `--proofs` shows it. `strata edit` of text without it puts the
+# hidden parts back where they were: a loop's clauses on the loop of the
+# same head, a proof after the statement it followed. A part whose place is
+# gone is dropped, and the edit says so. `edit --proofs` takes the text as
+# whole. `strata diff` tells proof changes from code changes.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "--no-search"]
+from = "sums.st"
+
+[[step]]
+strata = ["view", "main"]
+has = ["  while i < n {\n    // ⋯ 2 invariants\n", "  // ⋯ 1 proof\n  s\n", "  // ⋯ decreases\n"]
+lacks = ["invariant i", "lemma", "assert", "decreases n"]
+
+[[step]]
+strata = ["view", "main", "--proofs"]
+has = ["lemma double_le(a: Int, b: Int)", "  while i < n\n    invariant i <= n\n    invariant s >= 0 {", "  assert s + s >= 0 + 0 by double_le(0, s)", "  decreases n {"]
+lacks = ["⋯"]
+
+# picked by name, a lemma is shown; the map leaves lemmas out
+[[step]]
+strata = ["view", "double_le", "--level", "2"]
+has = ["lemma double_le(a: Int, b: Int)"]
+
+[[step]]
+strata = ["view"]
+has = ["fn     count"]
+lacks = ["fn     double_le"]
+
+# the code changed, its proofs kept
+[[step]]
+strata = ["edit", "--no-search", "-m", "twice"]
+text = '''
+fn sum_to(n: Int) -> Int
+  requires n >= 0
+  ensures it >= 0 {
+  mut i := 0
+  mut s := 0
+  while i < n {
+    // ⋯ 2 invariants
+    s += i * 2
+    i += 1
+  }
+  // ⋯ 1 proof
+  s
+}
+'''
+lacks = ["dropped"]
+
+[[step]]
+strata = ["view", "sum_to", "--level", "2", "--proofs"]
+has = ["    invariant s >= 0 {\n    s += i * 2", "  assert s + s >= 0 + 0 by double_le(0, s)\n  s\n"]
+
+[[step]]
+strata = ["diff", "--step", "2"]
+has = ["body changed"]
+lacks = ["proofs changed"]
+
+# a proof written in full (`--proofs`): one invariant fewer
+[[step]]
+strata = ["edit", "--no-search", "--proofs", "-m", "fewer"]
+text = '''
+fn sum_to(n: Int) -> Int
+  requires n >= 0
+  ensures it >= 0 {
+  mut i := 0
+  mut s := 0
+  while i < n
+    invariant s >= 0 {
+    s += i * 2
+    i += 1
+  }
+  assert s + s >= 0 + 0 by double_le(0, s)
+  s
+}
+'''
+
+[[step]]
+strata = ["diff", "--step", "3"]
+has = ["proofs changed"]
+lacks = ["body changed"]
+
+# the loop's head changed: its hidden clauses are dropped, and the edit
+# says so
+[[step]]
+strata = ["edit", "--no-search", "-m", "head"]
+text = '''
+fn sum_to(n: Int) -> Int
+  requires n >= 0
+  ensures it >= 0 {
+  mut i := 0
+  mut s := 0
+  while i + 1 <= n {
+    s += i * 2
+    i += 1
+  }
+  s
+}
+'''
+has = ["warning: in `sum_to`: dropped 1 clause of `while i < n` (hidden in the view)"]
+
+[[step]]
+strata = ["view", "sum_to", "--level", "2", "--proofs"]
+has = ["  while i + 1 <= n {\n", "  assert s + s >= 0 + 0 by double_le(0, s)"]
