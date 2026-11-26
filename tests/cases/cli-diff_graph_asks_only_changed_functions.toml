@@ -1,0 +1,49 @@
+# `strata diff --graph T` keeps each function's answers under its code and
+# what it reaches: a diff asks the solver only about the functions that
+# changed (`STRATA_TIMINGS=1` counts the sites asked). Its own empty cache.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["add", "$ROOT/tests/data/graph/orders.strata"]
+
+[[step]]
+strata = ["edit", "-m", "cancel"]
+text = '''
+fn cancel(o: Order, reason: NonEmptyString) -> Order {
+  match o {
+    Pending { id, .. } => Cancelled { id, reason },
+    _ => o,
+  }
+}
+'''
+
+# cold: both ends are asked, each function once (the end without `cancel`'s
+# change shares the others' answers)
+[[step]]
+run = ["sh", "-c", "STRATA_TIMINGS=1 STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" diff --graph Order 2>&1"]
+has = ["`cancel` now makes `Pending -> Cancelled` too", "graph: site asked"]
+
+# warm: nothing is asked again
+[[step]]
+run = ["sh", "-c", "STRATA_TIMINGS=1 STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" diff --graph Order 2>&1"]
+has = ["`cancel` now makes `Pending -> Cancelled` too"]
+lacks = ["graph: site asked"]
+
+[[step]]
+strata = ["edit", "-m", "no shipping"]
+text = '''
+fn ship(
+  mut db: Db,
+  id: OrderId,
+  tracking: NonEmptyString,
+) -> Result[Order, ShipError] {
+  Err(NotPending)
+}
+'''
+
+# one function changed: only it is asked
+[[step]]
+run = ["sh", "-c", "STRATA_TIMINGS=1 STRATA_CACHE=\"$TMP/cache\" \"$STRATA\" diff --graph Order 2>&1"]
+has = ["`ship` no longer makes `-> Shipped`", " 1  graph: site asked"]
