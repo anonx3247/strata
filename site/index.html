@@ -91,6 +91,36 @@
     </div>
   </section>
 
+  <section class="block faq">
+    <h2>FAQ</h2>
+    <div class="qs">
+      <details>
+        <summary>How is this different from Dafny, F* or Liquid Haskell?</summary>
+        <p>The contracts are the same idea: refinement types, <code>requires</code> and <code>ensures</code>, checked by an SMT solver. Strata differs around them. Where the solver can't decide, a fuzzer runs the function against the contract, and the verdict says which of the two it came from. Code is stored as a syntax tree, so unfinished code with holes still checks, and every edit is checked before it is stored. And it is built to be used by agents, through a command line.</p>
+      </details>
+      <details>
+        <summary>And from Unison?</summary>
+        <p>Unison also stores code as definitions identified by a hash of their content. Strata adds contracts and verification to that, and keeps text as a view: agents and people read and write ordinary text, which <code>strata edit</code> parses back into the tree.</p>
+      </details>
+      <details>
+        <summary>What exactly does "proven" mean?</summary>
+        <p>The solver (Z3, or cvc5) showed that a check holds for every input, under Strata's encoding of the program. What you trust is the solver, that encoding, the compiler and the C runtime. Code the solver can't reason about, such as a disk behind a capability or an <code>extern c</code> function, is assumed, and reported as assumed. Termination is proven, or reported as unproven. <a href="/docs/verification/">How verification works →</a></p>
+      </details>
+      <details>
+        <summary>How does an agent learn to use it?</summary>
+        <p><code>strata skill install</code> writes a short skill into the folders where coding agents look for them. It says that <code>.strata</code> files are binary, that code is read and changed through <code>strata</code>, and lists the commands. <a href="/docs/learn-strata/">Learn Strata in Y minutes</a> is the whole language as one valid file, written to be given to an agent.</p>
+      </details>
+      <details>
+        <summary>Which platforms does it run on?</summary>
+        <p>macOS on Apple silicon. There is no Linux build yet. Building from source needs an existing <code>strata</code>, because the compiler is written in Strata.</p>
+      </details>
+      <details>
+        <summary>Can I use it for real work?</summary>
+        <p>Not yet. This is a pre-alpha prototype: expect breaking changes, rough edges and bugs. A rebuild is under way. <a href="about.html">How it was built →</a></p>
+      </details>
+    </div>
+  </section>
+
   <section class="block start">
     <div class="kicker">Try it</div>
     <div class="links">

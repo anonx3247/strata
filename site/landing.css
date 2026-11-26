@@ -172,6 +172,17 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .story .vs .side.old h4 .big-n { color: var(--bad); } .story .vs .side.new h4 .big-n { color: var(--ok); }
 .visual .headline .hl-big { font-size: 18px; }
 
+/* faq */
+.faq .qs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 22px; align-items: start; }
+.faq details { border: 1px solid var(--line); border-radius: 14px; background: #13151bd9; backdrop-filter: blur(8px); padding: 0 22px; transition: border-color .25s; }
+.faq details[open] { border-color: var(--line2); }
+.faq summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 16px; padding: 18px 0; font: 600 17px var(--display); color: var(--text); }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; color: var(--accent2); font: 500 20px var(--mono); line-height: 1; transition: transform .25s; }
+.faq details[open] summary::after { transform: rotate(45deg); }
+.faq details p { color: var(--muted); font-size: 15.5px; margin: 0 0 18px; }
+.faq details a { color: var(--accent); }
+
 /* try it */
 .start { padding-bottom: 80px; }
 .start .links { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 18px; }
@@ -181,7 +192,7 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 26px
 .count.warn { background: #ffb05c1f; color: var(--warn); }
 
 @media (max-width: 1050px) {
-  .start .links, .chapter, .visual.two, .visual .vs, .astpair { grid-template-columns: 1fr; }
+  .start .links, .chapter, .visual.two, .visual .vs, .astpair, .faq .qs { grid-template-columns: 1fr; }
   .chapter .text { position: static; }
 }
 
