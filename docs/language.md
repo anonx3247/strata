@@ -677,6 +677,7 @@ Every program has these types without a `use`:
 | Type | Notes |
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` is arbitrary-precision, like Python's: a machine integer while it fits, a big integer when it doesn't. `Float` is never NaN or infinite. Ints and Floats never mix implicitly (`float(n)`, `round(x)`). Integer `/` and `%` are Euclidean, so the remainder is never negative: `-7 / 2 == -4`, `-7 % 3 == 2`, `7 % -3 == 1`. For C's truncating division, divide the magnitudes and restore the sign (`-(7 / 2) == -3`). `parse_int` accepts an optional `+` or `-` sign (`parse_int("+5") == Some(5)`), so check the first character when only digits are allowed. Strings are UTF-8, ordered (`<`, `<=`, `>`, `>=`, `compare`, `sort`) by code point, which matches UTF-8 byte order |
+| `Real` | exact rational numbers, the type of decimal literals: `0.1` is one tenth, so `0.1 + 0.2 == 0.3`. `+ - * / %` and comparisons are exact (`/` and `%` by zero is a check, as for `Int`); `1.0 / 3.0` prints `1/3`, a terminating decimal prints as one (`2.5`, `3.0`). `floor`, `ceil`, `round` give `Int`s, `abs`, `min`, `max`, `sum` work as on `Float`, `x.to_float()` is the nearest `Float` (`None` past the largest), `Real.from(n)` an `Int` as a `Real`, `Real.parse("1/3")` reads one (`-2.5`, `6.02e23` too). `sqrt`, `sin`, `exp` and the like are `Float`'s only. Cost: two `Int`s on the heap; each operation reduces by a GCD, and a value grows with the digits it needs (100 compoundings of `x * 1.07` give a 200-digit denominator), so numeric code that can round says `Float` |
 | `I8` … `I64`, `U8` … `U64` | fixed-width integers. Their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`) |
 | `()` | the unit type, for "no meaningful value". It plays the role of Python's `None` as a type |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
@@ -685,6 +686,8 @@ Every program has these types without a `use`:
 | `(A, B, …)` | tuples, `(word, 3)`, destructured with `(w, n) := …` and accessed with `t.0` |
 | `Dict[K, V]` | a hash map, `Dict { "a": 1, "b": 2 }`, with `get`, `insert`, `remove`, `keys`, `values`, `items` |
 | `Set[T]` | a hash set, `Set { 1, 2 }`, with `insert`, `union`, `intersection`, `difference` |
+
+**Decimal literals.** A decimal literal is a `Float` where a `Float` is wanted: an annotation (`let x: Float = 0.5`), a parameter or field, a function's result, the other operand of an operator (`x * 0.5`), the other branch of an `if`, another argument of a builtin (`max(x, 0.5)`), or a later use of the variable it is in (`mut t := 0.0` then `t = t + x.area()`). Anywhere else it is a `Real`. `verify` proves `Real` code exactly, as SMT's reals; `Float` code is not modelled.
 
 All values are immutable: `insert` returns a new dict. `+` adds numbers and concatenates strings and lists. String operations always name their unit: `s.bytes()`, `s.code_points()` or `s.graphemes()`.
 
