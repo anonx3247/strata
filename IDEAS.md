@@ -1071,32 +1071,65 @@ One declaration form for every foreign language, `extern LANG fn ...`, with two 
 - **What `derive Table` (the ORM, built since: see "ORM built into the language") needs from `std.sqlite`.** (1) The schema from a record: each field's type to a column (`Int`, `Bool` → `INTEGER`, `Float` → `REAL`, `String` → `TEXT`, `Option[T]` → nullable, others `NOT NULL`), through `std.typing`'s `Type.fields` at compile time, `CREATE TABLE IF NOT EXISTS` written by the derive and run with `db.run`; (2) refinements as `CHECK` constraints: the refinements SQL can say (comparisons, `len(it)` as `length(..)`, `&&`/`||`), with `T.check(x)` (`$check`) on every row read back, so a row a constraint couldn't express is still refused, as `Constraint` / a decode error value; (3) `distinct` ids as keys: a `distinct type BookId = Int` field named `id` as `INTEGER PRIMARY KEY` (SQLite's row id, `last_insert_id` read back as a `BookId`), and a field of another table's id type as `REFERENCES` that table (foreign keys need `PRAGMA foreign_keys = ON`, which `Sqlite.open` could set); (4) typed queries: `Book.where(b -> b.year > 1960)` checked against the fields, turned into SQL with `?` parameters (`SqlValue`s, the derive's `to_sql` per field) and read back through `Row`'s typed readers, never SQL text from strings; (5) from this module: a row as a record needs columns by name (`Row` keeps only values: `Statement.column_name` exists, a `Row.names` or reading by name is the next step), transactions as a scope (`db.transaction(body)` once a lambda can take a `mut` capability trait value), blobs for `List[U8]` fields, and migrations (a table's columns read back with `PRAGMA table_info`).
 - **The other way**, Strata called from other languages: see "Derives on functions: `derive C for f`" below.
 
-### The runtime reached only through `extern c` (REBUILD.md rule 8, §5b item 4; step 1 built, branch `runtime-extern-c`)
+### The runtime reached only through `extern c` (REBUILD.md rule 8, §5b item 4; steps 1-2 built, branch `runtime-extern-c`)
 
-The runtime is an ordinary C library (runtime.c, and core.rt's `strata_...` entry points compiled under C names), and compiled code reaches it through `extern c` declarations in core, the same form a program uses for its own C, each with `assumed` contracts saying what the C does: the trusted base under every proof.
+The runtime is an ordinary C library (runtime.c, and core.rt's `strata_...` entry points compiled under C names). Compiled code reaches it through `extern c` declarations in core, the same form a program uses for its own C. Each declaration carries contracts saying what the C does, the trusted base under every proof.
 
-Built (step 1):
-- **`core.runtime`** (core/runtime.strata): an `extern c` declaration for each of the 188 runtime functions compiled code calls. In core, an `extern c` declaration's types are the values as compiled code holds them (a `String` or a list its pointer, an `Int` its word, `Ptr` a raw pointer), so nothing is converted at a call: this is the runtime's ABI, not the C one a program's externs use (a `String` there is a NUL-terminated copy). Chosen over `Ptr`/`I64` everywhere so that contracts can talk about the values (`len(it) <= len(s)`). Can change. The strings group is typed and has contracts; the rest is typed as the IR passes it (`Ptr`, `I64`, `Bool`, `Float`, `I32`) and has none yet.
-- **Codegen takes every declaration from it** (`codegen.runtime_declarations`): the hand-written table of 203 `declare` lines is gone; `codegen.declarations` keeps LLVM's intrinsics, libc's `free` and `memcmp`, the globals `strata_cancel_any` (and `strata_slow_counts`, in `counting`), and the counts. A runtime function codegen calls that core.runtime doesn't declare is an error ("the runtime's `X` is called but core.runtime doesn't declare it"). `assumed ensures false` (it doesn't return) is `noreturn` (`strata_fault`), so the IR is the same as before.
-- **A builtin with a body**: `builtin fn byte_len(s: String) -> Int = strata_str_byte_len(s)`. The body must be a call of a core.runtime function with the builtin's parameters as arguments (`codegen.link_errors` says so otherwise); compiled code calls that function directly (`codegen.linked`, the overload picked by the arguments' types), and codegen names none of them. `verify`'s SMT model still knows the builtin by name, so nothing about proofs changed. The parser accepts a body on `builtin fn` (only core may declare builtins, so only core can give one); `view` shows it. Moved: `trim`, `ord`, `chr`, `byte_at`, `byte_len`, `byte_slice` (their cases in `codegen.string_builtin` are gone).
-- **`strata verify --assumed`**: what proofs trust, by package (the program, the std modules it reaches, core): each `assumed` clause, and every contract of an `extern c` / `extern python` function (`main.trusted_clauses`). Nothing runs.
-- **The C fuzzed against its contracts.** Before, an `extern c` function was never run by `verify` (its body a hole; its callers assumed). Now `verify` on core fuzzes each core.runtime function that has a contract and no `Ptr` through a wrapper with its parameters and contracts (`main.runtime_wrappers`, `checks_of`: a check with no solver view, only fuzzed): `strata --file core verify 'core.runtime.*'` fuzzes 14 functions, 200 cases each, all passing. Codegen compiles a call of a `strata_` extern as the runtime call itself (`foreign_call`). A wrong contract is caught (tried: `len(it) < len(s)` on `strata_str_trim` fails on `"t13sc"`). The fuzzer already checked `assumed` clauses in what it runs (fuzz drivers compile them in); what was missing was running the C at all.
-- **Contracts agree with verify's model** (`compiler/smt`'s `builtin`), or say less: `byte_len` between `len` and 4 × `len`; `byte_at` in 0..255 under its `requires`; `byte_slice`'s clamped bounds and empty when `a >= b`; `trim` no longer; `ord`/`chr` inverse under `chr`'s `requires`. Not said yet: `byte_at` equals the code point on an ASCII string (no ASCII test in Strata to write it with). Some contracts would be circular in a fuzz run (`strata_str_len`'s `it == len(s)` calls the same C), so they state bounds instead.
-- **Cost**: none at run time. The IR of `examples/wc`, `examples/books.strata`, the compiler itself and a string benchmark (`trim`, `byte_at`, `byte_slice`, `ord`, `chr` in a loop, 1.1 s) is the same as before, line for line (sorted: only the order of `declare` lines moved); self-compile user time the same (13.2 s against 13.2 s, warm cache, a loaded machine).
+Built:
+- **`core.runtime`** (core/runtime.strata): 196 `extern c` declarations: each runtime function compiled code calls, and `strata_channel_held`, which a contract uses. In core, an `extern c` declaration's types are the values as compiled code holds them, so nothing is converted at a call. This is the runtime's ABI, not the C one a program's externs use (where a `String` is a NUL-terminated copy).
+  - A `String`, a `List[A]` or an `Option[T]` result (NULL is `None`) is a pointer; an `Int` is its word.
+  - `Ptr` is left for a raw pointer: a value handed over, a callback, a slot written to, a handle.
+  - Chosen over `Ptr`/`I64` everywhere so that contracts can talk about the values. Can change.
+- **Contracts** (57 of 196 declarations): strings, integers (`Int` and sized), floats, showing and reading numbers, the fuzzer's generators, lists made fresh (`list_new`, `range`, `list_slice`), and the channel checks. They are as strong as `compiler/smt`'s model of the builtin they implement where there is one. Elsewhere they say what the C guarantees, checked by fuzzing.
+  - **No contract on 139.** These are the counts and allocation (raw blocks), the call stack and traces, tasks, scopes and the scheduler, tables (callbacks for hashing and comparing), list functions that take their list over (`push`, `set`, `extend`, `concat`: ownership is not in the types), the host I/O functions, and the `--copies` / `--memory-sites` counters.
+  - Their behaviour is not something a value-level contract says. For I/O, a contract would also make `verify` fuzz the system call (writing files, reading standard input), so they have none by choice.
+- **Contracts aren't circular where avoidable.** A contract calls a different runtime function than the one it describes, so fuzzing checks the C against the C:
+  - `strata_int_add` ensures `it - b == a` (subtraction);
+  - `strata_show_int` ensures `parse_int(it) == Some(n)` (the parser);
+  - `strata_int_to_float` ensures `floor(it) == v` (`strata_float_to_int`);
+  - `strata_mod` ensures `b * (a / b) + it == a` (division).
+- **Checked and assumed preconditions.** A `requires` that isn't `assumed` is one the C checks: it panics outside it. An `assumed requires` is one it relies on (`strata_div_nz`'s `b != 0`, which `verify` proved at the call).
+  - `codegen.panicking` derives from this the runtime functions that may panic. The list `soft_faults` and the pair named in `call` are gone.
+  - The set is the same 20 functions as before, so supervising programs compile as before.
+  - Chosen over "every `assumed requires`" (what the plan said), which would also have marked functions that never panic. Can change.
+- **Codegen takes every declaration from it** (`codegen.runtime_declarations`). Its own table (`codegen.declarations`) keeps:
+  - LLVM's intrinsics;
+  - the C library's `free` and `memcmp`;
+  - the global `strata_cancel_any`;
+  - the counts.
+  A runtime function codegen calls that core.runtime doesn't declare is an error. `assumed ensures false` (it doesn't return) is `noreturn`.
+- **Builtins with a body**, e.g. `builtin fn byte_len(s: String) -> Int = strata_str_byte_len(s)`. The body is a call of a core.runtime function with the builtin's parameters as arguments. Compiled code calls that function directly (`codegen.linked`), and an `Option` result is made from NULL. `verify`'s SMT model still knows the builtin by name.
+  - Moved: `trim`, `ord`, `chr`, `byte_at`, `byte_len`, `byte_slice`, `float`, `sqrt`. Codegen no longer names their C functions.
+- **`strata verify --assumed`** lists what proofs trust, by package. A checked `requires` is marked `(checked: panics outside it)`.
+- **The C fuzzed against its contracts.** `verify` on core fuzzes each core.runtime function that has an `ensures` and no `Ptr`, through a wrapper with its parameters and contracts (`main.runtime_wrappers`; a list's element type made `Int`).
+  - Codegen compiles a call of a `strata_` extern as the runtime call itself.
+  - `strata --file core verify 'core.runtime.*'`: 50 functions fuzzed and passing, 200 cases each when the `requires` lets them through. `strata_float_to_int` is skipped: random floats are never whole, and its `requires` asks for a whole number.
+- **Refuted by the fuzzer:** `strata_int_lit` on `" 6"` gave 42949672806 (`ensures parse_int(s) == Some(it)`).
+  - Not a C bug: `int_lit` reads only the literals codegen writes (`-` and digits). The contract was too weak: `parse_int` accepts surrounding white space, `int_lit` doesn't. Its `requires` now says digits.
+  - No other contract was refuted: no C bug found, and no disagreement with smt's model.
+- **Cost:** none at run time. The IR is the same line for line, with only the order of `declare` lines moved. Compared on `examples/wc`, `examples/books.strata`, the compiler itself, a string benchmark (1.1 s) and a numbers benchmark (big integers, `/`, `%`, `>>`, `float`, `sqrt`: 0.6 s); times equal.
 
-Kept by name in codegen, and why:
-- **Counts** (`strata_dup`, `strata_release`, `strata_dup_word`, `strata_release_word`, `strata_int_dup`, `strata_int_drop`): written inline with their fast path (`counting`), on every value; the rule's exception.
-- **Allocation** (`strata_alloc`, `strata_free`, arenas, `strata_raw_*`, `strata_share*`, `strata_unique`, `strata_list_owned`, `strata_tbl_owned`): the rule's exception (declared in core.runtime, called by name).
-- **Not moved yet** (declared in core.runtime, still called by symbol): operators on strings and integers (`strata_str_eq`, `strata_str_cmp`, `strata_concat`, `strata_str_append`, `strata_str_hash`, `strata_int_*`, `strata_div`, ...), showing values, string `len`/`at`/`slice`/`get` (no builtin declaration: the checker types them), case mappings and the `is_` tests (codegen passes generated Unicode tables), `parse_int`/`parse_float` (an out-pointer), lists and tables, tasks, channels and time, std's `host_*` I/O (untyped: `check` lets `host_` names through and codegen's `host` builds the `Result` from out-pointers), faults and traces, the test and fuzz harness, `--copies`/`--memory-sites` counters, `strata_init`.
-- The panicking ones are listed by name too (`codegen.soft_faults`, and `strata_str_at_or_fault`/`strata_str_chr` in `call`).
+Not moved yet: declared and contracted in core.runtime, but codegen still calls them by symbol.
+- **String `len`, `at`, `get`, `slice`.** No builtin declares them for `String`. Adding String overloads to core.builtins broke the checker: with a generic `List` overload and a `String` one under the same name, a call fitting neither is accepted silently (`xs["a"]` on a `List[Int]` checked fine). Found, not fixed; the overloads were taken back.
+- **Glue.** A builtin whose call needs more than one direct call has none:
+  - `parse_int`/`parse_float` (an out-slot);
+  - case mappings and the `is_` tests (codegen's generated Unicode tables);
+  - std's `host_*` I/O (`check` lets `host_` names through untyped; codegen's `host` builds the `Result` from out-slots);
+  - showing values in general.
+- **Operators** (`==`, `<`, `+`, `/`, `%`, `<<`, hashing): until they are trait methods.
+- **Lists and tables, tasks and channels:** lowered inline with element words, counted flags and callbacks.
+- **Faults and traces, the test and fuzz harness, `strata_init`.**
+- Kept by name on purpose: the counts, inline with their fast path, and allocation (`strata_alloc`, `strata_free`, arenas, regions, `strata_raw_*`, `strata_share*`, `strata_unique`): the rule's exception.
 
 Plan for the rest (each step a PR):
-1. Builtin bodies with glue: a Strata expression over core.runtime calls, not only one call, type-checked (today codegen accepts only the one-call shape, and `strata --file core check` only decodes core's files and warns about unused definitions: core's code is type-checked only when a program or `verify` uses it) and inlined by codegen. Then `get` (NULL to `None`), `parse_int`/`parse_float`, case mappings and `is_` tests (the Unicode tables as core constants).
-2. std's I/O: `host_*` become core.runtime declarations typed with `String`/`List[String]` and builtins whose bodies build the `Result` (needs 1); `codegen.host` goes.
-3. Operators as trait methods (§5b item 8): `==`, `<`, `+`, hashing on strings and integers get bodies in core calling `strata_str_eq`, `strata_str_cmp`, `strata_concat`, `strata_int_add`, ...
-4. Lists and tables, then tasks and channels, as their builtins get bodies.
-5. Panics from contracts: a runtime function may panic exactly when it has an `assumed requires` (outside it); `soft_faults` derived from that instead of a list.
-6. Each group typed with Strata types and given contracts as it moves, fuzzed by `verify` on core; a `Ptr` argument can't be generated, so those stay unfuzzed until their types say more.
+1. **Builtin bodies with glue:** a Strata expression over core.runtime calls, compiled as an unframed internal function the way the prelude's are.
+   - Typed with the prelude, so `check` types it.
+   - Out-slots as `mut` parameters of the declaration (a pointer to the variable's slot, the old value dropped when the C wrote a new one).
+   - Then `parse_int`/`parse_float`, `host_*` (each a typed builtin whose body builds the `Result`; `codegen.host` goes), string `get`, and case mappings (the Unicode tables as core constants).
+2. **Fix the checker's overload resolution** above, then String `len`/`at`/`get`/`slice` as bodies.
+3. **Operators as trait methods** (§5b item 8): bodies in core calling `strata_str_eq`, `strata_str_cmp`, `strata_concat`, `strata_int_add`, ...
+4. **Ownership in the declarations** (a parameter handed over), so the list functions that take their list (`push`, `set`, `extend`, `concat`) get contracts and are fuzzed. Then lists, tables, tasks and channels through bodies.
+5. **Fuzzing `strata_float_to_int`:** a generator steered by a `requires` (whole floats), or a wrapper that rounds its input.
 
 ### Derives written on the declaration: `derive A, B for` above a `fn` or a `type` (user, 2026-11-25; built, branch `attached-derives`)
 The user's design: `derive C, TypeScript, Python for` above `fn greet(...)`, `derive CommandLine, Json for` above `type Options = { ... }`. **Syntax only (the user's decision): storage does not change**: each trait's derive stays its own definition, `derive X for T` (an `ImplDef` with `derived`, no methods) for a type, a `DeriveFnDef` for a function, exactly what `derive X for name` lines give; no binary-format change, no `strata fix`.
