@@ -2352,6 +2352,106 @@
         {
           "type": "SYMBOL",
           "name": "tuple_type"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "record_type"
+        }
+      ]
+    },
+    "record_type": {
+      "type": "PREC_DYNAMIC",
+      "value": -3,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "{"
+          },
+          {
+            "type": "SYMBOL",
+            "name": "field_type"
+          },
+          {
+            "type": "REPEAT",
+            "content": {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": ","
+                },
+                {
+                  "type": "SYMBOL",
+                  "name": "field_type"
+                }
+              ]
+            }
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": ","
+                  },
+                  {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "ALIAS",
+                        "content": {
+                          "type": "STRING",
+                          "value": ".."
+                        },
+                        "named": true,
+                        "value": "rest"
+                      },
+                      {
+                        "type": "BLANK"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
+            "type": "STRING",
+            "value": "}"
+          }
+        ]
+      }
+    },
+    "field_type": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_field_name"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ":"
+        },
+        {
+          "type": "FIELD",
+          "name": "type",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_type"
+          }
         }
       ]
     },
@@ -3409,6 +3509,10 @@
         {
           "type": "SYMBOL",
           "name": "record_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "anonymous_record"
         },
         {
           "type": "SYMBOL",
@@ -5181,6 +5285,178 @@
         ]
       }
     },
+    "anonymous_record": {
+      "type": "PREC_DYNAMIC",
+      "value": -2,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "{"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "base_record"
+                  },
+                  {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "SEQ",
+                        "members": [
+                          {
+                            "type": "STRING",
+                            "value": ","
+                          },
+                          {
+                            "type": "CHOICE",
+                            "members": [
+                              {
+                                "type": "SEQ",
+                                "members": [
+                                  {
+                                    "type": "SYMBOL",
+                                    "name": "field_initializer"
+                                  },
+                                  {
+                                    "type": "REPEAT",
+                                    "content": {
+                                      "type": "SEQ",
+                                      "members": [
+                                        {
+                                          "type": "STRING",
+                                          "value": ","
+                                        },
+                                        {
+                                          "type": "SYMBOL",
+                                          "name": "field_initializer"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  {
+                                    "type": "CHOICE",
+                                    "members": [
+                                      {
+                                        "type": "STRING",
+                                        "value": ","
+                                      },
+                                      {
+                                        "type": "BLANK"
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              {
+                                "type": "BLANK"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "type": "BLANK"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "SEQ",
+                    "members": [
+                      {
+                        "type": "FIELD",
+                        "name": "name",
+                        "content": {
+                          "type": "SYMBOL",
+                          "name": "_field_name"
+                        }
+                      },
+                      {
+                        "type": "STRING",
+                        "value": ":"
+                      },
+                      {
+                        "type": "FIELD",
+                        "name": "value",
+                        "content": {
+                          "type": "SYMBOL",
+                          "name": "_expression"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "REPEAT",
+                    "content": {
+                      "type": "SEQ",
+                      "members": [
+                        {
+                          "type": "STRING",
+                          "value": ","
+                        },
+                        {
+                          "type": "SEQ",
+                          "members": [
+                            {
+                              "type": "FIELD",
+                              "name": "name",
+                              "content": {
+                                "type": "SYMBOL",
+                                "name": "_field_name"
+                              }
+                            },
+                            {
+                              "type": "STRING",
+                              "value": ":"
+                            },
+                            {
+                              "type": "FIELD",
+                              "name": "value",
+                              "content": {
+                                "type": "SYMBOL",
+                                "name": "_expression"
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "type": "CHOICE",
+                    "members": [
+                      {
+                        "type": "STRING",
+                        "value": ","
+                      },
+                      {
+                        "type": "BLANK"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "STRING",
+            "value": "}"
+          }
+        ]
+      }
+    },
     "record_fields": {
       "type": "SEQ",
       "members": [
@@ -6685,6 +6961,10 @@
     [
       "record_fields",
       "record_pattern"
+    ],
+    [
+      "field_declaration",
+      "field_type"
     ]
   ],
   "precedences": [],

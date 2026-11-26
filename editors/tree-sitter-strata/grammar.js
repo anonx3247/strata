@@ -91,6 +91,7 @@ module.exports = grammar({
     [$._primary, $.record_expression],
     [$.scoped_type_identifier, $._primary],
     [$.record_fields, $.record_pattern],
+    [$.field_declaration, $.field_type],
   ],
 
   rules: {
@@ -469,7 +470,26 @@ module.exports = grammar({
         $._type_name,
         $.function_type,
         $.tuple_type,
+        $.record_type,
       ),
+
+    // `{ id: Int, total: Cents }` (an anonymous record's type) and
+    // `{ id: Int, .. }` (any record with at least these fields)
+    // (`type R = { … }` is a record's body, not an alias of one)
+    record_type: ($) =>
+      prec.dynamic(
+        -3,
+        seq(
+          '{',
+          $.field_type,
+          repeat(seq(',', $.field_type)),
+          optional(seq(',', optional(alias('..', $.rest)))),
+          '}',
+        ),
+      ),
+
+    field_type: ($) =>
+      seq(field('name', $._field_name), ':', field('type', $._type)),
 
     _type_name: ($) =>
       choice($.type_identifier, $.scoped_type_identifier, $.identifier),
@@ -669,6 +689,7 @@ module.exports = grammar({
         $.dict_expression,
         $.set_expression,
         $.record_expression,
+        $.anonymous_record,
         $.block,
         $.if_expression,
         $.match_expression,
@@ -927,6 +948,23 @@ module.exports = grammar({
         seq(
           field('name', choice($.type_identifier, $.scoped_type_identifier)),
           field('fields', $.record_fields),
+        ),
+      ),
+
+    // `{ id: 1, total: 0 }` and `{ ..x, total: 0 }`: a record without a
+    // type's name (after `{`, a field's name and `:` is no statement)
+    anonymous_record: ($) =>
+      prec.dynamic(
+        -2,
+        seq(
+          '{',
+          choice(
+            seq($.base_record, optional(seq(',', commaSep($.field_initializer)))),
+            commaSep1(
+              seq(field('name', $._field_name), ':', field('value', $._expression)),
+            ),
+          ),
+          '}',
         ),
       ),
 
