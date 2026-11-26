@@ -91,6 +91,13 @@ int32_t toolchain_set_profile(int32_t on) {
   return 0;
 }
 
+// `--profile` and the JIT's level as at the start, read again from the
+// environment (each request a daemon serves, c/daemon.c, starts so).
+void toolchain_reset(void) {
+  profiling = -1;
+  jit_opt = -1;
+}
+
 // When profiling, every function the module defines keeps its frame
 // pointer.
 void toolchain_frame_pointers(LLVMModuleRef mod) {

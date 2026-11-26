@@ -73,6 +73,13 @@ static int64_t columns_of(int fd) {
 // pager or not. 0 when it is not a terminal.
 int64_t driver_columns(void) { return paged_columns > 0 ? paged_columns : columns_of(1); }
 
+// Whether standard output goes to a pager this process started: 1, else 0.
+int32_t driver_paged(void) { return pager_pid > 0 ? 1 : 0; }
+
+// The pager's width, for a request the daemon serves (c/daemon.c): the
+// client's pager, 0 for none.
+void driver_set_columns(int64_t columns) { paged_columns = columns; }
+
 // At exit: the pager gets the end of its input, and is waited for (it
 // keeps the terminal until it is quit).
 static void pager_done(void) {
@@ -160,6 +167,15 @@ int32_t timings_enabled(void) {
     if (timings_on) timings_start = timings_now();
   }
   return timings_on;
+}
+
+// Nothing timed yet, and whether to time read again from the environment
+// (each request a daemon serves, c/daemon.c, starts so).
+void timings_reset(void) {
+  for (int i = 0; i < phase_count; i++) free(phases[i].name);
+  phase_count = 0;
+  running_count = 0;
+  timings_on = -1;
 }
 
 // Phases timed from now on (`--timings`).
