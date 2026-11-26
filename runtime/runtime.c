@@ -3734,6 +3734,74 @@ static void roots_report(void) {
   fputc('\n', stderr);
 }
 
+// With STRATA_MEMORY_LIVE (core.rt's `strata_live_start`): the tables of
+// the heap's live objects by site, and the counts at their peak.
+static int64_t *live_tables;
+int64_t *strata_live_start(int64_t nsites);
+
+static int64_t *live_peak;
+static int live_by_bytes(const void *a, const void *b) {
+  int64_t x = live_peak[2 * *(const int64_t *)a + 1], y = live_peak[2 * *(const int64_t *)b + 1];
+  if (x != y) return x < y ? 1 : -1;
+  return *(const int64_t *)a < *(const int64_t *)b ? -1 : 1;
+}
+
+// The heap's live objects at their peak (bytes with count words, a small
+// object by its size class), by the site that made them: the 25 holding
+// the most, on stderr; with STRATA_MEMORY_LIVE=PATH (not `1`), every site
+// to PATH, most bytes first: objects, bytes, then the site's table line.
+// Objects made inside the runtime's functions are their caller's site's.
+// Statement regions and arenas are not counted.
+static void live_report(void) {
+  if (!live_tables) return;
+  int64_t n = live_tables[0];
+  live_peak = (int64_t *)live_tables[3];
+  int64_t *order = malloc((size_t)(n + 1) * sizeof(int64_t));
+  for (int64_t i = 0; i <= n; i++) order[i] = i;
+  qsort(order, (size_t)(n + 1), sizeof(int64_t), live_by_bytes);
+  fprintf(stderr, "live at the peak: %lld objects, %.1f MB (copied %lld times); now %lld objects, %.1f MB\n",
+          (long long)live_tables[11], (double)live_tables[5] / 1048576.0, (long long)live_tables[9],
+          (long long)live_tables[10], (double)live_tables[4] / 1048576.0);
+  char kind[64], fn[256], code[256];
+  for (int64_t j = 0, shown = 0; j <= n && shown < 25; j++) {
+    int64_t i = order[j];
+    if (live_peak[2 * i + 1] <= 0) break;
+    shown++;
+    fprintf(stderr, "  %8.1f MB %10lld  ", (double)live_peak[2 * i + 1] / 1048576.0, (long long)live_peak[2 * i]);
+    if (i == n) {
+      fprintf(stderr, "(no site: made before the first, or by code without sites)\n");
+      continue;
+    }
+    site_field(i, 0, kind, sizeof kind);
+    site_field(i, 1, fn, sizeof fn);
+    site_field(i, 3, code, sizeof code);
+    fprintf(stderr, "%-8s %s  %s\n", kind, fn, code);
+  }
+  const char *path = getenv("STRATA_MEMORY_LIVE");
+  if (path && strcmp(path, "1")) {
+    FILE *out = fopen(path, "w");
+    if (out) {
+      fputs("objects\tbytes\tkind\tfunction\tlocation\tcode\troot\n", out);
+      for (int64_t j = 0; j <= n; j++) {
+        int64_t i = order[j];
+        if (live_peak[2 * i] == 0 && live_peak[2 * i + 1] == 0) continue;
+        if (i == n) {
+          fprintf(out, "%lld\t%lld\tnone\t\t\t\t\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1]);
+          continue;
+        }
+        const char *s = site_lines[i];
+        size_t m = 0;
+        while (s[m] && s[m] != '\n') m++;
+        fprintf(out, "%lld\t%lld\t%.*s\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1], (int)m, s);
+      }
+      fclose(out);
+    } else {
+      fprintf(stderr, "memory live: can't write %s\n", path);
+    }
+  }
+  free(order);
+}
+
 static void sites_report(void) {
   int64_t total[SITE_KINDS] = {0}, second[SITE_KINDS] = {0}, reached[SITE_KINDS] = {0}, sites[SITE_KINDS] = {0};
   int64_t *order = malloc((size_t)(site_n ? site_n : 1) * sizeof(int64_t));
@@ -3803,6 +3871,7 @@ static void sites_report(void) {
     fprintf(stderr, "memory sites: can't write %s\n", path);
   }
   roots_report();
+  live_report();
   fflush(stderr);
 }
 
@@ -3823,6 +3892,9 @@ void strata_sites_start(const char *text) {
     if (*s) s++;
   }
   strata_site_counts = calloc((size_t)(2 * site_n + 2), sizeof(int64_t));
+#ifdef STRATA_CORE_RT
+  if (getenv("STRATA_MEMORY_LIVE") && !checking) live_tables = strata_live_start(site_n);
+#endif
   atexit(sites_report);
 }
 
