@@ -732,7 +732,7 @@ fn main() {
     for (const [k, f] of [['ackermann', 'ackermann'], ['isqrt', 'isqrt'], ['triangle', 'triangle_closed'], ['collatz', 'collatz_steps']])
       V.loops[k] = { code: defs(src, [`fn ${f}(`]), verify: out(dir, ['verify', f, '--checks']) };
   }
-  // contracts on behaviour: trait models, laws, generic code, a broken backend, state graphs
+  // contracts on behaviour: trait models, laws, generic code, a broken backend
   {
     /** A trait's members as rendered by `view --level 1`: its header (up to the first doc
      *  comment of a member), then each member with the doc comment above it. */
@@ -757,10 +757,8 @@ fn main() {
     C.bank_verify = out(bank, ['verify', '--no-race']);
     // a store that keeps only the last order it saved: the trait's contract refutes it
     const orders = pkg('v-db', [join(EX, 'orders.strata')]);
-    C.graph = out(orders, ['view', '--graph', 'Order']);
     const db = run(orders, ['view', '--level', '2']).out;
     C.db = defs(db, ['trait Db']);
-    C.moves = defs(run(orders, ['view', '--level', '1']).out, ['type Order =', 'fn ship', 'fn cancel']);
     const lossy = `impl Db for MemDb {
   model orders = self.all
 
