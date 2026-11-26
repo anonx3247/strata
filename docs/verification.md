@@ -211,6 +211,25 @@ A `while` loop terminates when a bound derived from its condition decreases on e
 
 A variable that the loop doesn't change keeps its value without any invariant. A place passed `mut`, assigned a value of another form, or named again by a binding inside the loop gets none of these facts. Neither does a sized integer, since sized integers wrap. The same facts hold at the head of a `for` and a `loop`.
 
+**A `for` over a list keeps its function's `ensures` over the elements visited.** When an `ensures` is about a variable the loop changes (the one the function returns), each `ensures` holds at the head of every pass with the elements visited so far in place of the list: `ensures it <= len(xs)` becomes `n <= len(xs[..k])` after `k` passes, `ensures all(xs, x -> it.contains(x))` says every visited element is a key. Those that hold on entry and that one pass keeps are assumed (no other candidate is tried, and nothing is written). This covers results built from the elements: counts, filtered or mapped lists, dicts filled per element, `all` / `any` flags, and sums (`sum(xs)`, `sum(xs.map(f))`: the element a pass visits steps the list's prefix sum). With `enumerate(xs)` the visited part is that of `xs`. Not yet: an `ensures` that calls a function, and `ensures` comparing whole lists or counting through `filter` (`it == xs.filter(p)`, `it == len(xs.filter(p))`), which the solver's model of lists doesn't follow.
+
+```rust
+fn total(xs: List[Int]) -> Int
+  ensures it == sum(xs) {
+  mut s := 0
+  for x in xs {
+    s += x
+  }
+  s
+}
+```
+
+```text
+✓ total                    proven (2 checks)
+    proven:  ensures it == sum(xs)
+    proven:  invariant of `for … in xs`: it == sum(xs) (it = s) over the elements visited (derived)
+```
+
 **`verify` searches for nothing.** `verify` and `build` use only the derived invariants and the `invariant` clauses written in the code, so a verdict depends on the code alone, and a run asks the solver nothing it didn't ask the time before. A check in or after a loop that these don't prove (an index, an `ensures`, an overflow, a written `invariant`) is fuzzed, and the result says which loop and variable it is about and how to go on:
 
 ```rust
