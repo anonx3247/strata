@@ -199,3 +199,30 @@ strata = ["--file", "p.strata", "edit"]
 fails = true
 text = "fn f(x: { id: Int, id: Int, .. }) -> Int = 1"
 has = ["field `id` is named twice"]
+
+# no values of its own: not an alias, a field's type, a variable's, a
+# structural type's field's
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+fails = true
+text = "type Row = { id: Int, .. }"
+has = ["a record type lists all its fields: `{ id: Int, .. }`, any record with at least these fields, is only a parameter's type or a type parameter's bound"]
+
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+fails = true
+text = '''
+type Holder = { r: { id: Int, .. } }
+
+fn f(x: { id: Int, .. }) -> Int {
+  let y: { id: Int, .. } = x
+  y.id
+}
+
+fn g(x: { a: { b: Int, .. }, .. }) -> Int = 1
+'''
+has = [
+  "error in Holder: a structural type (`{ id: Int, .. }`) is only a parameter's type or a type parameter's bound: it has no values of its own, so it is no result's, variable's or field's type (name a type parameter: `[T: { id: Int, .. }]`, `-> T`)",
+  "error in f: a structural type",
+  "error in g: a structural type",
+]

@@ -162,6 +162,34 @@ The spread is expanded into the written-out call when the program is checked, so
 - A `mut` parameter cannot come from a spread. Pass it explicitly (`mut x`).
 - A spread value that isn't a variable or a field of one is evaluated once, before the call's other arguments.
 
+### Structural types: any record with these fields
+
+`{ id: OrderId, total: Cents, .. }` is any record that has at least these fields, with these types. The `..` stands for the other fields a record may have, and must be written. It is a parameter's type, or a type parameter's bound:
+
+```rust
+type Invoice = { id: OrderId, total: Cents, paid: Bool }
+type Quote = { id: OrderId, total: Cents, days: Int }
+
+fn due(x: { id: OrderId, total: Cents, .. }) -> Cents
+  ensures it <= x.total
+= discount(x.total)
+
+fn larger[T: { total: Cents, .. }](a: T, b: T) -> T { if a.total >= b.total { a } else { b } }
+fn totals(xs: List[{ total: Cents, .. }]) -> Int { … }        // one record type for the whole list
+fn named[T: { id: OrderId, .. } + Display](x: T) -> String { … }
+
+due(invoice)                        // an Invoice
+due(quote)                          // a Quote
+larger(invoice, other_invoice)      // an Invoice, returned as one
+```
+
+- **A parameter's type is a type parameter of its own.** `fn due(x: { id: OrderId, .. })` is `fn due[X: { id: OrderId, .. }](x: X)`. Name the type parameter when the same type comes back out (`-> T`) or must be shared (`a: T, b: T`).
+- **Only the named fields can be used.** `x.id` and `x.total` read the record's fields, `x.total = 5` changes a `mut` one, and `x` can be passed on to another function whose bound asks for no more. Anything else on `x` is an error, as is constructing one: a structural type has no values of its own. It can't be a result's, a variable's or a field's type.
+- **A record fits when it has every field, of a type that fits.** A field whose type is refined (`Cents`, `Int where it > 0`) must be given by a field of that same type, since the function is proven knowing the refinement. An unrefined one takes what fits it the usual way. A record's other fields don't matter, nor their order. Records stay nominal otherwise: an `Invoice` is never a `Quote`, whatever their fields.
+- **Only records fit**, generic ones included (`Box[T]`). Variants, tuples, unions and other types don't, even with fields of those names.
+- **Compiled once per record type.** A call with an `Invoice` compiles `due[Invoice]`, which reads `x.total` at the offset `Invoice` keeps it at, as if `due` had been written for `Invoice`. There is no cost at run time. The cost is code size: one copy of the function per record type it is called with.
+- **Verified once, for every record.** `verify` proves the function on a record holding exactly the named fields. The function can only read those fields, so what it proves holds for every record that has them. The fuzzer runs it with the first record type of the program that has the fields.
+
 ## Unions, variants and patterns
 
 A union holds a value of any of its member types. Unions are unions of sets, so they normalize: `Int | Positive` is just `Int`, while distinct types stay separate.
