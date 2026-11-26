@@ -40,7 +40,6 @@ types, whose bodies are the operators themselves.
 
 ```strata-also
 ops.Sub ops.Mul ops.Div ops.Rem ops.Neg: the other traits
-ops.impl*: core's impls for the built-in types, each body the operator
 ```
 
 ```strata-also
@@ -67,7 +66,7 @@ operators.*: the rest of the mapping (`lowered`, `called`, the trait of each ope
 # The passes read calls
 Nothing turns the calls back into nodes: `desugar` leaves them. The passes
 that reason about arithmetic look at a call through `lowered_node`, a view
-of `Add.add(a, b)` or `i32_add(a, b)` as the operator, and keep their logic.
+of `Add.add(a, b)` or `sized_add(a, b)` as the operator, and keep their logic.
 
 ```strata-diff operators.lowered_node check.ints_of smt.eval_expr codegen.expr_node
 ```
@@ -95,7 +94,9 @@ operator, compiled inline and encoded by the prover. Generic code calling
 ```
 
 ```strata-also
-ops.integer_* ops.float_* ops.i8_* ops.i16_* ops.i32_* ops.i64_* ops.u8_* ops.u16_* ops.u32_* ops.u64_* ops.string_* ops.bool_eq* ops.list_add*: the intrinsics
+ops.integer_* ops.sized_* ops.float_* ops.string_* ops.bool_eq* ops.list_add*: the intrinsics, one per operation and family
+ops.SizedInt ops.SizedFloat ops.impl*: the families and the impls (blanket for `SizedInt`, `SizedFloat`)
+check.numeric check.sized_family check.infer_untagged check.code_method_problem check.operator_traits: a sized family's operators on a type parameter; methods through the blanket impls
 operators.is_neg_intrinsic operators.shown_node operators.operator_method operators.is_operator_name: their names
 ```
 
