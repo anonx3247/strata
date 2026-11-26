@@ -4796,6 +4796,26 @@ Str *strata_str_chr(int64_t c) {
 }
 #endif
 
+// The byte offset of the first `p` in `s` at or after `from`, or -1: the
+// prelude's `str_find_from`, which codegen calls this for. memchr finds each
+// place `p`'s first byte is, memcmp compares the rest there.
+int64_t strata_str_find(Str *s, Str *p, int64_t from) {
+  int64_t n = s->len, m = p->len;
+  if (from < 0) from = 0;
+  if (from > n - m) return -1;
+  if (m == 0) return from;
+  const char *b = s->bytes, *end = s->bytes + (n - m) + 1;
+  const char *at = b + from;
+  char first = p->bytes[0];
+  while (at < end) {
+    at = memchr(at, first, (size_t)(end - at));
+    if (!at) return -1;
+    if (memcmp(at + 1, p->bytes + 1, (size_t)(m - 1)) == 0) return at - b;
+    at++;
+  }
+  return -1;
+}
+
 #ifndef STRATA_CORE_RT
 // `parse_int` of the trimmed string: a sign, then a digit, then digits and
 // `_`. False when it isn't a number. A fault when it doesn't fit in 64 bits:

@@ -379,7 +379,7 @@ error in a: match arm: expected `Int`, found `Sq`
 error in b: match arm: expected `String`, found `Int`
 error in e: match arm: expected `Int`, found `Dot | Sq`
 error in f: variant `Rc` has no field `z`
-error in h: `return` value: expected `Int`, found `Sh`
+error in h: `return` value: expected `Int`, found `Sq`
 '''
 
 [[step]]
