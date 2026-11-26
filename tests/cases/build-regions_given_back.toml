@@ -1,0 +1,30 @@
+# Statement regions (`--regions`): a value a callee may give back as it is
+# (a function returning a `String` it was given, `join`, `to_string`,
+# `repeat`) and the part of an f-string of one part stay counted
+# (compiler/roots: `holds_nothing`, `copies`, `flow`), so a variable can
+# keep them past the statement. Check mode, with regions and without, and
+# on the JIT.
+
+[[step]]
+save = "given.strata"
+from = "given.st"
+
+[[step]]
+strata = ["--file", "given.strata", "build", "--no-verify", "--regions", "-o", "regions"]
+
+[[step]]
+run = ["./regions"]
+memory = true
+stdout = "[\"e0\", \"j0\", \"s0\", \"r0\", \"o0\", \"a\", \"e1\", \"j1\", \"s1\", \"r1\", \"o1\", \"b\", \"e2\", \"j2\", \"s2\", \"r2\", \"o2\", \"c\"]\n"
+
+[[step]]
+strata = ["--file", "given.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["./plain"]
+memory = true
+stdout = "[\"e0\", \"j0\", \"s0\", \"r0\", \"o0\", \"a\", \"e1\", \"j1\", \"s1\", \"r1\", \"o1\", \"b\", \"e2\", \"j2\", \"s2\", \"r2\", \"o2\", \"c\"]\n"
+
+[[step]]
+strata = ["--file", "given.strata", "run", "--regions"]
+out = "[\"e0\", \"j0\", \"s0\", \"r0\", \"o0\", \"a\", \"e1\", \"j1\", \"s1\", \"r1\", \"o1\", \"b\", \"e2\", \"j2\", \"s2\", \"r2\", \"o2\", \"c\"]\n"
