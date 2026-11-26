@@ -297,15 +297,19 @@ const char *cache_self_hash(void) {
 // This process's id (the run's scratch folders are named by it).
 int64_t cache_pid(void) { return (int64_t)getpid(); }
 
-/* A new stable id for a definition (compiler/binary's `new_id`): 64 random
+/* A new stable id for a definition (compiler/binary's `new_id`): 32 random
    bits, never 0. */
-uint64_t binary_new_id(void) {
-  uint64_t x;
+uint32_t binary_new_id(void) {
+  uint32_t x;
   do {
     arc4random_buf(&x, sizeof x);
   } while (x == 0);
   return x;
 }
+
+/* TEMPORARY: compiler/binary reads headers of the format with 8-byte ids
+   when this is set. */
+int32_t binary_read_v2(void) { return getenv("STRATA_READ_V2") != NULL; }
 
 // Whether the process `pid` is running (another user's too), for `strata
 // cache clean`: a scratch folder named by a running process's id is in use.

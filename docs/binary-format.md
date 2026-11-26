@@ -15,7 +15,7 @@ Design:
 - **A header inside the module file.** Like a C header, it comes first and lists every definition: its id, name, kind, visibility, three hashes, its dependencies and its size in bytes. Listing a module, building the dependency graph or finding what changed reads only the header: 14 µs for all of `examples/tasks`, against about 170 µs to decode everything.
 - **Interface first, bodies after.** Each definition's bytes start with its interface (types, signatures, contracts, laws), with each body written as `()`. The bodies follow. Checking code against a module needs only the interfaces, so a reader can stop there.
 - **Definitions with their own strings.** Each definition carries its own strings. Its references are indices into its file's id table, so its bytes mean the same only next to that table.
-- **References by id** (see [References by id](#references-by-id)). Every definition and variant has a stable id, a random 64-bit number given when it is first stored. A definition refers to another by that id, and the module file's header says which name each id has. Renaming a definition changes one name in its module's header: no definition that uses it changes.
+- **References by id** (see [References by id](#references-by-id)). Every definition and variant has a stable id, a random 32-bit number given when it is first stored, unique within its module. A definition refers to another by its module and id, and the module file's header says which name each has. Renaming a definition changes one name in its module's header: no definition that uses it changes.
 - **Qualified names in memory.** In memory, and in every pass of the compiler, a reference is its qualified name (`orders.Line`), however it was written (`Line` under `from orders use Line`, or `orders.Line` under `use orders`). A call to another module's function is a call of that name: `orders.ship(x)` is `Call(Var("orders.ship"), [x])`, not a method call on `orders`. Locals, fields, method calls (resolved from their receiver), and names that resolve to nothing are kept as written. When code is shown, each reference is written as short as the module's `use`s allow, so text is normalized: `orders.Line` written where `Line` is imported shows as `Line`. A module file shown alone (`git diff`) uses its own `use` lines. The conversions are `stored` and `written` in `compiler/resolve`; the encoder turns each qualified name into its id, and the decoder back.
 - **Exact.** Decoding returns exactly the tree that was encoded, including comments, docs, blank lines between groups, big integers (as their digits) and floats (as their bits).
 - **Canonical.** A tree has one encoding. Strings are numbered in the order they are first written, integers use the shortest form, and the decoder refuses anything else. A header's dependency lists can go stale when another module changes outside strata, or when an edit changes what an untouched definition would now depend on, because an edit writes only the files it changes and keeps each untouched definition's bytes and entry. `strata upgrade` rewrites every file.
@@ -36,8 +36,9 @@ bundle      = "STRATA" version:uint 1  manifest:option(raw-string)  modules:list
 ### The header
 
 ```text
-header = strings:list(raw-string)  module:str  variants:list(Name)  refs:list(Name)  entries:list(Entry)
+header = strings:list(raw-string)  module:str  variants:list(Name)  refs:list(Ref)  entries:list(Entry)
 Name   = id  name:str
+Ref    = module:str  id  name:str
 Entry  = id  name:str  kind:byte  public:bool  hash:32 bytes  interface_hash:32 bytes  code_hash:32 bytes
          deps:list(str)  size:uint  interface_size:uint
 ```
@@ -45,8 +46,8 @@ Entry  = id  name:str  kind:byte  public:bool  hash:32 bytes  interface_hash:32 
 - The header's strings are its own table (names, the module path, dependencies). They are all text.
 - `module` is the dotted module path (`""` for the root module).
 - `variants`: the id and qualified name (`shop.Paid`) of each variant of the module's sums that is stored by id, in the order of the definitions.
-- `refs`: the id and qualified name of each definition or variant of another module that the definitions refer to by id, in increasing order of id (unsigned). The name is the one it had when the file was written: the module that has the id is what names it (see [References by id](#references-by-id)).
-- The file's **id table** is the entries' ids in order, then the `variants`' ids, then the `refs`' ids. A definition refers to an id by its index in this table. Each id is written once, here.
+- `refs`: the module, id and qualified name of each definition or variant of another module that the definitions refer to by id, in increasing order of module (by bytes), then id. The name is the one it had when the file was written: the module that has the id is what names it (see [References by id](#references-by-id)).
+- The file's **id table** is the entries' keys in order (the file's module and each one's id), then the `variants`', then the `refs`'. A definition refers to a key by its index in this table. Each id is written once, here. A key given twice is refused.
 - `id` is a definition's stable id.
 - `name` is what `strata` calls the definition: `total`, `Order`, `test "totals"`, `impl Show for Order`, `use orders`. Its qualified name (`shop.total`, bare in the root module) is the name of its id.
 - `kind` is the `DeclKind` tag below.
@@ -96,7 +97,7 @@ Types and `use` have none. Everything else is interface: signatures, `requires` 
 | `int` | a 64-bit signed integer, zigzag-encoded then written as a `uint`: `0, -1, 1, -2, 2, …` become `0, 1, 2, 3, 4, …` (`(n << 1) ^ (n >> 63)`). |
 | `float` | the 8 bytes of the IEEE 754 double, little-endian. |
 | `bool` | one byte, `0` or `1`. |
-| `id` | 8 bytes, least significant first: an unsigned 64-bit integer, never 0 (a `U64` in memory). |
+| `id` | 4 bytes, least significant first: an unsigned 32-bit integer, never 0 (an `ast.Id`, a `U32`, in memory). |
 | `char` | a Unicode scalar value, as a `uint`. |
 | `raw-string` | length in bytes (`uint`), then the UTF-8 bytes. Only in a header's string table (and a bundle's manifest); a definition's table has `Item`s. |
 | `raw-bytes` | length (`uint`), then the bytes. |
@@ -281,7 +282,7 @@ the definition:
 
 ## References by id
 
-Every definition and every variant of a sum has an id: 64 random bits, never 0 (`arc4random_buf`, `binary.new_id`), an `ast.Id` (a `U64`; the width is that type and `binary.id_bytes`, `byte_id` and `new_id`), given by the encoder to a definition that has none (`binary.assign_ids`) and kept in `Decl.id` and `Variant.id` in memory. Writing a module file again keeps each definition's id: one without an id (just parsed from text) takes the id of the definition of the same module, name and kind in the previous version or in the file, else a new one. So `edit` keeps a definition's id when it replaces it, and `rename` and `move` keep it as they change the name or the module. A definition deleted and written again under another name with `edit` is a new definition with a new id; only `rename` and `move` keep one across names.
+Every definition and every variant of a sum has an id: 32 random bits, never 0 (`arc4random_buf`, `binary.new_id`), an `ast.Id` (a `U32`; the width is that type, `binary.id_bytes`, `byte_id` and `new_id`, and c/cache.c's `binary_new_id`). An id is unique within its module: a reference names a module and an id (`ast.Key`). It is given by the encoder to a definition that has none (`binary.assign_ids`) and kept in `Decl.id` and `Variant.id` in memory. Writing a module file again keeps each definition's id: one without an id (just parsed from text) takes the id of the definition of the same module, name and kind in the previous version or in the file, else a new one. An id another definition of the module already has is drawn again. So `edit` keeps a definition's id when it replaces it, and `rename` keeps it as it changes the name; `move` keeps it too unless the new module has it already, but a moved definition is another key, and what refers to it is written again by `move`. A definition deleted and written again under another name with `edit` is a new definition with a new id; only `rename` and `move` keep one across names.
 
 What is written by id. In every place that can name a definition (a variable, a constructor, a type's name, a pattern's constructor, an `is` variant, an impl's trait, a derive's trait and function, a definition's own name, a variant's name, a name of `from m use x`), a qualified name that is the name of a known id is written as a reference to that id. The ids known are the program's (every module of the package) and the ones std and other packages give the names the file already refers to. Three cases stay text:
 
@@ -289,14 +290,14 @@ What is written by id. In every place that can name a definition (a variable, a 
 - a bare name (the root module's) that the definition also binds as a parameter, local, field or type parameter, anywhere in it: the encoder can't tell which one a use means, so it keeps the text (the named pass lists the names a definition binds);
 - trait methods, impl methods, fields and locals, which are named by text.
 
-Reading. A file is read with its own header: each id as the header names it. A package is read with every module's header first (`decoded_files`), and each reference is read as the name the module that has its id gives it, which differs from the referring file's when the two were written apart: a branch renamed the definition, another added a use, and git merged the two files without the driver. The referring file's copy of the name is brought up to date the next time it is written (`strata upgrade` rewrites every file).
+Reading. A file is read with its own header: each id as the header names it. A package is read with every module's header first (`decoded_files`), and each reference is read as the name the module that has its key gives it, which differs from the referring file's when the two were written apart: a branch renamed the definition, another added a use, and git merged the two files without the driver. One case is told apart: when the referring file's name for the key is still the name of a definition of the package, the owner gave that definition another id (a merge does, see below), and the reference keeps its name (`binary.owner_names`). The referring file's copy of the name is brought up to date the next time it is written (`strata upgrade` rewrites every file).
 
 What it gives:
 
 - A rename changes the name in one header. Every other module's definitions keep their bytes; each module that refers to it has its own copy of the name in its header, which is updated.
-- `strata diff` pairs a definition, and a variant, by its id: one with the same id and a new name is renamed (or moved), even if its body changed too.
-- `strata merge-file` reads each id by one name on all three sides (the name one side changed it to, ours first), so a rename on one side is followed by the other side's new uses with nothing guessed. Two new definitions with one name, one on each side, have different ids: a name clash, reported as a conflict.
-- `strata sync` after a move fixes the imports (`from orders use charge` becomes `from billing use charge`); the references follow by id.
+- `strata diff` pairs a definition, and a variant, by its key: one with the same module and id and a new name is renamed, even if its body changed too. A move is another key: it is reported from the log.
+- `strata merge-file` reads each id by one name on all three sides (the name one side changed it to, ours first), so a rename on one side is followed by the other side's new uses with nothing guessed. Two new definitions with one name, one on each side, have different ids: a name clash, reported as a conflict. Two definitions of the module with one id, one from each side (two branches drew the same 32 bits), keep it for the first and draw another for the second, and merge-file says so.
+- `strata sync` after a move written apart from new uses moves them too (the old name is read for the old key, and the move is done again on the merged code).
 
 Limits: an edit that adds the first reference to a std name in a package stores it as text until `strata upgrade` (the ids of std are known only for names a module already refers to); `strata resolve FILE`, which stores a conflict resolved by hand from text, gives that module's definitions new ids.
 
