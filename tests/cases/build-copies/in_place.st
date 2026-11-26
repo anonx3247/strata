@@ -121,7 +121,7 @@ fn extend(n: Int) -> Int {
     mut o.inner.xs.push(i)
     o.inner.s = o.inner.s + "c"
   }
-  len(xs) + byte_len(s) + len(o.inner.xs) + byte_len(o.inner.s)
+  len(xs) + byte_len(s) + len(o.inner.xs) + byte_len(o.inner.s) + o.n
 }
 
 /// A dict of lists, of records, and of dicts (the inner dict taken out of

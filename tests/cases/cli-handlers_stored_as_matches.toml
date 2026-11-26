@@ -55,13 +55,14 @@ has = [
   'pat: CtorPattern { name: "Err", args: PositionalPats([Bind("e")]) }',
 ]
 
-# shown as written; a match written out in full stays one
+# shown as written; a match written out in full of a handler's shape is the
+# same program, shown as the handler
 [[step]]
 strata = ["--file", "h.strata", "view", "main"]
 has = [
   "  h := half(n)!\n  Ok(half(h)!)",
   "  x := get(xs, 0)?",
-  "  v := match r {\n    Ok(x) => x,\n    Err(e) => return Err(e),\n  }",
+  "  v := r!",
   "  a := quarter(8) !! 0\n  b := quarter(6) except e {",
   "  c := first([3]) ?? 0\n  d := first([]) or {",
   "  e := get([1], 5) ?? get([2], 0) ?? 9",
