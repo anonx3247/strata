@@ -3867,6 +3867,8 @@ void strata_print(Str *s) {
 // and `Result`, whose tags only it knows.
 
 static int prog_argc;
+// (set by `strata_host_serve`)
+static _Bool host_served, host_closed;
 // The program's name, as `--help` shows it: its file's, without the folder.
 static char *prog_name = "main";
 static char **prog_argv;
@@ -4054,7 +4056,15 @@ void strata_host_write(int64_t fd, Str *text) {
   FILE *f = fd == 2 ? stderr : stdout;
   if (fd == 2) fflush(stdout);
   if (fwrite(text->bytes, 1, (size_t)text->len, f) < (size_t)text->len || fflush(f) != 0) {
-    if (errno == EPIPE) exit(0);
+    if (errno == EPIPE) {
+      // (a request the compiler's daemon serves: the client's output closed
+      // ends the request, not the daemon)
+      if (host_served) {
+        host_closed = 1;
+        return;
+      }
+      exit(0);
+    }
   }
 }
 
@@ -4343,6 +4353,31 @@ Str *strata_host_read_stdin(void) {
 // (`strata`'s, compiler/c/driver.c): it counts as one.
 static _Bool stdout_paged = 0;
 void strata_host_paged(void) { stdout_paged = 1; }
+
+// The arguments `args()` gives from now on (`strata` without the options
+// it took for itself, c/daemon.c). `argv` is kept.
+void strata_host_set_args(int argc, char **argv) {
+  prog_argc = argc;
+  prog_argv = argv;
+}
+
+// A request served by the compiler's daemon (compiler/c/daemon.c): the
+// arguments `args()` gives from now on (the client's), and whether its
+// standard output is a pager. `strata_host_closed` says whether the
+// client's output closed while it ran (where a process would have exited
+// with 0), and forgets it.
+void strata_host_serve(int argc, char **argv, _Bool paged) {
+  host_served = 1;
+  host_closed = 0;
+  strata_host_set_args(argc, argv);
+  stdout_paged = paged;
+}
+
+_Bool strata_host_closed(void) {
+  _Bool c = host_closed;
+  host_closed = 0;
+  return c;
+}
 
 // Whether a stream (0: standard input, 1: output, 2: error) is a terminal
 // (not a pipe or a file), or a pager on one.
