@@ -64,22 +64,52 @@ resolve.call: the callee `Add.add` is never resolved
 operators.*: the rest of the mapping (`lowered`, `called`, the trait of each operator)
 ```
 
-# Back to nodes for the passes
-`desugar` lowers the calls, so check, smt, codegen and termination see the
-`Binary` nodes they always did. The few places that read stored trees
-directly lower them first.
+# The passes read calls
+Nothing turns the calls back into nodes: `desugar` leaves them. The passes
+that reason about arithmetic look at a call through `lowered_node`, a view
+of `Add.add(a, b)` or `i32_add(a, b)` as the operator, and keep their logic.
 
-```strata-diff desugar.unsugared_node builtins.core_of
+```strata-diff operators.lowered_node check.ints_of smt.eval_expr codegen.expr_node
 ```
 
 ```strata-also
-desugar.mock_of: models' `ensures` matched through the lowered node
-graph.plan: state graphs read lowered trees
-verified_decls: core's refinements lowered for the prover
-entry_expr is_literal write_found: the invariant search reads and compares lowered trees
-finding.quoted_place: an error quoting `+` points at the call
-store.ex: an operator depends on its trait's method, as a method call does
-walk.decl_parts: a derivable trait's `requires` is desugared too
+check.int_value check.float_value check.real_cuts check.real_holds check.as_listed check.unused_values: the checker's views
+smt.bounds smt.comparisons smt.invariant_candidates smt.cannot_fail smt.added_to smt.amount smt.assigned_step smt.pass_walk smt.stable smt.literal_value smt.loop_facts smt.defining_ensures smt.visited_candidates smt.assume_visited smt.for_list_name: the prover's views
+codegen.checked codegen.konst codegen.of_pred codegen.appended codegen.root_code: the code generator's views
+codegen.escapes unique.ex roots.assign roots.flow roots.region_literal roots.strings: ownership: `x + 1` doesn't let `x` escape
+codegen.wait_edges: an operator is no call that may wait (no cancellation point)
+capabilities.constant capabilities.noalloc_call capabilities.runtime_call_errors: an operator is no function call for these rules
+contracts.shallow contracts.konst contracts.holds derive.data_in exhaustive.scrutinee_type graph.flow_of termination.candidate_measures termination.cannot_fail eval.eval eval.holds desugar.elements_assigned: views
+ast.calc_steps ast.calc_fact ast.step_node: `calc` steps written with operators
+codegen.short eval.short: messages keep `Ord.lt`
+desugar.mock_of graph.plan is_literal entry_expr write_found finding.quoted_place store.ex: views on stored trees (an operator depends on its trait's method in `store.ex`)
+walk.decl_parts: a derivable trait's `requires` is walked too
+```
+
+# Intrinsics
+Core's impls for the built-in types call intrinsics; a call of one is its
+operator, compiled inline and encoded by the prover. Generic code calling
+`x.add(y)` on a built-in type gets the operator inline.
+
+```strata-diff operators.intrinsic_op codegen.builtin_operator codegen.method_call
+```
+
+```strata-also
+ops.integer_* ops.float_* ops.i8_* ops.i16_* ops.i32_* ops.i64_* ops.u8_* ops.u16_* ops.u32_* ops.u64_* ops.string_* ops.bool_eq* ops.list_add*: the intrinsics
+operators.is_neg_intrinsic operators.shown_node operators.operator_method operators.is_operator_name: their names
+```
+
+# Operands of two types
+`impl Mul[Int, Money] for Money` becomes the function `$Mul$Money$Int`;
+the checker calls it where the operands' types are that pair.
+
+```strata-diff desugar.mixed_lowered check.mixed_operator check.binary
+```
+
+```strata-also
+desugar.desugar_more desugar.last_part operators.is_operator_trait operators.mixed_name: the desugaring
+check.definition_errors: one such impl per pair, beside the one for `Self`
+select_names with_mixed: verify selects the function when it selects the impl
 ```
 
 # Operators on the program's own types
@@ -88,7 +118,7 @@ an operator trait for a type of its own or bounds a type parameter by one.
 It infers each function using an operator and writes the operator on such a
 type as its method's call.
 
-```strata-diff check.operators_resolved check.own_operator check.binary
+```strata-diff check.operators_resolved check.own_operator
 ```
 
 ```strata-also
