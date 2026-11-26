@@ -173,6 +173,7 @@ int32_t timings_enabled(void) {
 // (each request a daemon serves, c/daemon.c, starts so).
 void timings_reset(void) {
   for (int i = 0; i < phase_count; i++) free(phases[i].name);
+  memset(phases, 0, sizeof phases);
   phase_count = 0;
   running_count = 0;
   timings_on = -1;
