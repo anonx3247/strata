@@ -11,8 +11,9 @@ turned the whole file into text with markers. `strata diff` compared printed
 lines too, so it could say which lines changed but not which node.
 
 This PR compares and merges definitions node by node (REBUILD.md L5, item 10).
-Text only shows the result. On the last 5 compiler commits the node diff of all
-changed definitions took 0 to 5 ms, next to 3 to 6 s for the whole command.
+Text only shows the result: the default diff's lines come from the node changes.
+On the last 5 compiler commits the node diff of all changed definitions took 0
+to 5 ms, next to 3 to 6 s for the whole command.
 
 # Background
 Each side of a merge is read from its module file, written out and parsed back,
@@ -83,25 +84,49 @@ falls back to the line merge for that definition.
 ```strata-diff tree.merge tree.merge_items
 ```
 
+```strata-also
+tree.Conflict tree.DeclMerge tree.St tree.merge_node tree.merge_run tree.reordering tree.in_place tree.holds_hole tree.hole tree.side: the merge and its holes
+merge.Merged merge.use*: the holes reported, and the definitions merged from the stored forms
+```
+
+# The default diff, from the nodes
+`strata diff` keeps its lines (`-`, `+`, `~` with the words changed in place,
+unchanged lines folded), which `strata tour` and the viewer read. Those lines
+now come from the node changes. Each side is printed with its changed nodes
+placed (`placed_code`). Lines are lined up by their text and the changed nodes
+on them, so a line holding a changed node never shows as unchanged. A line
+changed in place keeps the text around its nodes and compares only the nodes'
+texts, word by word. When a side doesn't print the same with its nodes placed,
+the old line diff is used for it.
+
+```strata-diff diff.node_lines diff.line_segs diff.placed_code
+```
+
+`strata diff --nodes` prints each side with the changed nodes marked, then each
+change by path. `--json` gives the changes in a new `nodes` field next to `lines`.
+
+```strata-diff diff.nodes_text
+```
+
+```strata-also
+diff.Item diff.NodeChange diff.diff diff.node_changes diff.node_text_at diff.marked diff.indented diff.spans_back diff.indent_of_line diff.use*: carrying the node changes
+diff_command diff_json: the option and the JSON field
+```
+
+# Merging the stored forms
+`merge-file` used to merge the definitions read back from each side's text. A
+side that adds `from m use f` prints `f(1)` where the base printed `m.f(1)`, so
+that call looked changed. The tree merge now runs on the stored forms, where
+every reference is qualified. Its result is written as ours shows it, with any
+imports theirs added. `kept` hands the stored result to the file, so it is not
+read back from text.
+
 ```strata-diff merge.merge merge_file_command
 ```
 
 ```strata-also
-tree.Conflict tree.DeclMerge tree.St tree.merge_node tree.merge_run tree.reordering tree.in_place tree.holds_hole tree.hole tree.side: the merge and its holes
-merge.Merged merge.use*: the holes reported
-```
-
-# Shown: `diff --nodes` and `--json`
-Each changed item of a diff now carries its node changes and both written sides.
-`strata diff --nodes` prints each side with the changed nodes marked, then each
-change by path. `--json` gives them as `nodes`.
-
-```strata-diff diff.nodes_text diff.node_changes
-```
-
-```strata-also
-diff.Item diff.NodeChange diff.diff diff.node_text_at diff.marked diff.indented diff.use*: carrying the node changes
-diff_command diff_json: the option and the JSON field
+merge.stored_named: finding a side's stored definition
+use* : `written_at` imported, to write one merged definition
 ```
 
 # Tests

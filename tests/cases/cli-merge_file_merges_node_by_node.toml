@@ -218,3 +218,50 @@ has = ["conflict in f", "left as text with conflict markers"]
 run = ["cat", "a.strata"]
 dir = "sig"
 has = ["<<<<<<< ours\n", "fn f(x: Bool) -> Int", ">>>>>>> theirs"]
+
+# the stored forms are merged: ours imports `f` and `g` (so its text calls
+# them `f(1)`, `g(2)`) and changes `k`; theirs calls `m.g` where `h` called
+# `m.f`. As stored, ours left `h` alone, so theirs' `h` is taken, written
+# with ours' imports
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "m"]
+dir = "p"
+text = "pub fn f(x: Int) -> Int = x\n\npub fn g(x: Int) -> Int = x * 2\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "use m\n\nfn h() -> Int {\n  a := m.f(1)\n  b := m.g(2)\n  a + b\n}\n\nfn k() -> Int = 1\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "o.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn h() -> Int {\n  a := m.g(1)\n  b := m.g(2)\n  a + b\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "b.strata"]
+
+[[step]]
+run = ["cp", "o.strata", "p/main.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "from m use f, g\n\nfn h() -> Int {\n  a := f(1)\n  b := g(2)\n  a + b\n}\n\nfn k() -> Int = 2\n"
+
+[[step]]
+strata = ["merge-file", "../o.strata", "main.strata", "../b.strata", "main.strata"]
+dir = "p"
+lacks = ["conflict", "doesn't check"]
+
+[[step]]
+strata = ["--file", ".", "view", "main"]
+dir = "p"
+has = ["  a := g(1)\n  b := g(2)\n", "fn k() -> Int {\n  2\n}"]
