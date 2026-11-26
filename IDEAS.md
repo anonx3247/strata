@@ -1516,7 +1516,7 @@ The user asked whether Strata needs manual memory management, an unsafe mode or 
     - Seen, not fixed (not run by any command or test): `compiler check core/rt.strata` reports core.rt's statics as unknown variables (on main too), and, since these groups, type errors Rust's checker doesn't give, on `I64` arithmetic with a literal (`0 - big_base()` and `8 + an` with `an := str_size(a)` typed `Int`, then refused as allocating), though the allocator's `128 + k * 8` passes: the cause isn't investigated. compiler/codegen compiles the same code (it doesn't go through that path).
     - Found on the way, fixed in llvm.rs: an `assert` comparing `I64`s dropped, after it passed, the `Int`s made to show its sides, which only its failing path had made (undefined values: core.mem's test of `div_unsigned` crashed `strata --file core test --rust`).
 
-### Memory: scoped allocation from roots (design) (agreed with the user 2026-11-26 as step 4 of "Memory: beyond counting"; phase 1 built, branch `roots-plan`; phase 2a built, branch `regions-2a`)
+### Memory: scoped allocation from roots (design) (agreed with the user 2026-11-26 as step 4 of "Memory: beyond counting"; phase 1 built, branch `roots-plan`; phase 2 measured and not kept, branches `regions-2a`, `regions-2b`, `regions-lists`)
 Reference counting stays the model. Scoped allocation is an optimization on top of it, after Goose (https://aardappel.github.io/goose/). Goose has no heap and no counts: every value has a static root, "the variable that bounds its target's lifetime", values are bump-allocated on data stacks and freed when the root's scope ends, and results are built where the caller puts them. Strata can't drop counting, since some lifetimes aren't nested, but it can use the same idea where the compiler sees the lifetime. Phase 1 is this design and a measurement that changes no generated code. The numbers decide whether to build phase 2.
 
 Terms:
@@ -1568,7 +1568,7 @@ Run-time pieces, for phase 2:
 
 What still costs: a register per call for the destination, and a test per allocation of a result; a chunk taken at a scope's first allocation and given back at its end; a copy where a region object is updated without a proof; memory held until the scope ends; and the analysis at compile time.
 
-The bounding problem. Counting frees a value at its last use, a region at its scope's end, and the garbage in between piles up while the scope lives. Loop bodies and statements are reset often, and the counted rules above catch the values replaced on each pass. Recursion is the case left. A recursive function that builds its result from its own recursive results, copying them (`[x] + f(rest)`), leaves every level's copy in the outermost destination: memory O(n²) where counting needs O(n). Phase 2 must measure the peak memory against counting, on the benchmarks and on `strata check` of the compiler, before anything is on by default.
+The bounding problem. Counting frees a value at its last use, a region at its scope's end, and the garbage in between piles up while the scope lives. Loop bodies and statements are reset often, and the counted rules above catch the values replaced on each pass. Recursion is the case left. A recursive function that builds its result from its own recursive results, copying them (`[x] + f(rest)`), leaves every level's copy in the outermost destination: memory O(n²) where counting needs O(n). Phase 2b measured it (below).
 
 Phase 1, built (docs/internals.md, "Memory"; docs/tools-reference.md). `compiler/roots` computes the verdicts. With `--memory-sites`, codegen marks the IR with them and `counted_sites` totals, by root: the allocations at sites, the objects the runtime's calls make, and the releases with the releases they lead to inside helpers. A function's result takes its caller's verdict at run time. Without the flag nothing changes. Cases: `build-roots`, and the roots' totals in `build-memory_sites`. The analysis' helpers carry contracts that `verify` proves: `joined`, `common`, `home_code`, `reason_home`, `text_key`, `inside`, `in_loop_below`, `code_names`, `holds_nothing`.
 
@@ -1582,43 +1582,106 @@ Measured, `strata check` of the compiler package built with `--memory-sites` and
 - The benchmarks (`--release`): `trees` (lists of records built by a function in `main`'s loop) puts all 22M objects and all 20M releases in loop-body regions, through destination passing. `small` makes no heap objects at all (small values). `update` makes 300K objects, all in `main`'s region; 62.9% of its 15.9M releases are the counts of the record lent to `bump(mut c, …)`. `strings` makes 2.1M objects, 96.1% in regions (the `chr` temporaries, the lines' f-strings); the string grown by `s = s + chr(…)` is replaced in a loop. `tasks` puts all 2.5M objects in function regions: each task's rows in its own, and the shared list in `main`'s, borrowed by the tasks inside their `scope`.
 - Cost of the measurement: building the compiler with `--memory-sites` takes 40 s and peaks at 4.8 GB.
 
-Recommended phase 2, smallest useful first:
-- 2a: the run-time pieces (regions as chunk chains, release lists, poisoning in check mode) and statement regions for the temporaries a function makes in its own statements, with no change to calls: 21% of the objects. Its first deliverable is the peak memory against counting.
-- 2b: destination passing for results, with function and block regions: up to the 49.5% above.
-- Then, measured again: destinations through `mut` parameters a callee only grows, and lanes for lists grown in loops.
+The plan for phase 2 was 2a (the run-time pieces and statement regions, 21% of the objects), then 2b (destination passing, up to the 49.5% above), then destinations through `mut` parameters and lists grown in regions. The defaults it took, as recommended to the user: a hidden destination argument on every call, over two compiled versions of each function; a value replaced in a loop stays counted, since double buffering copies it each pass; `std.memory.arena` stays until regions cover what `check` uses it for; `mut` destinations only for parameters a callee only grows, after 2b is measured; no counted fallback for a function until a measurement shows recursion piling up garbage.
 
-Decisions for the user (the defaults are what phase 1 assumes):
-- How a function gets its destination: a hidden argument on every call, or two compiled versions of the functions whose results matter. Recommended: the hidden argument (one register, one test per allocation; two versions double the code).
-- A value replaced in a loop: counted, or copied each pass into a fresh region (double buffering). Recommended: counted. The copy costs O(size) per pass, where counting frees the old value in place.
-- `std.memory.arena`: keep it until regions cover what `check` uses it for, then remove it. Recommended.
-- Destinations through `mut` parameters: only for parameters a callee only grows, after phase 2 is measured. Recommended.
-- A way to run one function counted if recursion piles up garbage: none until a measurement shows the need. Recommended.
+Phase 2: measured and not kept (user, 2026-11-26): regions did not speed up `strata check` of the compiler; 2a reverted, 2b (#581) and lists in regions (#589) closed unmerged; the code stays on branches `regions-2a`, `regions-2b` and `regions-lists`. Phase 1 stays: `compiler/roots` and its `--memory-sites` verdicts. `std.memory.arena` stays.
 
+Phase 2 was built in three steps behind one option, `strata build --regions` (and `run --regions`), off by default. Each step was measured against counting with builds of the same sources. Instructions and cycles are averages of 3 runs. Counted objects are what `STRATA_MEMORY=1` reports. Peak is the largest resident set.
 
-Phase 2a: built (docs/internals.md, "Memory"). `strata build --regions` and `strata run --regions` put the values that die in the statement that makes them in that statement's region. It is off by default.
-- Run-time pieces, in core.rt. Each thread has one stack of regions, since statements nest: a statement's region is what the thread made after its mark. The stack is a chain of 1 MB chunks shared with the arenas' free chunks, plus one spare chunk per thread. Region objects have a count word of 0, so they need no mark of their own outside check mode. A release list in the region holds the counts its objects were given on counted fields, dropped at the reset. In check mode a region object is a malloc block, and a reset poisons it and marks it freed, so a use after the reset stops the program.
-- Codegen. A statement takes a mark (two loads from the thread's region state, found once per function) only when `roots.scoped` found a value it makes there. Its scope's end resets on every way out. Constructors, tuples, list literals, closures, f-strings, a string's `+` and the string built-ins that copy bytes go in the region; for the runtime's calls, allocation is routed there by setting the thread's arena word to 1. Calls and destinations are unchanged.
-- Decided here: an update in place of a region object always copies (it is never held once, and `compiler/unique` only proves variables, which never hold region objects). A supervising program doesn't route runtime calls, since a panic inside one would leave the routing on. A field's default and a lambda's body that is not a block never use a region. A cancelled task's leftover records are dropped when its thread ends.
-- Two gaps in phase 1's analysis, found by running the compiler built with regions; both make values look scoped that aren't. (1) A `+` whose operands weren't known lists was taken to be a string's, so `take(xs, k) + [s] + drop(xs, k + 1)` made `[s]` a temporary. A `+` is now a list's for `scoped` unless an operand is known to be a string; the verdicts of phase 1 are unchanged. A string here is a literal, an f-string or a built-in that makes only strings: `xs[a..b]` is a call of `slice`, which takes lists too, and taking it for a string's put `[x]` of `Ok(xs[..n] + [x])` in a region. (2) `kept_by` says whether a function keeps an argument, not what the argument holds: `local_value(g, n, V { ty, op: f"%lp.{k}" })` keeps the f-string inside its borrowed argument. A value that is part of an argument lent to a function of the program stays counted (`parts_lent`). The case `build-regions` covers both.
+Phase 2a, statement regions (#568, merged, then reverted). The values that die in the statement that makes them go in that statement's region.
+- Run time, in core.rt. Each thread has one stack of regions, since statements nest: a statement's region is what the thread made after its mark. The stack is a chain of 1 MB chunks shared with the arenas' free chunks, plus one spare chunk per thread. Region objects have a count word of 0. A release list in the region holds the counts its objects were given on counted fields, dropped at the reset. In check mode a region object is a malloc block, and a reset poisons it, so a use after the reset stops the program.
+- Codegen. A statement takes a mark only when `roots.scoped` found a value it makes there. Its scope's end resets on every way out (`break`, `continue`, `return`, `?`). Constructors, tuples, list literals, closures, f-strings, a string's `+` and the string built-ins that copy bytes go in the region. The runtime's calls allocate there when the thread's arena word is set to 1 around the call (routing).
+- Decided: an update in place of a region object always copies. A supervising program doesn't route, since a panic inside a routed call would leave the routing on. A field's default and a lambda's body that is not a block never use a region. A cancelled task's leftover records are dropped when its thread ends.
 
-Measured. Each pair is built by the same compiler; `--regions` compiles std with the program, so the baseline that also does is given too (std in the program, no regions). `strata check` of the compiler package, 3 runs each:
-- Objects: 182.7M counted without regions, 159.4M with them: 23.3M (12.8%) made in regions. Phase 1 estimated 38.5M for a function's own temporaries; the rest are lost to the two rules above and to lambda bodies.
-- Instructions: 83.4G without regions, 84.5G with them (+1.4%); std in the program without regions: 83.5G (a run of an earlier build). Cycles: 23.7G and 23.9G (+0.8%, within the noise of a shared machine). Peak memory: 492 and 499 MB; with `STRATA_JOBS=1` 362 and 360 MB, and 79.3G and 80.5G instructions.
-- Building the compiler with `--regions` takes 31 s and peaks at 2.1 GB (a warm cache; the analysis runs once more than for `--memory-sites`).
-- Before the marks, resets and bumps were inline, regions cost 7% more instructions. Most went to calls into core.rt for each mark and reset, each looking up the thread's state, and to a reset to the mark before the first chunk, which gave the chunk back on every pass of a loop.
-- Benchmarks (`--release`, instructions; cycles were within noise for all): `small` 8.58G both ways (no heap objects either way); `update` 2.015G both ways; `trees` 6.375G both ways (its objects are results and list elements, which need destination passing); `tasks` 2.30G both ways; `strings` 1.041G to 1.088G (+4.5%): its 1M `chr` temporaries go in regions, and each costs two routing calls and a bump against counting's allocation and free. Peak memory was the same for all.
-- Adversarial program (`[n] + up(n - 1)` copying its own results 20 times at depth 3000, then a recursion of depth 20000 holding an f-string across each recursive call): 2.10G instructions and 17 MB peak both ways. In 2a a result is always counted and a statement's temporaries live until the statement ends under counting too, so nothing piles up that counting would free earlier. The pile-up risk is phase 2b's, when results go to their caller's destination.
+| program (2a) | instructions counted / regions | peak MB counted / regions | counted objects counted / regions |
+|---|---|---|---|
+| `strata check` of the compiler | 83.4G / 84.5G (+1.4%) | 492 / 499 | 182.7M / 159.4M (12.8% in regions) |
+| the same, `STRATA_JOBS=1` | 79.3G / 80.5G | 362 / 360 | |
+| strings | 1.041G / 1.088G (+4.5%) | same | |
+| small, update, trees, tasks | unchanged (8.58G, 2.015G, 6.375G, 2.30G) | same | |
+| adversarial recursion | 2.10G / 2.10G | 17 / 17 | |
 
-Recommendation: keep `--regions` off by default. It is safe on every case: with it forced on for every program, the `build-` and `codegen-` cases pass, outputs equal and check mode clean, except the three that print the sites' counts or check that a build without the flag has no region (`build-memory_sites`, `build-roots`, `build-regions`). But it saves nothing measurable: a statement temporary is cheap to free, and the mark, reset, release records and routing cost about the same. Its value is as the base phase 2b needs.
+- Cycles on check: 23.7G and 23.9G, within the noise of a shared machine. Building the compiler with `--regions` took 31 s and peaked at 2.1 GB.
+- Phase 1 estimated 38.5M objects for a function's own temporaries. 2a moved 23.3M. The rest were lost to the two analysis gaps below and to lambda bodies.
+- The marks and resets must be inline. As calls into core.rt, each looking up the thread's state, they cost 7% more instructions. A reset to before the first chunk gave the chunk back on every pass of a loop, until the reset kept it.
+- `strings` lost because each of its 1M `chr` temporaries cost two routing calls and a bump, against counting's allocation and free. A statement temporary is cheap to free, and the mark, reset, release records and routing cost about the same.
+- The adversarial program (`[n] + up(n - 1)` copying its own results, and a recursion holding an f-string across each recursive call) piled nothing up: in 2a a result is always counted.
 
-What phase 2b needs:
-- Destination passing: a hidden region argument, with function and block regions. That needs regions other than the innermost one: a value made for a caller's destination goes below the callee's own marks, which one stack per thread can't do. Either a region per destination (a chain per scope, with chunks smaller than 1 MB so a deep recursion doesn't take a chunk per level) or two stacks (Goose's lanes).
-- `kept_by` for what an argument holds: a deep version would let parts of lent arguments into regions again.
-- Cheaper routing: a runtime call per routed call costs two calls; passing the destination to the string functions would remove them.
-- Borrowing: a field that is a variable outliving the statement, and not changed in it, needs no dup and no release record.
-- A type-aware `+`: roots has no types, so a string's `+` with two variables is taken to be a list's.
+Phase 2b, destination passing (#581, closed unmerged). Values whose home is a scope longer than their statement go in a region of that scope, and a function makes what it returns in the region its caller gives it.
+- Frame regions: a region per scope, 4 words in the frame of the function that owns the scope, freed on every way out of it. A destination needs a region other than the innermost one, so one stack per thread can't serve. Lanes (two stacks) were not chosen: a destination is not always the top of either stack. A frame region's first chunk is 256 bytes, each next one 8 times bigger up to 1 MB, with per-thread free lists for the 256-byte and 2 KB chunks.
+- A function that may make a value in its caller's destination is compiled as `NAME#dest` with a last `ptr` argument. `NAME` stays, as a wrapper passing null, for function values, trait tables and calls codegen makes itself. A null destination means counted. A function whose result is a number, a `Bool` or `()` takes none.
+- Runtime calls route to a frame region through the thread's arena word. An f-string made for a region that outlives its statement routes only its last concatenation, since its partial strings would stay in the region.
 
-Found, not fixed: `verify` can't run core.rt functions that read the thread's state unconditionally (`strata_region_state`, `region_alloc_kept`): their fuzz driver stops with `_tlv_bootstrap_error`, since the JIT sets up no thread-local storage. `arena_put` on main stops the same way.
+| program (2b) | instructions C / A / R | cycles C / A / R | peak MB C / A / R | counted objects C / A / R |
+|---|---|---|---|---|
+| `strata check` of the compiler | 84.4G / 85.6G / 86.8G | 24.3G / 24.2G / 25.9G | 492 / 500 / 502 | 184.7M / 161.1M / 165.6M |
+| the same, `STRATA_JOBS=1` | 80.2G / 81.5G / 82.6G | 20.2G / 20.5G / 20.6G | 368 / 367 / 367 | |
+| small | 8.58G / 8.59G / 8.75G | 1.82G / 1.76G / 1.74G | 1 / 1 / 1 | 8 / 1 / 1 |
+| update | 2.01G / 2.01G / 2.01G | 0.38G / 0.38G / 0.38G | 83 / 83 / 83 | 300K / 300K / 300K |
+| strings | 1.04G / 1.09G / 1.09G | 0.20G / 0.20G / 0.20G | 15 / 15 / 14 | 2.13M / 1.13M / 0.93M |
+| trees | 6.37G / 6.37G / 5.70G | 1.15G / 1.14G / 0.98G | 18 / 19 / 17 | 22.0M / 22.0M / 6.0M |
+| tasks | 2.32G / 2.31G / 1.62G | 0.99G / 0.95G / 0.35G | 108 / 108 / 103 | 2.50M / 2.50M / 0.10M |
+| 2a's adversarial | 2.10G / 2.10G / 2.10G | 0.47G / 0.46G / 0.46G | 17 / 17 / 17 | 1.04M / 1.04M / 1.04M |
+| recursions copying their results | 3.82G / 3.82G / 3.95G | 0.98G / 1.04G / 1.05G | 8 / 8 / 12 | 6.98M / 6.98M / 6.97M |
+
+C is counting, A is 2a, R is 2b.
+- On check, 2b put 19.1M objects (10.3%) in regions, fewer than 2a's 23.6M. The rule for what task-starting functions are given cost about 7M of 2a's objects. Destinations and function, loop and block regions added about 5M. Instructions were 2.8% above counting: the hidden argument, the wrappers, the frame regions' entry stores and inline frees, and the release records.
+- Destinations pay where records, strings and literal lists are made and dropped through direct calls: `trees` ran 15% fewer cycles with 73% fewer counted objects, `tasks` 65% fewer cycles, since its tasks no longer contend on counts.
+- The recursions (`bump` copying a record per level with `{ ..q }`, `wrapped` through another function, `[n] + up(n - 1)`, a string holding the level below's, at depth 2000): with every recursive result in the caller's destination, peak memory was 264 MB against counting's 8 MB, memory O(n²) where counting needs O(n). A recursive call that gets its caller's destination only when its result is the caller's own result brought it to 12 MB. The 4 MB left are a 256-byte chunk pinned by each level's block region.
+- Building the compiler with `--regions` took 40 to 58 s and peaked at 2.5 GB: `deep_kept` walks every function up to 4 more times.
+
+Rules 2b added to the analysis, each found by a crash or a freed object in a run of check or of the `build-` cases with regions forced on:
+- `deep_kept`: what a function keeps of its arguments is codegen's `kept_by` plus each parameter that reaches the function's result or a counted node, as a fixed point over the program (at most 4 rounds).
+- A `String` result may be the argument itself (`at(path, message)` returns `message` when `path` is empty). Only a number, a `Bool` or `()` holds nothing (`no_heap`).
+- What a function that may start tasks is given stays counted (`spawners`). A region object has a count of 0, so the walk that marks what crosses to a task stops at it, and what it holds would be counted by several threads without atomics.
+- A variable that may hold a region's object always tests whether it is held once before an update in place. A value lent `mut` to a function of the program stays counted.
+- A `+` with an operand known to be a number holds nothing of its operands.
+
+Lists in regions (#589, closed unmerged). A list whose home has a frame region is built and grown there: `[]`, a push, a list's `+` and `+=`.
+- A buffer a frame region made carries the region's tag in the word before its count, and a push tests the tag instead of the count. Lanes were not chosen: a list's elements are made in the same region between its pushes, so the buffer is rarely the region's last object.
+- A push onto a list held by a variable proven to hold it alone writes in place. Any other push makes a new 24-byte header in the region, and writes the slot in place when no other list used it, else copies into a buffer twice the size.
+- The compiled code records each counted value it pushes (one release record per element).
+- Dicts and sets stay counted: an insert in place needs the table held once, and a region object has no count to test.
+
+| program (lists) | instructions C / B / L | cycles C / B / L | peak MB C / B / L | counted objects C / B / L |
+|---|---|---|---|---|
+| `strata check` of the compiler | 86.3G / 86.8G / 87.2G | 25.1G / 24.6G / 24.7G | 494 / 504 / 505 | 185.1M / 166.0M / 163.0M |
+| the same, `STRATA_JOBS=1` | 80.5G / 83.0G / 83.5G | 20.5G / 21.4G / 21.3G | 370 / 374 / 370 | |
+| small | 8.58G / 8.75G / 8.75G | 1.73G / 1.75G / 1.74G | 1 / 1 / 1 | 8 / 1 / 1 |
+| update | 2.01G / 2.01G / 2.00G | 0.38G / 0.39G / 0.41G | 84 / 83 / 86 | 300K / 300K / 300K |
+| strings | 1.04G / 1.09G / 1.08G | 0.20G / 0.21G / 0.21G | 15 / 14 / 14 | 2.13M / 0.93M / 0.93M |
+| trees | 6.37G / 5.71G / 5.63G | 1.16G / 1.00G / 0.99G | 18 / 25 / 23 | 22.0M / 6.0M / 6.0M |
+| tasks | 2.35G / 1.62G / 1.52G | 0.98G / 0.38G / 0.39G | 109 / 105 / 118 | 2.50M / 0.10M / 0.10M |
+| 2a's adversarial | 2.10G / 2.11G / 2.11G | 0.49G / 0.48G / 0.48G | 17 / 17 / 17 | 1.04M each |
+| recursions copying their results | 3.83G / 3.95G / 3.95G | 1.01G / 1.08G / 1.05G | 8 / 12 / 12 | 6.98M / 6.97M / 6.97M |
+
+C is counting, B is 2b, L is 2b with lists.
+- On check, L made 3M fewer counted objects than B and ran the same cycles. Building the compiler with `--regions` took 69 s and peaked at 2.2 GB.
+- `update` (5M pushes onto one list) needs the proven in-place push to stay at counting's memory. Before it, each push made a header. Before the tag, a buffer over 1 MB was copied at every push, and memory grew past 3 GB.
+- `tasks` peaks 13 MB higher: its rows are lists in the tasks' function regions, held until each task returns.
+
+What was learned:
+- The compiler's remaining counted objects are lists and dicts the runtime grows. A call through a closure passes no destination, so recursions over trees through `map` with a lambda, or through `walk.kids`, are counted below their first level. Folds that join lists with `+` (`walk.kids`, `walk.kid_types`, `walk.pattern_kids`) count as replaced in a loop: 53M of the runtime's 93M objects. Lists grown through `mut` parameters stay counted.
+- What does move costs about what it saves. A variable that may hold region objects loses its proofs of being held once (on check, `owned.p` tests fell from 16.9M proven to 0.4M). Each counted element adds a release record, and each shared push a header. A bump is cheaper than the small-object allocator, but not by enough to show.
+- A recursion copying its own results must stay counted when its result goes to the caller's destination, or memory grows from O(n) to O(n²).
+- Tried and dropped in lists: a frame region for calls whose results die in a function body that is one expression. Inlining copied these regions into callers, and LLVM's code generation of one part ran past 8 minutes.
+
+Problems found on the way:
+- Two gaps in phase 1's analysis, found by running the compiler built with 2a. Both make values look scoped that aren't. (1) A `+` whose operands are not known to be lists is taken to be a string's, so `take(xs, k) + [s] + drop(xs, k + 1)` makes `[s]` a temporary. A string there would be a literal, an f-string or a built-in that makes only strings. `xs[a..b]` is a call of `slice`, which takes lists too. (2) `kept_by` says whether a function keeps an argument. It says nothing of what the argument holds: `local_value(g, n, V { ty, op: f"%lp.{k}" })` keeps the f-string inside its borrowed argument. 2a's fixes fed only `roots.scoped`. Phase 1's verdicts were the same with and without them, so they left with 2a, and the gaps stay in `--memory-sites`'s verdicts. 2b found a third: a `String` result is taken to hold nothing of the arguments (`holds_nothing`), though it may be one of them.
+- `verify` can't run functions that read thread-local storage: their fuzz driver stops with `_tlv_bootstrap_error`, since the JIT sets up no thread-local storage. 2a's `strata_region_state` and `region_alloc_kept` stopped this way, as does `arena_put` on main. 2b's `pool_take` and `pool_put` stopped `verify` silently.
+- An `I64` literal above 2^62 in core.rt (`address(rs) ^ 6614187340133218213`) compiles to a call of `strata_int_lit`, which recursed until the stack ran out in check mode. Lists in regions used a smaller constant. The miscompile is not fixed.
+- `strata build --no-verify` of a program using `?` on a `Result` where the function returns an `Option` compiles it, and the program reads garbage. `check` reports the error.
+- 2b's `dest_chunk_size` result refinement was only fuzzed: the solver reported a counterexample at `last = 32` that "depends on a union value" and doesn't fail when run.
+
+What each extension would need:
+- `mut` destinations: a second hidden region argument on every call of a function that only grows a parameter, and a destination for each value pushed into it. Estimated 5.4M runtime objects and 19.0M allocations at sites on check, about as many as 2b and lists moved together, which bought no cycles. Lists in regions already make the growth cheap.
+- Values replaced in a loop: rewrite the folds that join lists with `+` as loops pushing into one list. They would then be grows, and counting would do better too.
+- Closures: a destination argument in a closure's signature, with callers through a function value passing null or the region.
+- Scope children borrowing parent region objects: a run-time test telling a region object from a constant, for any object (chunks in a reserved address range). List buffers have it (the tag). Then the `spawners` rule could go.
+- Dicts in regions: an insert that keeps the old table, or counts on region tables.
+- A type-aware `+`: roots has no types, so a string's `+` of two variables is taken to be a list's.
+- Mutual recursion: the rule keeping non-returned recursive results counted looked only at direct recursion.
+- `std.memory.arena` stays until these exist: `check` runs each function in an arena whose results are the lists and dicts above.
 
 ### Memory: static uniqueness (asked by the coordinator 2026-11-26; built, branch `static-unique`)
 An update in place tests at run time whether its value is held once (`strata_unique`, `strata_list_owned`, `strata_tbl_owned`, `strata_list_pushable`) and copies the value otherwise. Decided: a dataflow analysis proves the test true where it can, before the functions are compiled, and codegen leaves the proven tests out. The user chose dataflow over solver queries for the cases that depend on a path.
