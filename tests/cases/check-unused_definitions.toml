@@ -1,0 +1,216 @@
+# What a whole package never uses (compiler/unused): a private function,
+# type, field or variant nothing reaches from the roots (`main`, tests, `pub`
+# and `extern` definitions, derived types, what contracts name) is a warning.
+# A name starting with `_`, a `pub` one, a test's helper, a function called
+# as a method, an impl of a live trait for a live type, a derived type and a
+# function named only in a contract are not. `strata fix` removes a dead
+# definition. `[check] unused = "error"` makes each an error: `check`, `run`
+# and `build` refuse, and an edit that adds one is rejected; another value
+# is refused.
+
+[[step]]
+write = "p/strata.toml"
+text = 'name = "p"'
+
+[[step]]
+module = "shapes"
+into = "$TMP/p/"
+text = '''
+pub type Shape =
+  | Circle(Int)
+  | Square(Int)
+
+pub fn area(s: Shape) -> Int {
+  match s {
+    Circle(r) => 3 * r * r,
+    Square(a) => a * a,
+  }
+}
+
+fn twice(x: Int) -> Int { x * 2 }
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+text = '''
+from shapes use area, Shape, Circle
+from std.json use Json
+
+trait Describe {
+  fn describe(self) -> String
+}
+
+type Live = { n: Int }
+
+impl Describe for Live {
+  fn describe(self) -> String { f"{self.n}" }
+}
+
+type Dead = { n: Int }
+
+impl Describe for Dead {
+  fn describe(self) -> String { "dead" }
+}
+
+type Saved = { a: Int, b: Int }
+
+derive Json for Saved
+
+type Point = { x: Int, y: Int, unused_field: Int }
+
+type Color =
+  | Red
+  | Green
+  | Blue
+
+fn helper(x: Int) -> Int { x + 1 }
+
+fn dead_fn(x: Int) -> Int { x * 2 }
+
+fn _kept(x: Int) -> Int { x }
+
+fn small(x: Int) -> Bool { x < 100 }
+
+fn checked(x: Int, y: Int) -> Int requires small(x + y) { x }
+
+fn tested(x: Int) -> Int { x }
+
+test "a test's helper" {
+  assert tested(1) == 1
+}
+
+fn main() {
+  p := Point { x: 1, y: 2, unused_field: 3 }
+  c := if p.x > 0 { Green } else { Red }
+  name := match c {
+    Red => "red",
+    Green => "green",
+    Blue => "blue",
+  }
+  print(f"{p.x + p.y} {name} {3.helper()} {checked(2, 1)} {area(Circle(2))} {Live { n: 1 }.describe()} {_kept(1)}")
+}
+'''
+
+[[step]]
+strata = ["check"]
+dir = "p"
+has = [
+  "warning: `dead_fn` is never used (remove it with `strata fix`, or make it `pub`)",
+  "warning: `Dead` is never used",
+  "warning: `shapes.twice` is never used",
+  "warning: field `unused_field` of `Point` is never read (remove it, or name it `_unused_field`)",
+  "warning: variant `Blue` of `Color` is never built, only matched (remove it)",
+  "ok: ",
+]
+lacks = ["`helper`", "`_kept`", "`small`", "`checked`", "`tested`", "`Live`", "`Describe`", "`Saved`", "`Square`", "`Red`", "`area`", "impl"]
+
+[[step]]
+strata = ["fix", "dead_fn", "--no-commit"]
+dir = "p"
+has = ["fixed: removed `dead_fn`, which is never used"]
+lacks = ["`Dead`"]
+
+[[step]]
+strata = ["fix", "Dead", "--no-commit"]
+dir = "p"
+has = ["fixed: removed `Dead`, which is never used", "fixed: removed `impl Describe for Dead`, of what is never used"]
+
+[[step]]
+strata = ["check"]
+dir = "p"
+has = ["warning: `shapes.twice` is never used"]
+lacks = ["dead_fn", "`Dead`"]
+
+[[step]]
+write = "p/strata.toml"
+text = '''
+name = "p"
+
+[check]
+unused = "error"
+'''
+
+[[step]]
+strata = ["check"]
+dir = "p"
+code = 1
+has = [
+  "error in shapes.twice: `shapes.twice` is never used",
+  "error in Point: field `unused_field` of `Point` is never read",
+]
+
+[[step]]
+strata = ["run"]
+dir = "p"
+code = 1
+has = ["error in shapes.twice: `shapes.twice` is never used"]
+
+[[step]]
+strata = ["build", "--no-verify", "-o", "prog"]
+dir = "p"
+code = 1
+has = ["`shapes.twice` is never used"]
+
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "p"
+text = '''
+fn another_dead() -> Int { 1 }
+'''
+code = 1
+has = ["`another_dead` is never used"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "p"
+lacks = ["another_dead"]
+
+[[step]]
+write = "p/strata.toml"
+text = '''
+name = "p"
+
+[check]
+unused = "loud"
+'''
+
+[[step]]
+strata = ["check"]
+dir = "p"
+code = 2
+has = ['[check] unused is "warn" or "error", not "loud"']
+
+# a script without `main` is not looked at; with one, its dead definitions
+# are reported
+[[step]]
+save = "lib.strata"
+text = '''
+fn alone(x: Int) -> Int { x }
+'''
+
+[[step]]
+strata = ["check", "lib.strata"]
+lacks = ["never used"]
+
+[[step]]
+save = "s.strata"
+text = '''
+fn alone(x: Int) -> Int { x }
+
+fn main() {
+  print("hi")
+}
+'''
+
+[[step]]
+strata = ["check", "s.strata"]
+has = ["warning: `alone` is never used"]
+
+[[step]]
+strata = ["--file", "s.strata", "fix"]
+has = ["fixed: removed `alone`, which is never used"]
+
+[[step]]
+strata = ["check", "s.strata"]
+lacks = ["alone"]

@@ -46,12 +46,12 @@ The reference has the same bug in both Python and TypeScript. `_release` puts ta
 
 The property is stated once, as `Entry`'s refinement, so every backend must preserve it wherever it writes an entry; a backend that releases to Pending on the last attempt doesn't type-check. The queue's contracts describe the component as a whole, not the input and output of single calls:
 
-- Each method is specified against the model. `claim` hands out only pending tasks, each now `Running` under `by`'s lease with one more attempt, and changes nothing else. `record` and `release` succeed exactly when `by` holds every task and no result is reported twice, and a refused call changes nothing. `expire` gives back exactly the overdue tasks.
+- Each method is specified against the model. `claim` hands out only pending tasks, each once (`unique`), each now `Running` under `by`'s lease with one more attempt, and changes nothing else: `self.entries.excluding(ids) == (old self.entries).excluding(ids)`, a frame the solver reads as the table's array with those keys masked. `record` and `release` succeed exactly when `by` holds every task and no result is reported twice, and a refused call changes nothing. `expire` gives back exactly the overdue tasks.
 - Every method (the trait's `ensures`) keeps the policy unchanged, never removes or alters a task, and starts each new entry as Pending with no attempt.
 - Three laws, all proven for `MemQueue`: enqueuing again adds nothing, two claims never hand out the same task, and a worker whose lease expired can't report.
 - The queue is `shared`, since many workers use it, so entrypoints rely only on what each call returns: `run_worker` returns one result per claimed attempt, at most a batch, each id once.
 
-`strata --file examples/tasks verify` proves the helpers, `drain`, `run_producer`, the demo, `empty_queue`, `MemQueue.claim` and all three laws. `enqueue`, `record`, `release` and `expire` are fuzzed without a counterexample, with most of their checks proven. The unproven checks are in their loops, whose invariants relating the table to its value before the loop are not inferred, and in `record`'s refusal path (see "Examples over trait models: what the prover lacks" in `IDEAS.md`).
+`strata --file examples/tasks verify` proves the helpers, `drain`, `run_producer`, the demo, `empty_queue`, and the laws `enqueue_once` and `late_worker_refused`. `MemQueue`'s methods and `no_double_claim` are fuzzed without a counterexample, with most of their checks proven. The unproven checks are in their loops, whose invariants relating the table to its value before the loop are not inferred, and in `record`'s refusal path (see "Examples over trait models: what the prover lacks" in `IDEAS.md`).
 
 ## Gaps compared with the reference
 

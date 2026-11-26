@@ -30,12 +30,12 @@ strata = ["merge-file", "o.strata", "a.strata", "b.strata", "core/builtins.strat
 [[step]]
 run = ["sh", "-c", "\"$STRATA\" header a.strata | head -1; \"$STRATA\" --no-pager --file a.strata view core.builtins | grep -c 'builtin fn to_int('; \"$STRATA\" --no-pager --file a.strata view core.builtins | grep -B1 'builtin fn to_int(x: \\(I8\\|I16\\|U64\\))'"]
 stdout = '''
-module core.builtins: 131 definitions
+module core.builtins: 135 definitions
 8
 /// `x` as an `Int` (ours).
 builtin fn to_int(x: I8) -> Int
 --
-/// `x` as an `Int`.
+
 builtin fn to_int(x: I16) -> Int
 --
 /// `x` as an `Int` (theirs).

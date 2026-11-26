@@ -1,0 +1,105 @@
+# Frames, key sets and uniqueness as the solver's own operations:
+# `d.excluding(keys)` is the dict's array masked, so "nothing else changed"
+# needs no quantifier over its entries (also through a loop, whose
+# invariant is the frame over the keys visited); `d.key_set()` the keys
+# whose entry is present;
+# `set(xs)` exactly the list's elements (a witness of each member's
+# position); `unique(xs)` position to element one to one (an inverse).
+# Contracts using them are proven, wrong ones refuted.
+[[step]]
+strata = ["--file", "t.strata", "edit"]
+text = '''
+fn put(mut d: Dict[String, Int], k: String, v: Int)
+  ensures d.excluding([k]) == old d.excluding([k])
+  ensures d.get(k) == Some(v) {
+  mut d.insert(k, v)
+}
+
+fn put_wrong(mut d: Dict[String, Int], k: String, j: String, v: Int)
+  ensures d.excluding([j]) == old d.excluding([j]) {
+  mut d.insert(k, v)
+}
+
+fn put_set(mut d: Dict[String, Int], k: String, v: Int)
+  ensures d.excluding(set([k])) == old d.excluding(set([k])) {
+  mut d.insert(k, v)
+}
+
+fn put_many(mut d: Dict[String, Int], ks: List[String])
+  ensures d.excluding(ks) == old d.excluding(ks) {
+  d0 := d
+  mut i := 0
+  while i < len(ks)
+    invariant d.excluding(take(ks, i)) == d0.excluding(take(ks, i)) {
+    mut d.insert(ks[i], 0)
+    i += 1
+  }
+}
+
+fn keys_of(d: Dict[String, Int], k: String) -> Bool
+  ensures it == d.contains(k) {
+  d.key_set().contains(k)
+}
+
+fn keys_wrong(d: Dict[String, Int], k: String) -> Bool
+  ensures it {
+  d.key_set().contains(k)
+}
+
+fn in_set(xs: List[String], i: Int) -> Bool
+  requires 0 <= i && i < len(xs)
+  ensures it {
+  set(xs).contains(xs[i])
+}
+
+fn member(xs: List[String], k: String) -> Bool
+  ensures it == xs.contains(k) {
+  set(xs).contains(k)
+}
+
+fn first_two(xs: List[Int]) -> Bool
+  requires len(xs) >= 2 && unique(xs)
+  ensures it {
+  xs[0] != xs[1]
+}
+
+fn dup(x: Int) -> Bool
+  ensures !it {
+  unique([x, 5, x])
+}
+
+fn dup_wrong(xs: List[Int]) -> Bool
+  requires len(xs) >= 2
+  ensures it {
+  unique(xs)
+}
+
+fn main() {
+  mut d := Dict[String, Int] {}
+  put(mut d, "a", 1)
+  print(d.excluding(["a"]) == Dict[String, Int] {})
+  print(d.key_set().contains("a"))
+  print([1, 2, 1].unique())
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--no-write"]
+fails = true
+has = [
+  "✓ put ",
+  "✗ put_wrong",
+  "✓ put_set",
+  "✓ put_many",
+  "✓ keys_of",
+  "✗ keys_wrong",
+  "✓ in_set",
+  "✓ member",
+  "✓ first_two",
+  "✓ dup ",
+  "✗ dup_wrong",
+]
+
+[[step]]
+strata = ["--file", "t.strata", "run"]
+has = ["true\ntrue\nfalse\n"]

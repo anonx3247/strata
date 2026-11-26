@@ -1,15 +1,18 @@
 # A loop's invariants are first derived from its code, with no search
-# (`--show-searches`: 0k for each loop): induction variables and their
+# (`--show-searches`: no search): induction variables and their
 # linear relations (`two_vars`), places only going up (`grows`, with a
 # branch and a length), bounds from the condition (`count_up`'s `i <= n`;
 # `down`'s `k >= 0` under `k != 0`), places given only literals (`flag`),
 # lists only pushed to (`pushes`), and the same at the head of a `for` and
-# a `loop` (`after_for`, `first_over`). The search runs only where a check
-# still fails, lazily: `needs_search`'s `ensures` names `best`, which jumps
-# to `i`, so it is searched for, and found.
+# a `loop` (`after_for`, `first_over`). `verify` searches nothing; `edit`
+# searches only where a check still fails: `needs_search`'s `ensures`
+# names `best`, which jumps to `i`, so it is searched for, found and
+# written into the code, where `verify` proves it.
 
 [[step]]
-save = "t.strata"
+strata = ["--file", "t.strata", "edit"]
+has = ["warning: in `needs_search`: added `invariant i >= best` to `while i < n` (found by search)"]
+lacks = ["in `count_up`: added", "in `two_vars`: added", "in `grows`: added", "in `flag`: added", "in `pushes`: added", "in `down`: added", "in `after_for`: added", "in `first_over`: added"]
 text = '''
 fn count_up(n: Natural) -> Natural
   ensures it == n {
@@ -115,7 +118,7 @@ fn needs_search(n: Natural) -> Int
 '''
 
 [[step]]
-strata = ["--file", "t.strata", "verify", "--checks", "--no-race", "--no-cache", "--no-write", "--show-searches"]
+strata = ["--file", "t.strata", "verify", "--checks", "--no-race", "--no-cache", "--show-searches"]
 has = [
   "✓ count_up ",
   "invariant of `while i < n`: i <= n (derived)",
@@ -134,15 +137,9 @@ has = [
   "✓ first_over ",
   "invariant of `loop`: i >= i₀ (derived)",
   "✓ needs_search ",
-  "invariant of `while i < n`: it <= n (it = best) (inferred)",
-  "search `count_up` `while i < n`: 0k, 0.0 s: nothing",
-  "search `two_vars` `while i < n`: 0k, 0.0 s: nothing",
-  "search `grows` `while k < n`: 0k, 0.0 s: nothing",
-  "search `pushes` `while i < n`: 0k, 0.0 s: nothing",
-  "search `down` `while k != 0`: 0k, 0.0 s: nothing",
-  "search `needs_search` `while i < n`: ",
-  ": it <= n (it = best), ",
+  "proven:  invariant `i >= best` after a pass of `while i < n`",
 ]
+lacks = ["search `", "searches:", "(inferred)"]
 
 # nothing wrong is derived: a sized integer wraps (`wraps`), a `break` in
 # the middle of a pass leaves a state no invariant describes (`half_pass`),
@@ -185,6 +182,6 @@ fn by_two(n: Natural) -> Int
 '''
 
 [[step]]
-strata = ["--file", "w.strata", "verify", "--no-race", "--no-cache", "--no-write"]
+strata = ["--file", "w.strata", "verify", "--no-race", "--no-cache"]
 fails = true
 has = ["✗ wraps ", "✗ half_pass ", "✗ by_two "]
