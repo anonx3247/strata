@@ -598,11 +598,11 @@ clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
   - A `derived fn` with parameters (`derived fn json(args: String) -> String { .. }`) is a wrapper around the function, exported as `NAME_METHOD` (`add_json`). Its body calls the function with `Self.call(p -> e)` or `Self.try_call(p -> e)`, where `e` gives each argument and `p` is its parameter, a `Field`.
   - `derived fn h() -> String { comptime ... }` produces, at compile time, the function's part of the file `NAME.h`. Here `Self` is the function, as a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`. A file is its parts in order, with each paragraph (up to a blank line) included once.
 
-  - A `derived fn` with no parameters giving another type (`derived fn tool() -> Tool { .. }`) is a **value standing for the function**: where the function is used as a value and not called, it is that value. `std.agent`'s `AsTool` makes `add`, written in a list of tools, a `Tool`. Calls of `add` are unchanged.
+  - A `derived fn` taking `self` (`derived fn name(self) -> String { .. }`) is a method of a type the derive makes for the function (`Tool$add`, a record of the parameters it binds), which implements the trait. Where the function is used as a value, not called, it is that type's value, so `add` is a value of the trait: `std.agent`'s `derive Tool for add` puts `add` in a `List[Tool]`. Calls of `add` are unchanged.
 
   `C` is therefore written in Strata, like `Json` (see "Derives on functions" in IDEAS.md).
-- **Arguments.** A derive takes arguments after its trait, each a word and names: `derive AsTool(bind: net) for search`, several separated by `;`. They are `Self.clauses` while deriving, as a type derive's block clauses are. `bind` is read by the derive machinery itself. The parameters it names are left to the use: the value takes them, written `search.with(net)`, in their order in `bind`, and `Self.call` passes them through. A function with bound parameters used as a value without `.with` is an error: "`search` needs `net`: write `search.with(net)`".
-- **Written above the function**: `derive AsTool for` on the line before `fn add(…)` derives it for that function, as `derive Json for` does for a type.
+- **Arguments.** A derive takes arguments after its trait, each a word and names: `derive Tool(bind: net) for search`, several separated by `;`. They are `Self.clauses` while deriving, as a type derive's block clauses are. `bind` is read by the derive machinery itself. The parameters it names are left to the use: they are the fields of the type made for the function, given as `search.with(net)` in their order in `bind`, and `Self.call` passes them from `self`. A function with bound parameters used as a value without `.with` is an error: "`search` needs `net`: write `search.with(net)`".
+- **Written above the function**: `derive Tool for` on the line before `fn add(…)` derives it for that function, as `derive Json for` does for a type.
 
 ### `derive Python for f`
 
@@ -658,7 +658,7 @@ The standard library is the `std/` package. It is written in Strata and built in
 | [std.collections](std/collections.md) | Sorted dictionaries and sets (AVL trees), and a priority queue (binary heap). |
 | [std.ffi](std/ffi.md) | Calling Strata from other languages: `derive C for f`, `derive Python for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
-| [std.agent](std/agent.md) | An LLM agent loop: a conversation of `Message`s, tools made from functions (`derive AsTool`), and `run` / `run_streamed`, which run the tools a `Model` calls (`Claude`, through Anthropic's Messages API, streamed or not, or a mock). |
+| [std.agent](std/agent.md) | An LLM agent loop: a conversation of `Message`s, tools (the `Tool` trait, derived for functions: `derive Tool for add`), and `run` / `run_streamed`, which run the tools a `Model` calls (`Claude`, through Anthropic's Messages API, streamed or not, or a mock). |
 | [std.http](std/http.md) | HTTP/1.1: requests, responses and routes, a client (`send`, `fetch`, `open` for a body read as it arrives, TLS for `https://`) and a server (`serve`), over any `Stream`. |
 | [std.io](std/io.md) | Console text input and output. |
 | [std.json](std/json.md) | JSON text, and reading and writing records and sum types as JSON. |

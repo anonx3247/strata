@@ -80,10 +80,10 @@ std.agent.Source std.agent.Sse std.agent.next_chunk std.agent.step std.agent.clo
 std.http.Streaming std.http.start std.http.some_bytes std.http.newline_in std.http.request_head std.http.read_head: a response read as it arrives
 ```
 
-# Tools from functions: `derive AsTool`
-`derive AsTool for` above a function makes the function, used as a value, a `Tool`: name, doc, a JSON Schema from its parameters' types, and a call decoding them. `derive AsTool(bind: notes)` leaves `notes` to the use, `note.with(notes)`.
+# Tools from functions: `derive Tool`
+`Tool` is a trait (`name`, `description`, `schema`, `call`), derivable for functions: `derive Tool for` above a function makes it implement `Tool`, so `add` is a value in a `List[Tool]`, a list of trait values. The name, doc, a JSON Schema from its parameters' types, and a call decoding them. `derive Tool(bind: notes)` leaves `notes` to the use, `note.with(notes)`, a value holding it.
 
-```strata-diff std.agent.AsTool std.agent.Tool std.agent.input_schema std.agent.schema_of
+```strata-diff std.agent.Tool std.agent.input_schema std.agent.schema_of
 ```
 
 ```strata-also
@@ -92,7 +92,7 @@ std.agent.tool_argument std.agent.tool_output: the call's input and output as JS
 ```
 
 # Derives with arguments, and derived values
-The compiler side: `derive T(bind: x) for f` stores its arguments as the derive's clauses (`Self.clauses`). A `derived fn` with no parameters giving another type is a value standing for the function, specialized to take the bound parameters, and `value_uses` puts it where the function is used as a value, `f.with(x)` included. An unbound use is an error.
+The compiler side: `derive T(bind: x) for f` stores its arguments as the derive's clauses (`Self.clauses`). A `derived fn` taking `self` is a method of a type made for the function (`Tool$f`, a record of the bound parameters, implementing the trait), and `value_uses` puts that type's value where the function is used as a value, `f.with(x)` included. An unbound use is an error.
 
 ```strata-diff derive.derive_fn derive.value_uses derive.value_use parse.derive_args
 ```
@@ -106,10 +106,10 @@ derive.Expander derive.call_fn derive.fn_value derive.clause_values derive.bound
 expanded: the rewrite applied to the whole program
 ```
 
-# Two fixes found on the way
-A std union mixing its own variants with member types (`Content`) failed in codegen: its own sum was named unqualified. And a type pattern naming a union of some members (`AgentError => c`) wasn't compiled.
+# Fixes found on the way
+A std union mixing its own variants with member types (`Content`) failed in codegen: its own sum was named unqualified. A type pattern naming a union of some members (`AgentError => c`) wasn't compiled. And a list literal of trait values didn't turn a call's result into one.
 
-```strata-diff desugar.mixed_unions codegen.matches
+```strata-diff desugar.mixed_unions codegen.matches codegen.list_literal_of
 ```
 
 # Routine

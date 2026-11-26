@@ -1,7 +1,7 @@
 # std.agent
 
 An LLM agent loop: the model calls tools, the loop runs them and answers, until a reply calls none.
-The model is a `Model`: `Claude` calls Anthropic's Messages API over HTTPS, or a mock in tests. A tool is a function with `derive AsTool`.
+The model is a `Model`: `Claude` calls Anthropic's Messages API over HTTPS, or a mock in tests. A tool is a `Tool`: a function with `derive Tool`, or any type implementing it.
 
 ## Types
 
@@ -119,22 +119,6 @@ type NoKey
 
 The environment has no `ANTHROPIC_API_KEY`.
 
-### Tool
-
-```rust
-type Tool = {
-  name: String,
-  description: String,
-  schema: JsonValue,
-  call: (JsonValue) -> Result[String, String],
-}
-```
-
-A tool the model may call: its name, what it does, the JSON Schema of
-its input, and the code that runs it on the model's input, giving the
-output as JSON text or a failure the model sees.
-`derive AsTool for f` makes one from a function.
-
 ### Stream
 
 ```rust
@@ -214,22 +198,30 @@ The request's headers.
 
 ## Traits
 
-### AsTool
+### Tool
 
 ```rust
-derivable(Function) trait AsTool {
-  /// The function as a tool.
-  derived fn tool() -> Tool
+derivable(Function) trait Tool {
+  /// The name the model calls it by.
+  derived fn name(self) -> String
+  /// What it does, for the model.
+  derived fn description(self) -> String
+  /// The JSON Schema of its input.
+  derived fn schema(self) -> JsonValue
+  /// Runs it on the model's input: the output as JSON text, or why it failed.
+  derived fn call(self, input: JsonValue) -> Result[String, String]
 }
 ```
 
-A function the model can call. `derive AsTool for add` makes `add`,
-used as a value, a `Tool`: its name, its doc comment as the description,
-the JSON Schema of its parameters (each a type with a JSON form), and a
-call that reads them from the model's input and writes the `Ok` value
-back as JSON; an `Err` is a failed call the model sees.
-`derive AsTool(bind: net) for search` leaves `net` out of the schema:
-the use gives it, `search.with(net)`.
+A tool the model may call: its name, what it does, the JSON Schema of
+its input, and the code that runs it on the model's input, giving the
+output as JSON text or a failure the model sees.
+`derive Tool for add` makes the function `add`, used as a value, a tool:
+its doc comment is the description, the schema comes from its
+parameters' types (each with a JSON form), and the call reads them from
+the input and writes the `Ok` value back as JSON; an `Err` is a failed
+call. `derive Tool(bind: net) for search` leaves `net` out of the schema:
+the use gives it, `search.with(net)`. Any other type can implement it.
 
 ### Model
 

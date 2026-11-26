@@ -72,9 +72,9 @@ golden = "tests/data/build/expected/std_net-sse.out"
 [[step]]
 save = "unbound.strata"
 text = '''
-from std.agent use AsTool, Tool
+from std.agent use Tool
 
-derive AsTool(bind: base) for
+derive Tool(bind: base) for
 fn shift(base: Int, n: Int) -> Result[Int, String] {
   Ok(base + n)
 }
