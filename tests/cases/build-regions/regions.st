@@ -1,0 +1,91 @@
+// Statement regions (`--regions`): values that die in the statement that
+// makes them are made in its region and freed when it ends.
+
+from std.memory use arena
+
+type P = { name: String, n: Int, tags: List[String] }
+
+type Row = { id: Int, label: String }
+
+fn weight(p: P) -> Int {
+  p.n + byte_len(p.name) + len(p.tags)
+}
+
+fn count(xs: List[Int], f: (Int) -> Bool) -> Int {
+  mut k := 0
+  for x in xs {
+    if f(x) {
+      k += 1
+    }
+  }
+  k
+}
+
+fn width(pair: (String, Int)) -> Int {
+  byte_len(pair.0) + pair.1
+}
+
+/// Leaves its statement early: `return`, `break` and `continue` reset the
+/// regions they leave.
+fn early(n: Int) -> Int {
+  mut s := 0
+  for i in 0..n {
+    if byte_len(f"{i}") > 2 {
+      break
+    }
+    if i % 2 == 0 {
+      s += weight(P { name: f"e{i}", n: 1, tags: [] })
+      continue
+    }
+    if i == 77 {
+      return s + width((f"r{i}", i))
+    }
+    s += 1
+  }
+  s
+}
+
+/// What a task reads stays counted; each task's own statements have their
+/// own regions.
+fn task_work(rows: List[Row], k: Int) -> Int {
+  mut s := 0
+  for r in rows {
+    s += weight(P { name: f"{r.label}{k}", n: r.id, tags: [r.label] })
+  }
+  s
+}
+
+fn in_arena(i: Int) -> List[String] {
+  mut out := []
+  for j in 0..3 {
+    mut out.push(f"a{i}.{j}")
+    _ := weight(P { name: f"t{j}", n: j, tags: [f"x{j}"] })
+  }
+  out
+}
+
+fn main() {
+  mut total := 0
+  base := "item"
+  big := 1000000000000000000000
+  mut kept := []
+  for i in 0..300 {
+    total += weight(P { name: f"{base}-{i}", n: i * big, tags: [base, f"t{i}"] })
+    total += byte_len(chr(65 + i % 26) + "x") + byte_len(trim(f"  {i} "))
+    total += count([1, 2, i], x -> x > i - 1 + big - big)
+    total += width((base + "!", i))
+    mut kept.push(f"k{i}")
+    total += { s := f"in{i}"; byte_len(s) + byte_len(f"{s}{s}") }
+  }
+  total += early(10) + early(100) + early(1000)
+  rows := [Row { id: 1, label: "a" }, Row { id: 2, label: "b" }]
+  sums := scope {
+    mut hs := []
+    for t in 0..4 {
+      mut hs.push(spawn task_work(rows, t))
+    }
+    await hs
+  }
+  made := arena(() -> in_arena(7))
+  print(f"{total} {len(kept)} {sum(sums)} {made}")
+}
