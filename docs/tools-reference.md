@@ -147,6 +147,10 @@ memory roots:                                    allocs   in arena      runtime 
 
 With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts), the code and the root. A function's result has the root `result`: it takes its caller's at run time. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
 
+## Counting everything: `--no-regions`
+
+`strata build` and `strata run` put the values that live only in the statement making them in the thread's region (docs/internals.md, "Regions"). `--no-regions` builds the program with every value counted, to compare the two. A `--memory-sites` build counts everything too.
+
 ## Docs in the terminal: `strata doc`
 
 `strata doc [TOPIC]` (`compiler/markdown` renders, `compiler/docgen` finds definitions) looks TOPIC up in this order:
