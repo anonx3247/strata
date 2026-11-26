@@ -1,7 +1,8 @@
 # std.array: construction, views (transpose, slice, row), broadcasting,
 # reductions along axes, dot and matmul, built and run with every object
-# freed, and under `strata run`; matmul's shape contract proven or refuted
-# by `verify` at the call sites
+# freed, and under `strata run`; matmul's shape contract and the magnitude
+# bounds that keep float results finite proven or refuted by `verify` at the
+# call sites
 
 [[step]]
 save = "arrays.strata"
@@ -26,4 +27,4 @@ from = "proofs.st"
 [[step]]
 strata = ["verify", "proofs.strata"]
 code = 1
-has = ["✓ square                   proven (2 checks)", "✓ chain                    proven (8 checks)", "✗ mismatch                 Requires violation (found by the solver)", "precondition of `std.array.matmul` violated"]
+has = ["✓ square                   proven (2 checks)", "✓ chain                    proven (6 checks)", "✓ mean_of                  proven (3 checks)", "✗ mismatch                 Requires violation (found by the solver)", "precondition of `std.array.matmul` violated"]

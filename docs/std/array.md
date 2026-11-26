@@ -24,6 +24,7 @@ An n-dimensional array of `Float`s: a view of a flat list.
 - Arithmetic, reductions and `matmul` read row-major data. A view that isn't row-major is copied once first (`compact`, O(n)).
 - Build arrays with `zeros`, `ones`, `full`, `arange`, `from_list` and `from_rows`. Their strides and offset stay inside `data`.
 - Changing an element (`mut a.set`) copies the data first when another array shares it.
+- Arithmetic takes bounds on the elements' magnitudes (`within`), so that every float result is finite.
 
 ### Matrix
 
@@ -49,15 +50,39 @@ Cost: O(1).
 
 ```rust
 fn size(self) -> Natural
+  ensures it == count(self.shape)
 ```
 
 The number of elements.
 Cost: O(number of axes).
 
+### Array.within
+
+```rust
+fn within(self, b: Float) -> Bool
+  assumed ensures it == all(self.to_list(), x -> abs(x) <= b)
+  assumed ensures it ==> all(self.to_list(), x -> abs(x) <= b)
+```
+
+Whether every element is at most `b` in magnitude. The arithmetic's contracts use it, so that no result overflows.
+Cost: O(n), plus the copy `to_list` makes of a view that isn't row-major.
+
+### Array.at_least
+
+```rust
+fn at_least(self, m: Float) -> Bool
+  assumed ensures it == all(self.to_list(), x -> abs(x) >= m)
+  assumed ensures it ==> all(self.to_list(), x -> abs(x) >= m)
+```
+
+Whether every element is at least `m` in magnitude: `div`'s divisor is at least the inverse of `factor_bound`.
+Cost: O(n), as `within`.
+
 ### Array.is_compact
 
 ```rust
 fn is_compact(self) -> Bool
+  ensures !it || len(self.data) == count(self.shape)
 ```
 
 Whether the array reads its data row-major from its start to its end, so the data is its elements in order.
@@ -67,6 +92,7 @@ Cost: O(number of axes).
 
 ```rust
 fn to_list(self) -> List[Float]
+  ensures len(it) <= self.size()
 ```
 
 The elements in row-major order.
@@ -176,9 +202,10 @@ Cost: O(n) calls of `f`, n the size of the broadcast shape.
 ```rust
 fn add(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(add_bound()) && other.within(add_bound())
 ```
 
-Element by element, broadcast.
+Element by element, broadcast. Both `within(add_bound())`, so no sum overflows.
 Cost: O(n).
 
 ### Array.sub
@@ -186,9 +213,10 @@ Cost: O(n).
 ```rust
 fn sub(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(add_bound()) && other.within(add_bound())
 ```
 
-Element by element, broadcast.
+Element by element, broadcast. Both `within(add_bound())`, so no difference overflows.
 Cost: O(n).
 
 ### Array.mul
@@ -196,9 +224,10 @@ Cost: O(n).
 ```rust
 fn mul(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(factor_bound()) && other.within(factor_bound())
 ```
 
-Element by element, broadcast.
+Element by element, broadcast. Both `within(factor_bound())`, so no product overflows.
 Cost: O(n).
 
 ### Array.div
@@ -206,9 +235,11 @@ Cost: O(n).
 ```rust
 fn div(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(factor_bound())
+    && other.at_least(1.0 / factor_bound())
 ```
 
-Element by element, broadcast. A division by 0.0 fails, as `/` on floats does.
+Element by element, broadcast. `self` `within(factor_bound())` and `other` `at_least` its inverse (so no element of `other` is 0.0): no quotient overflows.
 Cost: O(n).
 
 ### Array.neg
@@ -225,29 +256,32 @@ Cost: O(n).
 
 ```rust
 fn scale(self, k: Float) -> Array
+  requires self.within(product_bound() / max(abs(k), 1.0))
   ensures it.shape == self.shape
 ```
 
-Each element times `k`.
+Each element times `k`. Every element times `abs(k)` (or 1.0, if larger) at most `product_bound` in magnitude.
 Cost: O(n).
 
 ### Array.shift
 
 ```rust
 fn shift(self, k: Float) -> Array
+  requires self.within(add_bound()) && abs(k) <= add_bound()
   ensures it.shape == self.shape
 ```
 
-`k` added to each element.
+`k` added to each element. Every element and `k` at most `add_bound` in magnitude.
 Cost: O(n).
 
 ### Array.sum
 
 ```rust
 fn sum(self) -> Float
+  requires self.size() < 1 << 40 && self.within(sum_bound())
 ```
 
-The sum of the elements; 0.0 when there are none. They are added in row-major order into four interleaved partial sums, then those four, so the result can differ from a left-to-right sum in the last bits.
+The sum of the elements; 0.0 when there are none. They are added in row-major order into four interleaved partial sums, then those four, so the result can differ from a left-to-right sum in the last bits. At most 2^40 elements, `within(sum_bound())`, so no partial sum overflows.
 Cost: O(n).
 
 ### Array.mean
@@ -255,9 +289,10 @@ Cost: O(n).
 ```rust
 fn mean(self) -> Float
   requires count(self.shape) > 0
+  requires self.size() < 1 << 40 && self.within(sum_bound())
 ```
 
-The mean of the elements. The array must not be empty.
+The mean of the elements. The array must not be empty, and bounded as `sum` requires.
 Cost: O(n).
 
 ### Array.max
@@ -287,24 +322,26 @@ fn argmax(self) -> Option[Natural]
 Where the largest element is, in row-major order (the first, for ties); `None` when there are none.
 Cost: O(n).
 
-### Array.lanes
+### Array.lane_layout
 
 ```rust
-fn lanes(self, axis: Natural) -> List[Float]
+fn lane_layout(self, axis: Natural) -> (List[Natural], List[Int])
   requires axis < len(self.shape)
 ```
 
-The array with axis `axis` moved last, row-major: each run of `shape[axis]` elements is one reduction's input.
+The shape and row-major strides that read `to_list()` with axis `axis` moved last: each run of `shape[axis]` elements is one reduction's input.
+Cost: O(number of axes).
 
 ### Array.sum_axis
 
 ```rust
 fn sum_axis(self, axis: Natural) -> Array
   requires axis < len(self.shape)
+  requires self.shape[axis] < 1 << 40 && self.within(sum_bound())
   ensures it.shape == without_axis(self.shape, axis)
 ```
 
-The sums along axis `axis`: the result has the other axes. A matrix's `sum_axis(0)` sums each column.
+The sums along axis `axis`: the result has the other axes. A matrix's `sum_axis(0)` sums each column. The axis at most 2^40 long and the array `within(sum_bound())`, as `sum` requires.
 Cost: O(n).
 
 ### Array.mean_axis
@@ -312,10 +349,11 @@ Cost: O(n).
 ```rust
 fn mean_axis(self, axis: Natural) -> Array
   requires axis < len(self.shape) && self.shape[axis] > 0
+  requires self.shape[axis] < 1 << 40 && self.within(sum_bound())
   ensures it.shape == without_axis(self.shape, axis)
 ```
 
-The means along axis `axis`, which must not be empty.
+The means along axis `axis`, which must not be empty, and bounded as `sum_axis` requires.
 Cost: O(n).
 
 ### Array.max_axis
@@ -466,10 +504,14 @@ each from 0 to below its length.
 ```rust
 fn dot(a: Array where len(it.shape) == 1, b: Array) -> Float
   requires a.shape == b.shape
+  requires a.size() < 1 << 40
+    && a.within(dot_bound())
+    && b.within(dot_bound())
 ```
 
 The dot product of two arrays of one axis and the same length, added as
-`sum` adds.
+`sum` adds. At most 2^40 elements, and both `within(dot_bound())`, so no
+partial sum overflows.
 Cost: O(n).
 
 ### matmul
@@ -477,10 +519,58 @@ Cost: O(n).
 ```rust
 fn matmul(a: Matrix, b: Matrix) -> Matrix
   requires a.shape[1] == b.shape[0]
+  requires a.shape[1] < 1 << 40
+    && a.within(dot_bound())
+    && b.within(dot_bound())
   ensures it.shape == [a.shape[0], b.shape[1]]
 ```
 
-The matrix product of an m×k and a k×n matrix: an m×n matrix.
+The matrix product of an m×k and a k×n matrix: an m×n matrix. At most
+2^40 columns of `a`, and both `within(dot_bound())`, as `dot` requires.
 Cost: O(m·k·n) multiply-adds, one dot product of a row of `a` and a column
 of `b` per element, after a row-major copy of `b`'s transpose (O(k·n)) so
 both are read in order.
+
+### add_bound
+
+```rust
+fn add_bound() -> Float
+```
+
+2^1022, about 4.5e307: the largest magnitude of the operands of `add`,
+`sub` and `shift`, so their sums stay finite.
+
+### sum_bound
+
+```rust
+fn sum_bound() -> Float
+```
+
+2^960, about 9.7e288: the largest magnitude `sum`, `mean` and the reductions
+along an axis take, so that 2^40 elements add up to a finite number.
+
+### dot_bound
+
+```rust
+fn dot_bound() -> Float
+```
+
+2^480, about 3.1e144: the largest magnitude of the operands of `dot` and
+`matmul`, so that 2^40 products add up to a finite number.
+
+### product_bound
+
+```rust
+fn product_bound() -> Float
+```
+
+2^1023, about 9.0e307: the most `scale`'s products can reach.
+
+### factor_bound
+
+```rust
+fn factor_bound() -> Float
+```
+
+2^511, about 6.7e153: the largest magnitude of the operands of `mul`, and of
+`div`'s dividend; a divisor's are at least its inverse.
