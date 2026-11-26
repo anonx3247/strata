@@ -183,10 +183,10 @@ Expr = 0  Int(int)                       1  BigInt(digits:str)       2  Float(fl
      | 39 SupervisedSpawn(Expr)                                     supervised spawn e
      | 40 Old(Expr)                                                 old e (in an `ensures`: e where the function started)
      | 41 Assumed(Expr)                                             assumed requires/ensures/invariant e (verify only)
-     | 42 Spread(Expr)                                              ...e (a call's argument: the record's fields given to the parameters of their names)
+     | 42 unused (read as the call `...(e)`: a spread the parser gives, stored written out)
 
 CtorArgs = 0 None | 1 Positional(list(Expr)) | 2 Record(list((str, Expr)))
-         | 3 Update(base:Expr, list((str, Expr)))
+         | 3 Update(base:Expr, list((str, Expr)))   (read as Record with the base first, named `..`; never written)
 LamParam = name:str  ty:option(TypeExpr)
 CompFor  = pat:Pattern  iter:Expr  cond:option(Expr)
 CompKind = 0 List | 1 Set | 2 Dict        (a Dict comprehension's element is a Tuple of the key and value)

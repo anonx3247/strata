@@ -9,6 +9,10 @@
 # record that gives nothing, a positional argument between spreads, too many
 # positional arguments, a function value, a built-in, a spread where no
 # call is, a constructor. Last, across a package's modules.
+# Stored as the call written out (`resolve`), shown as `f(...x)` again
+# when every argument is a field of one place named like its parameter,
+# and a value that isn't a place as spread (`...Fee { fee: 2 }`); other
+# calls are shown written out.
 [[step]]
 strata = ["--file", "t.strata", "edit"]
 text = '''
@@ -108,12 +112,13 @@ test "a spread is the call written out" {
 strata = ["--file", "t.strata", "view", "main"]
 has = [
   "  print(total(...o))\n",
-  "  print(with_fee(...o, ...Fee { fee: 2 }))\n",
-  "  print(with_fee(5, ...o, 1))\n",
+  "  print(with_fee(o.id, o.qty, o.price, ...Fee { fee: 2 }))\n",
+  "  print(with_fee(5, o.qty, o.price, 1))\n",
   "  print(total(...make(mut made, 4)))\n",
   "  print(Shop.new(...Shop { name: \"kiosk\" }).line(...o))\n",
   "  mut t.add(...p)\n",
-  "  assert with_fee(...o, 9) == with_fee(2, 4, 5, 9)\n",
+  "  assert with_fee(o.id, o.qty, o.price, 9) == with_fee(2, 4, 5, 9)\n",
+  "  assert total(...o) == total(...o)\n",
 ]
 
 [[step]]
