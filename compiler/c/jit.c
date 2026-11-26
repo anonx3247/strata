@@ -574,6 +574,13 @@ static void names_add(Names *n, const char *s) {
   n->names[n->count++] = strdup(s);
 }
 
+static void names_free(Names *n) {
+  for (int i = 0; i < n->count; i++) free(n->names[i]);
+  free(n->names);
+  n->names = NULL;
+  n->count = n->cap = 0;
+}
+
 static int names_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
 static void names_sort(Names *n) { qsort(n->names, n->count, sizeof(char *), names_cmp); }
@@ -779,6 +786,83 @@ static void declared(LLVMModuleRef mod, LLVMValueRef v, int function) {
   free(name);
 }
 
+// Whether `code` (a definition's printed IR) refers to `@name`.
+static int refers(const char *code, const char *name) {
+  size_t n = strlen(name);
+  for (const char *at = strchr(code, '@'); at; at = strchr(at + 1, '@')) {
+    if (at[1] == '"') {
+      if (!strncmp(at + 2, name, n) && at[2 + n] == '"') return 1;
+    } else if (!strncmp(at + 1, name, n)) {
+      char c = at[1 + n];
+      if (!(c == '.' || c == '_' || c == '$' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+        return 1;
+    }
+  }
+  return 0;
+}
+
+// With live edits: the definitions of an edit's module that are its own
+// rather than the main module's (sorted, in `own`). Those whose code
+// differs from the main module's or that it hasn't, then, until nothing
+// changes, those that refer to one of them that isn't called through a
+// slot: a function making a closure of a changed lambda, a table of one.
+// (A reference to a swappable function goes through its stub, so it
+// doesn't count.) Local definitions are always the module's own and
+// don't count either, unless they are globals: local functions are
+// codegen's helpers, the same in every module. 0, else -1 when
+// a function the running program calls directly changed (said in `why`).
+static int live_own(LLVMModuleRef mod, Names *own, char *why, size_t why_len) {
+  int count = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) count++;
+  for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) count++;
+  LLVMValueRef *vs = malloc(sizeof(LLVMValueRef) * (count ? count : 1));
+  char **code = calloc(count ? count : 1, sizeof(char *));
+  int *mine = calloc(count ? count : 1, sizeof(int));
+  int k = 0;
+  for (LLVMValueRef f = LLVMGetFirstFunction(mod); f; f = LLVMGetNextFunction(f)) vs[k++] = f;
+  for (LLVMValueRef g = LLVMGetFirstGlobal(mod); g; g = LLVMGetNextGlobal(g)) vs[k++] = g;
+  int n = 0;
+  for (int i = 0; i < count; i++) {
+    LLVMValueRef v = vs[i];
+    // (a local global, a closure's table say, counts: the main module's
+    // were made visible, and an edit's has the same name)
+    if (LLVMIsDeclaration(v) || starts(name_of(v), "llvm.")) continue;
+    if (is_local(LLVMGetLinkage(v)) && LLVMIsAFunction(v)) continue;
+    vs[n] = v;
+    code[n] = code_of(v);
+    mine[n] = !same_as_defined(v);
+    n++;
+  }
+  for (int grew = 1; grew;) {
+    grew = 0;
+    for (int i = 0; i < n; i++) {
+      if (!mine[i] || names_index(&swappable_names, name_of(vs[i])) >= 0) continue;
+      for (int j = 0; j < n; j++)
+        if (!mine[j] && refers(code[j], name_of(vs[i]))) mine[j] = grew = 1;
+    }
+  }
+  int result = 0;
+  for (int i = 0; i < n; i++) {
+    if (!mine[i]) continue;
+    const char *name = name_of(vs[i]);
+    // (a function the main module has, called directly by its code, not
+    // through a slot: its change would never run. A lambda runs only in the
+    // closures its maker makes, which are swapped with it.)
+    if (LLVMIsAFunction(vs[i]) && names_index(&defined, name) >= 0 && names_index(&swappable_names, name) < 0 &&
+        !starts(name, "lambda.") && !starts(name, "drop.lambda.") && !starts(name, "share.lambda.") && result == 0) {
+      snprintf(why, why_len, "`%s` changed, and the running program calls it directly, not through a slot", name);
+      result = -1;
+    }
+    names_add(own, name);
+  }
+  names_sort(own);
+  for (int i = 0; i < n; i++) LLVMDisposeMessage(code[i]);
+  free(code);
+  free(mine);
+  free(vs);
+  return result;
+}
+
 // The verifier's module (the program compiled without the checks it
 // proved) added to the running program: each swappable function whose code
 // changed compiled as `NAME.proven.N` and its slot pointed at it; what
@@ -797,6 +881,13 @@ static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_
     LLVMDisposeMessage(msg);
     return -1;
   }
+  // (with live edits: what is the edit's own, `live_own`)
+  Names own = {0};
+  if (live && live_own(mod, &own, why, why_len) < 0) {
+    LLVMDisposeModule(mod);
+    LLVMContextDispose(ctx);
+    return -1;
+  }
   int generation = ++swaps;
   // (each function's code read before any is renamed or declared)
   int count = 0;
@@ -811,7 +902,8 @@ static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_
     int at = names_index(&swappable_names, name_of(f));
     if (at >= 0) {
       char *code = LLVMPrintValueToString(f);
-      if (moved[at] || strcmp(code, swappable_code[at])) changed[i] = strdup(name_of(f));
+      if (moved[at] || strcmp(code, swappable_code[at]) || names_index(&own, name_of(f)) >= 0)
+        changed[i] = strdup(name_of(f));
       LLVMDisposeMessage(code);
       // (a slot holds a body of one type: callers compiled for the old one
       // can't call a new one)
@@ -823,6 +915,7 @@ static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_
         for (int j = 0; j <= i; j++) free(changed[j]);
         free(changed);
         free(fs);
+        names_free(&own);
         LLVMDisposeModule(mod);
         LLVMContextDispose(ctx);
         return -1;
@@ -844,7 +937,7 @@ static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_
         strcat(names, changed[i] + strlen("strata:"));
         strcat(names, "`");
       }
-    } else if (names_index(&defined, name_of(f)) >= 0 && same_as_defined(f)) {
+    } else if (names_index(&defined, name_of(f)) >= 0 && names_index(&own, name_of(f)) < 0) {
       declared(mod, f, 1);
     } else {
       LLVMSetLinkage(f, LLVMInternalLinkage);
@@ -864,7 +957,8 @@ static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_
       LLVMDeleteGlobal(g);
     } else if (LLVMIsDeclaration(g)) {
       continue;
-    } else if (names_index(&defined, name_of(g)) >= 0 && (!LLVMIsGlobalConstant(g) || same_as_defined(g))) {
+    } else if (names_index(&defined, name_of(g)) >= 0 &&
+               (!LLVMIsGlobalConstant(g) || names_index(&own, name_of(g)) < 0)) {
       // (a variable is the main module's: its state is kept)
       declared(mod, g, 0);
     } else {
@@ -875,6 +969,7 @@ static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_
   if (n == 0) {
     for (int i = 0; i < count; i++) free(changed[i]);
     free(changed);
+    names_free(&own);
     LLVMDisposeModule(mod);
     LLVMContextDispose(ctx);
     return 0;
@@ -919,6 +1014,7 @@ static int swap_in(const char *ir, size_t len, const char *tag, char *why, size_
   free(slots);
   for (int i = 0; i < count; i++) free(changed[i]);
   free(changed);
+  names_free(&own);
   return result;
 }
 

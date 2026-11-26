@@ -1,0 +1,64 @@
+# `strata run --live` compiles each function from its own code alone
+# (codegen's `Gen.live`), since a frame running old code calls new code:
+# `run_loop` below never returns, so its frame stays on its first code.
+# - `wrap` first copies its argument, so the caller could make the `P` it
+#   passes on its stack; edited to keep it, the old frame's stack `P`s would
+#   be kept and overwritten. Live code never puts an argument on the stack.
+# - `check_small`'s entry check would be left out once every call proves it
+#   (the edited `run_loop` calls `check_small(5)`); the old frame's
+#   `check_small(t + 96)` must still be checked: the program faults at 100.
+needs = "python3"
+
+[[step]]
+write = "drive.py"
+from = "drive.py"
+
+[[step]]
+write = "demo.st"
+from = "demo.st"
+
+[[step]]
+write = "demo3.st"
+from = "demo3.st"
+
+[[step]]
+write = "keepsp.st"
+from = "keepsp.st"
+
+[[step]]
+write = "noshare.st"
+from = "noshare.st"
+
+[[step]]
+write = "callsmall.st"
+from = "callsmall.st"
+
+[[step]]
+run = ["python3", "-I", "drive.py", "$STRATA", "demo.st", "keepsp.st", "noshare.st"]
+env = { STRATA_CACHE = "$TMP/cache" }
+out = '''
+1/10 ys=1 xs=2
+1/10,2/20 ys=2 xs=3
+-- keepsp.st
+1/10,2/20,3/30 ys=3 xs=4
+1/10,2/20,3/30,4/40 ys=4 xs=5
+1/10,2/20,3/30,4/40,5/50 ys=5 xs=6
+-- noshare.st
+1/10,2/20,3/30,4/40,5/50,6/60 ys=6 xs=7
+1/10,2/20,3/30,4/40,5/50,6/60,7/70 ys=7 xs=8
+1/10,2/20,3/30,4/40,5/50,6/60,7/70,8/80 ys=8 xs=9
+exit 0
+note: live edits: when the program's files change, and they check and verify, the changed functions are swapped in
+note: live edit 1: `wrap` swapped in (verified 5 changed: 5 proven, 0 fuzzed), N ms after the change
+note: live edit 2: `run_loop` swapped in (verified 1 changed: 1 proven, 0 fuzzed), N ms after the change
+'''
+
+[[step]]
+run = ["python3", "-I", "drive.py", "$STRATA", "demo3.st", "callsmall.st"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = [
+  "1/10,2/20,3/30 ys=3 xs=4 c=99\n",
+  "exit 101\n",
+  "fault (Requires): precondition of `check_small` violated: requires x < 100 (with x = 100)",
+]
+lacks = ["c=100"]
