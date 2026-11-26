@@ -11,7 +11,11 @@ strata = ["--file", "$ROOT/examples/tasks", "verify", "--no-race"]
 has = [
   "✓ law enqueue_once for memory.MemQueue[P, E] proven",
   "✓ model.drain",
-  "~ model.run_worker         fuzzed: 200 cases",
+  "✓ model.run_worker         proven",
+  "✓ memory.MemQueue[P, E].claim proven",
+  "✓ memory.MemQueue[P, E].record proven",
+  "✓ memory.MemQueue[P, E].release proven",
+  "✓ memory.MemQueue[P, E].expire proven",
   "print.demo",
 ]
 lacks = ["✗", "skipped"]
