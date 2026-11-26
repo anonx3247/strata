@@ -1,7 +1,7 @@
 # std.web
 
-HTML pages built as values, one function per element, rendered by `render` or `document`.
-A page with events has a message type `M`. A page without events is an `Html[()]`.
+HTML pages built as values, written as markup or with one function per element, rendered by `render` or `document`.
+Markup (`<p class="x">{name}</p>`) is read by the parser as calls to this module (`element`, `attr`, `children`). Text and values are escaped when rendered, unless given to `raw_html`. A page with events has a message type `M`. A page without events is an `Html[()]`.
 
 ## Types
 
@@ -61,6 +61,24 @@ type KeyName = String
 A key for `on_key`: what the key types (`a`, `/`, `?`) or its name (`Escape`, `Enter`, `ArrowLeft`).
 Modifiers come first, in this order: `ctrl+`, `alt+`, `meta+`. `meta+p` is ⌘P on a Mac.
 Shift is not named. It is in what the key types (`?`, `A`).
+
+### Child
+
+```rust
+type Child[M] = Html[M] | String | Int | List[Html[M]]
+```
+
+What goes between an element's tags in markup (`<p>{x}</p>`): an element,
+text, a number, or a list of elements.
+
+### AttrValue
+
+```rust
+type AttrValue = String | Int | Bool
+```
+
+What `name={value}` holds in markup: text, a number, or a flag that is
+there when `true`.
 
 ## Functions
 
@@ -584,3 +602,31 @@ fn revealed[M]() -> Attr[M]
 ```
 
 The page scrolls as little as needed to show the element when it appears with this attribute, or the attribute appears on it.
+
+### children
+
+```rust
+fn children[M](items: List[Child[M]]) -> List[Html[M]]
+```
+
+The children of an element written as markup, in order: text and numbers
+become escaped text, a list's elements are put in its place.
+Cost: O(n) in the children.
+
+### attribute
+
+```rust
+fn attribute[M](name: AttrName, value: AttrValue) -> Attr[M]
+```
+
+An attribute written `name={value}` in markup: `class={c}`,
+`colspan={2}`, `disabled={busy}` (a flag, left out when `false`).
+
+### raw_html
+
+```rust
+fn raw_html[M](html: String) -> Html[M]
+```
+
+HTML written into the page as it is, not escaped. Only for markup from a
+source you trust: text from users must go through `text`.
