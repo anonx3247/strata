@@ -246,3 +246,17 @@ An input continues over several lines while a bracket or block it opened is stil
 - There is no `process` or `launcher`.
 
 `strata repl --allow files,process` provides the real ones: `disk` is std.fs's `Disk` as a `Files`, and `process` and `launcher` are std.process's `Process` and `Launcher` as an `Environment` and `Commands`. Inputs then run in the folder the REPL started in.
+
+## The daemon: `strata daemon`
+
+`strata daemon start` (or bare `strata daemon`) starts a long-running `strata` for the package here (or `--file`'s). While it runs, `check`, `verify`, `view`, `edit`, `add`, `build`, `find`, `refs`, `holes`, `status` and `doc` in that package are run by it. `--daemon` on one of those commands starts the daemon first when none runs. `strata daemon status` says what it holds (its process, requests served, resident memory); `strata daemon stop` stops it. `STRATA_NO_DAEMON=1` runs a command without it.
+
+The output is the same bytes as without a daemon. The client sends its arguments, current folder and environment, and passes its standard input, output and error themselves over a Unix socket. The daemon runs the command with them as its own, so a terminal is still a terminal (colors, widths, the pager), and returns the exit code. How it is built: `compiler/daemon` and `compiler/c/daemon.c`.
+
+What it keeps: the last clean `check` of a package without dependencies (its module files, their definitions, the warnings it printed, each definition's lint warnings, std desugared with the package). On the next `check` it reads only the module files whose size or time changed, and checks again only what an edit between the two versions can affect (the definitions changed, and the users of a changed interface: `edit`'s `edit_scope`). Anything else that `check` reads (strata.toml, std, core) changed means a whole check. The same goes for an error, a new warning or a hole in what is checked again. The whole package is then checked as without a daemon.
+
+What it costs: on `compiler/` (4,500 definitions), a check with nothing changed takes 0.02 s, a check after a one-function edit 0.2 to 0.4 s, and a check without the daemon 5 s. The daemon then holds about 950 MB. A request that leaves it above `STRATA_DAEMON_MEMORY` megabytes (4096) stops it. It also stops after `STRATA_DAEMON_IDLE` minutes without a request (30), and when its JIT nears the 4096 modules it keeps. The next command runs without it, and so does `--daemon`'s next start.
+
+Requests run one at a time, because the streams, the folder and the environment belong to the process. A second client waits in the socket's queue. An interrupt (Ctrl-C) of the client stops the daemon with the command. A client whose output closes (`| head`) ends its request, not the daemon. `run`, `test` and `repl` run the program in the compiler's own process, which the program may end, so they run without the daemon.
+
+The socket is `~/.cache/strata/daemon/HASH.sock` (`$STRATA_CACHE`; in `/tmp` when that path is too long for a socket). It is readable by its user only. The hash covers the package's folder, the `strata` executable (path, size and time, so a rebuilt `strata` has its own daemon) and `STRATA_HOME`. The daemon's own messages go to `HASH.log` beside it.

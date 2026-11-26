@@ -522,6 +522,34 @@ Not yet:
 - `process.args()` under `--allow process` is the REPL's own command line;
 - tasks kept between lines (a `scope` ends with its line, so there is nothing to keep yet).
 
+## A long-running compiler: `strata daemon` (status: built, branch `compiler-server`)
+
+The step (7) of "Storage: the tree, in binary", and the start of the verification server of "Verification fast enough to run with every check". Docs: tools-reference.md, "The daemon".
+
+Built:
+- `strata daemon start | stop | status`, one daemon per package (and per `strata` executable and `STRATA_HOME`), on a Unix socket in the cache. The ordinary commands use it when it runs; `--daemon` starts it; `STRATA_NO_DAEMON=1` bypasses it.
+- A request passes the client's standard streams themselves (`SCM_RIGHTS`), its arguments, folder and environment; the daemon runs the command as the client's process would, so the output is the same bytes (case `cli-daemon_same_output` compares them on check, edit, view and verify).
+- `check` of a package without dependencies keeps what it found (`main.CheckKept`) and checks again only what changed: files by stamp, then `edit_scope` and `scoped_errors` (what `edit` already used). Lint and unused results are kept per definition; std desugared with the package is kept and reused while the rest is unchanged. Any doubt (an error, a new warning, a hole, a warning it can't attribute, std or strata.toml changed) is a whole check, as without a daemon.
+- Measured on `compiler/`, machine loaded (load average 18): cold `check` 4.7 to 5.3 s; daemon, nothing changed, 0.02 s; after a one-function edit 0.43 s (std desugared again), 0.18 s on a second edit of it. Resident size about 950 MB.
+
+Decided (each can change):
+- Requests run one at a time. The streams, the folder and the environment belong to the process, and the commands write to them directly. A second client waits in the socket's queue. Tasks and channels would not help here: the work inside a command already runs on the workers (`parallel.map`). A queue in Strata (an accepting task feeding a channel) is worth it once commands write to a value instead of to the process's streams.
+- Served: check, verify, view, edit, add, build, find, refs, holes, status, doc. Not served: `run`, `test`, `repl` (the JIT runs the program in the compiler's process and the program may exit it; `jit_run_main` calls `exit`), the internal steps of the test cases, `ui`.
+- An interrupt of the client kills the daemon (SIGTERM). A command can't be stopped halfway with the daemon's state left whole. A client whose output closes ends its request (`strata_host_write` no longer exits the daemon on `EPIPE`) and gets exit code 0, as a process would.
+- Lifetime: 30 minutes idle (`STRATA_DAEMON_IDLE`), 4096 MB resident (`STRATA_DAEMON_MEMORY`), or 3500 JIT modules: the JIT keeps every module it compiles (`jit_fuzz_load`, at most 4096), and freeing them is not safe while values read back from them may be held.
+- The socket's key includes the executable's size and time, so a rebuilt `strata` never talks to an old daemon. The old one stops when idle.
+- Only the last clean check is kept. A check with errors is printed and dropped, so the next check is whole.
+
+How it combines with `stage-cache` (another branch: each stage's result cached per definition, on disk): the daemon keeps in memory what a process loads (decoded modules, the loaded package, std desugared, the last results) and decides what to check again by stamps and `edit_scope`. The disk cache makes a whole check, the daemon's first, or one after a restart, cheaper. Inside the daemon, the per-definition entries answer for the definitions `edit_scope` asks to check again.
+
+Next steps:
+1. `verify` in the daemon: keep the verdicts and the solver's inputs in memory, and verify again only what `edit_scope` reaches. The verdict cache on disk already skips unchanged functions; what is left is loading and encoding.
+2. Decoded std modules and `Shared` kept between requests (std is decoded again on each check: about 0.1 s), and a desugar of `lib` per definition instead of all of it (it is not per definition today: `$where_k` refinement aliases are numbered across the program).
+3. The literal probes of the definitions checked again (0.3 s on `compiler/`): reuse the probes' compiled core instead of compiling it with each batch.
+4. `check --json`, packages with dependencies, std itself: kept the same way.
+5. `run`/`test` through the daemon in a forked child, once the runtime's workers survive a fork (or start one at a time).
+6. The viewer, the MCP server and an LSP as clients of the same socket.
+
 ## Design principles (decided)
 
 - **No effects.** Capabilities (database, queue, console, clock) are traits; code takes an implementation as a parameter or holds it in a field. `mock T` generates an implementation that respects the trait's contracts. Iterators and concurrency are their own language features, **not** effects (concurrency: see "Concurrency: structured tasks without coloring"; it needs no capability, since tasks share nothing and `scope`/`spawn`/`await` are deterministic).

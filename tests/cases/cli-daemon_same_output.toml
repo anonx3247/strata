@@ -1,0 +1,120 @@
+# A package's daemon (`strata daemon`) runs `check`, `edit`, `view` and
+# `verify` with the same output as `strata` alone, byte for byte: a check
+# with nothing changed, one after an edit of a body (checked again in part),
+# one with an error (checked whole), and one after the fix. `STRATA_NO_DAEMON`
+# runs a command without the daemon.
+
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main", "--no-commit"]
+dir = "p"
+text = """
+/// The sum.
+pub fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs {
+    s += x
+  }
+  s
+}
+
+/// Half of `x`, if it is even.
+pub fn half(x: Int) -> Result[Int, String] {
+  if x % 2 == 0 {
+    Ok(x / 2)
+  } else {
+    Err("odd")
+  }
+}
+
+/// Throws a `Result` away (a warning of `check`).
+pub fn careless() {
+  _ := half(3)
+}
+
+/// A contract that is a refinement (a lint warning).
+pub fn positive(x: Int) -> Int requires x > 0 {
+  x
+}
+"""
+
+[[step]]
+strata = ["daemon", "start"]
+dir = "p"
+env = { STRATA_DAEMON_IDLE = "2" }
+has = ["started a daemon"]
+
+# each check twice: by the daemon and alone, then compared
+[[step]]
+run = ["sh", "-c", "for i in 1 2; do $STRATA check > d$i.txt 2>&1; echo \"exit $?\" >> d$i.txt; done; STRATA_NO_DAEMON=1 $STRATA check > c.txt 2>&1; echo \"exit $?\" >> c.txt; cmp c.txt d1.txt && cmp c.txt d2.txt && cat c.txt"]
+dir = "p"
+has = ["throws away", "ok: 4 definitions check", "exit 0"]
+
+[[step]]
+strata = ["edit", "main", "--no-commit"]
+dir = "p"
+text = """
+/// The sum.
+pub fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs {
+    s = s + x
+  }
+  s
+}
+"""
+
+[[step]]
+run = ["sh", "-c", "$STRATA check > d.txt 2>&1; echo \"exit $?\" >> d.txt; STRATA_NO_DAEMON=1 $STRATA check > c.txt 2>&1; echo \"exit $?\" >> c.txt; cmp c.txt d.txt && cat c.txt"]
+dir = "p"
+has = ["throws away", "ok: 4 definitions check", "exit 0"]
+
+# an error: the module file written by hand, as another tool would
+[[step]]
+strata = ["--file", "../bad.strata", "edit", "main"]
+dir = "p"
+text = """
+/// The sum.
+pub fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs {
+    s = s + x
+  }
+  "s"
+}
+"""
+any_code = true
+
+[[step]]
+run = ["sh", "-c", "cp main.strata ../good.strata; cp ../bad.strata main.strata; $STRATA check > d.txt 2>&1; echo \"exit $?\" >> d.txt; STRATA_NO_DAEMON=1 $STRATA check > c.txt 2>&1; echo \"exit $?\" >> c.txt; cmp c.txt d.txt && cat c.txt"]
+dir = "p"
+has = ["error in total", "exit 1"]
+
+[[step]]
+run = ["sh", "-c", "cp ../good.strata main.strata; $STRATA check > d.txt 2>&1; echo \"exit $?\" >> d.txt; STRATA_NO_DAEMON=1 $STRATA check > c.txt 2>&1; echo \"exit $?\" >> c.txt; cmp c.txt d.txt && cat c.txt"]
+dir = "p"
+has = ["ok: 4 definitions check", "exit 0"]
+
+[[step]]
+run = ["sh", "-c", "$STRATA view main > d.txt 2>&1; STRATA_NO_DAEMON=1 $STRATA view main > c.txt 2>&1; cmp c.txt d.txt && STRATA_NO_DAEMON=1 $STRATA verify total > /dev/null 2>&1; $STRATA verify total > d.txt 2>&1; STRATA_NO_DAEMON=1 $STRATA verify total > c.txt 2>&1; cmp c.txt d.txt && cat c.txt"]
+dir = "p"
+has = ["total"]
+
+[[step]]
+strata = ["daemon", "status"]
+dir = "p"
+has = ["requests 9"]
+
+[[step]]
+strata = ["daemon", "stop"]
+dir = "p"
+has = ["stopped the daemon"]
+
+[[step]]
+strata = ["daemon", "status"]
+dir = "p"
+fails = true
+has = ["no daemon is running"]
