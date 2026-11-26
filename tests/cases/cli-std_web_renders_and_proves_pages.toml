@@ -2,7 +2,7 @@
 
 [[step]]
 strata = ["--file", "$ROOT/examples/page", "test"]
-has = ["6 passed"]
+has = ["9 passed"]
 
 [[step]]
 strata = ["run", "$ROOT/examples/page"]
