@@ -9,7 +9,7 @@ name = "json"
 '''
 
 [[step]]
-strata = ["--file", "json/", "edit", "main"]
+strata = ["--file", "json/", "edit", "main", "--as-given"]
 text = '''
 pub type Tok = { n: Int }
 pub fn parse(s: String) -> Tok { Tok { n: helper(s) } }
@@ -25,7 +25,7 @@ name = "json"
 '''
 
 [[step]]
-strata = ["--file", "json/", "edit", "text"]
+strata = ["--file", "json/", "edit", "text", "--as-given"]
 text = '''
 pub fn twice(s: String) -> Int { parse(s).n + helper(s) }
 '''
@@ -40,7 +40,7 @@ json = { path = "../json" }
 '''
 
 [[step]]
-strata = ["--file", "app/", "edit", "main"]
+strata = ["--file", "app/", "edit", "main", "--as-given"]
 text = '''
 from json use parse, Tok
 use json.text
@@ -63,7 +63,7 @@ json = { path = "../json" }
 '''
 
 [[step]]
-strata = ["--file", "private/", "edit", "main"]
+strata = ["--file", "private/", "edit", "main", "--as-given"]
 text = '''
 from json use helper
 fn main() { print(helper("x")) }
