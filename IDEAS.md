@@ -564,7 +564,14 @@ The parser stores sugar as the core form it stands for, and the printer shows th
 
 Not done, with why, in order (each: a lowering when stored, a printer rule, the law, the passes' handling removed):
 1. Record field defaults at construction (`desugar.defaults`), `..r` updates (`UpdateArgs`), key paths (`desugar.key_paths`) and spread `f(...x)` (`check.infer_spread`): each needs a declaration (the record's fields, the callee's parameters), so it can't be lowered by the parser alone. Lower them where `edit` stores (after `resolve.stored`, which has the program), print fields equal to their defaults left out, and an update as `..r`. The printer then needs the declarations too, as `written` has them.
-2. What `desugar` keeps needs the whole program and isn't sugar of one expression: trait models and mocks (`with_models`), `extern python` calls, named results, refinements named as aliases, mixed unions. Storing their lowered forms would store generated methods and aliases; keep them as a pass, renamed for what it does.
+2. What `desugar` keeps generates code from the whole program (asked by the user 2026-11-27: store what they generate, printed back as the sugar where a pattern fits). Each, and what storing it takes:
+   - trait models (`with_models`): `model m: T` becomes a method, and the trait's invariants and `ensures` are copied into every method's `requires`/`ensures` and every function taking the trait. Stored, an edit of a trait must rewrite its impls and users (a pending change across modules), and the printer must take the copies back out by recognising them (`$`-marked clauses).
+   - mocks (`mock T` of a trait with models): a generated type and impl per trait used; stored as definitions of their own in the module of the first use, named `$mock_T`, hidden by `view`.
+   - `extern python` functions: the body becomes the worker call; stored as that body, printed back as the declaration when the body is exactly `python_call`'s shape.
+   - named results (`-> (q: Natural, r: Natural)`): `q`, `r` in contracts become `it.0`, `it.1`; stored so, printed back when the result type is a named tuple.
+   - refinements as aliases (`inline_refinements`, `$where_k`): aliases shared across the program by text; stored, each module that writes one gets its own `$where_k` alias, printed back inline.
+   - mixed unions: a sum with member types becomes variants; stored as the sum, printed as written (the union form is what `resolve.union_members` already shows).
+   None is impossible; each needs the printer to read the generated form back, and models need cross-module rewriting on edit.
 3. `DictExpr`/`SetExpr` as values: write compile-time values as `dict(…)`/`set(…)` calls in `compiler/eval`, then remove both nodes.
 4. Patterns as parameters were already lowered by the parser (`$pN`, `text.lambda_view`); dot-chaining across lines is layout, nothing stored.
 5. Found, not fixed: `cli-smt_proves_nested_quantifiers`' `stray` is now found by the fuzzer before the solver (the case accepts either); not looked into.
