@@ -1,0 +1,18 @@
+# an executable keeps only what it reaches: the linker drops std's and the
+# runtime's unused functions (`-dead_strip`), so hello world is tens of KB,
+# not the whole precompiled std
+
+[[step]]
+save = "hello.strata"
+from = "hello.st"
+
+[[step]]
+strata = ["--file", "hello.strata", "build", "--no-verify", "-o", "hello"]
+
+[[step]]
+run = ["./hello"]
+stdout = "hello\n"
+
+[[step]]
+run = ["sh", "-c", "test $(stat -f %z hello) -lt 200000 && echo small"]
+stdout = "small\n"
