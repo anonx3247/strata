@@ -340,7 +340,7 @@ Order: (1) `find`, `refs`; (2) locations in errors, `view LOCATION`; (3) `search
 
 Left of steps 1-2: runtime faults with each frame a location (the side table from compiled checks and calls to locations: codegen works on desugared, instantiated trees whose paths differ from the stored ones, so the table needs paths carried through desugaring and instantiation), `view --last-fault` (the runtime, core.fault, would keep the last fault), `--trace`'s `from` locations, verifier refutations with their location (the place of the failing call inside `verify_file`'s report).
 
-### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below)
+### Web UIs (direction agreed with the user 2026-11-20; steps 1-4 built, each step's "Not yet" below; JSX-like markup built, branch `std-pages`)
 
 The second place Strata should be useful, after the command line: UIs in the
 browser, written without JavaScript. The direction is the Elm architecture,
@@ -473,15 +473,28 @@ Steps:
    below), the wasm build. Capabilities in `init` / `update` (`Files`, the
    program's own), timers (`every`) and keys (`on_key`) are built (#145).
 
-**JSX-like syntax** (user: wanted at some point, for simplicity). Markup
-written directly in Strata expressions, compiled to the `Html` helpers, e.g.
-`<button on_click={Increment}>-</button>`. Helper functions come first; the
-syntax is added on top of them later. The parser checks the static markup (tag and
-attribute names, no `on…` attributes, no children in void elements) as
-syntax; only the `{…}` insertions are Strata code, and their types do the
-rest: a `String` becomes escaped text, an `Html[M]` a child, an `M` an event's
-message. The verifier has something to say only where an insertion's type is
-refined (e.g. `href={url}` with a `Url` that excludes `javascript:`).
+**JSX-like syntax** (user: wanted at some point, for simplicity; **built**, branch `std-pages`, 2026-11-26). Markup is written in Strata expressions: `<td class="num">{l.year}</td>`, `<button on_click={Inc} disabled={busy}>+</button>`, `<br />`, `<>…</>`. docs/language.md ("HTML pages") and docs/language-reference.md ("Markup") have the rules; `examples/page` is written with it and proven. Decisions and defaults (each can change):
+- **Stored as calls** (REBUILD rule 7): the parser reads markup into calls to `std.web` (`std.web.element("td", [std.web.attr("class", "num")], std.web.children([l.year]))`), and `text.markup_view` shows those calls as markup again. No new tree node, no format change: resolve, check, verify and codegen see ordinary calls. The printer recognizes the calls by name (`std.web.X`, or `web.X` after `use std.web`); a module of the user's own named `web` with functions `element`/`children` would be shown as markup and read back as `std.web` calls (not handled).
+- **The module needs an import from `std.web`** (any: `from std.web use Html` is what a typed component has anyway), since a qualified `std.web.X` needs one. The error is the resolver's ("`std.web.children` is in module `std.web`, which this module doesn't use").
+- **The lexer decides what is markup** (`lex.markup_starts`): a `<` followed at once by a letter or `>`, first on its line or after a token that can't end an operand (`a <b` compares). It keeps a stack of modes (in a start tag, in children, in a `{…}` with its brace depth), so code inside `{…}` is lexed as code and markup nests in it (`{xs.map(x -> <li>{x}</li>)}`). Text is read as JSX reads it (`lex.markup_text`). Mismatched end tags, `<br>` without `/>`, a `}` in text and `onclick` are errors at the place they are written.
+- **Children are typed by a union**, `std.web.Child[M] = Html[M] | String | Int | List[Html[M]]`, and `std.web.children` flattens them: `{name}` is text, `{row(l)}` an element, `{ls.map(row)}` a list spliced in, with no syntax to tell them apart. Attributes written `name={e}` take `std.web.AttrValue = String | Int | Bool` (`std.web.attribute`; a `Bool` is a flag, left out when `false`, a new `Absent` attribute kind). Events are `on_NAME={e}`, a call of `std.web.on_NAME(e)` (`on_click`, `on_submit`, `on_input`, `on_change`, `on_submit_form`); `every` and `on_key` take two arguments and stay functions.
+- **Escaping by construction**: text and attribute values are escaped by `render` (as before); `raw_html(s)` (new, a `Raw` node) is the one way to put HTML in unescaped. Components are plain functions called in braces; a capitalized tag is an error pointing at that (`{card(x)}`), rather than JSX's `<Card x={…} />`, since Strata's functions are lowercase.
+- **Layout in `view`**: one line when it fits; else children fill lines (`markup_lines`), an element that breaks gets lines of its own, and a long start tag has one attribute per line. Text whose edge spaces a line break would drop is written `{" more"}`, so `parse(print(t)) == t` holds (case `cli-markup_pages`).
+- Rendering stays server-side, to a string: `render`, `document`. `strata serve` went with Rust, so the page is written to a file and served by any static server (the case uses `python3 -m http.server`); the numbered handlers (`data-handle-click`) are rendered and `dispatch` finds their message, but nothing posts them back until `std-net`'s server (another branch) is connected.
+- Tree-sitter: `markup_element`, `markup_fragment`, `markup_text`, `markup_attribute`; a comparison's `<` is now an external token (`_binary_less`), which the scanner gives only when the `<` is on its expression's line and not written against a letter, so `<b` at the start of a line or after `return` is markup. Highlights: `@tag`, `@attribute`.
+
+Built on the way:
+- codegen: a type pattern with type arguments (`Html[M] =>`, `List[Html[M]] =>`) is a type test (`type_pattern`); it was taken for a constructor pattern and refused.
+- codegen: a boxed member of a union is tagged by its head alone (`List`) when no other boxed member has that head (`box_tag_in`). A generic call's arguments were boxed for the union with its type argument still open (`List[Html[?]]`) while the instance called tested for `List[Html[()]]`: different tags, so `children([xs.map(f)])` matched no arm. Left: a union converted to a wider one keeps its tags, so a wider union holding two members of one head (`List[Int] | List[String]`) would read a narrower one's list under the wrong tag.
+
+Not yet (a plan, in order):
+1. Connect to `std-net`'s HTTP server when it is merged: `examples/page` served by it, and the handler numbers posted back (the client script, `dispatch`, sessions: steps 3-4 above, rebuilt on the Strata server).
+2. Typed attributes: `href={url}` taking a `Url` that excludes `javascript:` (the verifier then has something to prove), `class={["a", "b"]}`.
+3. Components with named arguments and children (`<card title="x">…</card>` as `card(title: "x", children: […])`), once calls take named arguments.
+4. The site's highlighter (`site/common.js`), the terminal one (`compiler/highlight`) and VS Code's TextMate grammar don't know markup yet: they color it as code.
+5. `std.ast`/`std.code` (std's own Strata parser, if it is to read packages written with markup) don't know markup.
+
+Found on the way (not fixed): `strata parse FILE` exits 0 when the file doesn't parse; in compiled code a `_ =>` arm of a union match doesn't narrow (`c.x` there is "not compiled yet"); the checker refuses a pattern naming a local generic record with a type parameter (`List[B[M]] =>`: "unknown constructor `M` in pattern") though `List[Html[M]] =>` on std's `Html` passes.
 
 Questions to settle:
 - **Async first, or web first?** (user, 2026-11-20; undecided.) The web design

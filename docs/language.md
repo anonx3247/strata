@@ -761,7 +761,7 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - command lines (`std.cli`)
 - sorted dictionaries and sets and a priority queue (`std.collections`)
 - JSON and TOML (`std.json`, `std.toml`)
-- HTTP and HTML as values (`std.http`, `std.web`)
+- HTTP, and HTML pages written as markup (`std.http`, `std.web`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
 
 Each module has a [reference page](std/README.md), generated from its doc comments by `strata docgen`. `strata doc std.json` shows one in the terminal.
@@ -777,5 +777,30 @@ type Signup = { email: String where contains(it, "@"), age: Int where it >= 13, 
 signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
+
+**HTML pages.** Markup is written in Strata code, as in JSX, and an element is an `Html[M]` value (`std.web`):
+
+```rust
+from std.web use Html, document
+
+fn row(l: Language) -> Html[()] {
+  <tr>
+    <td>{l.name}</td>
+    <td class="num">{l.year}</td>
+  </tr>
+}
+
+fn table(ls: List[Language]) -> Html[()] {
+  <table><tbody>{ls.map(l -> row(l))}</tbody></table>
+}
+
+page := document("Languages", [], [<h1>Languages</h1>, table(ls)])
+```
+
+- `{e}` puts a value in: a `String` or `Int` as text, an `Html` as an element, a list of them in its place. Text and values are escaped when rendered, attributes too, so a name like `<script>` shows as written. Only `raw_html(s)` writes HTML as it is.
+- An attribute is `name="text"`, `name={e}` (a `String`, an `Int`, or a `Bool` for a flag that is there when `true`), or a bare `name` (a flag). An event is `on_click={message}`. `onclick="…"` is refused: a page can't hold inline scripts.
+- A component is a function returning `Html`, called in braces: `{row(l)}`. A tag is lowercase (`<div>`, `<my-card>`).
+- An element without children is written `<br />`, and `<>…</>` is a list of elements.
+- The module needs an import from `std.web` (such as `from std.web use Html`). The parser reads markup as calls to `std.web` (`std.web.element("td", [std.web.attr("class", "num")], std.web.children([l.year]))`), which is what is stored, checked and compiled; `view` shows those calls as markup again. A literal tag lets `verify` prove that void elements (`br`, `input`, …) get no children. Rendering is one pass over the tree (`render`, `document`).
 
 **Foreign functions.** C functions are declared with `extern c fn`: a signature with contracts and no body (see the [reference](language-reference.md#foreign-functions-extern-c)). Python functions are declared with `extern python "module" fn`. Their values cross the boundary as JSON (`Json`), and every call returns a `Result[T, PythonError]` (see the [reference](language-reference.md#foreign-functions-extern-python)).

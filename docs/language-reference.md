@@ -618,6 +618,27 @@ geo.divide(1, 0)                  # raises StrataError("err", "ByZero", {"type":
 
 Not supported: `derive TypeScript` and `derive Rust` (the same `NAME_json` export with other files), static libraries, `mut` parameters, and callbacks.
 
+## Markup
+
+Markup is an expression, read by the parser into calls to `std.web` and shown by `view` as markup again. The stored tree has only the calls.
+
+| Written | Read as |
+|---|---|
+| `<tag attrs>children</tag>` | `std.web.element("tag", [attrs], std.web.children([children]))` |
+| `<tag attrs />`, `<tag attrs></tag>` | `std.web.element("tag", [attrs], [])` |
+| `<>children</>` | `std.web.children([children])`, a `List[Html[M]]` |
+| `name="text"` | `std.web.attr("name", "text")` |
+| `name={e}` | `std.web.attribute("name", e)`: `e` is a `String`, an `Int`, or a `Bool` (a flag, left out when `false`) |
+| `name` | `std.web.flag("name")` |
+| `on_click={e}` | `std.web.on_click(e)`: any attribute starting with `on_` is a call of the `std.web` function of that name, with `e` |
+| text | a string literal |
+| `{e}` | `e`: a `String`, an `Int`, an `Html[M]` or a `List[Html[M]]` (`std.web.Child`) |
+
+- Markup starts at a `<` where an operand goes (at the start of a line, or after a token that can't end an operand, such as `(`, `,`, `:=`, `->` or `return`), followed at once by a letter or `>`. `a < b` and `a <b` compare.
+- A tag is lowercase letters, digits and dashes. An attribute's name is letters, digits, `-`, `_`, `:` and `.`; names starting with `on` other than the `on_` events are refused. Void elements (`area`, `base`, `br`, `col`, `embed`, `hr`, `img`, `input`, `link`, `meta`, `source`, `track`, `wbr`) are written `<br />`.
+- Text runs to the next `<` or `{`, and can't hold `}` (write `{"}"}`, `{"<"}`). It is read as in JSX: where a line breaks, the spaces next to the break are dropped, lines left blank are dropped, and the rest are joined by one space. Text on one line is kept as written, so `Hello, {name}!` keeps its spaces.
+- `view` writes an element on one line when it fits, else each child (or run of children that fits) on a line of its own and, when the start tag is too long, each attribute too. Text whose spaces a line break would drop is written in braces (`{" more"}`). Calls that markup can't write the same way (a non-literal tag, an attribute made by another function) are shown as calls.
+
 ## Programs
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`). `derive CommandLine for Options` generates the record's `from_args` and `help` at compile time.
@@ -669,7 +690,7 @@ The standard library is the `std/` package. It is written in Strata and built in
 | [std.unicode](std/unicode.md) | Code point sets, Unicode properties and simple case folding (Unicode 16.0.0). |
 | [std.unicode_tables](std/unicode_tables.md) | Unicode 16.0.0 character data, for `std.unicode`. |
 | [std.utf8](std/utf8.md) | Encoding text as UTF-8 bytes and decoding it. |
-| [std.web](std/web.md) | HTML pages built as values. |
+| [std.web](std/web.md) | HTML pages built as values, written as [markup](#markup). |
 
 **JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends:
 
