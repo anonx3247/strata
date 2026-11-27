@@ -1,0 +1,33 @@
+# `p = P { ..p, n: v }` is stored as `p = P { n: v, name: p.name, xs: p.xs }`
+# (every other field copied from `p`) and shown as written; codegen
+# compiles that shape as `p.n = v`, so a record only `p` holds is changed in
+# place (`set.here` in the IR): one allocation for a million updates, not a
+# million.
+
+[[step]]
+save = "u.strata"
+text = '''
+type P = { n: Int, name: String, xs: List[Int] }
+
+fn main() {
+  mut p := P { n: 0, name: "a", xs: [1, 2] }
+  for i in 0..1000000 {
+    p = P { ..p, n: p.n + i }
+  }
+  print(p.n)
+}
+'''
+
+[[step]]
+strata = ["--file", "u.strata", "view", "main"]
+has = ["p = P { ..p, n: p.n + i }"]
+
+[[step]]
+strata = ["build", "u.strata", "--no-verify", "--emit-llvm", "-o", "u.ll"]
+
+[[step]]
+run = ["grep", "-q", "set.here", "u.ll"]
+
+[[step]]
+strata = ["--file", "u.strata", "run", "--memory-sites"]
+has = ["499999500000", "alloc               1 at"]

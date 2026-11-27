@@ -30,7 +30,7 @@ stdout = "fn        jobs.get_task(xs: List[Task], i: Int) -> Task\n"
 
 [[step]]
 strata = ["--file", "p", "find", "~rnwrkr", "--list"]
-stdout = "jobs.run_worker@00df5b7a\n"
+stdout = "jobs.run_worker@29a1cbe0\n"
 
 [[step]]
 strata = ["--file", "p", "find", "Task", "--kind", "impl"]
@@ -47,7 +47,7 @@ strata = ["--file", "p", "refs", "Task.attempts", "--kind", "write"]
 stdout = '''
 used by — 1 use in 1 definition
 
-jobs.retried@5ce7a5fb/body/1/place  write
+jobs.retried@c285c6f1/body/1/place  write
 pub fn retried(t: Task) -> Task {
   mut u := t
   u.attempts = u.attempts + 1
@@ -59,18 +59,18 @@ pub fn retried(t: Task) -> Task {
 # a type's own method, told from the others by the receiver's type
 [[step]]
 strata = ["--file", "p", "refs", "Worker.next", "--used-by", "--list"]
-stdout = "jobs.run_worker@00df5b7a/body/3/scrutinee\n"
+stdout = "jobs.run_worker@29a1cbe0/body/3/scrutinee\n"
 
 [[step]]
 strata = ["--file", "p", "refs", "Shape.Circle", "--list"]
-stdout = "jobs.area@60101618/body/arms/0/pat\nmain@330e2ea9/body/2/args/0/args/0\n"
+stdout = "jobs.area@4ff8dbea/body/arms/0/pat\nmain@287ae42e/body/2/args/0/args/0\n"
 
 [[step]]
 strata = ["--file", "p", "refs", "same_ids", "--depth", "3", "--used-by"]
 stdout = '''
 jobs.same_ids
 └─ jobs.run_worker  call body/2/cond/callee
-   └─ drain  call body/left/callee
+   └─ drain  call body/args/0/callee
       └─ main  call body/1/args/0/callee
 '''
 
@@ -78,10 +78,10 @@ jobs.same_ids
 strata = ["--file", "p", "refs", "run_worker", "--uses"]
 stdout = '''
 uses — 4 definitions
-  construct jobs.Task                    jobs.run_worker@00df5b7a/body/1/value
-  type      jobs.Worker                  jobs.run_worker@00df5b7a/params/0/ty
-  call      jobs.get_task                jobs.run_worker@00df5b7a/body/2/cond/args/1/callee
-  call      jobs.same_ids                jobs.run_worker@00df5b7a/body/2/cond/callee
+  construct jobs.Task                    jobs.run_worker@29a1cbe0/body/1/value
+  type      jobs.Worker                  jobs.run_worker@29a1cbe0/params/0/ty
+  call      jobs.get_task                jobs.run_worker@29a1cbe0/body/2/cond/args/1/callee
+  call      jobs.same_ids                jobs.run_worker@29a1cbe0/body/2/cond/callee
 '''
 
 [[step]]
@@ -90,9 +90,9 @@ code = 1
 
 # a location shown as code; one from an older version of the definition
 [[step]]
-strata = ["--file", "p", "view", "jobs.run_worker@00df5b7a/body/2/cond/args/1/callee"]
+strata = ["--file", "p", "view", "jobs.run_worker@29a1cbe0/body/2/cond/args/1/callee"]
 stdout = '''
-jobs.run_worker@00df5b7a/body/2/cond/args/1/callee
+jobs.run_worker@29a1cbe0/body/2/cond/args/1/callee
 pub fn run_worker(w: Worker) -> Int {
   ⋮
   first := Task { id: 1, attempts: 0 }
@@ -124,10 +124,10 @@ fails = true
 [[step]]
 strata = ["check", "c.strata"]
 fails = true
-has = ["error in f: unknown variable `undefined_fn`\n--> f@", "/body/right/callee\n| fn f(t: T) -> Int {\n|   t.b + undefined_fn(2)\n|         ^^^^^^^^^^^^\n| }\n"]
+has = ["error in f: unknown variable `undefined_fn`\n--> f@", "/body/args/1/callee\n| fn f(t: T) -> Int {\n|   t.b + undefined_fn(2)\n|         ^^^^^^^^^^^^\n| }\n"]
 
 # on a terminal: the location dim, the code highlighted, the marks in their color
 [[step]]
 strata = ["--file", "p", "refs", "Task.attempts", "--kind", "write"]
 env = { FORCE_COLOR = "1" }
-has = ["\u001b[38;2;111;112;121mjobs.retried@5ce7a5fb/body/1/place  write\u001b[0m", "\u001b[38;2;218;119;242mfn\u001b[0m", "\u001b[38;2;142;162;255m  ^^^^^^^^^^\u001b[0m"]
+has = ["\u001b[38;2;111;112;121mjobs.retried@c285c6f1/body/1/place  write\u001b[0m", "\u001b[38;2;218;119;242mfn\u001b[0m", "\u001b[38;2;142;162;255m  ^^^^^^^^^^\u001b[0m"]

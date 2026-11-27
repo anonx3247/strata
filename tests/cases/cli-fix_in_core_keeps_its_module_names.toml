@@ -24,7 +24,7 @@ has = ["fixed: `pushed_twice`"]
 
 [[step]]
 strata = ["header", "core/iter.strata"]
-has = ["module core.iter:", "uses core.iter.Iterator"]
+has = ["module core.iter:", "trait  Iterator"]
 lacks = ["module iter:"]
 
 [[step]]

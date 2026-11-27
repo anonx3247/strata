@@ -1,0 +1,128 @@
+# `x!`, `x?`, `except`, `or { }`, `!!` and `??` are stored as the `match`
+# each stands for (compiler/sugar), shown as written, and checked and run as
+# before; the round-trip law holds for the file (tools/roundtrip.sh).
+
+[[step]]
+save = "h.strata"
+text = '''
+fn half(n: Int) -> Result[Int, String] {
+  if n % 2 == 0 {
+    Ok(n / 2)
+  } else {
+    Err("odd")
+  }
+}
+
+fn quarter(n: Int) -> Result[Int, String] {
+  h := half(n)!
+  Ok(half(h)!)
+}
+
+fn first(xs: List[Int]) -> Option[Int] {
+  x := get(xs, 0)?
+  Some(x + 1)
+}
+
+fn written(r: Result[Int, String]) -> Result[Int, String] {
+  v := match r {
+    Ok(x) => x,
+    Err(e) => return Err(e),
+  }
+  Ok(v)
+}
+
+fn main() {
+  a := quarter(8) !! 0
+  b := quarter(6) except e {
+    print(e)
+    -1
+  }
+  c := first([3]) ?? 0
+  d := first([]) or {
+    print("none")
+    7
+  }
+  e := get([1], 5) ?? get([2], 0) ?? 9
+  print(f"{a} {b} {c} {d} {e} {written(Ok(4)) !! 0} {(-1).abs()}")
+}
+'''
+
+# stored: matches with `$` names, no handler nodes
+[[step]]
+strata = ["header", "h.strata", "--tree"]
+has = [
+  'MatchExpr { scrutinee: Call { callee: Var("half"), args: [Var("n")] }, binding: None, arms: [Arm { comments: [], pat: CtorPattern { name: "Ok", args: PositionalPats([Bind("$v")]) }, body: Var("$v") }, Arm { comments: [], pat: CtorPattern { name: "Err", args: PositionalPats([Bind("$e")]) }, body: Return(CtorExpr { name: "Err", args: PositionalArgs([Var("$e")]) }) }] }',
+  'pat: CtorPattern { name: "Err", args: PositionalPats([Bind("e")]) }',
+]
+
+# shown as written; a match written out in full of a handler's shape is the
+# same program, shown as the handler
+[[step]]
+strata = ["--file", "h.strata", "view", "main"]
+has = [
+  "  h := half(n)!\n  Ok(half(h)!)",
+  "  x := get(xs, 0)?",
+  "  v := r!",
+  "  a := quarter(8) !! 0\n  b := quarter(6) except e {",
+  "  c := first([3]) ?? 0\n  d := first([]) or {",
+  "  e := get([1], 5) ?? get([2], 0) ?? 9",
+  "(-1).abs()",
+]
+
+[[step]]
+strata = ["--file", "h.strata", "run"]
+out = '''
+odd
+none
+2 -1 4 7 2 4 1
+'''
+
+[[step]]
+run = ["sh", "$ROOT/tools/roundtrip.sh", "--strata", "$STRATA", "h.strata"]
+has = ["1 files, 0 differ"]
+
+# errors speak of the handler written, not of the match it is stored as
+[[step]]
+save = "bad.strata"
+text = '''
+fn f(o: Option[Int]) -> Int {
+  o ?? "s"
+}
+
+fn g(r: Result[Int, String]) -> Int {
+  r!
+}
+
+fn h(n: Int) -> Int {
+  n?
+}
+
+fn k(o: Option[Int]) -> Int {
+  o except { 0 }
+}
+
+fn m(r: Result[Int, String]) -> Int {
+  r or { 0 }
+}
+
+fn t(r: Result[Int, String]) -> Result[Int, String] {
+  scope {
+    x := spawn r!
+    Ok(await x)
+  }
+}
+
+fn main() { print(1) }
+'''
+fails = true
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file bad.strata check 2>&1 | grep -E \"^error in \" | LC_ALL=C sort; true"]
+stdout = '''
+error in f: `or` fallback: expected `Int`, found `String`
+error in g: `!` returns the error early, so the result type must be `Result[_, String]`, found `Int` (handle it here with `except`)
+error in h: `?` needs an Option, found `Int` (use `!` on a Result)
+error in k: `except` / `!!` handle a Result; an Option is handled with `or { … }` / `??`
+error in m: `or` / `??` handle an Option; a Result is handled with `except { … }` / `!!`
+error in t: `!` can't return from a task (a `spawn`, a `race` arm): handle the Result with `except` or `match`, or give it back as the task's result
+'''
