@@ -17,6 +17,8 @@ This page holds the detailed rules of [the tools](tools.md). Each section adds t
 
 A change to a body alone can't break anything else, so only that body is checked. An existing error elsewhere in the package, which the edit can't have caused, doesn't block it. `rename`, `move` and `fix` check the same way. std, core, and packages with dependencies are still checked whole, and `strata check` checks everything.
 
+**What `strata check` checks again.** Each definition that checks is kept in the cache, in one file per package (`check/`, about 65 bytes a definition: 290 kB for `compiler/`, rewritten in place, so it doesn't grow from one edit to the next). It is kept under a key of its code and of the interfaces of everything it reaches through the dependencies the module headers list (`compiler/checked`). The next `check` checks only the definitions whose key changed, with what they reach and every definition that isn't a function in scope (the whole package when that finds an error), and gives the warnings of those it doesn't check again. The headers it reads for the keys are kept too, per module file by the file's SHA-256 (`check/*.rows`). So a body change checks that definition alone, and an interface change checks everything that reaches it. What check runs, rather than only reads, counts by its code: what a type or a trait reaches (a refinement's predicate), and `comptime fn`s with all they reach. A definition with `comptime` code, a `derive … for f` or a hole is checked every time. The key also holds the compiler, std, core, the package's strata.toml and strata.lock, the names and imports of the definition's module, and every `impl`'s and trait's interface. Only a run without errors keeps verdicts. The resolver's errors and unused definitions are found for the whole package every time. A package with dependencies is checked whole. On `compiler/` (4,500 definitions), `check` after a one-function edit takes 0.8 s instead of 5.5 s; `build` checks the same way.
+
 **Warnings.** An edit prints warnings about what it wrote, on stderr, as `strata check` does for everything: a contract that should be a refinement, or a refinement that should be a contract (`compiler/lint`). `strata fix [NAME]...` applies the change each warning shows and logs it like an edit. With `--file F`, it writes a script or folder outside any log, as `edit --file` does.
 
 **Unused code.** `strata check` reports what a whole package, folder or script never uses (`compiler/unused`), after the unused variables. Each is a warning, or an error when strata.toml says `[check] unused = "error"`. Another value of `unused` is refused, naming the two allowed.
@@ -117,6 +119,18 @@ memory roots:                                    allocs   in arena      runtime 
 
 With `STRATA_MEMORY_SITES=FILE` it also writes every place to FILE as tab-separated lines: the counts, the kind, the function, the location (which `strata view` accepts), the code and the root. A function's result has the root `result`: it takes its caller's at run time. The program runs slower in this mode, and std is compiled with it. How it is built: [internals](internals.md), "Memory".
 
+With `STRATA_MEMORY_LIVE` set too, the program counts the heap's live objects by the place that made them, and reports the places holding the most at the peak of live bytes:
+
+```
+live at the peak: 12635102 objects, 499.3 MB (copied 267 times); now 0 objects, 0.0 MB
+     243.8 MB    7989757  runtime  strata.compiled.str_chars  push(out, byte_slice(s, i, j))
+      25.8 MB     846462  append   std.json.read_string  out + c
+```
+
+An object is a block with its count word: a small one counts its size class. Objects made inside the runtime's functions count for the place that called them. Statement regions and arenas are left out. `STRATA_MEMORY_LIVE=FILE` also writes every place to FILE: the objects and bytes at the peak, then at the end, then the place's line as in `STRATA_MEMORY_SITES`. Counting costs two atomic adds per allocation and per free.
+
+`tools/memcurve.c` samples a command's memory every 10 ms (resident size and footprint, children included) into a CSV and plots it. `tools/memprof.sh` runs the workloads in `tools/memprof/` and `strata check` of compiler/ under it.
+
 ## Docs in the terminal: `strata doc`
 
 `strata doc [TOPIC]` (`compiler/markdown` renders, `compiler/docgen` finds definitions) looks TOPIC up in this order:
@@ -159,6 +173,7 @@ Dependencies are handled by `compiler/deps` and `compiler/main`, whose `package 
 - Nothing is evicted. The own cache only grows until it is cleaned by hand.
 - `strata cache` prints where the own cache is, its size, and each top-level folder's size and contents:
   - `verify-strata`: verify's verdicts, proofs and loop findings
+  - `check`: check's verdicts, one file per package
   - `objects` and `ir`: built programs
   - `std-library` and `core-rt`: std and core.rt, compiled
   - `comptime`, `proofs-lines`, `identity`

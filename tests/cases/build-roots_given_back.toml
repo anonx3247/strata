@@ -14,7 +14,7 @@ strata = ["--file", "given.strata", "build", "--no-verify", "--memory-sites", "-
 
 [[step]]
 run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./sites >/dev/null 2>&1; awk -F'\\t' '$3 == \"runtime\" && $4 == \"main\" { print $6 \"\\t\" $7 }' sites.tsv | uniq"]
-out = "either(\"\", f\"e{i}\")\tfunction\njoin([f\"j{i}\"], \",\")\tfunction\nto_string(f\"s{i}\")\tfunction\nrepeat(f\"r{i}\", 1)\tfunction\nf\"{f\"o{i}\"}\"\tfunction\nf\"{chr(97 + i)}\"\tfunction\n[]\tfunction\n"
+out = "either(\"\", f\"e{i}\")\tfunction\njoin([f\"j{i}\"], \",\")\tfunction\nto_string(f\"s{i}\")\tfunction\nrepeat(f\"r{i}\", 1)\tfunction\nf\"{f\"o{i}\"}\"\tfunction\nf\"{chr(97 + i)}\"\tfunction\npush(kept, e)\tfunction\npush(kept, j)\tfunction\npush(kept, s)\tfunction\npush(kept, r)\tfunction\npush(kept, o)\tfunction\npush(kept, c)\tfunction\n[]\tfunction\n"
 
 [[step]]
 strata = ["--file", "given.strata", "build", "--no-verify", "-o", "plain"]
