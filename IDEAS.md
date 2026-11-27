@@ -2764,4 +2764,5 @@ What the composition needed:
 Found, not fixed:
 1. In the runtime's own check (`main.core_rt_text`), `raw_alloc(1024 * 24)` is refused: an operator call of two literals is an `Int` where a builtin wants an `I64` (a plain function's argument is fine). core.rt writes `raw_alloc(24576)`.
 2. `xs[i]` is stored as `at(xs, i)`, which a local named `at` takes over (locate's `replaced_type` has one; it reads back the same, but it is not the built-in).
-3. `std.agent` doesn't round-trip (on main too): each store adds a `std.agent.` to the own types a mixed union and its patterns name (`std.agent.ToolCall`, `std.agent.AgentError`), so `tools/roundtrip.sh` reports it and `strata upgrade` rewrites it each time. It checks and runs.
+3. (fixed) `std.agent` didn't round-trip, on main too: `resolve` named a mixed union's member type (`| ToolCall`) as a variant too, `std.agent.ToolCall`, so each store added a `std.agent.` (six by the time std's library stopped building).
+4. An assertion's message shows a record update lowered (`p == Point { y: 3, x: p.x }`, was `Point { ..p, y: 3 }`): `desugar.records_lowered` runs before codegen prints the expression (case `codegen-programs-4` blessed).
