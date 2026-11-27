@@ -23,4 +23,4 @@ stdout = "[0, 1, 2, 3, 4]\n([1, 2, 3], [1, 2, 3, 4])\nBox { items: [\"x\", \"y\"
 [[step]]
 strata = ["verify", "grow.strata"]
 code = 1
-has = ["✓ filled                   proven (7 checks)", "✓ same                     proven (2 checks)", "✗ negative                 Runtime violation (found by the solver)", "`grow` by a negative size: -1"]
+has = ["✓ filled                   proven (6 checks)", "✓ same                     proven (2 checks)", "✗ negative                 Runtime violation (found by the solver)", "`grow` by a negative size: -1"]
