@@ -22,9 +22,10 @@ fn pushed_twice() -> List[Int] {
 strata = ["--file", "core", "fix"]
 has = ["fixed: `pushed_twice`"]
 
+# (core's names are global: its files list no dependencies)
 [[step]]
 strata = ["header", "core/iter.strata"]
-has = ["module core.iter:", "uses core.iter.Iterator"]
+has = ["module core.iter:"]
 lacks = ["module iter:"]
 
 [[step]]
