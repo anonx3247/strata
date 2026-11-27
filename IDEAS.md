@@ -2751,3 +2751,17 @@ Decided against (not gaps):
 5. **Viewer**: ~~show which agent is working on which slice, and add a diff view for each patch~~ (built as the workspace: see "Viewer as a workspace").
 6. ~~**Structural records with row polymorphism**: "anything with `.id: OrderId`"~~ (built, branch `structural-records`: `{ id: OrderId, .. }` as a parameter's type or a bound; see "Structural records"). Records stay nominal: a `B` with the same fields as `A` is not an `A`.
 7. ~~A compilation backend~~ (built: LLVM, see "Compilation before transpilation"). A wasm build is still wanted for the web.
+
+### The format trio merged: stable-ids + stored-core + operators-traits (2026-11-27; built, branch `format-trio`)
+How it was made: every module viewed as text with its own branch's strata (`view --proofs`); merged definition by definition against each merge base (stable-ids, then stored-core, then operators-traits onto main), imports as sets; stored with a compiler built from the merged text by stored-core's strata (given stable-ids' `codegen.cmp_helper`: without it a `Dict` keyed by a `U32` finds every key, and the merged compiler hung reading headers); stored again with that compiler from the text, `strata upgrade`, bootstrapped. stable-ids' seed chain (d73be6f8 …) wasn't used: it can't read main's newer trees (structural records, `Real`), and the text route needs no old reader.
+What the composition needed:
+1. An operator's callee (`Eq.eq`) is written as its name, not by id (format-stack's fix).
+2. Nameless updates `{ ..x, f: v }` and a type parameter's `T { ..x }` (main's structural records) in stored-core's form, a constructor whose first field is `..`: `desugar.records_lowered` leaves them for the checker, and `check.infer_untagged`, `codegen.construct_want`, `smt.ctor` read them (main had them as `UpdateArgs`).
+3. `extern rust` / `extern ts` (main) through `sugar.python_lowered`/`python_raised` (`ast.foreign_of`).
+4. sugar's builders and readers use operator calls (`applied`, `lowered_node`): `a..=b`'s `+ 1`, a comprehension's `$acc + …`, `xs[f()] += 1`.
+5. `check.types_of` and codegen's `Shape { params: t.params, … }`: stored-core had stored them as `Shape { ..t, … }` from a `TypeDecl`, which lowers to a copy of fields the base lacks (`written`, main's).
+6. `resolve`: a spread in a method body, which `check.spreads_resolved` doesn't write out, is read back by the callee's parameter names (`strata upgrade`, which prints and reads back, stored std.array's `count(...self)` and std.orm's `quoted(...c)` as errors).
+Found, not fixed:
+1. In the runtime's own check (`main.core_rt_text`), `raw_alloc(1024 * 24)` is refused: an operator call of two literals is an `Int` where a builtin wants an `I64` (a plain function's argument is fine). core.rt writes `raw_alloc(24576)`.
+2. `xs[i]` is stored as `at(xs, i)`, which a local named `at` takes over (locate's `replaced_type` has one; it reads back the same, but it is not the built-in).
+3. `std.agent` doesn't round-trip (on main too): each store adds a `std.agent.` to the own types a mixed union and its patterns name (`std.agent.ToolCall`, `std.agent.AgentError`), so `tools/roundtrip.sh` reports it and `strata upgrade` rewrites it each time. It checks and runs.
