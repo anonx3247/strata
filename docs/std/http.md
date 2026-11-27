@@ -432,9 +432,11 @@ fn serve_connection(
 ```
 
 Answers the requests on one connection with `handler` until the client
-closes it or asks to (`connection: close`), then closes it. A request
-it can't read gets a 400 and ends the connection. Returns how many
-requests were answered.
+closes it or asks to (`connection: close`), then closes it. Returns how
+many requests were answered.
+- A request it can't read gets a 400 and ends the connection.
+- Each request is handled in a supervised task, a thread of its own: a
+  handler that panics gets the request a 500 and ends the connection.
 
 ### serve
 
@@ -443,8 +445,10 @@ fn serve(listener: Listener, handler: (Request) -> Response) -> NetError
 ```
 
 Accepts connections on `listener` and answers each in a task of its
-own (`serve_connection`), until accepting fails, such as when the task
-is cancelled. Returns why it stopped.
+own (`serve_connection`), until the listener is closed or the task is
+cancelled. Returns why it stopped.
+An `accept` the system refuses (no file descriptors left, say) is
+skipped after a pause of 10 ms, and the connection waits in the backlog.
 
 ### open
 

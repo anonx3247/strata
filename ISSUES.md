@@ -140,7 +140,7 @@ Direction: an edit touches only its definitions; dependencies are fetched only o
 
 ### 18. The web server isn't safe to expose
 
-No timeouts, no connection limit, one failed `accept` stops the server, one handler panic ends it, requests with both `transfer-encoding` and `content-length` are accepted, the path is decoded before it is split.
+No timeouts, no connection limit, the path is decoded before it is split.
 
 Direction: supervised tasks per connection, deadlines from the clock, a connection cap, and a request parser written against the RFCs.
 
