@@ -31,6 +31,13 @@ Proposed (user, 2026-11-27; to settle in the spec, section 6). Aim: no `Some`, `
 
 ### `derive Error` from a type's text
 `derive Error` makes `message` the value's ordinary text (its `Debug`/`Display` form: `NotFound { path: "app.toml" }`), so an error type needs no hand-written method unless it wants a better message (user, 2026-11-27).
+### `[]T` for lists
+Proposed (user, 2026-11-27; spec sections 2 and 6): `[]T` is sugar for `List[T]`, as in Go and Zig. A prefix binds tighter than `|` and looser than postfix `?`:
+- `[]A | B` is `List[A] | B`; a list of either is `[](A | B)`.
+- `[]User?` is `List[Option[User]]`; an optional list is `([]User)?`.
+- `[]T ! E` is `Result[List[T], E]` (`!` loosest, as above).
+Why `[]T` and not Swift's `[T]`: with types as values (generics as functions over types, `comptime`), `[I64]` would also read as a list holding the type `I64`; `[]I64` can't be an expression. It also leaves `[4]T` for a fixed-size array ("Unboxed fixed-size arrays in the language"). `Dict[K, V]` and `Set[T]` keep their names.
+
 ### Parameter defaults
 Only record fields have defaults. A parameter default would let a spread or a call leave that parameter out. Open: whether a default is filled in where it is stored or where it is called, as for record fields. (Claude, 2026-11-25)
 
