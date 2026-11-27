@@ -10,10 +10,16 @@
 // of the object's contents and `strata_free`. Objects never form cycles,
 // since values never change once built.
 
+#ifdef STRATA_WASM
+// A WebAssembly module (`strata build --target wasm64`): no C library, the
+// few functions this file needs from one in runtime/wasm.h and wasm.c.
+#include "wasm.h"
+#else
 #ifdef __linux__
 #define _GNU_SOURCE  // pthread_getattr_np
 #endif
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -32,6 +38,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif  // STRATA_WASM
 
 // A string: its length in bytes, then its UTF-8 bytes (not NUL-terminated).
 // String literals are laid out the same way as constants in the IR.
@@ -40,12 +47,25 @@ typedef struct {
   char bytes[];
 } Str;
 
+#ifdef STRATA_WASM
+// (the faults' and the system's sections are left out of a module: these
+// come from wasm.c)
+_Noreturn void strata_fault(int32_t kind, Str *msg);
+_Bool strata_soft_fault(int64_t kind, Str *msg);
+#define soft_fault(kind, msg) strata_soft_fault(kind, msg)
+static char *cstr(Str *s);
+static int64_t no_str_words[2] = {0, 0};
+#define NO_STR ((Str *)&no_str_words[1])
+#endif
+
 // Fault kinds, in the order of the IR's constants.
 static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Runtime", "Hole", "Limit"};
 
 // ---- memory ----
 
-#ifdef __APPLE__
+#if defined(STRATA_WASM)
+#define usable_size malloc_usable_size
+#elif defined(__APPLE__)
 #include <malloc/malloc.h>
 #define usable_size malloc_size
 #else
@@ -139,8 +159,14 @@ int64_t strata_raw_size(void *p) { return (int64_t)usable_size(p); }
 // A reserved range of addresses, zeroed, paged in as it is touched (core.mem's
 // `raw_reserve`); NULL when the system refuses it.
 void *strata_raw_reserve(int64_t n) {
+#ifdef STRATA_WASM
+  // (no address space to reserve: core.rt's small objects come from malloc)
+  (void)n;
+  return NULL;
+#else
   void *r = n > 0 ? mmap(NULL, (size_t)n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0) : MAP_FAILED;
   return r == MAP_FAILED ? NULL : r;
+#endif
 }
 
 // core.rt (core/rt.strata) replaces these when it is linked in
@@ -531,6 +557,7 @@ static void print_stack(void) {
   free(t);
 }
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- tests ----
 //
 // `strata test` with the JIT calls each test's function through
@@ -2008,6 +2035,7 @@ static void finish_open_scopes(void) {
   }
 }
 
+#endif  // STRATA_WASM
 // ---- integers ----
 //
 // core.int (core/int.strata) replaces these when core.rt is linked in, as
@@ -3498,6 +3526,7 @@ List *strata_range(int64_t lo, int64_t hi) {
 }
 #endif
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- `--copies`: the copies of values a program makes, reported at its end ----
 //
 // Code compiled with `--copies` (`strata run`, `test` and `build`) calls
@@ -3966,9 +3995,15 @@ void strata_main_error(Str *shown) {
   else fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
 }
 
+#endif  // STRATA_WASM
 // ---- output ----
 
 void strata_print(Str *s) {
+#ifdef STRATA_WASM
+  // (to the host: no tests run in a module)
+  write(1, s->bytes, (size_t)s->len);
+  write(1, "\n", 1);
+#else
   if (RS->capturing) {
     keep_printed(s->bytes, (size_t)s->len);
     keep_printed("\n", 1);
@@ -3978,8 +4013,10 @@ void strata_print(Str *s) {
   fwrite(s->bytes, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
   funlockfile(stdout);
+#endif
 }
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- the system (the `host_*` operations of std) ----
 //
 // A failure is a kind and a message, an OS error written as "No such file
@@ -4670,6 +4707,22 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
   return l;
 }
 
+#endif  // STRATA_WASM
+
+#ifdef STRATA_WASM
+void strata_memory_start(_Bool check);
+
+// A module's start, before the host calls what it exports (the loader
+// `derive TypeScript` writes calls it once).
+void strata_lib_init(void) {
+  strata_memory_start(0);
+  set_threaded(0);
+}
+
+// A string an export returned, freed by the host.
+void strata_string_free(char *p) { free(p); }
+#endif
+
 // ---- strings ----
 //
 // The string built-ins. Strings are UTF-8, and these index them by
@@ -4950,6 +5003,18 @@ _Bool strata_parse_int(Str *s, int64_t *out) {
 }
 #endif
 
+#ifdef STRATA_WASM
+// `s` with a NUL after it, in a buffer kept for the next call.
+static char *cstr(Str *s) {
+  static char *c;
+  static size_t cap;
+  if ((size_t)s->len + 1 > cap) c = realloc(c, cap = (size_t)s->len + 1);
+  memcpy(c, s->bytes, (size_t)s->len);
+  c[s->len] = 0;
+  return c;
+}
+#endif
+
 // (the C library's with core.rt too, as `strata_show_float`)
 static _Bool parse_float_trimmed(Str *t, double *out);
 
@@ -5063,7 +5128,8 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
 }
 #endif
 
-// ---- `extern python`: a Python worker ----
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
+// ---- `extern python` and `extern ts`: a worker process each ----
 //
 // std.python calls Python functions through one worker process for the whole
 // program: `PYTHON -c DRIVER PATH` (the driver below), started on the first
@@ -5071,12 +5137,15 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
 // `{"module": m, "function": f, "args": [...]}`, a reply `{"ok": value}`,
 // `{"error": {"type", "message", "traceback"}}` (an exception), or
 // `{"unencodable": message}` (a result with no JSON form: a set, a NaN).
-// Calls from several tasks (threads) take turns (`py_lock`): one request and its reply at a time. A
-// worker that ends (killed, `os._exit`, a crash) fails the call it was
-// answering (`{"failed": message}`, made here) and the next call starts a
-// new one. Its standard error is the program's (what Python prints goes
-// there: the driver points `sys.stdout` at it, keeping the real one for
-// replies). The worker ends when this process does (its input closes).
+// std.ts does the same with `node -e DRIVER PATH` (`bun -e`, `deno eval`)
+// and the JavaScript driver below it.
+// Calls from several tasks (threads) take turns (the worker's `lock`): one
+// request and its reply at a time. A worker that ends (killed, `os._exit`,
+// a crash) fails the call it was answering (`{"failed": message}`, made
+// here) and the next call starts a new one. Its standard error is the
+// program's (what the code prints goes there: the drivers point standard
+// output at it, keeping the real one for replies). A worker ends when this
+// process does (its input closes).
 static const char *py_driver =
   "import sys, json, importlib, traceback\n"
   "out = sys.stdout\n"
@@ -5103,12 +5172,66 @@ static const char *py_driver =
   "    out.write(reply + '\\n')\n"
   "    out.flush()\n";
 
-static pthread_mutex_t py_lock = PTHREAD_MUTEX_INITIALIZER;
-static pid_t py_pid = -1;
-static int py_to = -1, py_from = -1;
-// (what was read and not yet handed back)
-static char *py_buf = NULL;
-static size_t py_len = 0, py_cap = 0;
+
+// The TypeScript driver: modules found in the `:`-separated folders of its
+// argument (`m`, `m.ts`, `m.mts`, `m.js`, `m.mjs`, else a package in their
+// `node_modules`), each imported once; a promise is awaited; requests
+// answered in order.
+static const char *ts_driver =
+  "(async () => {\n"
+  "const fs = await import('node:fs'), url = await import('node:url'), pth = await import('node:path'), mod = await import('node:module');\n"
+  "const arg = globalThis.Deno ? Deno.args[0] : process.argv[1];\n"
+  "const dirs = (arg || '').split(':').filter(x => x);\n"
+  "process.stdout.write = process.stderr.write.bind(process.stderr);\n"
+  "console.log = console.info = console.debug = console.error;\n"
+  "const find = (m) => {\n"
+  "  for (const d of dirs) for (const e of ['', '.ts', '.mts', '.js', '.mjs']) {\n"
+  "    const f = pth.resolve(d, m + e);\n"
+  "    if (fs.existsSync(f) && fs.statSync(f).isFile()) return url.pathToFileURL(f).href;\n"
+  "  }\n"
+  "  for (const d of dirs) { try { return url.pathToFileURL(mod.createRequire(pth.join(d, 'x.js')).resolve(m)).href; } catch (e) {} }\n"
+  "  return m;\n"
+  "};\n"
+  "const loaded = new Map();\n"
+  "const load = (m) => { if (!loaded.has(m)) loaded.set(m, import(find(m))); return loaded.get(m); };\n"
+  "const send = (o) => { let s; try { s = JSON.stringify(o); } catch (e) { s = JSON.stringify({unencodable: String(e && e.message || e)}); } fs.writeSync(1, s + '\\n'); };\n"
+  "const handle = async (line) => {\n"
+  "  try {\n"
+  "    const req = JSON.parse(line);\n"
+  "    const m = await load(req.module);\n"
+  "    const f = m[req.function];\n"
+  "    if (typeof f !== 'function') throw new TypeError('module `' + req.module + '` has no function `' + req.function + '`');\n"
+  "    let r = await f(...req.args);\n"
+  "    if (r === undefined) r = null;\n"
+  "    if (typeof r === 'number' && !Number.isFinite(r)) return send({unencodable: String(r) + ' is not a JSON number'});\n"
+  "    send({ok: r});\n"
+  "  } catch (e) {\n"
+  "    const err = e instanceof Error;\n"
+  "    send({error: {type: err ? e.name : typeof e, message: err ? e.message : String(e), traceback: err && e.stack ? String(e.stack) : ''}});\n"
+  "  }\n"
+  "};\n"
+  "let buf = '', chain = Promise.resolve();\n"
+  "process.stdin.setEncoding('utf8');\n"
+  "process.stdin.on('data', (d) => {\n"
+  "  buf += d;\n"
+  "  let i;\n"
+  "  while ((i = buf.indexOf('\\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); chain = chain.then(() => handle(l)); }\n"
+  "});\n"
+  "})();\n";
+
+// A worker process: its pipes, what was read and not yet handed back, and
+// the language named in its messages.
+typedef struct {
+  const char *lang;
+  pthread_mutex_t lock;
+  pid_t pid;
+  int to, from;
+  char *buf;
+  size_t len, cap;
+} Worker;
+
+static Worker py_worker = {"Python", PTHREAD_MUTEX_INITIALIZER, -1, -1, -1, NULL, 0, 0};
+static Worker ts_worker = {"TypeScript", PTHREAD_MUTEX_INITIALIZER, -1, -1, -1, NULL, 0, 0};
 // (the reply handed back: each thread's own, kept until its next call, so
 // the caller copies it after the lock is let go)
 static __thread char *py_reply = NULL;
@@ -5140,27 +5263,27 @@ static const char *py_failed(const char *why) {
 
 // The worker gone: its pipes closed, the process reaped; how it ended, in
 // `why`.
-static void py_stop(char *why, size_t n) {
-  if (py_to >= 0) close(py_to);
-  if (py_from >= 0) close(py_from);
-  py_to = py_from = -1;
-  py_len = 0;
-  snprintf(why, n, "the Python worker ended");
-  if (py_pid > 0) {
+static void worker_stop(Worker *w, char *why, size_t n) {
+  if (w->to >= 0) close(w->to);
+  if (w->from >= 0) close(w->from);
+  w->to = w->from = -1;
+  w->len = 0;
+  snprintf(why, n, "the %s worker ended", w->lang);
+  if (w->pid > 0) {
     int st = 0;
-    if (waitpid(py_pid, &st, 0) == py_pid) {
-      if (WIFEXITED(st)) snprintf(why, n, "the Python worker ended (exit code %d)", WEXITSTATUS(st));
-      else if (WIFSIGNALED(st)) snprintf(why, n, "the Python worker was killed (signal %d)", WTERMSIG(st));
+    if (waitpid(w->pid, &st, 0) == w->pid) {
+      if (WIFEXITED(st)) snprintf(why, n, "the %s worker ended (exit code %d)", w->lang, WEXITSTATUS(st));
+      else if (WIFSIGNALED(st)) snprintf(why, n, "the %s worker was killed (signal %d)", w->lang, WTERMSIG(st));
     }
   }
-  py_pid = -1;
+  w->pid = -1;
 }
 
-static int py_start(const char *python, const char *path, char *why, size_t n) {
+static int worker_start(Worker *w, char *const argv[], char *why, size_t n) {
   int in[2], out[2];
-  if (cloexec_pipe(in) != 0) return snprintf(why, n, "can't start the Python worker: %s", strerror(errno)), -1;
+  if (cloexec_pipe(in) != 0) return snprintf(why, n, "can't start the %s worker: %s", w->lang, strerror(errno)), -1;
   if (cloexec_pipe(out) != 0) {
-    snprintf(why, n, "can't start the Python worker: %s", strerror(errno));
+    snprintf(why, n, "can't start the %s worker: %s", w->lang, strerror(errno));
     close(in[0]);
     close(in[1]);
     return -1;
@@ -5174,10 +5297,9 @@ static int py_start(const char *python, const char *path, char *why, size_t n) {
   posix_spawn_file_actions_adddup2(&fa, in[0], 0);
   posix_spawn_file_actions_adddup2(&fa, out[1], 1);
   posix_spawn_file_actions_addinherit_np(&fa, 2);
-  char *argv[] = {(char *)python, "-c", (char *)py_driver, (char *)path, NULL};
   extern char **environ;
   pid_t pid;
-  int e = posix_spawnp(&pid, python, &fa, &at, argv, environ);
+  int e = posix_spawnp(&pid, argv[0], &fa, &at, argv, environ);
   posix_spawn_file_actions_destroy(&fa);
   posix_spawnattr_destroy(&at);
   close(in[0]);
@@ -5185,28 +5307,28 @@ static int py_start(const char *python, const char *path, char *why, size_t n) {
   if (e != 0) {
     close(in[1]);
     close(out[0]);
-    snprintf(why, n, "can't start `%s`: %s", python, strerror(e));
+    snprintf(why, n, "can't start `%s`: %s", argv[0], strerror(e));
     return -1;
   }
 #ifdef F_SETNOSIGPIPE
   // (a worker that died breaks its pipe: writing fails with EPIPE, no SIGPIPE)
   fcntl(in[1], F_SETNOSIGPIPE, 1);
 #endif
-  py_pid = pid;
-  py_to = in[1];
-  py_from = out[0];
-  py_len = 0;
+  w->pid = pid;
+  w->to = in[1];
+  w->from = out[0];
+  w->len = 0;
   return 0;
 }
 
 // Sends `request` (one line of JSON) to the worker, started first with
-// `python` and the module folders `path` (`:`-separated) if there is none,
-// and gives its reply line, or `{"failed": message}`.
-const char *python_worker_call(const char *python, const char *path, const char *request) {
-  pthread_mutex_lock(&py_lock);
+// `argv` if there is none, and gives its reply line, or `{"failed":
+// message}`.
+static const char *worker_call(Worker *w, char *const argv[], const char *request) {
+  pthread_mutex_lock(&w->lock);
   char why[700];
-  if (py_pid < 0 && py_start(python, path, why, sizeof why) != 0) {
-    pthread_mutex_unlock(&py_lock);
+  if (w->pid < 0 && worker_start(w, argv, why, sizeof why) != 0) {
+    pthread_mutex_unlock(&w->lock);
     return py_failed(why);
   }
   size_t len = strlen(request), sent = 0;
@@ -5215,40 +5337,103 @@ const char *python_worker_call(const char *python, const char *path, const char 
     // (the request, then its newline)
     const char *p = sent < len ? request + sent : "\n";
     size_t m = sent < len ? len - sent : 1;
-    ssize_t w = write(py_to, p, m);
-    if (w < 0 && errno == EINTR) continue;
-    if (w <= 0) ok = 0;
-    else sent += (size_t)w;
+    ssize_t r = write(w->to, p, m);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) ok = 0;
+    else sent += (size_t)r;
   }
   if (!ok) {
-    py_stop(why, sizeof why);
-    pthread_mutex_unlock(&py_lock);
+    worker_stop(w, why, sizeof why);
+    pthread_mutex_unlock(&w->lock);
     return py_failed(why);
   }
   for (;;) {
-    char *nl = py_len ? memchr(py_buf, '\n', py_len) : NULL;
+    char *nl = w->len ? memchr(w->buf, '\n', w->len) : NULL;
     if (nl) {
-      size_t k = (size_t)(nl - py_buf);
-      py_buf[k] = 0;
-      const char *r = py_give(py_buf);
-      memmove(py_buf, nl + 1, py_len - k - 1);
-      py_len -= k + 1;
-      pthread_mutex_unlock(&py_lock);
+      size_t k = (size_t)(nl - w->buf);
+      w->buf[k] = 0;
+      const char *r = py_give(w->buf);
+      memmove(w->buf, nl + 1, w->len - k - 1);
+      w->len -= k + 1;
+      pthread_mutex_unlock(&w->lock);
       return r;
     }
-    if (py_cap - py_len < 4096) {
-      py_cap = py_cap ? py_cap * 2 : 65536;
-      py_buf = realloc(py_buf, py_cap);
+    if (w->cap - w->len < 4096) {
+      w->cap = w->cap ? w->cap * 2 : 65536;
+      w->buf = realloc(w->buf, w->cap);
     }
-    ssize_t r = read(py_from, py_buf + py_len, py_cap - py_len - 1);
+    ssize_t r = read(w->from, w->buf + w->len, w->cap - w->len - 1);
     if (r < 0 && errno == EINTR) continue;
     if (r <= 0) {
-      py_stop(why, sizeof why);
-      pthread_mutex_unlock(&py_lock);
+      worker_stop(w, why, sizeof why);
+      pthread_mutex_unlock(&w->lock);
       return py_failed(why);
     }
-    py_len += (size_t)r;
+    w->len += (size_t)r;
   }
+}
+
+// std.python's call: the worker runs `python` with the module folders
+// `path` (`:`-separated).
+const char *python_worker_call(const char *python, const char *path, const char *request) {
+  char *argv[] = {(char *)python, "-c", (char *)py_driver, (char *)path, NULL};
+  return worker_call(&py_worker, argv, request);
+}
+
+// std.ts's call: the worker runs `node -e DRIVER PATH` (`bun` the same way,
+// `deno eval DRIVER PATH`).
+const char *ts_worker_call(const char *node, const char *path, const char *request) {
+  const char *base = strrchr(node, '/');
+  base = base ? base + 1 : node;
+  char *argv[] = {(char *)node, strcmp(base, "deno") == 0 ? "eval" : "-e", (char *)ts_driver, (char *)path, NULL};
+  return worker_call(&ts_worker, argv, request);
+}
+
+// ---- `extern rust`: a library made by cargo ----
+//
+// std.rust calls the C functions of the library cargo made from the
+// package's crates (compiler/cargo): linked into a built executable, found
+// with `dlsym`; under `strata run` and `test`, the shared library, loaded on
+// the first call and kept:
+// each takes its arguments as a JSON array and gives its reply, freed by
+// the library's `strata_rust_free` once copied. Calls aren't serialized.
+static pthread_mutex_t rust_lock = PTHREAD_MUTEX_INITIALIZER;
+static void *rust_handle = NULL;
+static char *rust_path = NULL;
+
+const char *rust_library_call(const char *library, const char *symbol, const char *args) {
+  pthread_mutex_lock(&rust_lock);
+  // (a built executable has the library linked in: its functions are the
+  // program's own. Under `strata run` it is loaded from `library`.)
+  if (!rust_handle && dlsym(RTLD_DEFAULT, "strata_rust_free")) {
+    rust_handle = RTLD_DEFAULT;
+    rust_path = strdup(library);
+  }
+  if (!rust_handle || (rust_handle != RTLD_DEFAULT && strcmp(rust_path, library) != 0)) {
+    void *h = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+      char why[1200];
+      const char *e = dlerror();
+      snprintf(why, sizeof why, "can't load the Rust library (`strata run` and `strata build` make it with cargo): %s", e ? e : library);
+      pthread_mutex_unlock(&rust_lock);
+      return py_failed(why);
+    }
+    rust_handle = h;
+    free(rust_path);
+    rust_path = strdup(library);
+  }
+  char *(*f)(const char *) = (char *(*)(const char *))dlsym(rust_handle, symbol);
+  void (*release)(char *) = (void (*)(char *))dlsym(rust_handle, "strata_rust_free");
+  pthread_mutex_unlock(&rust_lock);
+  if (!f || !release) {
+    char why[700];
+    snprintf(why, sizeof why, "the Rust library has no `%s`: it was made before this declaration (`strata run` and `strata build` make it again)", symbol);
+    return py_failed(why);
+  }
+  char *r = f(args);
+  const char *out = py_give(r ? r : "{\"failed\":\"the Rust function gave no reply\"}");
+  if (r) release(r);
+  return out;
 }
 
 // ---- sockets (std.net) ----
@@ -5999,3 +6184,4 @@ void std_net_close(uint64_t h) {
 int32_t std_net_status(void) { return net_status; }
 
 const char *std_net_message(void) { return net_give(net_msg, strlen(net_msg)); }
+#endif  // STRATA_WASM
