@@ -2,8 +2,8 @@
 # yes: a trait value that isn't the trait (or a subtrait), `()` or a
 # function used as a trait, a union some member of which lacks the trait, a
 # mismatch inside a type with a function in it, a narrowed value joined
-# with the whole sum, a type that would contain itself, and types nested
-# past the comparison's depth
+# with the whole sum, a type that would contain itself, and function types
+# nested past the depth `unify` compares
 
 [[step]]
 save = "p.strata"
@@ -117,7 +117,7 @@ has = [
   "error in unprinted: call to `takes_pair`, argument 1: expected `(Int, (Int) -> Int)`, found `(Int, Int)`",
   "error in narrowed_join: `Square` has no field `r`, so not every `Shape` does",
   "error in self_list: a type that contains itself: `_` would be `List[_]`",
-  "error in too_deep: types too deeply nested to compare",
+  "error in too_deep: call to `deep`, argument 1: expected `(((",
 ]
 lacks = [
   "error in union_all",
