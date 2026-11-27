@@ -1,0 +1,5 @@
+name = "rust"
+
+# `extern rust` (module `text`): `strata run`, `test` and `build` write a
+# crate calling the declared functions of ./text_tools into .strata/rust and
+# build it with `cargo` from the PATH (or `[rust] cargo = "..."` here)

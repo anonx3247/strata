@@ -17,10 +17,12 @@ The modules of `std`, each with its types, traits and functions: their signature
 | [std.process](process.md) | The running program's arguments, environment and exit code, and the programs it runs. |
 | [std.python](python.md) | Calls to Python functions declared `extern python "module" fn …`. |
 | [std.regex](regex.md) | Regular expressions in regex-syntax's syntax, matched by a Pike VM or a DFA. |
+| [std.rust](rust.md) | Calls to Rust functions declared `extern rust "crate" fn …`. |
 | [std.sqlite](sqlite.md) | SQLite databases through the system's libsqlite3. |
 | [std.term](term.md) | Text styled for a terminal with ANSI escape codes. |
 | [std.time](time.md) | The clock, waiting, and timers in `select`. |
 | [std.toml](toml.md) | TOML 1.1 text (https://toml.io/en/v1.1.0) read into values and written from them, and `derive Toml` for records and sum types. |
+| [std.ts](ts.md) | Calls to TypeScript functions declared `extern ts "module" fn …`. |
 | [std.typing](typing.md) | Types as values at compile time, for derivable traits. |
 | [std.unicode](unicode.md) | Sets of code points, Unicode properties, simple case folding and grapheme clusters (Unicode 16.0.0). |
 | [std.unicode_tables](unicode_tables.md) | Unicode 16.0.0 character data for `std.unicode`. |

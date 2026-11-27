@@ -1,0 +1,8 @@
+name = "ts"
+
+# `extern ts` (module `text`): the worker runs `node` from the PATH (Node
+# 22.18 or later runs .ts files as they are; `bun` and `deno` work too), and
+# finds `text_utils.ts` in this folder (the default; `path = ["ts"]` would
+# look in ./ts instead)
+[ts]
+executable = "node"
