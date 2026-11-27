@@ -1,0 +1,4 @@
+/// `s`, louder.
+fn shout(s: String) -> String {
+  s + "!!"
+}

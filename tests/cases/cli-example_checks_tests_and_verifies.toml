@@ -4,7 +4,7 @@ strata = ["--file", "$ROOT/examples/orders.strata", "check"]
 
 [[step]]
 strata = ["--file", "$ROOT/examples/orders.strata", "test"]
-has = ["1 passed"]
+has = ["2 passed"]
 
 [[step]]
 strata = ["--file", "$ROOT/examples/orders.strata", "verify", "--cases", "50"]

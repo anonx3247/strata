@@ -127,7 +127,7 @@ Err("payload: expected Positive or String or Address, got []")
 '''
 
 [[step]]
-strata = ["--file", "bad0.strata", "edit"]
+strata = ["--file", "bad0.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 
@@ -144,7 +144,7 @@ fails = true
 has = ["a field named `type` can't be written to JSON"]
 
 [[step]]
-strata = ["--file", "bad1.strata", "edit"]
+strata = ["--file", "bad1.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 
@@ -161,7 +161,7 @@ fails = true
 has = ["`None` and `Some(None)` would both be `null`"]
 
 [[step]]
-strata = ["--file", "bad2.strata", "edit"]
+strata = ["--file", "bad2.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 
@@ -178,7 +178,7 @@ fails = true
 has = ["`(Int) -> Int` can't be JSON"]
 
 [[step]]
-strata = ["--file", "bad3.strata", "edit"]
+strata = ["--file", "bad3.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 
@@ -196,7 +196,7 @@ fails = true
 has = ["`P` has several positional fields"]
 
 [[step]]
-strata = ["--file", "bad4.strata", "edit"]
+strata = ["--file", "bad4.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 
@@ -215,7 +215,7 @@ fails = true
 has = ["`B` doesn't implement `Json`: write `derive Json for B`"]
 
 [[step]]
-strata = ["--file", "bad5.strata", "edit"]
+strata = ["--file", "bad5.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 
@@ -232,7 +232,7 @@ fails = true
 has = ["`Int | Float` can't be JSON: two members are written as a JSON number"]
 
 [[step]]
-strata = ["--file", "bad6.strata", "edit"]
+strata = ["--file", "bad6.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 
@@ -249,7 +249,7 @@ fails = true
 has = ["two members are written as a JSON array"]
 
 [[step]]
-strata = ["--file", "bad7.strata", "edit"]
+strata = ["--file", "bad7.strata", "edit", "--as-given"]
 text = '''
 from std.json use Json
 

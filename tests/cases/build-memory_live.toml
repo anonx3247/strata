@@ -1,0 +1,14 @@
+# STRATA_MEMORY_LIVE with --memory-sites (docs/tools-reference.md,
+# "Measuring memory"): the live objects at the peak by the place that made
+# them, and at the end, when everything was freed.
+
+[[step]]
+save = "live.strata"
+from = "live.st"
+
+[[step]]
+strata = ["--file", "live.strata", "build", "--no-verify", "--memory-sites", "-o", "prog"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_LIVE=live.tsv ./prog 2>/dev/null; awk -F'\t' 'NR > 1 && $2 >= 100000 { print $1 \"\t\" $2 \"\t\" $3 \"\t\" $4 \"\t\" $5 \"\t\" $6 \"\t\" $8 }' live.tsv"]
+out = "20000\n20000\t640000\t0\t0\truntime\tmain\tpush(keep, Rec { name: f\"rec {i}\", n: i })\n20000\t640000\t0\t0\talloc\tmain\tpush(keep, Rec { name: f\"rec {i}\", n: i })\n19365\t619680\t0\t0\truntime\tnames\tpush(out, f\"{r.name}!\")\n1\t163856\t0\t0\truntime\tmain\tpush(keep, Rec { name: f\"rec {i}\", n: i })\n1\t163856\t0\t0\truntime\tnames\tpush(out, f\"{r.name}!\")\n"

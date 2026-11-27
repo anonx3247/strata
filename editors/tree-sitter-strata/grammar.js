@@ -64,6 +64,7 @@ module.exports = grammar({
     $._try_bang,
     $._try_question,
     $._binary_minus,
+    $._binary_less,
     // never produced: tells the scanner it is called in error recovery
     $._error_sentinel,
   ],
@@ -91,6 +92,7 @@ module.exports = grammar({
     [$._primary, $.record_expression],
     [$.scoped_type_identifier, $._primary],
     [$.record_fields, $.record_pattern],
+    [$.field_declaration, $.field_type],
   ],
 
   rules: {
@@ -469,7 +471,26 @@ module.exports = grammar({
         $._type_name,
         $.function_type,
         $.tuple_type,
+        $.record_type,
       ),
+
+    // `{ id: Int, total: Cents }` (an anonymous record's type) and
+    // `{ id: Int, .. }` (any record with at least these fields)
+    // (`type R = { … }` is a record's body, not an alias of one)
+    record_type: ($) =>
+      prec.dynamic(
+        -3,
+        seq(
+          '{',
+          $.field_type,
+          repeat(seq(',', $.field_type)),
+          optional(seq(',', optional(alias('..', $.rest)))),
+          '}',
+        ),
+      ),
+
+    field_type: ($) =>
+      seq(field('name', $._field_name), ':', field('type', $._type)),
 
     _type_name: ($) =>
       choice($.type_identifier, $.scoped_type_identifier, $.identifier),
@@ -669,12 +690,15 @@ module.exports = grammar({
         $.dict_expression,
         $.set_expression,
         $.record_expression,
+        $.anonymous_record,
         $.block,
         $.if_expression,
         $.match_expression,
         $.select_expression,
         $.scope_expression,
         $.mock_expression,
+        $.markup_element,
+        $.markup_fragment,
       ),
 
     binary_expression: ($) => {
@@ -682,7 +706,7 @@ module.exports = grammar({
       const table = [
         [PREC.or, '||'],
         [PREC.and, '&&'],
-        [PREC.compare, choice('==', '!=', '<', '<=', '>', '>=')],
+        [PREC.compare, choice('==', '!=', alias($._binary_less, '<'), '<=', '>', '>=')],
         [PREC.bitor, '|'],
         [PREC.bitxor, '^'],
         [PREC.bitand, '&'],
@@ -930,6 +954,23 @@ module.exports = grammar({
         ),
       ),
 
+    // `{ id: 1, total: 0 }` and `{ ..x, total: 0 }`: a record without a
+    // type's name (after `{`, a field's name and `:` is no statement)
+    anonymous_record: ($) =>
+      prec.dynamic(
+        -2,
+        seq(
+          '{',
+          choice(
+            seq($.base_record, optional(seq(',', commaSep($.field_initializer)))),
+            commaSep1(
+              seq(field('name', $._field_name), ':', field('value', $._expression)),
+            ),
+          ),
+          '}',
+        ),
+      ),
+
     record_fields: ($) =>
       seq(
         '{',
@@ -1140,6 +1181,65 @@ module.exports = grammar({
       ),
 
     format_spec: (_) => token.immediate(/[^}]+/),
+
+    // markup: `<p class="x">Hi {name}</p>`, `<br />`, `<>…</>`. The tag's
+    // name is written against its `<` (`a <b` compares).
+    markup_element: ($) =>
+      choice(
+        seq(
+          $.markup_start_tag,
+          repeat($._markup_child),
+          $.markup_end_tag,
+        ),
+        $.markup_self_closing_tag,
+      ),
+
+    markup_start_tag: ($) =>
+      seq(
+        '<',
+        field('name', $.tag_name),
+        repeat($.markup_attribute),
+        '>',
+      ),
+
+    markup_self_closing_tag: ($) =>
+      seq(
+        '<',
+        field('name', $.tag_name),
+        repeat($.markup_attribute),
+        '/>',
+      ),
+
+    markup_end_tag: ($) =>
+      seq('</', field('name', $.tag_name), '>'),
+
+    markup_fragment: ($) =>
+      seq('<', token.immediate('>'), repeat($._markup_child), '</', '>'),
+
+    tag_name: (_) => token.immediate(/[a-zA-Z][a-zA-Z0-9-]*/),
+
+    markup_attribute: ($) =>
+      seq(
+        field('name', $.attribute_name),
+        optional(
+          seq('=', field('value', choice($.string, $.markup_expression))),
+        ),
+      ),
+
+    attribute_name: (_) => /[a-zA-Z_][a-zA-Z0-9_:.-]*/,
+
+    _markup_child: ($) =>
+      choice(
+        $.markup_text,
+        $.markup_expression,
+        $.markup_element,
+        $.markup_fragment,
+      ),
+
+    markup_expression: ($) => seq('{', field('value', $._expression), '}'),
+
+    // text between tags; the spaces around it are `extras`
+    markup_text: (_) => token(prec(-1, /[^{}<\s]([^{}<]*[^{}<\s])?/)),
 
     comment: (_) => token(seq('//', /[^\n]*/)),
 
