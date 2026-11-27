@@ -103,7 +103,7 @@ has = [
 ]
 
 [[step]]
-strata = ["--file", "e.strata", "edit"]
+strata = ["--file", "e.strata", "edit", "--as-given"]
 text = '''
 fn a() -> Real {
   x := 0.5
@@ -221,7 +221,7 @@ has = ["✓ doubled ", "✓ label ", "✓ halve "]
 
 # a `Real` is never built from its parts
 [[step]]
-strata = ["--file", "q.strata", "edit"]
+strata = ["--file", "q.strata", "edit", "--as-given"]
 text = '''
 pub fn a() -> Real {
   Real { num: 2, den: 4 }
