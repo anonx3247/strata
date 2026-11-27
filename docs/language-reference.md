@@ -656,7 +656,11 @@ clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
   - A `derived fn` with parameters (`derived fn json(args: String) -> String { .. }`) is a wrapper around the function, exported as `NAME_METHOD` (`add_json`). Its body calls the function with `Self.call(p -> e)` or `Self.try_call(p -> e)`, where `e` gives each argument and `p` is its parameter, a `Field`.
   - `derived fn h() -> String { comptime ... }` produces, at compile time, the function's part of the file `NAME.h`. Here `Self` is the function, as a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`. A file is its parts in order, with each paragraph (up to a blank line) included once.
 
+  - A `derived fn` taking `self` (`derived fn name(self) -> String { .. }`) is a method of a type the derive makes for the function (`Tool$add`, a record of the parameters it binds), which implements the trait. Where the function is used as a value, not called, it is that type's value, so `add` is a value of the trait: `std.agent`'s `derive Tool for add` puts `add` in a `List[Tool]`. Calls of `add` are unchanged.
+
   `C` is therefore written in Strata, like `Json` (see "Derives on functions" in IDEAS.md).
+- **Arguments.** A derive takes arguments after its trait, each a word and names: `derive Tool(bind: net) for search`, several separated by `;`. They are `Self.clauses` while deriving, as a type derive's block clauses are. `bind` is read by the derive machinery itself. The parameters it names are left to the use: they are the fields of the type made for the function, given as `search.with(net)` in their order in `bind`, and `Self.call` passes them from `self`. A function with bound parameters used as a value without `.with` is an error: "`search` needs `net`: write `search.with(net)`".
+- **Written above the function**: `derive Tool for` on the line before `fn add(…)` derives it for that function, as `derive Json for` does for a type.
 
 ### `derive Python for f`
 
@@ -742,7 +746,7 @@ Markup is an expression, read by the parser into calls to `std.web` and shown by
 
 **Subcommands** are a union that derives `CommandLine`. Each member is a subcommand (`Edit` is `edit`), its fields are the subcommand's options, and its `///` doc is its help. An options record with a field of that union type parses its other fields as global options before the subcommand.
 
-**`main`'s parameters.** `main` can also take `Console` (`std.io`, chosen by the environment: the terminal) and capabilities, in any order. std provides `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself as the tools see it, a `Code`) and `Sqlite` (`std.sqlite`); a program can define its own. `main` passes them on where `Files` or `Environment` is expected: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so tests can pass `mem_files(...)`.
+**`main`'s parameters.** `main` can also take `Console` (`std.io`, chosen by the environment: the terminal) and capabilities, in any order. std provides `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself as the tools see it, a `Code`), `Sqlite` (`std.sqlite`) and `Net` (`std.net`: TCP connections and listeners); a program can define its own. `main` passes them on where `Files` or `Environment` is expected: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so tests can pass `mem_files(...)`.
 
 **Exit codes.** `main` returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either. An `Err` is written to standard error and the exit code is 1. A run-time fault exits with 101. `strata run <fn> [ARGS]` calls a single function instead, with its arguments written as code.
 
@@ -757,10 +761,12 @@ The standard library is the `std/` package. It is written in Strata and built in
 | [std.collections](std/collections.md) | Sorted dictionaries and sets (AVL trees), and a priority queue (binary heap). |
 | [std.ffi](std/ffi.md) | Calling Strata from other languages: `derive C for f`, `derive Python for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
-| [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
+| [std.agent](std/agent.md) | An LLM agent loop: a conversation of `Message`s, tools (the `Tool` trait, derived for functions: `derive Tool for add`), and `run` / `run_streamed`, which run the tools a `Model` calls (`Claude`, through Anthropic's Messages API, streamed or not, or a mock). |
+| [std.http](std/http.md) | HTTP/1.1: requests, responses and routes, a client (`send`, `fetch`, `open` for a body read as it arrives, TLS for `https://`) and a server (`serve`), over any `Stream`. |
 | [std.io](std/io.md) | Console text input and output. |
 | [std.json](std/json.md) | JSON text, and reading and writing records and sum types as JSON. |
 | [std.memory](std/memory.md) | Arenas, for programs that must be fast. |
+| [std.net](std/net.md) | TCP connections and listeners (`Net`), read and written through the `Stream` trait; TLS for clients. |
 | [std.process](std/process.md) | The running program's arguments, environment variables and exit code, and running other programs. |
 | [std.orm](std/orm.md) | Records stored as SQLite tables: `derive Table` (the schema, rows written and read back with checks) and typed queries over their fields. |
 | [std.regex](std/regex.md) | Regular expressions. |

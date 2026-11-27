@@ -4,15 +4,18 @@ The modules of `std`, each with its types, traits and functions: their signature
 
 | Module | |
 |---|---|
+| [std.agent](agent.md) | An LLM agent loop: the model calls tools, the loop runs them and answers, until a reply calls none. |
 | [std.cli](cli.md) | Command-line options read into a record, and commands into a union, with `derive CommandLine`. |
 | [std.code](code.md) | A codebase as Strata's tools see it, for viewers and agents. |
 | [std.collections](collections.md) | Ordered dictionaries and sets (AVL trees), and a priority queue (a binary heap). |
 | [std.ffi](ffi.md) | Strata functions called from other languages. |
 | [std.fs](fs.md) | Files and folders. |
-| [std.http](http.md) | Requests, responses and routes for `strata serve`. |
+| [std.http](http.md) | HTTP/1.1 requests and responses, a client (`send`, `fetch`, TLS for `https://`) and a server (`serve`, a `Router`), over any `std.net.Stream`. |
 | [std.io](io.md) | The console, text in and out. |
 | [std.json](json.md) | JSON text, and records and sum types read from it and written to it. |
+| [std.lemmas](lemmas.md) | Facts about the builtin collections, proven once by `verify`, for proofs to use (`assert … by frame_with(d, k, v, done)`). |
 | [std.memory](memory.md) | Arenas, for programs that allocate much and keep little. |
+| [std.net](net.md) | TCP connections and listeners, through the `Net` capability. |
 | [std.orm](orm.md) | Records as SQLite tables: `derive Table for Todo` gives the table's schema, its rows written and read back as `Todo`s, and typed queries over its fields. |
 | [std.process](process.md) | The running program's arguments, environment and exit code, and the programs it runs. |
 | [std.python](python.md) | Calls to Python functions declared `extern python "module" fn …`. |
