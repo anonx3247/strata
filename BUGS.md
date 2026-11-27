@@ -378,14 +378,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Runtime and core
 
-- [ ] **(memory) `threaded` flip inside an open arena sends allocations out of it (possible use-after-free).** `arena_now()` reads `heap` 296 when `threaded()`, else `rt_state` 272. An arena opened while tasks run is stored in `heap` 296 (`d,48 = 1`). Say an `await` inside that arena joins the last task: `join` then calls `set_threaded(0)`, and `arena_now()` reads 272 from then on.
-  Where: core.rt.arena_now, arena_put, strata_arena_begin, strata_memory_threaded, strata_memory_spawning. Source: review core-runtime. Confidence: possible.
 - [ ] **Per-thread free lists only go back when the thread ends (producer/consumer grows without bound).** A freeing thread pushes onto its own `heap` list. `refill` only takes from the shared list, and `strata_memory_thread_end` gives lists back at thread end. A consumer that frees what a producer allocated hoards the blocks, and the producer keeps carving new chunks.
   Where: core.rt.strata_free (threaded branch), refill, strata_memory_thread_end. Source: review core-runtime; ledger R3. Confidence: sure.
 - [ ] **(memory) `join` is not synchronized: double `pthread_join` and a wrong `live_tasks`.** `static void join(Task *t) { if (t->joined) return; pthread_join(t->thread, NULL); t->joined = 1; if (__atomic_sub_fetch(&live_tasks, 1, …) == 0) set_threaded(0); …}`.
   Where: runtime.c join (1535), strata_await (1621), strata_scope_end, strata_task_share. Source: review core-runtime. Confidence: likely.
-- [ ] **(memory) Use-after-free when a task drops an unclosed channel it made.** `strata_channel_new` calls `hold_sender(c)` on the creating thread. `strata_channel_drop` frees `c` when `--c->ends == 0` and doesn't remove `c` from `held`. At the task's end, `for (int64_t i = 0; i < nheld; i++) held[i]->senders--;` writes to the freed channel.
-  Where: runtime.c strata_channel_new (hold_sender), strata_channel_drop, task_main. Source: review core-runtime. Confidence: likely.
 - [ ] **(memory) `str_trim` makes a negative-length string on non-UTF-8 input (memory corruption).** The forward loop steps by the lead byte's length (`a += char_size(s, a)`) and decodes past the end. The backward loop steps back over continuation bytes and can end before `a`.
   Where: core.str.str_trim (core.str.st:158), str_part, str_alloc. Source: review core-runtime. Confidence: sure.
 - [ ] **Host strings are never checked to be UTF-8.** Each builds the `String` with `str_from(buf, len)` and no check. IDEAS.md "Known gaps": "`Files.read` (`host_read_file`) and `Console.read_line` don't check that the bytes are UTF-8 … it should be an `FsError`".
