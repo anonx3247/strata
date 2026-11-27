@@ -139,7 +139,7 @@ Each layer lists what it adds; nothing else exists yet.
 ## Work streams beside the layers
 
 - **Sugar**: each form a parser rule and a printer rule with the round-trip law. Handlers (`!`, `?`, `except`, `or`, `!!`, `??`) first, then defaults and `..r` updates, ranges and indexing, comprehensions, `loop`, spreads.
-- **std**: io, fs, process with L0; collections, json, toml after L2; regex (search, captures, replace, compiled once) after L2; http with supervised connections, deadlines and a connection cap after L3; web with the Elm architecture's commands after L3; byte buffers, paths, dates, terminal input; Linux releases.
+- **std**: `derive Json` on a sum writes its variant as `"type": "snake_case_name"` beside the shared (`with`) and the variant's fields (user, 2026-11-27; `type` is a keyword, so no field can collide with it; positional variants as `"value"`; key and names overridable on the derive; a variant rename that changes the JSON is reported). io, fs, process with L0; collections, json, toml after L2; regex (search, captures, replace, compiled once) after L2; http with supervised connections, deadlines and a connection cap after L3; web with the Elm architecture's commands after L3; byte buffers, paths, dates, terminal input; Linux releases.
 
 ## Before L0: the spec, then phase 0
 
