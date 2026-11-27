@@ -165,7 +165,7 @@ fn f(x: Int) -> Int {
 strata = ["merge-file", "o.strata", "a.strata", "b.strata", "a.strata"]
 dir = "same"
 fails = true
-has = ["conflict in f: ?conflict_1 at body/0/value/right"]
+has = ["conflict in f: ?conflict_1 at body/0/value/args/1"]
 
 [[step]]
 strata = ["--file", "a.strata", "view", "main"]
