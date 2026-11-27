@@ -355,6 +355,7 @@ test "a receipt shows the time" {
 | Type | Notes |
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` is arbitrary-precision, like Python's: a machine integer while it fits and a big integer when it doesn't, literals included. `Float` is never NaN or infinite; an operation whose result would be is a fault (`1e308 * 10.0`). Where that can't be ruled out, for example in code that runs other programs' arithmetic, `checked_add`, `checked_sub`, `checked_mul`, `checked_div`, `checked_rem` and `checked_sqrt` return an `Option[Float]`, and `checked_floor`, `checked_ceil` and `checked_round` an `Option[Int]`, with `None` in place of the fault. Ints and Floats never mix implicitly (`float(n)`, `round(x)`) |
+| `Real` | exact rationals, core.real's record `{ num: Int, den: Positive }` in lowest terms. The checker refuses one built from its parts (`Real { num: 2, den: 4 }`) or a part assigned outside core.real, so `==`, hashing and `Dict` keys are structural. The checker writes each decimal literal as `Real { num: 1, den: 10 }` (from the `Float`'s shortest digits, so a literal of more than 17 significant digits is read as its nearest `Float` first) and each integer literal where a `Real` is wanted as `Real { num: n, den: 1 }`. The code generator makes a literal a constant block and calls core.real's `real_add`, `real_mul`, `real_cmp` … for the operators, a result of one put on the stack or into the variable it is assigned to; core.real has no call-stack frames. A division checks its divisor ("division by zero") unless `verify` proved it nonzero. `verify` encodes a `Real` as an SMT `Real` (`floor` is `to_int`) everywhere but in core.real, whose own functions see the record and are proven. A decimal literal pattern is `where it == 0.5`, written back as `0.5`. `%` is Euclidean, as on `Int`. `{x:.2}` rounds ties to even, as on `Float`. The fuzzer makes a `Real` as an `Int` over a `Positive`, reduced. `std.json`'s and `std.toml`'s `Number` hold a `Real` (beside `Integer(Int)`): read exactly, written with the shortest digits that are exact (`Real.number_text`); writing a `Real` a double can't give back exactly (`Real.fits_double`: `1/3`, too many digits, past the range) is an error, and `-0.0` reads as `0.0`. `std.sqlite` stores a `Real` as its text (`Row.real` reads it back), the ORM's `Real` columns are `TEXT` |
 | `I8` … `I64`, `U8` … `U64` | Fixed-width machine integers, each a separate type compiled to its own width (`U32` is an LLVM `i32`). Arithmetic wraps: each operation (`+ - * / % & \| ^ << >>`, `-x`) computes the `Int` result, then takes it modulo 2^width (two's complement for the signed types). `/` and `%` are Euclidean, as on `Int`. A shift by the width or more gives 0, or -1 for `>>` of a negative number. They never mix with `Int` or with each other: `x + n` with `x: U32` and `n: Int` is an error. Convert with `x.to_int()`, `n.to_u32()` (`n` must fit; `verify` proves it or a run-time check enforces it) or `n.wrap_u32()` (`n` modulo 2^32). An integer literal is an `Int` unless its context makes it a sized integer: an annotation (`let b: U8 = 200`), a parameter, a result, a field, a list of them, or the other operand of an operator (`x + 1`, `x >> 3`). It must fit (`let b: U8 = 300` is an error). `verify` models them as integers in their range with every operation wrapped, so it finds where an `ensures` breaks on overflow (`x + 1 > x` fails for `x = 255`) |
 | `()` | the unit type, for "no meaningful value". It plays the role of Python's `None` as a type |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
@@ -523,7 +524,7 @@ Paths are relative to the package's folder, or absolute. `compiler/strata.toml`,
 - **C calls work everywhere code runs:** in `strata build`, and in `strata run` and `strata test` through the JIT, which compiles the `[native]` sources into a library with clang and loads it. The C standard library (`strlen`, …) needs no `[native]` section.
 - **A native module's capability** is requested like any other. `main` and tests name it (`fn main(sqlite: Sqlite)`), its functions receive it as `self` (`sqlite.open(path)`), and the program is linked with the package's `[native]` libraries. std's native libraries are the system's: std.sqlite calls macOS's libsqlite3. `strata build` links it into the executables that use it, against a stub (`compiler/c/libsqlite3.tbd`) so no SDK is needed, and `strata run` and `strata test` load it for the JIT. std's precompiled library excludes the code that calls C, so programs that don't use it don't link it.
 
-Not supported: linking a dependency's `[native]` C into the programs that use it, passing structs by value, callbacks, buffers (so std.sqlite has no blobs), and languages other than C and Python (`extern ts` and `extern rust`, with values crossing as `Json`, are planned; see IDEAS.md).
+Not supported: linking a dependency's `[native]` C into the programs that use it, passing structs by value, callbacks, buffers (so std.sqlite has no blobs), and languages other than C, Python, Rust and TypeScript.
 
 ## Foreign functions: `extern python`
 
@@ -564,6 +565,61 @@ path = ["py"]            # where its modules are, relative to the package (defau
 
 Not supported: Python objects kept on the Python side (handles), keyword arguments, a Python function with a different name from its Strata declaration, a pool of workers, embedding libpython, and `async` functions.
 
+## Foreign functions: `extern rust`
+
+A Rust function is declared with `extern rust "CRATE" fn`, followed by a signature with contracts and no body. `CRATE` is a folder with a Cargo.toml, relative to the package (`"text_tools"`, `"crates/text"`), or a crate of crates.io by name (`"name"`, `"name@1.2"`). `"text_tools::words"` names a module in the crate. The Rust function has the Strata name. Values cross as JSON, as for `extern python`: through the derived `Json` trait on the Strata side and serde on the Rust side, so the Rust parameters are `serde::Deserialize` and the result `serde::Serialize`. `examples/rust` calls the crate `text_tools/`, next to its strata.toml:
+
+```rust
+from std.rust use RustError
+
+/// A post summed up (Rust builds a `Card` struct).
+extern rust "text_tools" fn summary(post: Post) -> Result[Card, RustError]
+```
+
+```rust
+// text_tools/src/lib.rs
+#[derive(serde::Deserialize)]
+pub struct Post { pub title: String, pub body: String, pub tags: Vec<String> }
+
+pub fn summary(post: Post) -> Card { ... }
+```
+
+- **How it is built.** `strata run`, `strata test` and `strata build` write a crate into `.strata/rust` in the package: one `#[no_mangle] extern "C"` function per declaration, which reads the arguments from a JSON array (`serde_json`), calls the Rust function and writes its reply. They build it with `cargo build --release` into a shared library, `cargo` from the `PATH` or `[rust] cargo` in strata.toml. The first build compiles serde and the crates (seconds); after that cargo finds nothing to do (about 50 ms). Without cargo, these commands fail with an error saying what to install. A declared function the crate lacks is cargo's compile error.
+- **How it is called.** cargo builds the crate twice over: a static library and a shared one. `strata build` links the static library into the executable (`-force_load`, then `-dead_strip`), together with the system libraries Rust's std needs (`-lSystem -lc`), through the C compiler. The executable runs from anywhere, with `.strata` deleted. On macOS, Rust's std, serde_json and the shim add about 0.5 MB to it; std.rust and std.json add another 0.15 MB. `strata run` and `strata test` load the shared library instead (`dlopen`) on the first call. Each call is a C call with a JSON string each way, and calls from several tasks run at once.
+- **Every call returns a `Result`.** The result type is written `Result[T, RustError]` (std.rust):
+  - `Failed`: the Rust function returned `Err(e)`, with `e.to_string()`. A Rust function returning `Result<T, E>` (`E: Display`) answers its `Err` this way; any other return type is the value.
+  - `Panicked`: the function panicked. The panic is caught, and the next call works. Rust prints the panic to standard error.
+  - `BadArguments`: the arguments aren't what the Rust function takes (serde's message).
+  - `NotLoaded`: the library couldn't be loaded, or lacks the function.
+  - `BadReply`, `NotEncodable`: as for `extern python`.
+- **The same rules as `extern python`:** never `pub`, called only from the module's capabilities, assumed by `verify` and never run by it, contracts checked at run time.
+
+Not supported: a dependency's `extern rust` (only the package's own modules are read for the crate), linking with lld (lld's stub of libSystem lacks what Rust's std calls, so these executables are linked by clang), Rust values kept on the Rust side (handles), and generic Rust functions.
+
+## Foreign functions: `extern ts`
+
+A TypeScript (or JavaScript) function is declared with `extern ts "MODULE" fn`, followed by a signature with contracts and no body. `MODULE` is `text_utils` for `text_utils.ts` (or `.mts`, `.js`, `.mjs`) in the package's folder or the folders of `[ts] path`, else a package in their `node_modules`. The exported function has the Strata name. Values cross as JSON, as for `extern python`. `examples/ts` calls `text_utils.ts`:
+
+```rust
+from std.ts use TsError
+
+/// A post summed up (TypeScript builds the `Card` as an object).
+extern ts "text_utils" fn summary(post: Post) -> Result[Card, TsError]
+```
+
+```toml
+# strata.toml (both optional)
+[ts]
+executable = "node"   # the runtime (default: node on the PATH; bun and deno work too)
+path = ["ts"]         # where its modules are, relative to the package (default: the package's folder)
+```
+
+- **One worker per run**, as for `extern python`: the first call starts `node -e DRIVER` (`bun -e`, `deno eval`), the driver a string in the runtime, answering each call with one JSON line. Node 22.18 and later run `.ts` files by stripping their types; an older Node needs `.js`. A function returning a promise is awaited. Calls from several tasks take turns. What the code prints (`console.log`) goes to standard error. If the worker exits, the call it was answering fails and the next call starts a new worker.
+- **Every call returns a `Result`.** The result type is written `Result[T, TsError]` (std.ts): `Thrown` (an error thrown, with its name, message and stack; a missing module or function too), `WorkerFailed`, `BadReply` (a `bigint`, `NaN`, an integer beyond 2^53, a wrong shape, a broken refinement), `NotEncodable`. `undefined` is `null`.
+- **The same rules as `extern python`:** never `pub`, called only from the module's capabilities, assumed by `verify` and never run by it, contracts checked at run time.
+
+Not supported: JavaScript objects kept on the worker's side (handles), a pool of workers, and embedding a JavaScript engine.
+
 ## Exporting functions: `derive C for f`
 
 To let C call Strata, a trait can be derivable over functions (`derivable(Function) trait C`). `derive C for add`, with a function's name after `for` where a type's would go, makes `add` callable from C. `C` is defined in `std.ffi`:
@@ -600,7 +656,11 @@ clang -o use use.c -L. -lcalc -Wl,-rpath,@executable_path
   - A `derived fn` with parameters (`derived fn json(args: String) -> String { .. }`) is a wrapper around the function, exported as `NAME_METHOD` (`add_json`). Its body calls the function with `Self.call(p -> e)` or `Self.try_call(p -> e)`, where `e` gives each argument and `p` is its parameter, a `Field`.
   - `derived fn h() -> String { comptime ... }` produces, at compile time, the function's part of the file `NAME.h`. Here `Self` is the function, as a `std.typing.Type` of kind `Function` with its `name`, `doc` and `parameters`. A file is its parts in order, with each paragraph (up to a blank line) included once.
 
+  - A `derived fn` taking `self` (`derived fn name(self) -> String { .. }`) is a method of a type the derive makes for the function (`Tool$add`, a record of the parameters it binds), which implements the trait. Where the function is used as a value, not called, it is that type's value, so `add` is a value of the trait: `std.agent`'s `derive Tool for add` puts `add` in a `List[Tool]`. Calls of `add` are unchanged.
+
   `C` is therefore written in Strata, like `Json` (see "Derives on functions" in IDEAS.md).
+- **Arguments.** A derive takes arguments after its trait, each a word and names: `derive Tool(bind: net) for search`, several separated by `;`. They are `Self.clauses` while deriving, as a type derive's block clauses are. `bind` is read by the derive machinery itself. The parameters it names are left to the use: they are the fields of the type made for the function, given as `search.with(net)` in their order in `bind`, and `Self.call` passes them from `self`. A function with bound parameters used as a value without `.with` is an error: "`search` needs `net`: write `search.with(net)`".
+- **Written above the function**: `derive Tool for` on the line before `fn add(…)` derives it for that function, as `derive Json for` does for a type.
 
 ### `derive Python for f`
 
@@ -618,7 +678,52 @@ geo.middle(geo.Point(0.0, 0.0), geo.Point(2.0, 4.0))   # Point(x=1.0, y=2.0)
 geo.divide(1, 0)                  # raises StrataError("err", "ByZero", {"type": "ByZero"})
 ```
 
-Not supported: `derive TypeScript` and `derive Rust` (the same `NAME_json` export with other files), static libraries, `mut` parameters, and callbacks.
+Not supported: `derive Rust` (the same `NAME_json` export with another file), static libraries, `mut` parameters, and callbacks.
+
+### `derive TypeScript for f`
+
+`derive TypeScript for clamp` (`std.ffi`) exports `clamp_json`, the same JSON export as `derive Python`. `strata build --target wasm32` builds a WebAssembly module, `NAME.wasm`, that exports it, and writes `NAME.ts` next to the module. `NAME.ts` loads the module with the standard WebAssembly API, so it runs in Node, Bun, Deno and browsers, with no native code. It has one typed function per derived function, an interface per record, a union type per union (variants tagged by `"type"`, as their JSON is), and errors thrown as `StrataError`. `examples/wasm` holds a module and a test:
+
+```ts
+import { clamp, summary, StrataError } from "./stats.ts";   // stats.ts and stats.wasm, side by side
+clamp(15, 0, 10);        // 10
+summary([3, 9, 6]);      // { type: "Summary", count: 3, mean: 6, best: 9 }
+summary([]);             // throws StrataError: kind "err", value "no scores"
+clamp(1, 10, 0);         // throws StrataError: kind "fault" (`requires lo <= hi` broken)
+```
+
+- **How the module is built.**
+  - The program, the std code it uses and core.rt are compiled by LLVM for wasm64. That is the same IR as a native build, with 8-byte pointers.
+  - runtime.c is compiled without its threads, files and processes (`STRATA_WASM`). `runtime/wasm.c` provides the few C library functions the runtime needs: memory over `memory.grow`, formatting, and the host's imports.
+  - `wasm-ld` links these, keeping what the exports reach.
+  - `wasm-opt` lowers the module to a 32-bit memory (`--memory64-lowering`, as Emscripten's `MEMORY64=2` does). Pointers stay 8 bytes in memory, so the module runs where memory64 doesn't: Node 22, Bun and Safari.
+  - The build needs Homebrew's `llvm`, `lld` and `binaryen` (`STRATA_WASM_CLANG`, `STRATA_WASM_LD` and `STRATA_WASM_OPT` name others), and takes about 3 s.
+- **What it costs.** A module exporting one small function is about 97 KB (34 KB gzipped). A call takes about 15 µs from TypeScript, most of it in the JSON export: the same `add_json` called natively from C takes 12 µs.
+- **The host.** The module imports only five functions, which `NAME.ts` provides: output (to `console`), float text and parsing, and the end of a faulting call. Any other import is a fault when called.
+- **Faults.** A broken `requires` or another fault throws `StrataError` with `kind` `"fault"`. The loader then starts the module again on the next call (fresh memory). A refinement broken by an argument is an `"arguments"` answer, as for `derive Python`.
+
+Not supported in a module: tasks, files, processes, the clock, `extern c`, and `main` (a module only has exports). A module also doesn't share std's precompiled library, so each module carries the std code it uses.
+
+## Markup
+
+Markup is an expression, read by the parser into calls to `std.web` and shown by `view` as markup again. The stored tree has only the calls.
+
+| Written | Read as |
+|---|---|
+| `<tag attrs>children</tag>` | `std.web.element("tag", [attrs], std.web.children([children]))` |
+| `<tag attrs />`, `<tag attrs></tag>` | `std.web.element("tag", [attrs], [])` |
+| `<>children</>` | `std.web.children([children])`, a `List[Html[M]]` |
+| `name="text"` | `std.web.attr("name", "text")` |
+| `name={e}` | `std.web.attribute("name", e)`: `e` is a `String`, an `Int`, or a `Bool` (a flag, left out when `false`) |
+| `name` | `std.web.flag("name")` |
+| `on_click={e}` | `std.web.on_click(e)`: any attribute starting with `on_` is a call of the `std.web` function of that name, with `e` |
+| text | a string literal |
+| `{e}` | `e`: a `String`, an `Int`, an `Html[M]` or a `List[Html[M]]` (`std.web.Child`) |
+
+- Markup starts at a `<` where an operand goes (at the start of a line, or after a token that can't end an operand, such as `(`, `,`, `:=`, `->` or `return`), followed at once by a letter or `>`. `a < b` and `a <b` compare.
+- A tag is lowercase letters, digits and dashes. An attribute's name is letters, digits, `-`, `_`, `:` and `.`; names starting with `on` other than the `on_` events are refused. Void elements (`area`, `base`, `br`, `col`, `embed`, `hr`, `img`, `input`, `link`, `meta`, `source`, `track`, `wbr`) are written `<br />`.
+- Text runs to the next `<` or `{`, and can't hold `}` (write `{"}"}`, `{"<"}`). It is read as in JSX: where a line breaks, the spaces next to the break are dropped, lines left blank are dropped, and the rest are joined by one space. Text on one line is kept as written, so `Hello, {name}!` keeps its spaces.
+- `view` writes an element on one line when it fits, else each child (or run of children that fits) on a line of its own and, when the start tag is too long, each attribute too. Text whose spaces a line break would drop is written in braces (`{" more"}`). Calls that markup can't write the same way (a non-literal tag, an attribute made by another function) are shown as calls.
 
 ## Programs
 
@@ -641,7 +746,7 @@ Not supported: `derive TypeScript` and `derive Rust` (the same `NAME_json` expor
 
 **Subcommands** are a union that derives `CommandLine`. Each member is a subcommand (`Edit` is `edit`), its fields are the subcommand's options, and its `///` doc is its help. An options record with a field of that union type parses its other fields as global options before the subcommand.
 
-**`main`'s parameters.** `main` can also take `Console` (`std.io`, chosen by the environment: the terminal) and capabilities, in any order. std provides `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself as the tools see it, a `Code`) and `Sqlite` (`std.sqlite`); a program can define its own. `main` passes them on where `Files` or `Environment` is expected: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so tests can pass `mem_files(...)`.
+**`main`'s parameters.** `main` can also take `Console` (`std.io`, chosen by the environment: the terminal) and capabilities, in any order. std provides `Disk` (`std.fs`), `Process` and `Launcher` (`std.process`), `Codebase` (`std.code`: the codebase itself as the tools see it, a `Code`), `Sqlite` (`std.sqlite`) and `Net` (`std.net`: TCP connections and listeners); a program can define its own. `main` passes them on where `Files` or `Environment` is expected: `fn main(mut console: Console, disk: Disk) { wc(mut console, disk) }`, with `wc` taking any `Files` so tests can pass `mem_files(...)`.
 
 **Exit codes.** `main` returns `()` (exit code 0), an `ExitCode` (`Int where 0 <= it && it <= 255`), or a `Result` of either. An `Err` is written to standard error and the exit code is 1. A run-time fault exits with 101. `strata run <fn> [ARGS]` calls a single function instead, with its arguments written as code.
 
@@ -657,10 +762,12 @@ The standard library is the `std/` package. It is written in Strata and built in
 | [std.collections](std/collections.md) | Sorted dictionaries and sets (AVL trees), and a priority queue (binary heap). |
 | [std.ffi](std/ffi.md) | Calling Strata from other languages: `derive C for f`, `derive Python for f`. |
 | [std.fs](std/fs.md) | Files and folders. |
-| [std.http](std/http.md) | Requests, responses and routes, for `strata serve`. |
+| [std.agent](std/agent.md) | An LLM agent loop: a conversation of `Message`s, tools (the `Tool` trait, derived for functions: `derive Tool for add`), and `run` / `run_streamed`, which run the tools a `Model` calls (`Claude`, through Anthropic's Messages API, streamed or not, or a mock). |
+| [std.http](std/http.md) | HTTP/1.1: requests, responses and routes, a client (`send`, `fetch`, `open` for a body read as it arrives, TLS for `https://`) and a server (`serve`), over any `Stream`. |
 | [std.io](std/io.md) | Console text input and output. |
 | [std.json](std/json.md) | JSON text, and reading and writing records and sum types as JSON. |
 | [std.memory](std/memory.md) | Arenas, for programs that must be fast. |
+| [std.net](std/net.md) | TCP connections and listeners (`Net`), read and written through the `Stream` trait; TLS for clients. |
 | [std.process](std/process.md) | The running program's arguments, environment variables and exit code, and running other programs. |
 | [std.orm](std/orm.md) | Records stored as SQLite tables: `derive Table` (the schema, rows written and read back with checks) and typed queries over their fields. |
 | [std.regex](std/regex.md) | Regular expressions. |
@@ -672,7 +779,7 @@ The standard library is the `std/` package. It is written in Strata and built in
 | [std.unicode](std/unicode.md) | Code point sets, Unicode properties and simple case folding (Unicode 16.0.0). |
 | [std.unicode_tables](std/unicode_tables.md) | Unicode 16.0.0 character data, for `std.unicode`. |
 | [std.utf8](std/utf8.md) | Encoding text as UTF-8 bytes and decoding it. |
-| [std.web](std/web.md) | HTML pages built as values. |
+| [std.web](std/web.md) | HTML pages built as values, written as [markup](#markup). |
 
 **JSON** (`std.json`) is read into records and sum types that derive `Json`, in the form a web front end sends:
 
@@ -687,6 +794,8 @@ The standard library is the `std/` package. It is written in Strata and built in
 Every refinement is checked, and errors give the path: `home.zip: "1234" does not satisfy …`. Keys that the record doesn't have are ignored, unless `strata.toml` sets `unknown_keys = "error"` under `[json]`. `from_json_with(j, Reject)` or `from_json_with(j, Ignore)` decides for a single call.
 
 Integers must be within ±(2^53 − 1), the integers a JavaScript number holds exactly (`std.json.SafeInt`). Reading or writing a larger one is an error, which is why `to_json` returns a `Result`. A package that wants this proven instead sets `integers = "proven"` under `[json]`. Every integer field must then be shown to be a `SafeInt`, by its type or a refinement within it, and `strata verify` fails on any field that might not be.
+
+A `Real` is written as a number only when a reader of IEEE doubles (JavaScript's `JSON.parse`) gets exactly it back, `Real.fits_double()`: the nearest double's shortest digits are the `Real` (`0.1`, `2.5`), or the double is it exactly (`2^60`). Anything else is an error from `to_json` naming the field: `1/3` (no terminating decimal), `1.00000000000000001` (more digits than a double holds at that size), anything past 1.8 × 10^308. Nothing is rounded silently. Reading into a `Real` is exact, from the digits as written. `reals = "proven"` under `[json]` refuses a `Real` field at compile time instead: only a `Float` is allowed, converted with `to_float()` where the value is built. std.toml does the same for TOML's floats (`[toml]`'s `reals`).
 
 A type with no JSON form (a function, `Option[Option[T]]`, a field named `type`, a variant with several positional fields) is an error at the `derive`, and so is a field whose type doesn't derive `Json`. A generic type derives `Json` for every type argument that has it (`derive Json for Pair` covers `Pair[T]` for each `T: Json`). Through the generic impls, `Some(x)` where `x` is written as `null` (`Some(None)`) is an error from `to_json`, and `from_json` checks the elements' refinements (`read[List[Port]]("[70000]")` is an `Err` naming `Port`).
 

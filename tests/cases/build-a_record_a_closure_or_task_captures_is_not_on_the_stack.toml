@@ -1,0 +1,16 @@
+# A record a closure or a task captures is built on the heap: on the stack
+# it crossed to tasks without what it holds (each task counted the same
+# table: "dup of a freed object", every run before the fix), and a closure
+# returned with it read a dead frame
+
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+strata = ["build", "main.strata", "--no-verify", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "120000 120000 106\n"

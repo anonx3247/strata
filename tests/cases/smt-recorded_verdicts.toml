@@ -26,7 +26,7 @@ stdout = '''
     precondition of `half` violated: requires n % 2 == 0 (with n = 1) (stack: bad_half -> half)
 ✓ abs                      proven (2 checks)
 ✓ count                    proven (1 check)
-✓ checks                   proven (3 checks)
+✓ checks                   proven (2 checks)
 ✓ masks                    proven (1 check)
 ✗ shifts                   Runtime violation (found by the solver)
     input:   0, -1
@@ -230,7 +230,7 @@ stdout = '''
 ✓ fallback                 proven (1 check)
 ✓ meters                   proven (nothing to check)
 ✓ depth                    proven (1 check)
-✓ same_point               proven (1 check)
+✓ same_point               proven (nothing to check)
 ✓ shapes_eq                proven (1 check)
 ✓ pick                     proven (1 check)
 ✓ nested                   proven (nothing to check)
