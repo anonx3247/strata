@@ -1,0 +1,40 @@
+# `strata lint --claims` flags comment and doc lines that state facts about
+# the code (REBUILD.md rule 11), each with the contract, invariant or law to
+# write instead; a name, a sketch or a condition is left alone. Off without
+# `--claims`.
+
+[[step]]
+save = "notes.strata"
+text = '''
+/// The first element. The list is never empty here.
+fn first(xs: List[Int]) -> Int {
+  // every caller passes a sorted list
+  xs[0] ?? 0
+}
+
+/// A variable never assigned has no slot.
+fn slots(n: Int) -> Int {
+  // when it cannot fail, the result is kept
+  match n {
+    // invariant: n is small
+    0 => 1,
+    _ => n,
+  }
+}
+
+fn main() {
+  print(f"{first([1])} {slots(2)}")
+}
+'''
+
+[[step]]
+strata = ["--file", "notes.strata", "lint"]
+lacks = ["states a fact"]
+
+[[step]]
+strata = ["--file", "notes.strata", "lint", "--claims"]
+out = '''
+warning: in `first`, the comment "The list is never empty here." states a fact about the code (`never`): write it as a contract, invariant or law, where it is checked
+warning: in `first`, the comment "every caller passes a sorted list" states a fact about the code (`every caller`): write it as a contract, invariant or law, where it is checked
+warning: in `slots`, the comment "invariant: n is small" states a fact about the code (`invariant:`): write it as a contract, invariant or law, where it is checked
+'''

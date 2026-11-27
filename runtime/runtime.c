@@ -978,6 +978,7 @@ typedef struct Channel {
   int64_t head, len, size;
   int64_t senders;           // copies of the sender not closed yet: one per task holding it
   int64_t ends;              // its ends (`End`) not dropped yet, on every thread
+  int64_t holds;             // entries for it in threads' `held` and tasks' `shares`
   int64_t sent, taken;       // values sent and received so far
   int64_t waiting;           // receivers waiting (an unbuffered send in a `select` can go)
   void (*drop)(int64_t);     // drops a value left in it (NULL: nothing to drop)
@@ -1010,8 +1011,25 @@ static _Bool holds_sender(Channel *c) {
   return 0;
 }
 
+// One entry for `c` in a `held` or `shares` fewer, under `chan_lock`:
+// whether `c` is to be freed (`free_channel`, after unlocking).
+static _Bool unhold_channel(Channel *c) { return --c->holds == 0 && c->ends == 0; }
+
+static void free_channel(Channel *c) {
+  free(c->items);
+  free(c);
+}
+
 // A test starts holding none.
-static void forget_senders(void) { nheld = 0; }
+static void forget_senders(void) {
+  pthread_mutex_lock(&chan_lock);
+  int64_t n = 0;
+  for (int64_t i = 0; i < nheld; i++)
+    if (unhold_channel(held[i])) held[n++] = held[i];
+  pthread_mutex_unlock(&chan_lock);
+  for (int64_t i = 0; i < n; i++) free_channel(held[i]);
+  nheld = 0;
+}
 
 // Removes `c` from the senders this thread holds; whether it held it.
 static _Bool unhold_sender(Channel *c) {
@@ -1370,13 +1388,18 @@ static void *task_main(void *arg) {
   // wait forever), and that is a panic, unless the task was cancelled
   pthread_mutex_lock(&chan_lock);
   _Bool unclosed = nheld > 0 && !t->unwound && !died;
-  for (int64_t i = 0; i < nheld; i++) held[i]->senders--;
+  int64_t gone = 0;
+  for (int64_t i = 0; i < nheld; i++) {
+    held[i]->senders--;
+    if (unhold_channel(held[i])) held[gone++] = held[i];
+  }
   t->done = 1;
   remove_waiter(t->run_of, &t->w);
   me = NULL;
   my_run = NULL;
   wake_all();
   pthread_mutex_unlock(&chan_lock);
+  for (int64_t i = 0; i < gone; i++) free_channel(held[i]);
   free(held);
   held = NULL;
   nheld = capheld = 0;
@@ -1463,6 +1486,7 @@ void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(voi
     for (int64_t i = 0; i < nshares; i++)
       if (holds_sender(shares[i]->c)) {
         shares[i]->c->senders++;
+        shares[i]->c->holds++;
         t->shares[t->nshares++] = shares[i]->c;
       }
     pthread_mutex_unlock(&chan_lock);
@@ -1498,8 +1522,10 @@ void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(voi
     for (int64_t i = 0; i < t->nshares; i++) {
       pthread_mutex_lock(&chan_lock);
       t->shares[i]->senders--;
+      _Bool gone = unhold_channel(t->shares[i]);
       wake_all();
       pthread_mutex_unlock(&chan_lock);
+      if (gone) free_channel(t->shares[i]);
     }
   }
   if (s->last) s->last->next = t;
@@ -1672,6 +1698,7 @@ End *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
   c->drop = drop;
   c->senders = 1;
   c->ends = 1;
+  c->holds = 1;
   hold_sender(c);
   End *e = strata_alloc(sizeof(End));
   e->c = c;
@@ -1680,19 +1707,24 @@ End *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
 }
 
 // One holder of end `e` fewer. The last frees it; the channel's last end
-// drops what is still in it.
+// drops what is still in it. The channel is freed once no thread holds a
+// copy of its sender either (`holds`).
 void strata_channel_drop(End *e) {
   if (!strata_release(e)) return;
   Channel *c = e->c;
   strata_free(e);
   pthread_mutex_lock(&chan_lock);
   _Bool last = --c->ends == 0;
+  if (last) c->holds++;
   pthread_mutex_unlock(&chan_lock);
   if (!last) return;
   if (c->drop)
     for (int64_t i = 0; i < c->len; i++) c->drop(c->items[(c->head + i) % c->size]);
-  free(c->items);
-  free(c);
+  c->len = 0;
+  pthread_mutex_lock(&chan_lock);
+  _Bool gone = unhold_channel(c);
+  pthread_mutex_unlock(&chan_lock);
+  if (gone) free_channel(c);
 }
 
 // End `e` crossing to another thread (core.rt's `strata_cross_block` for
@@ -1763,8 +1795,10 @@ void strata_channel_close(End *e) {
   }
   pthread_mutex_lock(&chan_lock);
   c->senders--;
+  _Bool gone = unhold_channel(c);
   wake_all();
   pthread_mutex_unlock(&chan_lock);
+  if (gone) free_channel(c);
 }
 
 // ---- the clock (std.time) ----
