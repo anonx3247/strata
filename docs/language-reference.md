@@ -674,7 +674,31 @@ geo.middle(geo.Point(0.0, 0.0), geo.Point(2.0, 4.0))   # Point(x=1.0, y=2.0)
 geo.divide(1, 0)                  # raises StrataError("err", "ByZero", {"type": "ByZero"})
 ```
 
-Not supported: `derive TypeScript` and `derive Rust` (the same `NAME_json` export with other files), static libraries, `mut` parameters, and callbacks.
+Not supported: `derive Rust` (the same `NAME_json` export with another file), static libraries, `mut` parameters, and callbacks.
+
+### `derive TypeScript for f`
+
+`derive TypeScript for clamp` (`std.ffi`) exports `clamp_json`, the same JSON export as `derive Python`. `strata build --target wasm32` builds a WebAssembly module, `NAME.wasm`, that exports it, and writes `NAME.ts` next to the module. `NAME.ts` loads the module with the standard WebAssembly API, so it runs in Node, Bun, Deno and browsers, with no native code. It has one typed function per derived function, an interface per record, a union type per union (variants tagged by `"type"`, as their JSON is), and errors thrown as `StrataError`. `examples/wasm` holds a module and a test:
+
+```ts
+import { clamp, summary, StrataError } from "./stats.ts";   // stats.ts and stats.wasm, side by side
+clamp(15, 0, 10);        // 10
+summary([3, 9, 6]);      // { type: "Summary", count: 3, mean: 6, best: 9 }
+summary([]);             // throws StrataError: kind "err", value "no scores"
+clamp(1, 10, 0);         // throws StrataError: kind "fault" (`requires lo <= hi` broken)
+```
+
+- **How the module is built.**
+  - The program, the std code it uses and core.rt are compiled by LLVM for wasm64. That is the same IR as a native build, with 8-byte pointers.
+  - runtime.c is compiled without its threads, files and processes (`STRATA_WASM`). `runtime/wasm.c` provides the few C library functions the runtime needs: memory over `memory.grow`, formatting, and the host's imports.
+  - `wasm-ld` links these, keeping what the exports reach.
+  - `wasm-opt` lowers the module to a 32-bit memory (`--memory64-lowering`, as Emscripten's `MEMORY64=2` does). Pointers stay 8 bytes in memory, so the module runs where memory64 doesn't: Node 22, Bun and Safari.
+  - The build needs Homebrew's `llvm`, `lld` and `binaryen` (`STRATA_WASM_CLANG`, `STRATA_WASM_LD` and `STRATA_WASM_OPT` name others), and takes about 3 s.
+- **What it costs.** A module exporting one small function is about 97 KB (34 KB gzipped). A call takes about 15 µs from TypeScript, most of it in the JSON export: the same `add_json` called natively from C takes 12 µs.
+- **The host.** The module imports only five functions, which `NAME.ts` provides: output (to `console`), float text and parsing, and the end of a faulting call. Any other import is a fault when called.
+- **Faults.** A broken `requires` or another fault throws `StrataError` with `kind` `"fault"`. The loader then starts the module again on the next call (fresh memory). A refinement broken by an argument is an `"arguments"` answer, as for `derive Python`.
+
+Not supported in a module: tasks, files, processes, the clock, `extern c`, and `main` (a module only has exports). A module also doesn't share std's precompiled library, so each module carries the std code it uses.
 
 ## Markup
 

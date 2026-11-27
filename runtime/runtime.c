@@ -10,6 +10,11 @@
 // of the object's contents and `strata_free`. Objects never form cycles,
 // since values never change once built.
 
+#ifdef STRATA_WASM
+// A WebAssembly module (`strata build --target wasm64`): no C library, the
+// few functions this file needs from one in runtime/wasm.h and wasm.c.
+#include "wasm.h"
+#else
 #ifdef __linux__
 #define _GNU_SOURCE  // pthread_getattr_np
 #endif
@@ -33,6 +38,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif  // STRATA_WASM
 
 // A string: its length in bytes, then its UTF-8 bytes (not NUL-terminated).
 // String literals are laid out the same way as constants in the IR.
@@ -41,12 +47,25 @@ typedef struct {
   char bytes[];
 } Str;
 
+#ifdef STRATA_WASM
+// (the faults' and the system's sections are left out of a module: these
+// come from wasm.c)
+_Noreturn void strata_fault(int32_t kind, Str *msg);
+_Bool strata_soft_fault(int64_t kind, Str *msg);
+#define soft_fault(kind, msg) strata_soft_fault(kind, msg)
+static char *cstr(Str *s);
+static int64_t no_str_words[2] = {0, 0};
+#define NO_STR ((Str *)&no_str_words[1])
+#endif
+
 // Fault kinds, in the order of the IR's constants.
 static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Runtime", "Hole", "Limit"};
 
 // ---- memory ----
 
-#ifdef __APPLE__
+#if defined(STRATA_WASM)
+#define usable_size malloc_usable_size
+#elif defined(__APPLE__)
 #include <malloc/malloc.h>
 #define usable_size malloc_size
 #else
@@ -140,8 +159,14 @@ int64_t strata_raw_size(void *p) { return (int64_t)usable_size(p); }
 // A reserved range of addresses, zeroed, paged in as it is touched (core.mem's
 // `raw_reserve`); NULL when the system refuses it.
 void *strata_raw_reserve(int64_t n) {
+#ifdef STRATA_WASM
+  // (no address space to reserve: core.rt's small objects come from malloc)
+  (void)n;
+  return NULL;
+#else
   void *r = n > 0 ? mmap(NULL, (size_t)n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0) : MAP_FAILED;
   return r == MAP_FAILED ? NULL : r;
+#endif
 }
 
 // core.rt (core/rt.strata) replaces these when it is linked in
@@ -532,6 +557,7 @@ static void print_stack(void) {
   free(t);
 }
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- tests ----
 //
 // `strata test` with the JIT calls each test's function through
@@ -1996,6 +2022,7 @@ static void finish_open_scopes(void) {
   }
 }
 
+#endif  // STRATA_WASM
 // ---- integers ----
 //
 // core.int (core/int.strata) replaces these when core.rt is linked in, as
@@ -3486,6 +3513,7 @@ List *strata_range(int64_t lo, int64_t hi) {
 }
 #endif
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- `--copies`: the copies of values a program makes, reported at its end ----
 //
 // Code compiled with `--copies` (`strata run`, `test` and `build`) calls
@@ -3954,9 +3982,15 @@ void strata_main_error(Str *shown) {
   else fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
 }
 
+#endif  // STRATA_WASM
 // ---- output ----
 
 void strata_print(Str *s) {
+#ifdef STRATA_WASM
+  // (to the host: no tests run in a module)
+  write(1, s->bytes, (size_t)s->len);
+  write(1, "\n", 1);
+#else
   if (RS->capturing) {
     keep_printed(s->bytes, (size_t)s->len);
     keep_printed("\n", 1);
@@ -3966,8 +4000,10 @@ void strata_print(Str *s) {
   fwrite(s->bytes, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
   funlockfile(stdout);
+#endif
 }
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- the system (the `host_*` operations of std) ----
 //
 // A failure is a kind and a message, an OS error written as "No such file
@@ -4658,6 +4694,22 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
   return l;
 }
 
+#endif  // STRATA_WASM
+
+#ifdef STRATA_WASM
+void strata_memory_start(_Bool check);
+
+// A module's start, before the host calls what it exports (the loader
+// `derive TypeScript` writes calls it once).
+void strata_lib_init(void) {
+  strata_memory_start(0);
+  set_threaded(0);
+}
+
+// A string an export returned, freed by the host.
+void strata_string_free(char *p) { free(p); }
+#endif
+
 // ---- strings ----
 //
 // The string built-ins. Strings are UTF-8, and these index them by
@@ -4938,6 +4990,18 @@ _Bool strata_parse_int(Str *s, int64_t *out) {
 }
 #endif
 
+#ifdef STRATA_WASM
+// `s` with a NUL after it, in a buffer kept for the next call.
+static char *cstr(Str *s) {
+  static char *c;
+  static size_t cap;
+  if ((size_t)s->len + 1 > cap) c = realloc(c, cap = (size_t)s->len + 1);
+  memcpy(c, s->bytes, (size_t)s->len);
+  c[s->len] = 0;
+  return c;
+}
+#endif
+
 // (the C library's with core.rt too, as `strata_show_float`)
 static _Bool parse_float_trimmed(Str *t, double *out);
 
@@ -5051,6 +5115,7 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
 }
 #endif
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- `extern python` and `extern ts`: a worker process each ----
 //
 // std.python calls Python functions through one worker process for the whole
@@ -5357,3 +5422,4 @@ const char *rust_library_call(const char *library, const char *symbol, const cha
   if (r) release(r);
   return out;
 }
+#endif  // STRATA_WASM
