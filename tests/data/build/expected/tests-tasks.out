@@ -6,6 +6,5 @@
 ✓ print: demo: job #3 fails once, then everything is done
 
 6 passed, 0 failed
-warning: in `memory.queue_after`: `_ := model.run_worker(…)` throws away a `Result`: an error from it is ignored
 
 --- exit 0
