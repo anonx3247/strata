@@ -29,6 +29,9 @@ A nominal record's refined field must have the same written type as the structur
 ### One form for builtin calls in printed code
 `len(xs)` and `xs.len()` are both accepted. The printer could pick one form (the method form in chains) so code reads the same everywhere. (Claude, 2026-11-20)
 
+
+### Capabilities marked in types
+Capability traits and the values that carry them get a mark in the syntax, so a reader sees at once which parameters give access to the outside world: `fn main(console: @Console, fs: @Files)`, `capability trait Console`. `*Console` was the first suggestion; `*` reads as a pointer to C, Go and Zig readers, so `@` is proposed if the lexer leaves it free. To settle in the spec, sections 1 and 6. (user, 2026-11-27)
 ## Verification
 
 ### Assurance levels
@@ -93,6 +96,17 @@ Ideas not built: values of types whose values are all constants (enums) as immor
 ### Lanes for growing lists
 After Goose: a list grown in a loop gets its own bump area, so it stays at the top while the loop's other objects go elsewhere. Large lists outside arenas are also not handled. (coordinator, 2026-11-26)
 
+
+### Lists sized from the loop that fills them
+A list made empty before a loop that pushes onto it in most iterations is made with room for the loop's count (`len(xs)` of a `for` over `xs`, `b - a` of a range), so it is never grown. Pushes under a branch still count: room for the count is at most one oversized block, freed or shrunk when the list is done. Growth itself stays lazy: a buffer grows only when a push finds it full (as the lab does: `list_push_owned` checks `used == cap` before writing), so filling a list to its capacity and emptying it never reallocates. (user, 2026-11-27)
+
+### Flat and interned representations by derive
+A sum type keeps its meaning in code (`type MyTree = Atom | Children(List[MyTree])`, built with constructors, taken apart with `match`, recursion as usual), and a derive picks how it is stored:
+- `derive Flat`: the nodes of one tree in arrays, one entry per node in postorder (a tag array, a payload array, children as index ranges into a child array). A value of `MyTree` is a handle: the tree's arrays (counted once, as one block) and a node index. `match t { Children(cs) => … }` reads the tag at the index and gives `cs` as a list of handles into the same arrays; constructors append to the arrays of the tree being built, children first, which is the order a bottom-up build makes them anyway. Costs: a subtree is never changed in place (a change copies the path to the root, or rebuilds); keeping one small subtree keeps the whole tree's arrays alive.
+- `derive Interned`: each distinct value stored once in a table; a constructor looks its value up before making it, so equal values are the same index and `==` is one comparison. For names, types and prover terms; diff, merge and the prover then compare subtrees in one step.
+- Both are representation, not type: the derive generates the constructors, the pattern readers (the views `match` uses) and `Eq`, and proves them against the plain sum's (`match` on a flat value gives what it would on the plain one), so code and proofs never see the difference.
+- Parallel: a frozen flat tree is read by any task without counting. Built in parallel, each task fills its own arrays and a join concatenates them, shifting the indices; an interned table is sharded by hash, or each task interns locally and a merge renumbers.
+- Known in other systems as data-oriented ASTs (Zig's compiler, Carbon), struct-of-arrays layouts, and hash-consing. Without this, `derive Tree` gives only the traversal interface (fold, rewrite, find over the plain layout). (user, 2026-11-27; L6 for the derive, L7 for the layouts)
 ### Unboxed fixed-size arrays in the language
 A built-in `Array` with unboxed elements (`Array[U8]` as bytes), written in place, indices proven in bounds. Open: whether its size is known at compile time (`Array[U8, 64]`), and how it relates to `std.array`. (user, 2026-11-24)
 
@@ -113,6 +127,48 @@ A blocked C call holds a whole OS thread. Go hands that thread's other tasks to 
 ### Supervision beyond one task
 Memory budgets per supervised task (running out as that task's panic), restart helpers in std (one-for-one, all-for-one), supervised scopes, and cancelling every blocking I/O call, not only `read_line`. (user, 2026-11-22)
 
+
+### Shared state across tasks
+Values are never shared mutably; a task that owns state serves it to others (an actor). Sketch:
+
+```strata
+type CacheRequest =
+  | Get { key: String, reply: Sender[Option[Bytes]] }
+  | Put { key: String, value: Bytes }
+
+/// A cache shared by any number of tasks; copies of it are cheap (a sender).
+type Cache = { requests: Sender[CacheRequest] }
+
+fn serve_cache(requests: Receiver[CacheRequest]) {
+  mut entries: Dict[String, Bytes] = dict()
+  for r in requests {          // ends when the last Cache is dropped
+    match r {
+      Get { key, reply } => reply.send(entries.get(key))
+      Put { key, value } => entries[key] = value
+    }
+  }
+}
+
+impl Cache {
+  fn get(self, key: String) -> Option[Bytes] {
+    (reply, answer) := channel()
+    self.requests.send(Get { key, reply })
+    answer.receive() ?? None
+  }
+  fn put(self, key: String, value: Bytes) { self.requests.send(Put { key, value }) }
+}
+
+fn start_cache(s: Scope) -> Cache {
+  (requests, inbox) := channel()
+  s.spawn(serve_cache(inbox))
+  Cache { requests }
+}
+```
+
+- **A shared capability** is the same shape: `impl Db for Pool` where `Pool` is a handle to the task that owns the connections; tasks receive `db: @Db` (a copy of the handle), and the trait hides that a message is sent. A test passes a `mock Db` instead.
+- **Read-mostly state** (configuration, route tables, a game world's static map): the owner publishes frozen snapshots on a watch channel (it keeps only the latest value); readers take the current snapshot and read it without counting or copying.
+- **std could give the generic form**: `actor(initial, (state, request) -> state)` returning a handle, with `ask` for requests that reply, so most programs write only the state type and the update.
+- Cost: one message hop per access on the green scheduler; batched requests or snapshots where that is too much. (user asked for the sketch, 2026-11-27; REBUILD.md L3)
 ## Tools
 
 ### Structural search and rewrite: `strata search`
@@ -162,6 +218,31 @@ Typed attributes (`href` taking a `Url` that excludes `javascript:`, `class` fro
 ### Apps in the browser
 A WebAssembly build of a web app, so the same code runs client-side. (user, 2026-11-20)
 
+
+### UI components with their own state
+The Elm architecture keeps one model for the whole app, which grows unwieldy. Components with local state, as in React, SwiftUI, Flutter and Iced: a component is a type with its own state, an `update` from its events, and a `view`; the runtime keeps each component's state at its place in the view tree (by position, or by a key in lists), so its parent never holds it.
+
+```strata
+type Button = { label: String }                 // what the parent passes in
+type ButtonState = { pressed: Bool }            // private to the module
+type ButtonEvent = | Down | Up
+
+impl Component for Button {
+  type State = ButtonState
+  type Event = ButtonEvent
+  fn initial(self) -> ButtonState { ButtonState { pressed: false } }
+  fn update(self, state: ButtonState, e: ButtonEvent) -> (ButtonState, Option[Clicked]) {
+    match e { Down => ({ pressed: true }, None), Up => ({ pressed: false }, Some(Clicked)) }
+  }
+  fn view(self, state: ButtonState) -> Html[ButtonEvent] {
+    button(color: if state.pressed { dark } else { light }, on_down: Down, on_up: Up, self.label)
+  }
+}
+```
+
+- Encapsulation: the state type isn't public, so a parent sees only what goes in (the props, `Button`) and what comes out (`Clicked`), as an object's private fields and public methods would give.
+- State stays a value: `update` returns the new state; the runtime stores it. Nothing is mutated behind the program's back, so updates stay provable (`ensures` on `update`) and replayable.
+- Shared state (the signed-in user, a cart): one or two stores passed down as context, each an ordinary state and update, which any component may read and send events to. (user, 2026-11-27)
 ### `std.http` and `std.net`
 Streaming bodies (server-sent events), a client connection pool, `expect: 100-continue`, timeouts beyond a caller's `race`, binary bodies. (Claude, 2026-11-26)
 
