@@ -1,4 +1,4 @@
-from std.agent use Sse, Claude, Chunk, on_event, request_json, system, user, Message, Agent, Text, Reasoning, ToolCall, ToolResult, User
+from std.agent use Reading, Claude, Chunk, on_event, request_json, system, user, Message, Agent, Text, Reasoning, ToolCall, ToolResult, User
 from std.net use Net
 
 /// The events of a streamed reply: reasoning, text, a tool call whose
@@ -25,18 +25,7 @@ fn events() -> List[String] {
 
 fn main(net: Net) {
   claude := Claude { net, key: "unused" }
-  mut s := Sse {
-    claude,
-    conversation: [],
-    tools: [],
-    body: None,
-    content: [],
-    slots: dict([]),
-    inputs: dict([]),
-    queued: [],
-    stop: "",
-    done: false,
-  }
+  mut s := Reading {}
   for e in events() {
     match on_event(mut s, e) {
       Ok(_) => (),
@@ -55,5 +44,5 @@ fn main(net: Net) {
     Message { role: Agent, content: s.content },
     Message { role: User, content: [ToolResult { id: "t1", output: "42", failed: false }] },
   ]
-  print(request_json(claude, conversation, [], true))
+  print(request_json(claude.model, claude.max_tokens, claude.effort, conversation, [], true))
 }
