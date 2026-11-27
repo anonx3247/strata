@@ -35,7 +35,7 @@ The plan for a Strata rebuilt in small layers, each read and understood before t
 - **Types**: records, sums (unions of variants or of types), generics with trait bounds, structural record bounds, refinement types, contracts. One impl per trait and type, with an orphan rule. Dicts are hash maps with no order.
 - **Effects**: capabilities are ordinary traits passed as parameters; no effect system, no monads. Purity is inferred (no capability, no `extern`, no `spawn`) and shown.
 - **Verification**: SMT first (Z3, cvc5 raced), written proofs (`lemma`, `assert … by`, `calc`), no dependent types or tactic language.
-- **Concurrency**: structured, uncolored tasks (`scope`, `spawn`, `await`), channels with explicit `close`, `select`, `race`, supervised tasks. No object is ever counted by two threads: no atomic counts.
+- **Concurrency**: structured, uncolored tasks (`scope`, `spawn`, `await`), channels, `select`, `race`, supervised tasks. Channels close by counting, never by hand (user, 2026-11-27): a channel closes when its last sender is dropped (dropped at its last use, so a sender passed to `spawn` is gone there), and `for v in rx` then ends; once the last receiver is dropped, `send` returns `Err(Closed)`. There is no `close`; a task that is done with a sender it stored passes it to a function that consumes it. The runtime reports a receiver waiting on a channel no sender holds. Replaces the lab's explicit `close`; tried in the lab first. No object is ever counted by two threads: no atomic counts.
 - **Memory**: reference counting, with scoped allocation from roots layered on it where proven (designed and measured in the lab first).
 - **std** lives in this repository and is its own work stream.
 
@@ -99,7 +99,7 @@ Each layer lists what it adds; nothing else exists yet.
 ### L3: tasks
 
 - `scope`, `spawn`, `await` on a single-threaded green scheduler; every wait and I/O wait through one park interface; a finished task freed when its handle is dropped.
-- Channels (a lock per channel), `select`, `race` and cancellation, supervised tasks; deadlines that nested calls inherit; a CPU loop cancellable at its back edge.
+- Channels (a lock per channel, closed when the last sender is dropped), `select`, `race` and cancellation, supervised tasks; deadlines that nested calls inherit; a CPU loop cancellable at its back edge.
 - Values crossing tasks are copied, or frozen and shared; copies reported.
 - `Clock`, `VirtualClock`; a seeded scheduler for `strata test`, std mocks of network and files that inject faults.
 - Pinning a task to one thread, for C libraries with thread state.
