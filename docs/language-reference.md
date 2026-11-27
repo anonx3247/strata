@@ -756,6 +756,7 @@ The standard library is the `std/` package. It is written in Strata and built in
 
 | Module | |
 |---|---|
+| [std.array](std/array.md) | N-dimensional arrays of `Float`, `I64` and `I32` over a flat list: views, broadcasting, reductions along an axis, `dot` and `matmul`, with shapes in contracts. |
 | [std.cli](std/cli.md) | Command-line options parsed into a record, and subcommands into a union. |
 | [std.code](std/code.md) | A codebase as Strata's tools see it: definitions as text with their dependencies and dependents, checker findings, cached verification results, and the package log. |
 | [std.collections](std/collections.md) | Sorted dictionaries and sets (AVL trees), and a priority queue (binary heap). |

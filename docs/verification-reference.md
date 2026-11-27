@@ -76,7 +76,7 @@ The prover lives in `compiler/smt`. It executes the body symbolically, with valu
 - `keys`, `values`, `set(xs)` and `dict(pairs)` of a non-literal list are known only by their sizes.
 - A counterexample shows an input dict or set as a literal of its first entries (`Set[String] { "x", "" }`).
 
-**Unmodelled values.** Anything not modelled becomes an unknown value. This includes floats, positions after `filter` and `sort`, most higher-order builtins, and unions whose members can share a shape (`List[Int] | List[String]`) or include a type parameter. An unknown value can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as at run time.
+**Unmodelled values.** Anything not modelled becomes an unknown value. This includes positions after `filter` and `sort`, most higher-order builtins, and unions whose members can share a shape (`List[Int] | List[String]`) or include a type parameter. An unknown value can only make a proof fail, never make a false proof succeed, and the reason is kept for the report. `Int` is a mathematical integer, as at run time.
 
 **Strings.** An SMT string is a sequence of code points, so `len(s.code_points())` is its exact length. String positions are byte offsets. `byte_len(s)` is a function of the string known to lie between its number of code points and four times that, and equal to it on an ASCII string. `byte_slice`, `index_of` and a match's position are exact on ASCII strings and bounded on others, so refinements on lengths and positions stay provable.
 

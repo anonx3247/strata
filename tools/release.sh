@@ -123,9 +123,14 @@ LLVM_BIN=${LLVM_BIN:-$(brew --prefix llvm)/bin}
   || { cat "$DIST/llvm-link.log" >&2; exit 1; }
 "$S" object "$DIST/runtime-lto.ll" "$HOME_DIR/runtime-lto.o" -O 3
 
-# std, compiled by the compiler itself (its codegen, its LLVM)
-step "std (about 20 s)"
-"$S" codegen --library > "$DIST/std.ll"
+# std, compiled by the compiler itself (its codegen, its LLVM), without the
+# checks `verify` proves inside its functions: std is verified (no fuzzing),
+# and its proofs, entry checks left out (programs prove those), go to
+# codegen, as `strata`'s std library at first use does (`std_proofs`)
+step "std (verified, then compiled)"
+"$S" --file std verify --cases 0 --cross-check 0 > "$DIST/std-verify.txt" 2>&1 || true
+"$S" proofs std | grep -v "^entry	" > "$DIST/std-proofs.txt"
+"$S" codegen --proofs "$DIST/std-proofs.txt" --library > "$DIST/std.ll"
 ! grep -q '^error' "$DIST/std.ll" || { grep '^error' "$DIST/std.ll" >&2; exit 1; }
 "$S" object "$DIST/std.ll" "$HOME_DIR/std/std.o" -O 2
 sed -n 's/^; precompiled //p' "$DIST/std.ll" > "$HOME_DIR/std/names"

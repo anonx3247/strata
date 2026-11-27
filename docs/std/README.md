@@ -5,6 +5,7 @@ The modules of `std`, each with its types, traits and functions: their signature
 | Module | |
 |---|---|
 | [std.agent](agent.md) | An LLM agent loop: the model calls tools, the loop runs them and answers, until a reply calls none. |
+| [std.array](array.md) | N-dimensional arrays of floats and integers, stored flat with a shape and strides. |
 | [std.cli](cli.md) | Command-line options read into a record, and commands into a union, with `derive CommandLine`. |
 | [std.code](code.md) | A codebase as Strata's tools see it, for viewers and agents. |
 | [std.collections](collections.md) | Ordered dictionaries and sets (AVL trees), and a priority queue (a binary heap). |
