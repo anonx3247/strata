@@ -1,0 +1,51 @@
+# Desugared code calls the built-ins whatever is in scope: `xs[i]` is
+# `at(xs, i)`, `xs[i] = v` is `xs = set_at(xs, i, v)`, `a..b` is
+# `range(a, b)`, slices, comprehensions and `Dict {…}`/`Set {…}` call
+# `slice`, `len`, `map`, `filter`, `fold`, `dict` and `set`, and `mut
+# xs.push(x)` is `xs = push(xs, x)`. A local or a function of one of those
+# names used to take them over: a local `at` made every `xs[i]` fail to
+# check ("`Int` is not a function"), a top-level `fn at` was called by
+# `xs[i]`. Now desugaring calls them by a name no program can write
+# (`$core:at`) where the plain name means something else, and a call by
+# name still means the program's own.
+
+[[step]]
+save = "locals.strata"
+from = "locals.st"
+
+[[step]]
+strata = ["--file", "locals.strata", "run"]
+stdout = "[7, 2, 3, 1, 4, 4, 22, 4, 2, 4, 2, 34]\n"
+
+# the nested store is in place with a local `at`
+[[step]]
+strata = ["--file", "locals.strata", "build", "--no-verify", "--memory-sites", "-o", "prog"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./prog 2>/dev/null; cut -f1,2,3,4,6 sites.tsv | grep -E '\t(owned|owned.p)\t' | grep set_at | sort"]
+out = "[7, 2, 3, 1, 4, 4, 22, 4, 2, 4, 2, 34]\n1\t0\towned\tshadowed\tset_at(grid, at, set_at(grid[at], 0, range))\n1\t0\towned\tshadowed\tset_at(xs, at, set_at)\n1\t1\towned.p\tshadowed\tset_at(grid, at, set_at(grid[at], 0, range))\n"
+
+[[step]]
+save = "toplevel.strata"
+from = "toplevel.st"
+
+[[step]]
+strata = ["--file", "toplevel.strata", "run"]
+stdout = "[12, 7, 5, 6, 2]\n[-1, 0, 0, -2, -3]\n"
+
+[[step]]
+strata = ["--file", "toplevel.strata", "verify", "main"]
+has = ["main", "proven (10 checks)"]
+
+# `?`, `comptime`, `mut` methods, f-strings and tests with shadowing locals
+[[step]]
+save = "more.strata"
+from = "more.st"
+
+[[step]]
+strata = ["--file", "more.strata", "run"]
+stdout = "10\n[1, 3, 0]\n[2, 1]\n3 3\n"
+
+[[step]]
+strata = ["--file", "more.strata", "test"]
+has = ["✓ shadowed in a test", "1 passed, 0 failed"]

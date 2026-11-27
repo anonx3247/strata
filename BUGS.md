@@ -1,0 +1,799 @@
+# Bugs to fix
+
+Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07), found by reading the code; remove an entry in the PR that fixes it.
+
+## Verification (soundness)
+
+- [ ] **Header `code_hash`, `interface_hash`, `deps` and `name` are never checked, but verify keys its cache on them.** A module header's `code_hash`, `interface_hash`, `deps` and `name` are never checked against the content, and hashes are trusted by default, but verify keys its cached verdicts on them.
+  Where: binary.entry_with (compiler.binary.st:2243), binary.read_header_of; main.keys_over/closure_keys (compiler.main.st:7763–7810); binary.read, decode_module, decode_entry (`checked: false`). Source: review front-end. Confidence: likely.
+- [ ] **The dependency lists that verify keys on miss real dependencies.** ImplDef: walks method params, ret and body, but not `pre`/`post`, nor `i.bounds` or method bounds. An impl method's contract calling `helper` doesn't depend on `helper`.
+  Where: store.refs (compiler.store.st:137), store.ty, store.graph_from. Source: review front-end. Confidence: likely.
+- [ ] **Function values have no identity: calls with different function arguments are equated.** A function-typed parameter is `VFn { ret }` (`shape`: `FnType { ret, .. } => VFn { ret }`). It carries nothing else. In `call_key`, an argument `Var(n)` bound to a local is keyed by `debug(v)` (`is_fn` is false for a bound name).
+  Where: smt.call_key (rendered .st ~9252), smt.same_call, smt.call (SeeThrough branch, memo reuse of lists), Val.VFn. Source: review prover. Confidence: likely.
+- [ ] **Function-typed parameters: results assumed valid, lambda arguments never checked.** `call_value` on a `VFn { ret }` makes `res := shape(ret)` and then `assume(check_type(ret, res, []))`. The callee therefore assumes a refined result (`(Int) -> Nat`).
+  Where: smt.call_value, smt.check_type_at (`UnitType | FnType { .. } => "true"`), smt.refined_by (`UnitType | FnType { .. } => false`), smt.call_contract. Source: review prover. Confidence: likely.
+- [ ] **An unfolded recursive definition is only as sound as termination's verdict.** For a function in `Methods.unfold`, `define_fn` declares `fn:KEY` and defines `def:KEY` as the body with recursive calls as `fn:KEY` applications. `rec_use` then asserts `(= (fn:KEY args) (def:KEY args))` at each use, two levels deep.
+  Where: smt.rec_use, smt.define_fn (rec branch), smt.rec_call, smt.call (`contains(vc.methods.unfold, name)`). Source: review prover. Confidence: likely.
+- [ ] **Scalar merges are not shared: term text doubles at each conditional update.** `share` is applied to list lengths, arrays, tags and datatype terms (`merge` around 6289-6334, `share_deep`), but not to scalars. After `if c1 { x = x + 1 }`, x is `(ite c1 (+ x0 1) x0)`, with x0 twice.
+  Where: smt.merge (`(VInt(x), VInt(y)) => VInt(ite(c, x, y))`, same for Bool and String), smt.branches_narrowed, smt.assign. Source: review prover. Confidence: likely.
+- [ ] **Own-method calls are never call-graph edges (std and core are never resolved).** Any `MethodCall` whose name is some type's own method is dropped from the call graph. The comment relies on `check.own_methods_resolved` having rewritten own-method calls to `Call(Var("T.m"))`.
+  Where: termination.calls_in (`own := ctx.methods.own_types.any(t -> t.1 == name); if !smaller && !own { call_name(...) }`), main.verified_decls. Source: review prover. Confidence: likely.
+- [ ] **Recursion through a function value is invisible to `structural`.** `struct_expr` records a recursive call only for `Call { callee: Var(n) }` or a `MethodCall` with `n` in `st.names`. Passing the function itself as a value (`apply(f, t)`) is a `Var` argument, which falls into `_ => ()`.
+  Where: termination.structural, termination.struct_expr. Source: review prover. Confidence: likely.
+- [ ] **`for` over an iterator: unknown sources and exhausted fuel count as finite.** Any iterator expression other than `map`/`filter`/`drop` over something known is judged finite. That includes a call returning an `Iterator`, `chain`, a field of an unknown record, or 8 levels of lets.
+  Where: termination.finite_source (`if fuel <= 0 { return true }`, `MethodCall … else { true }`, `_ => true`), termination.loop_start ("a value the encoder doesn't model (`""`) is taken to be a list"). Source: review prover. Confidence: likely.
+- [ ] **Proven checks are removed by check name, not by site.** `proven(g, "index in range", "exact")` is true when *some* fact of the function is `proven …index in range` and none is `open`.
+  Where: codegen.proven (st:5409), index_check (12091), the Int and Real division paths (14098, 14314), has_field_check (18478), check_type/check_key (5233, 5440), assertion (15310). Source: review codegen. Confidence: likely.
+- [ ] **Entry checks are dropped when callers proved a check with a matching name.** An argument or `requires` check on entry is dropped when every caller in `call_refs` has a `proven` fact that `same_check`es the key (`e == k || starts_with(e, k + ":") || starts_with(e, k + " (")`) and no `open` one.
+  Where: main.proofs_text `at_calls` (main st:7905), consumed by codegen.proven_entry (st:21009). Source: review codegen. Confidence: likely.
+- [ ] **A long-running `verify_file` once reported a refuted edit as proven.** Repeated calls in one process returned "proven" for an edit with a counterexample. Cause not found; `run --live` uses a process per edit to avoid it.
+  Where: verify_file. Source: ledger V2. Confidence: possible.
+- [ ] **Fuzz harness crashes on a function taking `mut Book` and returning a value.** SIGSEGV in the harness.
+  Where: fuzzer. Source: ledger V23 (STRATA-ISSUES 0.3.4). Confidence: likely.
+- [ ] **A cached verdict can go stale when a callee's body changes a caller's errors.** A function's key holds its callees' interfaces only (`"interface " + e.interface` for any `fn` not in `run`). Some of a caller's errors depend on a callee's body.
+  Where: compiler.checked.keys_of; main.loaded_check; check.type_errors_with (`on_type`, `calls_on_type`). Source: review checker. Confidence: likely.
+- [ ] **`ensures it == e` replaces the body as the function's definition.** `body := match defining_ensures(vc, f) { Some(e) => eval(mut vc, e), None => eval(mut vc, f.body) }`. Contracts see through the function as `e`, whether or not that ensures is proven.
+  Where: smt.defining_ensures, smt.define_fn. Source: review prover. Confidence: sure.
+- [ ] **Strings with code points past U+2FFFF are modelled wrongly.** Strings and regex classes are modelled only up to U+2FFFF, while the model calls itself exact, so code points above it are modelled wrongly.
+  Where: smt.builtin (`chr`: `(=> (<= x 196607) (= c (str.from_code x)))`, `ord`: `str.to_code`), smt.max_char, std.regex.smt_ranges/max_smt_char; std.regex.smt_ranges, std.regex.max_smt_char; std.regex.smt_ranges, to_smt, smt_model. Source: review prover; review std. Confidence: likely.
+- [ ] **Structural bounds modelled as closed records.** For `[T: { id: Int, .. }]`, `T` is inserted into `vc.types` as a record with only those fields, with the claim "`f` can only read them (it makes no value of `T` and compares none)".
+  Where: smt.rows_as_records. Source: review prover. Confidence: possible.
+- [ ] **`ForPat` arms are taken as never matching.** An unexpanded `ForPat` arm gets the condition `false`. Its body runs on a dead path, so every check in it is proven vacuously, and the "some arm matches" obligation leaves it out.
+  Where: smt.pattern (`ForPat { .. } => "false"`), main.verified_decls (`if derives { expand_in(...) } else { sweet0 }`). Source: review prover. Confidence: possible.
+- [ ] **Unresolved method calls bound by a unique name suffix over all functions.** When `method_call` finds nothing, any single function anywhere in core, std and the program whose qualified name ends with `.name` is called with the receiver as an argument.
+  Where: smt.call (fallback `keys(vc.fns).filter(k -> ends_with(k, "." + name))`). Source: review prover. Confidence: possible.
+- [ ] **Loop havoc may miss a variable changed through `mut`.** Only `MutExpr(MethodCall { recv })` and the arguments `passed_mut` finds from a declaration count as changes. `method_params` takes the first trait declaring a method of that name (`[d, ..] => Some(d.params)`).
+  Where: smt.changed_vars, smt.passed_mut, smt.method_params. Source: review prover. Confidence: possible.
+- [ ] **Results that silently answer "true" become proven checks that codegen removes.** A goal of `"true"` is recorded as "proven … without a query" (`vc.given`) and listed as a proof. In `check_type_at`, a type name missing from `vc.types` (a key mismatch: qualified vs bare names, an alias) gives `"true"`, and so does a `RowType`.
+  Where: smt.check_type_at (`RowType(_) => "true"`, `_ => match get(vc.types, name) { None => "true", ...}`), smt.oblige (`g == "true"` goes to `vc.given`), main.proof_lines, codegen.proven. Source: review prover. Confidence: possible.
+- [ ] **Two transparency analyses with different rules.** `methods_of` sets `Methods.seen` from `smt.transparency`. Termination's encodings run with that. `verify` then replaces it with termination's `seen_through`. The two `cannot_fail` differ. smt's treats every trait method call as `ContractOnly`.
+  Where: smt.transparency + smt.cannot_fail + smt.callee_seen vs termination.cannot_fail + termination.seen_through. Source: review prover. Confidence: sure.
+- [ ] **Recursive calls in `spawn`/`scope`/`race`/`await`/`select`/`comptime` are not looked at.** The arm that recurses lists `Interp | IfExpr | Binary | Unary | ListExpr | TupleExpr | CtorExpr | FieldOf | IsExpr | Return | Try | MutExpr | Fallback`.
+  Where: termination.struct_expr (the last arm, `_ => ()`). Source: review prover. Confidence: sure.
+- [ ] **`self.field.m()` assumed smaller in an implementation of `m`.** The edge is dropped, not checked. The call dispatches to the field type's implementation, which can rebuild a value of the original type around its own `self` and call `m` again.
+  Where: termination.calls_in (`smaller := st.own != "" && trait_node(name) == st.own && self_field(recv)`). Source: review prover. Confidence: likely.
+- [ ] **Termination proofs assume the function's own `ensures`, which may be unproven.** Measure and loop-bound obligations are asked over the function's facts. Those include the callee contracts assumed at each call, the function's own `ensures` at its recursive calls among them.
+  Where: smt.call_contract (a recursive call assumes `f.post`), smt.measure_check / termination.loop_answered (obligations over `vc.facts`). Source: review prover. Confidence: likely.
+- [ ] **Mutual recursion always unknown; tree recursion not proven to terminate (known).** Recorded in ~/dev/strata-bench/STRATA-ISSUES.md ("Tree recursion isn't proven to terminate. 52 and 68 functions respectively are reported 'may not terminate'"). The code has no measure search for components larger than one.
+  Where: termination.analyze_with (`Some(other) => Err("it is recursive through ...")`). Source: review prover; ledger V7. Confidence: sure.
+- [ ] **A cached proof skips the lemma termination gate.** The proof key (`interface_keys`) holds callees' interface hashes for ContractOnly callees, not their termination status. A lemma calling `g` stays keyed the same when `g`'s body changes and `g` stops terminating.
+  Where: main.verify_program (`Some(p) => Some(lawful(cross_checked(p, cc, t.once, fz)))` for `proved`; the gate `(Some(f), Some(Unknown(why))) => if f.lemma && x0 is VProven { VIncomplete(...) }` only in the `check_fn` branch). Source: review prover. Confidence: likely.
+- [ ] **Checks matched to assumed clauses by text prefix and substring.** For any assumed clause with text `t`, all four forms (`ensures t`, `requires t`, ``invariant `t` ``, `invariant failed: t`) are tried against the check. Matches are `starts_with(line, k + " ")`, `starts_with(line, k + ":")` or `contains(line, k + " (")`.
+  Where: main.assumed_note, main.assumed_verdict, main.rules_broken (`VAssumed(_) => { accepted = true }`). Source: review prover. Confidence: likely.
+- [ ] **Stack overflow with a quantified refinement on a list element type.** STRATA-ISSUES.md #4b: "The verifier overflows its stack in `smt.element_at → instance → subst_val` when a list element type's refinement contains `all(...)`". Not re-run, and no PR claims a fix.
+  Where: smt.element_at → smt.instance → smt.subst_val. Source: review prover. Confidence: sure.
+- [ ] **Counterexample replay crashes.** STRATA-ISSUES.md #4c: "crash (signal 11) in: strata_verify_replay_0" on nested, mutually recursive types with `Natural`-refined fields. `build` fails too.
+  Where: main.replay (strata_verify_replay_0). Source: review prover. Confidence: sure.
+- [ ] **`build` and `verify` disagree on what is proven.** STRATA-ISSUES.md (ob-verify): "`strata build` lists 35 clauses as 'not proven' that `strata verify` reports as proven".
+  Where: verify paths (see "Three different ways to turn solver output into verdicts"). Source: review prover; ledger V22. Confidence: sure.
+- [ ] **Refined fields of recursive types make the solver reject checks; `Set[Value]` inside a recursive type can't be encoded.** STRATA-ISSUES.md (sql arms): "the solver itself reported this as its own bug" and "The SMT encoding rejects a `Set[Value]` inside the recursive expression type".
+  Where: smt sorts / datatype declarations. Source: review prover; ledger V8, V9. Confidence: sure.
+- [ ] **`verify` loses the value under `x!` for capability or trait calls in std.** When `x` is a call on a capability or a trait inside std, the facts about `x!` are lost.
+  Where: verify. Source: ledger V3 (#574). Confidence: likely.
+- [ ] **`verify` of a nine-arm type match over `std.agent.Chunk` goes past 8 GB.** Memory explodes in seconds.
+  Where: verify. Source: ledger V4 (#574). Confidence: likely.
+- [ ] **LLVM pass-registry errors loop during parallel fuzzing.** `verify` of `codegen.computed_value` prints "Required pass not found" without end; 84 functions at once printed "Pass 'Function Alias Analysis Results' is not initialized" in a loop (84 MB log). `jit_fuzz_load` initializes the native target per load.
+  Where: compiler/c/jit.c jit_fuzz_load. Source: ledger V5 (#532, #596). Confidence: likely.
+- [ ] **`len(s) == 0` doesn't make a set empty.** Set size is not tied to members, which gave a false counterexample.
+  Where: smt (sets). Source: ledger V10. Confidence: likely.
+- [ ] **Callees in other modules are not analysed for termination in a by-name run.** A verify run naming some functions sees their callees in other modules only through their contracts.
+  Where: verify (by name). Source: ledger V12. Confidence: possible.
+- [ ] **`verify` can't run functions reading thread-local storage.** The JIT sets up no TLS (`_tlv_bootstrap_error`); `arena_put` on main stops this way.
+  Where: JIT fuzzing. Source: ledger V24. Confidence: likely.
+- [ ] **The std termination cache keeps old findings after an edit.** The cache is keyed by name and binary, so std edited without a rebuild keeps stale findings for the changed function.
+  Where: termination cache. Source: ledger V31. Confidence: likely.
+- [ ] **Float fields compared as reflexive datatype terms.** A record with a `Float` field is a datatype term over an uninterpreted `Float` sort. `p == p` is `"true"` and `(= p p)` holds. If run-time equality compares floats IEEE-wise, a NaN field makes `p == p` false.
+  Where: smt.sort_type (`"Float" | "_" => Some(opaque_sort(...))`), smt.eq (`VData` with `x == y` gives `"true"`, else `(= x y)`). Source: review prover. Confidence: possible.
+- [ ] **Trait invariants looked up by short name.** `vc.methods.traits.filter(x -> x.name == name || x.name == last)`, then the first match. For a parameter typed `b.Db`, another module's `a.Db` invariants can be assumed of it.
+  Where: smt.trait_invariants. Source: review prover. Confidence: possible.
+- [ ] **Argument refinements checked with no bindings.** A parameter refinement that names an earlier parameter (`i: Int where it < n`) is evaluated with `n` unbound. It can't be proven at any call. The result check passes `binds`, but this one doesn't.
+  Where: smt.call_contract (`check_type(mut vc, subst(p.ty, sub), a, [])`). Source: review prover. Confidence: likely.
+- [ ] **Scratch files and job dedup keyed by a 64-bit polynomial hash.** `h = h * 131 + byte`, wrapping at 64 bits. Two different scripts with the same hash share one `.smt2` path and one `.out` file, and `run_scripts` runs only the first.
+  Where: smt.text_hash, smt.run_script, smt.run_scripts (non-pooled path, `seen` by `text_hash(flags + script)`). Source: review prover. Confidence: sure.
+- [ ] **`cannot_fail` accepts calls of non-`Var` callees and doesn't look at `let` annotations.** `Call { callee: FieldOf … }` (a stored function) passes as "cannot fail". A `let x: Nat = e` (a run-time check when not proven) isn't considered. Such functions become transparent and are seen through as total.
+  Where: termination.cannot_fail (`_ => true`), smt.cannot_fail (`_ => SeeThrough`). Source: review prover. Confidence: possible.
+- [ ] **The lemma gate only fires for `Unknown`.** `Assumed(names)` (a callee marked `terminates`) and `None` (not analysed) pass. An induction then rests on a `terminates` mark, and the verdict says only "proven".
+  Where: main.verify_program (lemma gate). Source: review prover. Confidence: sure.
+- [ ] **Loops stepping an `I64` counter are reported "may not terminate".** Termination doesn't handle sized-int counters.
+  Where: termination. Source: ledger V6. Confidence: likely.
+- [ ] **A function returning `Set[TaskId]` isn't seen through.** `list_set` doesn't restate the elements' refinements.
+  Where: smt. Source: ledger V11. Confidence: likely.
+- [ ] **Refined records pushed to a list in a loop are not proven element by element.** Fixed by #612 only for types holding a `Real`.
+  Where: smt. Source: ledger V13 (#612). Confidence: likely.
+- [ ] **`old` inside a trait `ensures` lambda makes the method "skipped".** The method is not verified.
+  Where: verify. Source: ledger V14 (#529). Confidence: likely.
+- [ ] **`verify` reports an insert naming a missing row as "not proven" instead of refuted.** `sqlite.memory()` doesn't carry its empty model through `create`; a `delete` of a referenced row is refused only at run time.
+  Where: std.sqlite models. Source: ledger V27. Confidence: likely.
+
+## Type checker
+
+- [ ] **`unify` has no occurs check.** `TVar(x) => { if rb != ra { mut i.subst.insert(x, widened(rb)) } return true }`. Nothing checks whether `x` occurs in `rb`. `x -> x(x)` or `mut xs.push(xs)` binds `α := List[α]` or `α := Fn(α) -> β` with no error.
+  Where: compiler.check.unify (rendered compiler.check.st:4178). Source: review checker. Confidence: sure.
+- [ ] **A narrowed type accepts any value of its sum.** `fits` has arms for `(TNamed, TVariants)` and `(TVariants, TVariants)`, but `(TVariants, TNamed)` falls to `_ => unify(...)`, and `unify` widens both sides first (`ra := widened(res(i, a))`).
+  Where: compiler.check.fits (4007), join_union (4975), infer_if (4786). Source: review checker. Confidence: likely.
+- [ ] **Every variable matched anywhere in a function is `TAny` everywhere in it.** `narrowed: narrowed_in(f.body, {})` collects every `x` in any `match x` anywhere in the body, with no scopes.
+  Where: compiler.check.var_type (4314), narrowed_in (2800), fn_inferred. Source: review checker. Confidence: sure.
+- [ ] **A field whose type is a sum or a union reads as `TAny`.** `if is_sum(i, t) || res(i, t) is TUnion { TAny } else { t }`. `order.status`, `p.1` of a tuple holding an `Option`, and any field of type `Option[T]` or `Result[T, E]` are untyped from then on.
+  Where: compiler.check.place (1270), and its uses in field access (3418-3517) and variants_field (9125). Source: review checker. Confidence: sure.
+- [ ] **A `match` without an expected type has type `TAny`.** The arms' types are never joined. `x := match o { A => 1, B => "s" }` is accepted, and `x` is `TAny` for the rest of the function. An `as` binding is `TAny` too (`mut copy.insert(b, TAny)`).
+  Where: compiler.check.infer_match (7698), last line `expected ?? TAny`. Source: review checker. Confidence: sure.
+- [ ] **Trait bounds are checked only for a few traits.** `if t.derivable is None && !t.capability && len(t.params) == 0 { checked.insert }`, and blanket-implemented traits are then removed. `infer_call` checks bounds only `if contains(i.methods.checked, b.1)`.
+  Where: compiler.check.methods_of (`checked`, ~1989), infer_call (5732), own_trait_of. Source: review checker. Confidence: sure.
+- [ ] **The type tables are rebuilt by nine entry points, and they disagree.** `type_errors_with` builds `types_of(code + all)` and `with_code(Methods { ..methods_of(all), local, own_traits, noallocs }, methods_of(code))`.
+  Where: compiler.check.type_errors_with, instantiated, typed, lambdas_typed, holes_of, mark_field_reads, own_methods_resolved, spreads_resolved, field_typing. Source: review checker. Confidence: sure.
+- [ ] **Matches on a local variable or a field of sum type are never checked.** `coverage_checked` excludes every `TNamed` except `Tuple`, saying "`exhaustive` checks the others". `exhaustive.scrutinee_type` knows only a parameter never rebound (`Var(x) => if contains(unsafe, x) … else get(params, x)`), a call returning `Bool`, and comparisons.
+  Where: compiler.check.coverage_checked (7961), check.infer_match, exhaustive.scrutinee_type (501). Source: review checker. Confidence: sure.
+- [ ] **A sum match with any nested pattern is not checked.** `pattern_variants` gives `None` for `Circle(0)` or `Some(Ok(x))`, which sets `partial`, and then `if partial || undecided { return }`. `exhaustive` says it skips "constructors partly covered by nested patterns".
+  Where: compiler.check.variants_covered (`partial = true`), pattern_variants; exhaustive.covered/understood. Source: review checker. Confidence: sure.
+- [ ] **An impl's method signatures are never compared with its trait's.** `declarations` checks only that the names match (`missing method`, `is not a method of trait`). `check` checks each method's body against its own written signature.
+  Where: compiler.declarations.declaration_errors_in (ImplDef arm); compiler.check.decl_type_errors (ImplDef arm). Source: review checker. Confidence: likely.
+- [ ] **The checker doesn't type `ensures` clauses beyond their shape.** `ensures n == "x"` on an `Int` passes `check`.
+  Where: checker (ensures). Source: ledger C1 (#462). Confidence: sure.
+- [ ] **`stringify(x.to_json())` type-checks and crashes.** `to_json` returns a `Result`, yet the call passes `check`, then crashes with signal 10/11 in `std.json.stringify`.
+  Where: checker (calls). Source: ledger C3 (#497). Confidence: likely.
+- [ ] **`unify` returns true when its fuel runs out.** `if fuel <= 0 { return true }`. Callers pass 100. Any pair of types nested more than 100 deep unifies, whatever they are. This is the same limit as the one above, now answering "yes".
+  Where: compiler.check.unify. Source: review checker. Confidence: sure.
+- [ ] **Generic type arguments are covariant everywhere, including contravariant positions.** `ok = ok && fits(mut i, was[k], gas[k])` for every argument of every named type. The comment justifies this by value semantics ("values are never shared").
+  Where: compiler.check.fits, the `(TNamed, TNamed)` arm. Source: review checker. Confidence: likely.
+- [ ] **`implements` answers true for every type it doesn't model.** The last arm is `_ => true`. `TUnit`, `TFn`, `TUnion`, `TVar` and `TAny` all "implement" every trait, so `as_trait` accepts a function or `()` where a `Display`/`Json` trait value is wanted.
+  Where: compiler.check.implements (4072). Source: review checker. Confidence: sure.
+- [ ] **Any trait value fits any other trait.** `(TTrait(_), TTrait(_)) => return`. A `Shape` value passed where a `Json` value is expected is accepted, with no supertrait check.
+  Where: compiler.check.expect (4643). Source: review checker. Confidence: sure.
+- [ ] **Mismatches involving unprinted types are silently accepted.** The error is raised only when `(text_of(want), text_of(got))` are both `Some`. `text_of` is `None` for `TAny`, for a `TNamed` with a function-typed argument, and for a `TFn` inside a union.
+  Where: compiler.check.expect. Source: review checker. Confidence: sure.
+- [ ] **A union with any member it can't print becomes `TAny`.** `match shown(t) { Some(x) => …, None => return TAny }`. `Int | (Int) -> Int`, or a union with a generic record holding a function, is `TAny` everywhere it is written, so nothing typed with it is checked.
+  Where: compiler.check.union_of (1755), join_union. Source: review checker. Confidence: sure.
+- [ ] **A field every member of a union (or every variant) has takes the last one's type.** Both loops do `out = Some(x)` for each member and never compare. The comments ("with the same type", and the IDEAS entry "a field all have, with one type, gets that type") claim a check the code doesn't make.
+  Where: compiler.check field access on `TUnion` (3455-3480), variants_field (9093). Source: review checker. Confidence: sure.
+- [ ] **Narrowing ignores changes made through `mut`.** `assigns_to` only looks for `ast.Assign { place: ast.Var(y) }`. Neither `mut o.cancel()` (a `mut self` method that may change the variant) nor `refund(mut o)` counts.
+  Where: compiler.check.assigns_to (4948), narrowed_env, infer_match. Source: review checker. Confidence: likely.
+- [ ] **`solve_pending` skips obligations on generic and compound types.** `TNamed { name, args } => if len(args) == 0 && program_type(i, name) && …`. `Box[Int]`, `List[Foo]`, `Option[Foo]`, unions and functions fall into `_ => ()` and are accepted.
+  Where: compiler.check.solve_pending (9641). Source: review checker. Confidence: sure.
+- [ ] **Trait obligations are not tracked in packages.** `ast.TraitDef(t) => if d.module == "" { own_traits.insert }`, with the comment "In a package, names are qualified in ways the obligations don't follow." In a package, `own_trait_of` always gives `None`, so a trait method used as a function (`price(x)`, `xs.map(price)`) is `TAny`, and `true.price()` makes no obligation.
+  Where: compiler.check.type_errors_with (`own_traits`), own_trait_of, trait_fn_of. Source: review checker. Confidence: sure.
+- [ ] **Own methods and trait methods share one table key.** The own `impl Pt { fn area }` and the trait's `impl Area for Pt { fn area }` both write `of["Pt.area"]`, and whichever comes later in `decls` wins. The comment "a type's own method comes before a trait's of the same name, as calls find them" holds only for `own_recv`/`trait_recv`, not for `of`.
+  Where: compiler.check.methods_of (`of.insert(q + "." + f.name, …)`). Source: review checker. Confidence: likely.
+- [ ] **Generic impls whose parameter names differ from the type's are ignored.** `usable := get(types.named, q) ?? ["?"] == im.type_params && (len(im.type_params) == 0 || own_params)`. For `type Box[T]` with `impl[U] Box[U]`, or a specialised `impl Show for Box[Int]`, `usable` is false, so the methods never enter `of`, `self_methods` or `mut_self`.
+  Where: compiler.check.methods_of (`usable`). Source: review checker. Confidence: sure.
+- [ ] **Closure and `extern` calls with the wrong number of arguments pass.** `infer_call` skips argument checking when the counts differ, saying "reported by `expression_errors`". But `errors_in` only reports when `get(c.arity, n)` is `Some`, and returns `None` when `contains(env, n)` (a local closure).
+  Where: compiler.check.infer_call (`if len(params) == len(args)`), errors_in (Call arm, ~944), expression_errors_in. Source: review checker. Confidence: sure.
+- [ ] **Any arm with a guard turns off the missing-value check.** One undecidable arm anywhere disables the whole exhaustiveness check for ints, strings, lists, tuples and unions. IDEAS ("Match coverage with the SMT solver") says verify then obliges "some arm matches".
+  Where: compiler.check.check_coverage (`if rows.any(r -> r.any(c -> has_cond(c))) { return }`). Source: review checker. Confidence: sure.
+- [ ] **`missing` gives "nothing missing" past depth 12.** `None` means exhaustive. Depth grows by one per column and per constructor field, so a tuple of 13 elements, or a list pattern nested past 12 levels, is accepted as covered whatever the arms are.
+  Where: compiler.check.missing (`if depth > 12 { return None }`), useful (`depth > 12 … return true`). Source: review checker. Confidence: sure.
+- [ ] **Float coverage ignores NaN.** The atoms are intervals from -inf to +inf and points between them. No atom stands for NaN (the file has no mention of NaN). `match x { x where x < 0.0 => …, x where x >= 0.0 => … }` is judged exhaustive, but NaN fails both comparisons and reaches `no match arm`.
+  Where: compiler.check.atoms (TFloat), sample, real_holds. Source: review checker. Confidence: likely.
+- [ ] **Known: methods of std types and built-ins have no facts, so their matches are covered by no one.** IDEAS.md line 200: "methods of std's types the checker doesn't see (`SortedDict.get`) and built-ins (`get`, `xs.first()`) have no facts, so matches on them are covered by neither the checker nor `exhaustive`".
+  Where: compiler.check.variants_covered / narrowed_at. Source: review checker; ledger C20. Confidence: sure.
+- [ ] **`declarations` finds traits by short name, so imported traits are not checked.** An `impl std.json.Json for T` (the trait named in full, as check's comment says another module writes it) looks up `"std.json.Json"` and finds nothing, so neither missing nor extra methods are reported.
+  Where: compiler.declarations.declaration_errors_in (`trait_methods.insert(t.name, …)`, `get(trait_methods, im.trait_name)`). Source: review checker. Confidence: likely.
+- [ ] **Known: a trait and a type with the same name in one module pass `check`.** IDEAS.md lines 2384 and 2528 (std-net): codegen then can't find the type's constructor. Not claimed fixed. The code is consistent with it: `lower` checks `types.traits` before `types.named`.
+  Where: compiler.check / compiler.declarations (name tables). Source: review checker; ledger C8. Confidence: sure.
+- [ ] **Known: a generic `List` overload and a `String` overload let a call that fits neither pass.** IDEAS.md line ~2535: "`xs["a"]` on a `List[Int]` … fixed on branch `std-math`, #573, not on main". Assumed still present at v0.5.0.
+  Where: compiler.check.builtin_call / fitting_builtins. Source: review checker; ledger C2 (fixed only on unmerged #573). Confidence: sure.
+- [ ] **Known: core is never type-checked.** IDEAS.md line ~2558: "`strata --file core check` only decodes core's files; it never type-checks core's code". Not claimed fixed.
+  Where: main / check entry for `--file core`. Source: review checker; ledger C18. Confidence: sure.
+- [ ] **`mut` markers on method arguments are never checked.** `params_of` collects `FnDef` parameters only, and method calls never reach `check_arg`. `check` checks only the receiver's `mut self` marker and, through `mut_params`, exactness for functions only (it is keyed by function name).
+  Where: compiler.mutability.walk (`MethodCall { recv, args, .. } => { walk_arg; walk_args }`), params_of; compiler.check.infer_method. Source: review checker. Confidence: likely.
+- [ ] **`noalloc` trusts every receiver it can't type.** `TList(_) | TAny | TVar(_) => ()` for loops, `TAny` for method receivers, and `_ => None` for arithmetic.
+  Where: compiler.check.noalloc_typed, allocating_arith. Source: review checker. Confidence: sure.
+- [ ] **A `T: Json` bound on a generated call is not checked.** Calls of `std.python.argument[T: Json]` pass with types that are not `Json`.
+  Where: checker (trait bounds). Source: ledger C4 (#495). Confidence: likely.
+- [ ] **`check` accepts a call of a deleted function by its qualified name.** `model.unique` still checks after `unique` is deleted.
+  Where: checker. Source: ledger C5 (#529). Confidence: likely.
+- [ ] **A pattern of a removed variant passes `check`.** `ast.Spread(_)` was accepted by `check` and refused only by codegen.
+  Where: checker (patterns). Source: ledger C13 (#562). Confidence: possible.
+- [ ] **A refined record accepts a `()` for a field.** With a record refined, `Box { table: b.table.insert(k, e), … }` passed `check`, which the unrefined type refuses.
+  Where: checker (records). Source: ledger C14 (#486). Confidence: likely.
+- [ ] **A two-parameter lambda where a one-argument function is expected is not reported.** `xs.map((a, b) -> a)` on a `List[Int]` passes `check`.
+  Where: checker (lambdas). Source: ledger C15. Confidence: likely.
+- [ ] **A type nothing fixes stays `_`, and `==`/hashing skip it.** A `_` part of a value is compared as `true`; there is no error for a value with a `_` part that is made.
+  Where: checker / codegen. Source: ledger C16 (#563, #565 partial). Confidence: likely.
+- [ ] **Names of builtins break models and methods.** A trait model named `keys` is never read through the model; a user `fn insert` breaks `mut self.all.insert(..)` in an impl; `Set[KeyValue] {}` (a set of a union) doesn't type-check.
+  Where: checker. Source: ledger C19. Confidence: likely.
+- [ ] **`resolve` stops at its fuel and doesn't look into `TVariants`, `TUnion` or the arguments of `TVariants`.** `TVariants`, `TUnion`, `TTrait` and `TGen` fall into `_ => t`. A `TVariants.args` holding a `TVar` stays unresolved, and `unify`'s last arm `_ => ra == rb` then compares structurally, so two identical unions with an unresolved member are not equal.
+  Where: compiler.check.resolve (1292). Source: review checker. Confidence: likely.
+- [ ] **`VarDecl` widening drops a generic sum's type arguments.** `TVariants { owner, .. } => TNamed { name: owner, args: [] }` instead of `widened(...)`, which keeps `args`. `mut y := x`, with `x` narrowed to `Some` of an `Option[Int]`, gives `Option` with no arguments, which `unify` then refuses against `Option[Int]` (`len(xs) != len(ys)`).
+  Where: compiler.check.infer_block, the `VarDecl` arm (~5048). Source: review checker. Confidence: sure.
+- [ ] **Unknown types and wrong type-argument counts lower to `TAny`.** `Some(ps) => if len(ps) == len(args) {…} else { TAny }`, `None => TAny`, and `ast.RowType(_) => TAny`. A misspelled or imported-but-unmodelled type, or `Box[Int, Int]`, makes every value of it unchecked.
+  Where: compiler.check.lower. Source: review checker. Confidence: sure.
+- [ ] **The "can't be passed as a value" rule only sees generic functions among `decls`.** `on_type` is built from `decls` only. A generic function in `lib` that calls `T.empty()` and is passed as a value is never reported. That includes a definition of the same package that the check cache (main.loaded_check) put in `lib` because it was already checked.
+  Where: compiler.check.type_errors_with (`on_type`). Source: review checker. Confidence: sure.
+- [ ] **Constructor patterns match by short name across sums.** In a union of two sums from different modules that each have a variant `Empty`, a pattern `a.Empty` also covers `b.Empty`'s atom, so the missing `b.Empty` is not reported.
+  Where: compiler.check.covers (`last_part(c) == last_part(n)`). Source: review checker. Confidence: possible.
+- [ ] **Known: a non-exhaustive error is reported against the wrong function on a rejected edit.** IDEAS.md "Known gaps" (line ~2532): "On a rejected edit, non-exhaustive-match errors are reported against the wrong functions (e.g. `lint.refined_by` …)". No PR claims a fix.
+  Where: compiler.exhaustive / main error labelling. Source: review checker; ledger C11. Confidence: sure.
+- [ ] **Known: what is left of a mixed union isn't narrowed after its variants are matched.** IDEAS.md "Known gaps" line ~2529 (std-net). Not claimed fixed.
+  Where: compiler.check.arm_members / arm_variants. Source: review checker; ledger C9. Confidence: sure.
+- [ ] **Known: `List[B[M]] =>` refused for a local generic record.** IDEAS.md line ~2530 (std-pages): "unknown constructor `M` in pattern". Not claimed fixed.
+  Where: compiler.check.cover_of / declarations.pattern_errors. Source: review checker; ledger C10. Confidence: sure.
+- [ ] **Calls to imported or same-named functions skip the `mut` rules.** A name defined twice is left out ("A name defined twice is left out"), and lookups go by the name as written. When `get(w.fns, n)` is `None` the arguments are only walked: neither a missing `mut` nor a needless one is reported.
+  Where: compiler.mutability.params_of, walk_call. Source: review checker. Confidence: likely.
+- [ ] **A `spawn` inside a lambda passes the `scope` rule.** `Lambda { … } => Ctx { ..c, in_spawn: false }` keeps `floor: true` from an enclosing `scope`. A lambda made inside a `scope` that spawns, returned from the scope and called later, starts a task outside any scope.
+  Where: compiler.capabilities.walk (Lambda arm keeps `floor`). Source: review checker. Confidence: possible.
+- [ ] **`unused.members` types field reads with the second, weaker inference.** `field_typing` builds `types_of(all)` and `methods_of(all)` with no core code traits (see the table finding), so more receivers are `TAny`. That counts as "read of every record" (`None => true`): conservative.
+  Where: compiler.unused.members, check.field_typing / field_reads. Source: review checker. Confidence: sure.
+- [ ] **The lint rewrite renames `it` by substitution.** A refinement conjunct that holds a lambda with its own `it`, or that names a variable called like the parameter, would be captured or renamed wrongly when it is moved into a `requires`.
+  Where: compiler.lint.fn_shapes (`renamed(c, "it", p.name)`). Source: review checker. Confidence: possible.
+- [ ] **Some errors are missed once an import fails.** compiler/'s checker misses errors such as `unknown constructor in pattern` after a failed import.
+  Where: checker. Source: ledger C7. Confidence: likely.
+- [ ] **Errors are labelled by short name.** `text.inline` is reported as `markdown.inline`, `parse.binary` as `check.binary`, `resolve.decl_kind` as `parse.decl_kind`.
+  Where: checker (error labels). Source: ledger C12 (#562). Confidence: likely.
+- [ ] **`check` of a `--file` program doesn't type `s.graphemes()`.** std's impl is not in the tables there.
+  Where: checker (file mode). Source: ledger C17 (#453). Confidence: likely.
+- [ ] **A match the syntax check can't type is found only by `verify`.** `match p.op` errors surface only in `verify`.
+  Where: checker. Source: ledger C21 (#416). Confidence: likely.
+- [ ] **`build --no-verify` prints no warnings.** Warnings are lost when verification is skipped.
+  Where: build. Source: ledger C24 (#459). Confidence: possible.
+
+## Front end
+
+- [ ] **`"\r"` is not an escape.** `"\r"` in a string literal is a backslash and an `r`, not a carriage return; `\0`, `\u{..}` and `\x` are missing too. Code comparing with `"\r"` (`lex.debug_char`, `parse.debug_quoted`, std.json's decoder and `quote`) is dead or wrong, so std.json decodes the escape `\r` as backslash + `r`.
+  Where: lex.escaped (compiler.lex.st:537); lex.debug_char (compiler.lex.st:557); std.json.read_string (std.json.st:1235); std.json.quote (std.json.st:365). Source: review front-end; review std; ledger F1, F2, S3. Confidence: sure.
+- [ ] **Inherent and trait methods go into the module's global namespace, marked public.** Inherent methods: `ImplDef(i) => if i.trait_name == "" { … mq := qualified(m, f.name); mut table.insert(mq, Item { module: m, public: true, … })`.
+  Where: resolve.names_of (compiler.resolve.st:1517–1550), resolve.scope_of. Source: review front-end. Confidence: likely.
+- [ ] **Refinements written as type arguments are hoisted to root-level aliases keyed by their printed text.** `text := type_text(a); if !contains(all, text) { … made.push((base, pred)) }`.
+  Where: desugar.inline_refinements (compiler.desugar.st:1431), desugar.unrefined_type. Source: review front-end. Confidence: likely.
+- [ ] **Lexing is quadratic: `text_of` copies the tail of the source for every token.** `join(take(drop(lx.chars, a), b - a), "")`. `drop` copies everything after `a`, and it is called for every identifier, number and comment. `symbols()` also rebuilds a 47-element list and runs `find` with `starts_with` for every symbol token.
+  Where: lex.text_of (compiler.lex.st:358), lex.lex. Source: review front-end. Confidence: likely.
+- [ ] **Comment placement is quadratic.** Each call scans all of `p.comments`: `for (i, c) in enumerate(p.comments)`.
+  Where: parse.leading, parse.trailing, parse.blank_line_before, parse.use_comment. Source: review front-end. Confidence: sure.
+- [ ] **`:=` doesn't refuse refutable patterns.** IDEAS.md:1051: "`:=` doesn't refuse refutable patterns at all today: `Some(z) := q` checks". A bare record pattern `{ x, y }` is not a pattern anywhere. The code still has no check.
+  Where: parse.statement → binding_pattern (no refutability check, unlike param_pattern). Source: review front-end. Confidence: sure.
+- [ ] **`select`/`race` arm comments are dropped.** The parser stores `SelectArm.comments` (leading and trailing, compiler.parse.st:2496/2520), but the printer never calls `comments_text(a.comments, …)` for them, unlike match arms (text.st:839).
+  Where: text.inline, the `Select(arms) | Race(arms)` case (compiler.text.st:881–904). Source: review front-end. Confidence: sure.
+- [ ] **A negative literal as a receiver prints as a negation of the call.** The parser folds `-5` into `IntLit(-5)` / `FloatLit(-f)`. So `(-5).abs()` is `MethodCall { recv: IntLit(-5) }`. `prec(IntLit(-5))` falls to `_ => 12`, so it prints `-5.abs()`, which reparses as `Neg(5.abs())` and evaluates to -5 instead of 5.
+  Where: text.prec (compiler.text.st:1110), parse.unary. Source: review front-end. Confidence: sure.
+- [ ] **`derive T for X { model m = e }` prints as `derive T for X`, losing the models.** `if i.derived && len(i.methods) == 0 && i.clauses == [] { return impl_head(i) }`. `models` is not checked, but parse.impl_rest accepts `model` lines in a derive block.
+  Where: text.impl_decl_text (compiler.text.st:2066), impl_interface_text (1706). Source: review front-end. Confidence: sure.
+- [ ] **Markup is recognised by call shape, so user code is shown as markup.** `MethodCall { recv: Var("web"), name, args } => Some((name, args))`, and likewise `Call { callee: Var("web.…") }`. Any value named `web` with methods `element`/`children`/`attr` (a local, a parameter, a record) prints as `<…>`, which reparses as `std.web.element(…)`.
+  Where: text.web_fn (compiler.text.st:504), text.expr_text → markup_view. Source: review front-end. Confidence: likely.
+- [ ] **Printing is exponential in nesting depth for long expressions.** `expr_text` always computes `one := inline(e, d)`. When the result is too long it prints the children again in broken form, each of which again does `inline` and then maybe broken.
+  Where: text.expr_text, text.wrap, text.prec → text.shorthand. Source: review front-end. Confidence: likely.
+- [ ] **Two sum types in one module with the same variant name collide silently.** `cq := qualified(m, v.name); mut table.insert(cq, item)`. No error is given; the last one wins in the table, in `children`, and in `store.graph_from`'s `ctor_types`.
+  Where: resolve.names_of (compiler.resolve.st:1504–1509); derive.defs_of `ix.ctors` likewise. Source: review front-end. Confidence: likely.
+- [ ] **`from m use f` skips the foreign-function, host-builtin and privacy checks.** `check_name` (foreign, private, `host_` and mock rules) runs only when the name is not in `r.visible`. A name imported by `from m use f` is in `visible`, so only `test_only` runs.
+  Where: resolve.name (compiler.resolve.st:505–511), resolve.errors_from (2026–2050). Source: review front-end. Confidence: likely.
+- [ ] **Names made by desugaring are not hygienic.** IDEAS.md:2006: "a local or a function of that name takes them over… a top-level `fn at(…)` is called by `xs[i]` instead of the built-in." Desugar still emits plain `Var("at")` and the other names.
+  Where: desugar.unsugared_node and sliced (`call("at"…)`, `range`, `slice`, `len`, `set_at`, `dict`, `set`, `map`, `filter`, `fold`). Source: review front-end; ledger F3. Confidence: sure.
+- [ ] **Foreign wrappers are recognised by the shape of their body, so a user function can be taken as assumed.** `Call { callee: Var(n), .. } => … if n == "std." + w + ".decoded" || n == "std." + w + ".finished"`. The doc says "`verify` takes it as assumed and never runs it".
+  Where: desugar.foreign_call, desugar.python_call (compiler.desugar.st:1780–1801). Source: review front-end. Confidence: likely.
+- [ ] **Mock methods are computed from the old state for every `self` in an `ensures`.** `value: self_as(before(…ch.1…), "$old_self")` replaces every `self`, not only the ones under `old`, with the pre-call receiver. For `ensures self.n == len(self.items) && self.items == old(self.items) + [x]` the mock sets `n` from the old `items`, which breaks the trait's own `ensures`.
+  Where: desugar.mock_of (compiler.desugar.st:296–306). Source: review front-end. Confidence: likely.
+- [ ] **`value_uses` rewrites locals that share a derived function's name.** `Var(name) => match get(values, name)`. There is no scope check. Root-module functions are stored unqualified, so in a script a local or parameter named like a function that has `derive Tool for search` (here `search`) is replaced with `search.Tool.value()` or `$unbound.search`.
+  Where: derive.value_use (compiler.derive.st:2871). Source: review front-end. Confidence: likely.
+- [ ] **Method dispatch takes the first impl in declaration order, not the static one.** `for i in w.impls { if type_head(i.for_type) == h { for f in i.methods { if f.name == m { return Some(…) } } } }`.
+  Where: eval.method_for (compiler.eval.st:1672), eval.method_typed. Source: review front-end. Confidence: likely.
+- [ ] **Two definitions with the same header name share an entry.** Header names come from `decl_name`: `impl Foo`, `impl Show for Pt`, `test "x"`.
+  Where: binary.encode_module_kept (`match get(kept, name)`), desugar.decl_name. Source: review front-end. Confidence: likely.
+- [ ] **In a module with `use binary`, `take(...)` resolves to the private `binary.take`.** A plain call of a builtin picks a private function of the same name from an imported module, and a private `fn slice` in one module captures `slice` calls in others.
+  Where: resolver. Source: ledger F4. Confidence: likely.
+- [ ] **Script `edit` accepts a `comptime` that `check` refuses.** `strata --file F edit` of a script stores a `comptime` that `check` then refuses.
+  Where: edit. Source: ledger F8. Confidence: likely.
+- [ ] **Columns are in characters, except after a string, where they move by bytes; multi-line strings don't reset the column.** `lx.col += 2 + byte_len(s)`. The module doc says columns count characters. Inside a string `\n` bumps `lx.line` but never resets `lx.col`, and an escape counts as one character instead of two.
+  Where: lex.string (compiler.lex.st:530). Source: review front-end. Confidence: sure.
+- [ ] **The markup heuristic misreads keyword-led operands.** Only `return`, `in` and `assert` are excluded: `Ident(s) => !(s == "return" || s == "in" || s == "assert")`. So `else <p/>`, `await <x/>`, `spawn <p/>`, `=> … else <b>` all lex `<` as a comparison.
+  Where: lex.ends_operand (compiler.lex.st:737). Source: review front-end. Confidence: likely.
+- [ ] **Doc lines are trimmed, so indented doc examples lose their indentation.** Recorded in IDEAS.md:404 ("a `///` doc's indented example loses its indentation when `edit` reads it (doc lines are trimmed)").
+  Where: lex.lex: `DocTok(trim(byte_slice(t, 3, …)))`. Source: review front-end; ledger T3. Confidence: sure.
+- [ ] **Pattern parameters become `$pN` with `let`s at the top of the body, so `decreases` is refused.** `"a function with a parameter written as a pattern can't have a decreases clause yet"`. Recorded in IDEAS.md:1051. The `$p{len(out)}` rename is information passed by naming, and `text.fn_view` and `text.lambda_view` have to reverse it by matching `Let { value: Var(v) }` shapes.
+  Where: parse.fn_rest (compiler.parse.st:3159), parse.params_bound. Source: review front-end. Confidence: sure.
+- [ ] **Huge format widths silently become 0, and the overflow check is dead.** `width := … parse_int(w) ?? 0`, then `if w != "" && width > 18446744073709551615`. When `parse_int` fails the width is already 0, so the error is never given. The same applies to precision.
+  Where: parse.parse_spec (compiler.parse.st:2130–2150). Source: review front-end. Confidence: likely.
+- [ ] **The capability and impl "needs a body" checks are dead.** Both call `fn_rest(mut p, false)`, which sets `has_body := !optional_body || …`, so `has_body` is always true. Their `if !has_body` messages never fire: a missing body fails earlier with "expected `{`".
+  Where: parse.capability_decl (3503), parse.impl_rest (3471). Source: review front-end. Confidence: sure.
+- [ ] **A `Set`/`Dict` comprehension in an `if`/`for`/`while`/`match` head prints unparseable code.** It covers `DictExpr`/`SetExpr` but not `Comp { kind: SetComp | DictComp }`, which print as `Set { … }` / `Dict { … }`. In a head the parser has `no_struct` set and fails with "put the `Set { … }` in parentheses here" (parse.collection).
+  Where: text.brace_on_spine (compiler.text.st:257). Source: review front-end. Confidence: sure.
+- [ ] **`shared capability trait` prints a combination the parser refuses.** The printer prints both `shared ` and `capability ` before `trait`. The parser accepts only `shared trait` or `capability trait` (decl_kind:812/819). A derivable trait also loses its `shared`/`capability` flags when printed.
+  Where: text.trait_text (compiler.text.st:79–93). Source: review front-end. Confidence: sure.
+- [ ] **Type parameters are not locals in expressions.** `T.empty()` is `MethodCall { recv: Var("T") }`. `module_path` returns None, then `expr(Var("T"))` runs `name(r, "T")`, which consults `r.visible` but not `r.tparams` (only `ty()` checks tparams).
+  Where: resolve.expr, the `Var(x)` case (compiler.resolve.st:735). Source: review front-end. Confidence: possible.
+- [ ] **Any global (non-local) name equal to a module path is read as that module.** `if contains(r.modules, path) { Some(path) }`. `r.modules` holds every module of the program and std, not only the imported ones. A root-level value or function sharing a module's name turns `x.f` into a call of `x.f`, which then fails with "module doesn't use".
+  Where: resolve.module_path (compiler.resolve.st:1366). Source: review front-end. Confidence: possible.
+- [ ] **`bind` silently drops a binding when no scope is open.** `match get(r.locals, n - 1) { Some(s) => …, None => () }`. Patterns resolved outside an open scope, such as a `relocated` definition's patterns before any `open`, bind nothing.
+  Where: resolve.bind (compiler.resolve.st:1241). Source: review front-end. Confidence: possible.
+- [ ] **Use before import is accepted by `edit`.** `edit` and `check` accept a definition using a type or constructor stored before its import was added; codegen catches it later.
+  Where: resolve (names that resolve to nothing "stay as written, and the checker reports it"); compiler.declarations / check.lower (`None => TAny`). Source: review front-end; review checker; ledger C6. Confidence: likely.
+- [ ] **`modelled` keys traits by short name too, so same-named traits in two modules collide.** `mut out.insert(t.name, m)` for every trait. `modelled_of("a.Db")`, when it misses, looks up `"Db"`, which may be another module's `Db`.
+  Where: desugar.modelled (compiler.desugar.st:168), desugar.modelled_of (falls back to the last part). Source: review front-end. Confidence: likely.
+- [ ] **Mock types may be generated twice across incremental desugars.** `used` is collected from `decls` (the new batch) only. `mock_of` makes `$mock_T` and its impl every time a batch uses `mock T`. Nothing checks `context` for an existing `$mock_T`, unlike `anon_types`, which checks `have`.
+  Where: desugar.with_models (compiler.desugar.st:107–149). Source: review front-end. Confidence: possible.
+- [ ] **Named results are substituted without regard to shadowing.** Every `Var(n)` whose name is a result name becomes `it.k`, including a lambda parameter of that name inside the `ensures`. `self_as` and `fn_models`' `self_as(…, "it")` have the same capture problem with a lambda parameter named `it`.
+  Where: desugar.results_named (compiler.desugar.st:931). Source: review front-end. Confidence: possible.
+- [ ] **Field-by-field update rewriting may pass through states that break a record's refinement.** `x = T { ..x, a: v, b: w }` becomes `x.a = $upd_a; x.b = $upd_b`. For `type T = { a: Int, b: Int } where it.a <= it.b`, the intermediate `x` (new `a`, old `b`) may break the refinement.
+  Where: desugar.updates_assigned (compiler.desugar.st:962). Source: review front-end. Confidence: possible.
+- [ ] **Functions are recognised by short name: `compile_error`, `implements`.** `if short(n) == "compile_error" && len(args) == 1` and `short(n) == "implements" && len(args) == 2`. Any user function with that short name, in any module, called inside derived code is hijacked.
+  Where: derive.expr (compiler.derive.st:1295, 1302). Source: review front-end. Confidence: sure.
+- [ ] **`comptime` outside functions, tests and impl methods is never folded.** Only `FnDef`, `TestDef` and non-derived `ImplDef` method bodies are checked. A `comptime e` in a field default, a type refinement, a trait's default method or a contract stays a `Comptime` node, which `eval` and the other passes treat as plain evaluation.
+  Where: derive.holds_comptime (compiler.derive.st:2933). Source: review front-end. Confidence: possible.
+- [ ] **`MutExpr` is ignored, and built-ins that change values are triggered by method name alone.** `xs.sort()` without `mut` on a list is treated as a changing call and assigned back. The receiver expression is evaluated twice: once by `eval(recv)` and again inside the `changes_as` block.
+  Where: eval.eval (`MutExpr(x) => eval(mut st, w, x)`), eval.method_call (`if changing(name) …`). Source: review front-end. Confidence: likely.
+- [ ] **`entry_strings` swallows errors.** `match strings(mut r) { _ => () }`. A corrupt table gives a partial list with no error.
+  Where: binary.entry_strings (compiler.binary.st:2862–2868). Source: review front-end. Confidence: sure.
+- [ ] **The 10000-level depth limit may still overflow the native stack.** Decoding recurses `expr → exprs → expr`, several frames per level. Whether 10000 levels fit on the stack isn't established; it is a guard, not a proof.
+  Where: binary.max_depth (10000), binary.deeper. Source: review front-end. Confidence: possible.
+- [ ] **`without_notes` keeps comments inside `assert … by` proofs, `calc` steps and derive clauses.** `AssertBy { cond, proof }` and `Calc(xs)` are not walked, so `Comment` statements inside a proof block stay. Editing a comment there, or on a derive clause, changes `code_hash`/`interface_hash`, which invalidates verify results and recompiles.
+  Where: ast.bare_stmt (`_ => s`), ast.without_notes (`ImplDef(ImplDecl { ..i, … })` keeps `clauses` with their comments; `DeriveFnDef(x) => DeriveFnDef(x)`). Source: review front-end. Confidence: sure.
+- [ ] **`calc_steps` leaves the first step's `_` as a variable.** `(Binary { op, left: Var("_"), right }, Some(p))` only matches after a step. A first step `_ <= c`, or a step after a non-binary step, keeps `Var("_")`, which later reads as an unknown variable instead of an error.
+  Where: ast.calc_steps (compiler.ast.st:770-ish). Source: review front-end. Confidence: sure.
+- [ ] **`tests_it` ignores shadowing of `it`.** `IsExpr { value: Var("it"), .. } => true`, even inside a lambda whose parameter is named `it`. `check.narrowed_result` would then narrow on the wrong fact.
+  Where: walk.tests_it. Source: review front-end. Confidence: possible.
+- [ ] **`type Answer = Some(Int) | None` says `unknown type None`.** language-reference.md says it is refused as `Option[Int]`; the message is wrong.
+  Where: resolver / checker. Source: ledger F5. Confidence: likely.
+- [ ] **`let`/`for` patterns naming a removed variant still reject the edit.** Patterns outside `match` keep a removed variant and block the edit.
+  Where: edit. Source: ledger F7. Confidence: likely.
+- [ ] **The tree-sitter grammar doesn't know `decreases`.** Editors mis-highlight or mis-parse a `decreases` clause.
+  Where: tree-sitter grammar. Source: ledger F10 (#461). Confidence: possible.
+
+## Code generation
+
+- [ ] **(memory) `extern c` `mut String` parameter: the buffer is freed before it is read back.** For `p.mutable` with `ct.kind == "str"`, the `strata_cstr` copy goes in the out slot and is also pushed to `frees`. After the call, `for c in frees { … strata_cstr_free(c) }` runs before `for (l, ct, slot, old) in outs { raw := load slot; from_c(raw …) }`.
+  Where: codegen.foreign_call (st:21127-21195). Source: review codegen. Confidence: sure.
+- [ ] **`mut` arguments of method calls are not recorded, so `entry` stays "held once".** For `x.f(mut y)`, each argument goes through `ex`, which spoils `y`. Nothing is pushed to `c.calls`, so `entry_lowered` never lowers `T.f`'s parameter. `T.f` is in `unknown_callers` only when it takes `mut self` or is a trait method's name.
+  Where: unique.ex, the `ast.MethodCall` branch (st:600-615); call_flow only handles `ast.Call { callee: ast.Var }`; mut_method only handles `MutExpr(MethodCall)` (parameter 0). Source: review codegen. Confidence: likely.
+- [ ] **A union with two members of the same head reads under the wrong tag.** Widening into `List[Int] | List[String]` reads the list under the wrong tag (wrong results).
+  Where: codegen (unions). Source: ledger G3 (#577). Confidence: likely.
+- [ ] **Refinements inside a generic record's type arguments are not checked at run time.** A `Box[Cents]` holding a negative value doesn't fault.
+  Where: codegen (run-time checks). Source: ledger G5 (#570). Confidence: likely.
+- [ ] **A union holding a tuple returned by a call prints its first element.** `let u: Int | (Int, Int) = dm(8, 3)` prints `2`.
+  Where: codegen (unions). Source: ledger G9 (#542). Confidence: likely.
+- [ ] **Escape analysis looks callees up by name: a local closure takes a top-level function's summary.** Escape analysis and the `exit`/`entry` summaries look callees up by short name, so a local closure takes the summary of a top-level function with the same name.
+  Where: codegen.escapes (st:4778, `ast.Call { callee: ast.Var(name) }` → `keeps_arg(kept, name, i)`), stack_let (10832); root-module keys are unqualified (`qualified("", n) == n`, st:1116); unique.candidates / call_flow (st:780-812) / borrows. Source: review codegen. Confidence: likely.
+- [ ] **A `for i in a..b` counter adds 1 to the raw word, also when `a` is a big integer.** The counting path takes `lo` and `hi` as `Int` words, with no test that they are small. A big `Int` is a handle outside [-2^62, 2^62) (runtime.c `big_at`), so `add 1` turns it into another handle.
+  Where: codegen.for_loop (st:15315, 15405 `{next} = add i64 {i}, 1`). Source: review codegen. Confidence: likely.
+- [ ] **A Float's hash is its bits, but `==` is `fcmp oeq`.** `0.0 == -0.0` holds, but their hashes differ. So a `Set[Float]` can hold both, and a `Dict` lookup of `-0.0` can miss the key `0.0`.
+  Where: codegen.hash_helper (st:8118 `TBool | TFloat => to_slot` = `bitcast double to i64`), equal (6820 `fcmp oeq`). Source: review codegen. Confidence: likely.
+- [ ] **`?` passes the failure through without converting it to the function's result type.** The fail path is `give_result(g, V { ..v, ty: better(g.ret, v.ty) })`. `better` keeps `g.ret`'s type but does no representation change. When the function's error type is a union (`Result[T, A | B]`) and `v`'s is a member `A`, a boxed member would need `to_union`.
+  Where: codegen.try_want (st:17091). Source: review codegen. Confidence: possible.
+- [ ] **No type checks and no verifier on the fast IR path.** `value(r, t)` returns a local of whatever type it has, never compared with `t`, so `store i64 %p` with `%p` a `ptr` builds an invalid instruction. LLParser would reject it (known bug #6 shows codegen does make such IR).
+  Where: ir.c value (st:429), instruction, read_module; no `LLVMVerifyModule` anywhere in compiler/c. Source: review codegen. Confidence: sure.
+- [ ] **The pattern `Ok(())` doesn't compile.** `Ok(_)` does.
+  Where: codegen (patterns). Source: ledger G1 (#574). Confidence: likely.
+- [ ] **A `_ =>` arm of a union match doesn't narrow in compiled code.** `c.x` there is "not compiled yet".
+  Where: codegen (match). Source: ledger G2 (#577). Confidence: likely.
+- [ ] **`Shop.line(s, x)` (own `self` method called on the type) doesn't compile.** Codegen reports "`Shop` without its fields".
+  Where: codegen (methods). Source: ledger G4 (#570). Confidence: likely.
+- [ ] **A `match` giving a `U64` with a literal `0` in one arm crashed at run time.** Not reduced.
+  Where: codegen. Source: ledger G6. Confidence: possible.
+- [ ] **A list holding an `Option[Int]` and an `Option[Float]` makes invalid IR.** LLVM refuses a `switch` with duplicate cases.
+  Where: codegen. Source: ledger G7. Confidence: likely.
+- [ ] **`x := setting(k) ?? d` with `k` unset compiles to an undefined value.** LLVM reports "use of undefined value %v.x".
+  Where: codegen (`??`). Source: ledger G8 (#495). Confidence: likely.
+- [ ] **A lambda with no expected type gets `()` as its parameter type.** `r := R { f: Some(x -> x) }` called in a generic function makes IR that LLVM rejects.
+  Where: codegen (lambdas). Source: ledger G10 (#450). Confidence: likely.
+- [ ] **`containers` in `build-copies` is quadratic though the case says linear.** The case times out under load.
+  Where: codegen (copies). Source: ledger P1. Confidence: likely.
+- [ ] **Long list literals need about 5 GB at 20,000 elements.** `cli-long_list_literals_compile_in_linear_time` passes on output but not memory.
+  Where: codegen (list literals). Source: ledger P2. Confidence: likely.
+- [ ] **The temporary file name does not include the PID.** Two processes writing the same entry write the same temporary file. One can rename it into place while the other has truncated and is rewriting it, so a reader sees a torn entry.
+  Where: cache.write_entry (`tmp := path + ".tmp-" + sha256_hex(path + text)`), write_entry_bytes (`… + to_string(len(bytes))`). Source: review codegen. Confidence: likely.
+- [ ] **Cancellation checks match methods by name.** `Fixed.take` checks for cancellation because `Line.take` waits.
+  Where: codegen (cancellation). Source: ledger G13 (#435). Confidence: likely.
+- [ ] **Equal `SortedDict`s can compare unequal.** Two with the same entries can have different tree shapes, and `==` compares shapes.
+  Where: std.collections / codegen ==. Source: ledger G20 (#448). Confidence: likely.
+- [ ] **Remaining codegen gaps.** `[]` in a record literal, a list of a union of records inside a run-time `ensures`, the built-in `level_or_empty` on a Dict, the constructor `Cancel` in `strata_run_call`.
+  Where: codegen. Source: ledger G21 (#455 partial). Confidence: possible.
+- [ ] **Cold and warm builds of the same compiler differ by a few bytes.** `compile_part` reads parts with LLVM's IR parser, not c/ir.c's; one `eval` function's alignment differs.
+  Where: codegen.compile_part. Source: ledger G26 (#434, #427). Confidence: likely.
+
+## Runtime and core
+
+- [ ] **(memory) `threaded` flip inside an open arena sends allocations out of it (possible use-after-free).** `arena_now()` reads `heap` 296 when `threaded()`, else `rt_state` 272. An arena opened while tasks run is stored in `heap` 296 (`d,48 = 1`). Say an `await` inside that arena joins the last task: `join` then calls `set_threaded(0)`, and `arena_now()` reads 272 from then on.
+  Where: core.rt.arena_now, arena_put, strata_arena_begin, strata_memory_threaded, strata_memory_spawning. Source: review core-runtime. Confidence: possible.
+- [ ] **Per-thread free lists only go back when the thread ends (producer/consumer grows without bound).** A freeing thread pushes onto its own `heap` list. `refill` only takes from the shared list, and `strata_memory_thread_end` gives lists back at thread end. A consumer that frees what a producer allocated hoards the blocks, and the producer keeps carving new chunks.
+  Where: core.rt.strata_free (threaded branch), refill, strata_memory_thread_end. Source: review core-runtime; ledger R3. Confidence: sure.
+- [ ] **(memory) `join` is not synchronized: double `pthread_join` and a wrong `live_tasks`.** `static void join(Task *t) { if (t->joined) return; pthread_join(t->thread, NULL); t->joined = 1; if (__atomic_sub_fetch(&live_tasks, 1, …) == 0) set_threaded(0); …}`.
+  Where: runtime.c join (1535), strata_await (1621), strata_scope_end, strata_task_share. Source: review core-runtime. Confidence: likely.
+- [ ] **(memory) Use-after-free when a task drops an unclosed channel it made.** `strata_channel_new` calls `hold_sender(c)` on the creating thread. `strata_channel_drop` frees `c` when `--c->ends == 0` and doesn't remove `c` from `held`. At the task's end, `for (int64_t i = 0; i < nheld; i++) held[i]->senders--;` writes to the freed channel.
+  Where: runtime.c strata_channel_new (hold_sender), strata_channel_drop, task_main. Source: review core-runtime. Confidence: likely.
+- [ ] **(memory) `str_trim` makes a negative-length string on non-UTF-8 input (memory corruption).** The forward loop steps by the lead byte's length (`a += char_size(s, a)`) and decodes past the end. The backward loop steps back over continuation bytes and can end before `a`.
+  Where: core.str.str_trim (core.str.st:158), str_part, str_alloc. Source: review core-runtime. Confidence: sure.
+- [ ] **Host strings are never checked to be UTF-8.** Each builds the `String` with `str_from(buf, len)` and no check. IDEAS.md "Known gaps": "`Files.read` (`host_read_file`) and `Console.read_line` don't check that the bytes are UTF-8 … it should be an `FsError`".
+  Where: runtime.c strata_host_read_file, strata_host_read_line, strata_host_read_stdin, strata_host_env_var, strata_host_args, strata_host_run (output); std_net's `net_text` uses `utf8_prefix`. Source: review core-runtime; ledger R1. Confidence: sure.
+- [ ] **`Taken` is a `FiniteIterator` over any iterator, but its `next` need not end.** The `take` doc says "Finite even when this iterator is not", and the `FiniteIterator` doc says "`verify` proves that a `for` loop over one ends".
+  Where: core.iter `impl[I: Iterator[T], T] FiniteIterator[T] for Taken[I, T]` (core.iter.st:124); `Filtered.next`'s `loop`. Source: review core-runtime. Confidence: likely.
+- [ ] **The JIT never frees modules.** `jit_fuzz_load` keeps up to 4096 (`static LLVMOrcLLJITRef fuzz_jits[4096]`), so a long-lived process grows with every `check`, then fails with "too many modules compiled".
+  Where: compiler/c/jit.c. Source: ledger R2. Confidence: sure.
+- [ ] **(memory) A crossed task handle can outlive its `Task`.** `release_scope` frees each `Task` at scope end (`free(t)`). A handle sent on a channel (`strata_task_share`) to a thread outside the scope can be awaited after that, which dereferences freed memory.
+  Where: runtime.c release_scope, strata_await, strata_task_share. Source: review core-runtime. Confidence: possible.
+- [ ] **`send` after this thread closed its sender still succeeds.** The only check is `if (c->senders == 0)`. core.channel says "A `send` after the channel has ended fails, and so does a second `close` of one sender". A send after the thread's own `close` passes while other copies are open, because `holds_sender` isn't checked.
+  Where: runtime.c strata_channel_send. Source: review core-runtime. Confidence: sure.
+- [ ] **An unbuffered send in `select` doesn't wait for its receiver, and can strand a value.** `(c->cap == 0 && c->waiting > c->len)` then `push_item` and return. `strata_channel_send` instead waits `while (c->cap == 0 && c->taken < mine …)`. A receiving `select` raises `waiting` on every channel it lists.
+  Where: runtime.c strata_select (kind 1). Source: review core-runtime. Confidence: sure.
+- [ ] **Every program linked with std polls for cancellation after each runtime call that may panic.** Recorded in IDEAS.md lab-fleet bugs: "Every program linked with std counts as supervising, so it polls for cancellation after every runtime call that may panic".
+  Where: runtime.c soft_fault / strata_cancel_any (and codegen's cancel points). Source: review core-runtime; ledger G12. Confidence: sure.
+- [ ] **Every big `Int` has the same hash.** `return v < -(1<<62) || v > (1<<62)-1 ? 0x5bd1e995 : v;`. A `Set`/`Dict` of big integers (U64 hashes and IDs past 2^62, `1 << 70` keys) puts every key on one linear-probing run, so each insert or lookup is O(n).
+  Where: runtime.c strata_int_hash. Source: review core-runtime. Confidence: sure.
+- [ ] **A big integer literal is re-parsed on every evaluation.** `int_lit(s)` builds the number from its decimal digits each time it is called. IDEAS.md lab-fleet bugs: "An integer literal of 2^62 or more is re-parsed from its digits each time it is evaluated; `to_u64`'s precondition holds one, so every `n.to_u64()` allocates".
+  Where: core.int.int_lit. Source: review core-runtime; ledger G11. Confidence: sure.
+- [ ] **(memory) `str_at`, `str_slice` and `str_case` read past the end on a truncated sequence.** `str_part(s, i, char_size(s, i))` copies a lead byte's full length even past `str_size`. `str_slice` does `j += char_size(s, j)` with no `j <= n` clamp, then `str_part(s, i, j - i)`.
+  Where: core.str.str_at (281), str_slice (323), char_code, str_case (550), str_is. Source: review core-runtime. Confidence: sure.
+- [ ] **Code-point counting disagrees across functions on invalid UTF-8.** `str_len` and prelude `str_chars` count non-continuation bytes. `char_offset` (used by `str_at`, `str_slice`) jumps by the lead byte's stated length. `CodePoints.next` uses `min(n, remaining)` bytes and doesn't check that they are continuation bytes.
+  Where: core.str.str_len vs char_offset; prelude str_chars; core.text CodePoints.next vs CodePoints.len. Source: review core-runtime. Confidence: sure.
+- [ ] **`CodePoints.next` gives negative or out-of-range code points.** `c = c * 64 + (byte_at(self.text, self.at + k) - 128)` doesn't check that the byte is in 0x80..0xBF, so `"\xC0\x00"` gives -128. Leads 0xF8..0xFF give values past 0x10FFFF, and surrogates and overlong forms are accepted. core.str's `char_code` masks with `& 63` instead, so the two decoders disagree.
+  Where: core.text CodePoints.next. Source: review core-runtime. Confidence: sure.
+- [ ] **Host paths and process arguments silently drop everything after a NUL.** `memcpy(c, s->bytes, len); c[len] = 0;` has no NUL check, while `strata_cstr` (FFI) faults on an embedded NUL. A path such as `"secret\0.txt"` passes a `.txt` suffix check in Strata and opens `secret`.
+  Where: runtime.c static `cstr` (4180, used by read_file, list_dir, env_var, …), strata_host_run (`strndup`). Source: review core-runtime. Confidence: sure.
+- [ ] **(data loss) A read error during `read_file` returns a truncated string as success.** `while ((got = fread(…)) > 0) …; fclose(f); return str_from(buf, len)`. `ferror` is never checked, so an EIO in the middle of a file looks like its end. `malloc` and `realloc` results aren't checked either.
+  Where: runtime.c strata_host_read_file, strata_host_read_stdin. Source: review core-runtime. Confidence: sure.
+- [ ] **`range` passes `Int`s to an `I64` function: big bounds are read as raw words.** `list_range(lo: I64, hi: I64)` computes `hi - lo` on the encoded words.
+  Where: core.list.list_range; codegen `call(mut g, TList(TInt), "strata_range", vs)`; core.builtins `range(a: Int, b: Int)` (no `requires`). Source: review core-runtime. Confidence: likely.
+- [ ] **`float_from_bits` makes infinite `Float`s.** `ord` is true for infinities, so `Some(inf)`. core.types says "An operation whose result is not finite fails". Recorded in IDEAS.md "Known gaps": "`float_from_bits` gives infinities (only a NaN is `None`), though a `Float` is never infinite".
+  Where: codegen `("float_from_bits", TInt, 1)` (`fcmp ord`); core.builtins `float_from_bits` ("`None` for a NaN"). Source: review core-runtime; ledger G14. Confidence: sure.
+- [ ] **`len` on `Taken` and `Filtered` runs a copy, with the side effects of a real run.** `for _ in self { n += 1 }` on a copy. For a `Receiver`, the copy shares the channel, so `rx.take(3).len()` consumes up to 3 messages. A `Mapped` or `Filtered` closure runs twice.
+  Where: core.iter Taken.len ("Counted by running a copy"), Filtered.len, FiniteIterator.get/at. Source: review core-runtime. Confidence: likely.
+- [ ] **"A builtin without `requires` always returns" is false for several builtins.** The header says "A builtin without `requires` always returns, so contracts see through the functions that call it". `matches` says itself that it fails on an invalid pattern, with no `requires`.
+  Where: core.builtins header; `matches` ("An invalid pattern fails"), `sum(xs: List[Float])` (prelude `sum_float`: `total += x` faults on overflow), `range` (big bounds, out of memory), `repeat`, `float_from_bits` (see above). Source: review core-runtime. Confidence: sure.
+- [ ] **Hashing and comparing `-0.0` and `0.0` disagree in tables.** `0.0` and `-0.0` compare equal but hash differently. A table of up to `TBL_SMALL` (8) entries is searched in order and finds `-0.0` as `0.0`. A larger one probes by hash and doesn't, so `set([...])` can hold both and `contains` depends on the set's size.
+  Where: codegen hash for `TFloat` (`to_slot`: the bits) and runtime.c tbl_search; core.builtins `compare` ("Numbers by value"). Source: review core-runtime. Confidence: likely.
+- [ ] **`std.io.printed(console)` on a test's `Console` parameter crashed.** Signal 11 in `std.io.printed`.
+  Where: std.io / runtime. Source: ledger R4. Confidence: possible.
+- [ ] **Arena tags wrap after 8191 arenas.** `store_i64(d, 32, rem_unsigned(n, 8191) + 1 << 48)`. `arena_made` compares only the tag. Kept arenas live for ever (finding above), so arena number k+8191 has the same tag as a live kept arena.
+  Where: core.rt.strata_arena_begin, arena_made. Source: review core-runtime. Confidence: likely.
+- [ ] **(memory) `hash_slot` can give a negative slot.** `h := (c >> 4) * 40503` wraps. For `h == INT64_MIN`, `0 - h` is still negative, so `% m` is negative and `large_put`/`large_find` index before the table. This only matters with `--memory-sites`, and the address needed is improbable.
+  Where: core.rt.hash_slot. Source: review core-runtime. Confidence: possible.
+- [ ] **A cancelled unbuffered `send` leaves its value in the channel.** The value is pushed first, then `while (c->cap == 0 && c->taken < mine && !strata_cancelled()) WAIT(…)`. On cancellation it returns with the item still queued, so a "cancelled" send can still be received.
+  Where: runtime.c strata_channel_send. Source: review core-runtime. Confidence: sure.
+- [ ] **Timed waits use the wall clock.** `clock_gettime(CLOCK_REALTIME, &now)` feeds `pthread_cond_timedwait`. A wall-clock step (NTP, a sleep/resume) makes sleeps and `select` timers wake early or very late.
+  Where: runtime.c wait_until. Source: review core-runtime. Confidence: sure.
+- [ ] **(memory) `stack_leave` with an empty stack reads before the counts array.** With `r == 0`, `load_i64(calls, 32776 + (r - 1) * 8)` reads a frame slot and stores depth -1. From then on every stack text is garbage. This needs an unbalanced enter/leave (e.g. after `test_run` resets depth to 0 while an outer frame later leaves).
+  Where: core.fault.stack_leave (core.fault.st:45). Source: review core-runtime. Confidence: possible.
+- [ ] **`test_run` doesn't restore the outer run's capture flag and leaks a failed test's arenas.** It sets `store_i64(st, 80, 1)`, then `store_i64(st, 80, 0)` instead of restoring the old value, so a nested run (compile-time code inside a test) turns capturing off for the outer one.
+  Where: core.run.test_run. Source: review core-runtime. Confidence: sure.
+- [ ] **`strata_run_begin` forgets the thread's held senders without restoring them.** `nheld = 0` without saving the old list. After a test on a thread that held senders (a JIT host running compile-time code), that thread can no longer `close` them.
+  Where: runtime.c strata_run_begin (`forget_senders()`). Source: review core-runtime. Confidence: possible.
+- [ ] **`ord`'s `requires` and its runtime check differ on invalid UTF-8.** For `"\x80"`, `chars` gives one element, so the precondition holds, but `str_ord` sees `char_size` 2 ≠ 1 and faults. Code that verify proved safe faults anyway.
+  Where: core.builtins `ord` (`requires len(chars(s)) == 1`) vs core.str.str_ord (`char_size(s, 0) == str_size(s)`). Source: review core-runtime. Confidence: sure.
+- [ ] **Float show and parse in C depend on the locale.** `snprintf("%.*e")` and `strtod` follow `LC_NUMERIC`. `shortest` copies every byte except `.` as a digit, so a C library loaded via FFI that calls `setlocale` changes `to_string(1.5)` and `parse_float("1.5")`.
+  Where: runtime.c shortest, strata_show_float, parse_float_trimmed (strtod), strata_show_float_fixed (snprintf). Source: review core-runtime. Confidence: possible.
+- [ ] **`float_fixed` precision is cast to `int`.** `snprintf(NULL, 0, "%.*f", (int)p, x)`: a `p` past `INT_MAX` wraps, and a negative `p` means "default 6". core.builtins/fmt has no `requires p >= 0`.
+  Where: runtime.c strata_show_float_fixed. Source: review core-runtime. Confidence: likely.
+- [ ] **Float `%` can return `|b|` itself.** `r + |b|` for a tiny negative `fmod` rounds to `|b|`: `-1e-20 % 1.0` gives `1.0`, not a value below `|b|`. A zero `b` gives NaN with `r < 0.0` false, so NaN is returned (probably caught by the compiled `strata_finite`).
+  Where: core.float.float_mod. Source: review core-runtime. Confidence: sure.
+- [ ] **Table entries are limited to 2^32.** The entry index has 32 bits, with no check when a table grows past that.
+  Where: runtime.c tbl_place / tbl_search (`tag << 32 | (e + 1)`, `(v & 0xFFFFFFFF) - 1`). Source: review core-runtime. Confidence: sure.
+- [ ] **`strata_host_run` leaks `argv` on early errors and is macOS-only.** `return NULL` after `cloexec_pipe` fails skips `free(argv[i])`. It uses `posix_spawn_file_actions_addinherit_np` and `addchdir_np` (Apple or very recent glibc), and `F_SETNOSIGPIPE` (macOS).
+  Where: runtime.c strata_host_run. Source: review core-runtime. Confidence: sure.
+- [ ] **Recursion depth depends on how a program runs.** A native binary's `main` runs on the default stack; the JIT uses a larger one.
+  Where: runtime (stack). Source: ledger R6. Confidence: likely.
+- [ ] **`_ := e` compiles through the refutable `let`.** It emits an `Int` drop on an `I64`.
+  Where: codegen / desugar. Source: ledger R8. Confidence: likely.
+
+## std
+
+- [ ] **JSON with CRLF line endings is refused.** `contains([" ", "\n", "\r", "\t"], get(cs, i) ?? "")`. Here `"\r"` is two characters, so a carriage return (one code point) is never whitespace. `{\r\n"a": 1}` fails with "expected a key".
+  Where: std.json.skip_space (std.json.st:1211). Source: review std. Confidence: sure.
+- [ ] **`matches()` recompiles its pattern on every call and never uses the DFA.** Codegen emits `call std.regex.match_code(text, pattern)`, which runs `compile(parse(pattern)!)!` and then `is_full_match` (the Pike VM) every time. The doc of `matcher` says "Compiled code builds it while compiling, for a literal pattern", but nothing in codegen calls `matcher` or `run_matcher`.
+  Where: std.regex.match_code / full_match; compiler.codegen.regex_matches. Source: review std. Confidence: sure.
+- [ ] **Property predicates decode a whole table on every call.** `is_alphabetic(c)` for `c >= 128` runs `contains_code(decode(unicode_tables.bool_property("Alphabetic") ?? ""), c)`. `decode` splits a long string of decimal numbers and parses each one, so one character test costs thousands of `parse_int` calls.
+  Where: std.unicode.is_alphabetic, is_white_space, is_alphanumeric, perl_word, perl_space, perl_digit. Source: review std. Confidence: sure.
+- [ ] **No timeouts and no connection limit.** `serve` spawns `answer(conn, handler)` for every accepted connection with no bound. The reads (`next_line`, `exact`) wait forever. A client that opens connections and sends nothing (slowloris) holds a task, which is an OS thread (IDEAS, Concurrency step 1), per connection.
+  Where: std.http.serve, serve_connection, read_request. Source: review std. Confidence: sure.
+- [ ] **One failed `accept` stops the server.** `Err(e) => { stop = e; break }` on any `accept` error. Running out of file descriptors (EMFILE) or a connection aborted before accept (ECONNABORTED) is transient, yet it ends `serve` and returns.
+  Where: std.http.serve. Source: review std. Confidence: sure.
+- [ ] **`javascript:` URLs, `srcdoc` and `<script>` are allowed.** `AttrName` refuses only names matching `[oO][nN].*`. `href(url)` is `attr("href", url)` with no check. Recorded in IDEAS.md (Web UIs step 1: "Not yet: `javascript:` URLs in `href` are not rejected"), with no fix since.
+  Where: std.web.href, src, attr, AttrName, TagName, element. Source: review std; ledger S5. Confidence: sure.
+- [ ] **`Real` columns are TEXT, so `CHECK`s and queries compare text.** A field `price: Real where 0 <= it && it <= 1000` gets the column `"price" TEXT … CHECK (0 <= "price" AND "price" <= 1000)`. In SQLite, comparing a TEXT-affinity column with an unaffiliated literal applies TEXT affinity to the literal, so this compares `'5' <= '1000'`, which is false.
+  Where: std.orm.sql_type (`Real => "TEXT"`), column_sql, check_sql, Compare for KeyPath. Source: review std. Confidence: likely.
+- [ ] **No depth limit.** `[[[[…` recurses once per bracket. Deep input from the network ends the program with a stack overflow, which is a fault, not an `Err` ("errors are results").
+  Where: std.json.read_value (recursive). Source: review std. Confidence: likely.
+- [ ] **`encode` is quadratic for non-ASCII text.** `out = out + [192 + n / 64] + [128 + n % 64]`. This is reassignment rather than `push`, so each non-ASCII character copies the list built so far. It is used by `std.net.encode_bytes` (`write_bytes`, `read_bytes` defaults), `Files.read_bytes` and std.http, so sending a 1 MB non-ASCII body is O(n²).
+  Where: std.utf8.encode. Source: review std. Confidence: likely.
+- [ ] **Request smuggling: `transfer-encoding` and `content-length` together.** `if contains(to_lower(get(headers, "transfer-encoding") ?? ""), "chunked") { return read_chunks(…) }`. A message with both headers is accepted and the connection is kept alive.
+  Where: std.http.read_body, start. Source: review std. Confidence: sure.
+- [ ] **Repeated headers are joined with commas.** `joined := … old + ", " + v`. `Set-Cookie` values can't be joined this way, because `Expires=Mon, 01 …` already holds a comma. On the way out, a `Dict` can't hold two `Set-Cookie` headers at all, so a server can't set two cookies.
+  Where: std.http.read_headers; Request/Response `headers: Dict[String, String]`. Source: review std. Confidence: sure.
+- [ ] **A client `HEAD` request misreads the response.** `read_response` decides whether there is a body from the status alone (`status < 200 || status == 204 || status == 304`). For `HEAD`, it then waits for `content-length` bytes that never come.
+  Where: std.http.read_response / exchange. Source: review std. Confidence: likely.
+- [ ] **The path is decoded before it is split.** `/files/a%2Fb` becomes `/files/a/b` before `segments` splits it, so `:name` can never hold a `/`, and `..%2F..` turns into real `..` segments. `segments` also drops empty and `..` segments as given, with no normalisation.
+  Where: std.http.read_request (`path: percent_decode(path, false)`), Router.handle, match_path. Source: review std. Confidence: sure.
+- [ ] **The client sends the URL target unchecked.** Header values are checked for CR/LF, but `target` is not. A URL holding a space, CR or LF (`http://h/a\r\nX: y`) is written into the request line.
+  Where: std.http.parse_url, request_head. Source: review std. Confidence: sure.
+- [ ] **Bodies are UTF-8 text only, and have no streaming limit.** Recorded in IDEAS.md (std.http, "bodies are UTF-8 text. Not built: streaming bodies…, binary bodies"). So no images, uploads or gzip. `Body.rest()` reads with no `body_limit`.
+  Where: std.http (Request.body, Response.body: String), Body.rest. Source: review std. Confidence: sure.
+- [ ] **Foreign keys are on only after `Schema.create`.** `PRAGMA foreign_keys = ON` is sent only by `create`, and the pragma lasts for one connection. A program that opens an existing database file and doesn't call `create` has no `REFERENCES` enforcement.
+  Where: std.sqlite.Sqlite.open; std.orm.Schema.create. Source: review std. Confidence: sure.
+- [ ] **Invalid UTF-8 or NUL in TEXT columns.** SQLite TEXT may hold any bytes, including embedded NULs and invalid UTF-8 written by another program. They come back through an `extern c` `String` (a C string), so they are cut at the first NUL.
+  Where: std.sqlite.Statement.value (`sqlite3_column_text`). Source: review std; ledger R1 (sqlite part). Confidence: possible.
+- [ ] **Non-ASCII string literals in refinements are mangled.** `c` is a byte from `byte_at`, and `chr(195)` is `Ã`. So `where it != "é"` becomes `CHECK ("x" <> 'Ã©')`, and `==` against such a literal makes SQLite refuse every valid row.
+  Where: std.orm.tokens (`text = Some(t + chr(c))`). Source: review std. Confidence: sure.
+- [ ] **A dropped stream is taken as a complete reply.** When `read_event` returns `None` (end of stream), `finished(s.reading.content, s.reading.stop)` is called. With `stop == ""` (no `message_delta` arrived, because the connection broke mid-reply), it returns `Ok(Message {…})`.
+  Where: std.agent.step (None branch), finished. Source: review std. Confidence: likely.
+- [ ] **The tool schema disagrees with std.json's encoding.** A tuple-shaped union member (`Pixels(Int)`) goes through `_ => schema_of(m, depth)`, then `shaped` → Tuple → `{"type": "array", "prefixItems": …}`. std.json reads it only as `{"type": "Pixels", "value": 3}`, so a model that follows the schema sends input that `decode_as` refuses.
+  Where: std.agent.member_schema, shaped. Source: review std. Confidence: likely.
+- [ ] **`MemFiles` behaves unlike `Disk`.** `make_dir` is `Ok(())` and records nothing, so `exists(dir)` and `is_dir(dir)` are false after it, and `list(dir)` on an empty folder is `NotFound`. `remove` of a folder is `NotFound`.
+  Where: std.fs.MemFiles. Source: review std. Confidence: sure.
+- [ ] **A bad exit code reads as success.** `code := parse_int(parts[0]) ?? 0`, and a negative code is also forced to 0. If the host's text isn't a number, the program appears to have succeeded. `parts[0..2]` are indexed with no length check, which faults if the host returns fewer.
+  Where: std.process.Launcher.run_with. Source: review std. Confidence: sure.
+- [ ] **`SortedSet`/`SortedDict` check an O(n) `count` on every change.** The `ensures count(self.root) == count(old self.root) + …` clauses walk the whole tree. STRATA-ISSUES.md (v034 order book) records "`std.collections.SortedSet` costs O(n) per operation… keeps an O(n) `count` check on every insert and remove".
+  Where: std.collections.SortedDict.insert, remove, SortedSet.insert, remove, put, cut, balance, node, join. Source: review std; ledger S6. Confidence: sure.
+- [ ] **The derived JSON decoder faults on an integer too large for a `Float` field.** It faults "too large for a Float" instead of returning an error (`std.json.decode_as.for.Summary.10`).
+  Where: std.json derive. Source: ledger S1 (#601). Confidence: likely.
+- [ ] **A `Bool` option defaulting to `true` can't be turned off.** `std.cli` maps `Bool` to `FlagOpt` and has no `--no-x`.
+  Where: std.cli. Source: ledger S4. Confidence: sure.
+- [ ] **A dependency's `[native]` C isn't linked into programs that use it.** Only the program's own package's and std's native code is linked.
+  Where: build (linking). Source: ledger S7. Confidence: likely.
+- [ ] **`derive Python`/TS wrappers don't check a function's `requires`.** Bad arguments fault the host process.
+  Where: std derive Python/TS. Source: ledger S11. Confidence: likely.
+- [ ] **The number grammar is lenient.** It takes any run of `-+0123456789.eE`, then calls `parse_int` or `Real.parse`. `parse_int("+5")` is `Some(5)` (STRATA-ISSUES P2), and `Real.parse` accepts `.5` (its own doc says so).
+  Where: std.json.read_number. Source: review std. Confidence: likely.
+- [ ] **Union members are told apart by type-name strings.** `if name == "Int" || name == "Float" { ["number"] } … else { ["object " + name] }`. `Real`, `I32`, `U8` and the other sized ints fall into "object Real" and similar, so `Int | Real` is not reported as overlapping, although both are written as numbers.
+  Where: std.json.kinds_of. Source: review std. Confidence: likely.
+- [ ] **Decoding a `Distinct` type skips its refinement.** Other arms call `t.check(…)`; this one doesn't. If a `distinct` type can carry its own `where`, it is not checked when read.
+  Where: std.json.decode_as `Distinct[y] => Ok(t(decode_as(y, j, path, keys)!))`. Source: review std. Confidence: possible.
+- [ ] **No byte-order mark.** A leading U+FEFF is read as a key and fails ("expected a key"). Editors on Windows write one.
+  Where: std.toml.parse. Source: review std. Confidence: likely.
+- [ ] **`normalize` drops non-ASCII characters.** `else if n < 128 { out += c }` drops other characters without a word, so `\p{Grëek}` looks up `grek`.
+  Where: std.unicode.normalize. Source: review std. Confidence: sure.
+- [ ] **A server's `HEAD` response sends `content-length: 0`.** `Response { ..r, body: "" }`, and then `write_response` writes `content-length: {byte_len(r.body)}`, which is 0. A HEAD response should carry the length GET would send.
+  Where: std.http.serve_connection, write_response. Source: review std. Confidence: sure.
+- [ ] **`Body.read_line` is quadratic.** Every call scans `pending` from the start, then copies the rest (`self.pending[i + 1..]`). `more` does `self.pending += bytes.map(…)`. A long SSE stream with many lines per read re-scans the buffer each time.
+  Where: std.http.Body.read_line, newline_in. Source: review std. Confidence: sure.
+- [ ] **`!` binds differently in SQL.** In Strata `!it.a == it.b` is `(!a) == b`. In SQL, `NOT "a" = "b"` is `NOT (a = b)`, because NOT binds less tightly than `=`. The CHECK can then refuse rows the refinement accepts.
+  Where: std.orm.operator (`"!" => "NOT"`). Source: review std. Confidence: likely.
+- [ ] **`Cond.not` and NULL.** `NOT ("x" < ?)` is NULL, so false, for a NULL `x`. `x.lt(v).not()` therefore doesn't select rows where `x` is `None`, though in Strata terms "not less than" holds for them.
+  Where: std.orm.Cond.not, compared. Source: review std. Confidence: sure.
+- [ ] **A streamed `pause_turn` is unbounded.** IDEAS.md says "streamed, with no limit", while `Claude.response` stops after 8. A server that keeps pausing loops forever.
+  Where: std.agent.step. Source: review std. Confidence: sure.
+- [ ] **`read_event` trims too much.** `trim(byte_slice(line, 5, …))`. SSE removes exactly one leading space after `data:`, and nothing at the end. Harmless for JSON payloads, but wrong for SSE in general.
+  Where: std.agent.read_event. Source: review std. Confidence: sure.
+- [ ] **Generated Python docstrings can break.** `"""` inside a doc is escaped, but a doc line ending in `"` gives `"""text""""`, which ends the docstring early and leaves a stray `"`. The generated `.py` doesn't parse.
+  Where: std.ffi.py_doc. Source: review std. Confidence: likely.
+- [ ] **`plain` stops escapes at the wrong place.** An escape is skipped until the first character with case (`to_lower(c) != to_upper(c)`), which includes non-ASCII letters. OSC sequences (`ESC ] 8 ;; url ESC \`, hyperlinks) stop at the first letter of the URL and leave the rest in the output.
+  Where: std.term.plain. Source: review std. Confidence: sure.
+- [ ] **The ORM doesn't refuse a `REAL` key column.**
+  Where: std.orm. Source: ledger S12. Confidence: likely.
+
+## Tools
+
+- [ ] **(data loss) A module file that doesn't decode is treated as empty, and an edit then overwrites it.** `decoded_files` maps a decode error to `[]` after a bare `print(e)` (`Some(Err(e)) => { print(e) [] }`). `decls_of` does the same. So `o.decls` has no definitions for that module.
+  Where: main.decoded_files, main.decls_of, main.package_decls → codebase.write_modules / codebase.module_bytes. Source: review tools. Confidence: likely.
+- [ ] **(data loss) `view` → `edit` loses the proof material of tests, trait default methods, capability methods and laws.** `proofs_hidden` is `rewrite_decl(d, e -> hidden_in(e))`, applied to every definition in `view` and the editor (main.st:14446, 22781).
+  Where: views.proofs_kept (views.st:758), views.proofs_hidden; main.apply_edit, main.edit_file, main.edit_in_editor. Source: review tools. Confidence: likely.
+- [ ] **(data loss) Renaming a trait method renames every same-named method and call site in the package.** For `kind == "method"`:
+  Where: refactor.renamed_decl (refactor.st ~517 and ~553). Source: review tools. Confidence: sure.
+- [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
+  Where: main.abort_command, main.restore_files. Source: review tools. Confidence: sure.
+- [ ] **`strata update` is a test-internal command: it takes a DIR, not names, and always exits 0.** `low_level` makes `update` always the internal step (`… | "update" | … => true`). `update_deps` reads `dir := get(args, 0) ?? "."` and `names := drop(args, 1)`. Errors only `print("error: " + e)`, and `code` stays 0.
+  Where: main.command_line (`"update" => update_deps(…)`), main.low_level, main.update_deps. Source: review tools. Confidence: sure.
+- [ ] **(data loss) `upgrade` ignores STRATA_HOME: outside the repo it re-stores every reference with no std or core.** `lib := std_imports(disk, "std", decls)` and `core := read_core(disk)`. `read_core` reads `core_files()`, which are `"core/types.strata"` and so on, relative to the current folder.
+  Where: main.upgrade_command. Source: review tools. Confidence: likely.
+- [ ] **(data loss) The log is written after the files, and a failed append still leaves the change on disk.** `apply_edit` runs `write_modules`, then `disk.append(root + "/" + log_file(), …)` and returns `Err` on failure, which gives exit 1 with the files changed and nothing logged.
+  Where: main.apply_edit, main.apply_change, main.done_command. Source: review tools. Confidence: sure.
+- [ ] **`--file PKG/mod.strata edit` writes a package module unchecked.** `alone := !of_core && in_package is None && (…)`, so a module file of a package gets `errors = []` and is written as given. Recorded in IDEAS.md "A failed edit writes nothing…", "Not yet: … a single module file of a package (`--file p/util.strata edit`) is still written unchecked".
+  Where: main.edit_file. Source: review tools. Confidence: sure.
+- [ ] **(data loss) `fix --file` writes in place, not atomically, and removes "unused" definitions without any check.** `match mut disk.write_bytes(f, bytes)` writes the script in place (not `codebase.write_file`), after `unused.removable` and `lint.fixes`. Nothing is checked. The package branch goes through `apply_change` (write, then check).
+  Where: main.fix_command (the `--file` branch). Source: review tools. Confidence: sure.
+- [ ] **`edit_scope` assumes a body change can't break other definitions.** Only `interface_hash` changes widen the check (`if interface_hash(o) != interface_hash(d) { wide… }`).
+  Where: main.edit_scope. Source: review tools. Confidence: possible.
+- [ ] **`git_commit` stages and commits everything under the package folder.** `["add", "-A", "--", ".", ":(exclude).strata"]`, then `["commit", "-q", "-m", message, "--", "."]`. Unrelated work-in-progress files, untracked notes, `.env` files, the strata.lock rewritten by dependency resolution, and C or doc files in the package folder are all committed under the edit's message.
+  Where: main.git_commit. Source: review tools. Confidence: sure.
+- [ ] **`rename`, `move`, `fix` (package) and `done` write, then check, then restore.** `rename`, `move`, `fix` (package), `done` and `follow_renames` write first, then check, then restore on failure; `follow_renames` also writes without a check and without grouping the writes.
+  Where: main.apply_change; main.follow_renames. Source: review tools; ledger T6. Confidence: sure.
+- [ ] **`apply_change` ignores the pending file's write failure and the log's.** `mut disk.write(pending.file_of(o.root), pending.pending_json(saved)) !! ()` and `mut disk.append(…log…) !! ()`. A rename during a pending change can lose its rename record, so the `done` entry has no `renames` and `sync` can't follow it.
+  Where: main.apply_change. Source: review tools. Confidence: sure.
+- [ ] **Renames reach patterns only inside `match` arms.** `patterns_renamed` rewrites only `MatchExpr` arms. Patterns in `Let` (destructuring `Point { x, y } := p`), `For`, `CompFor`, lambda parameter patterns (IDEAS "Patterns as parameters") and `CondPat` are not renamed.
+  Where: refactor.patterns_renamed, refactor.substituted. Source: review tools. Confidence: likely.
+- [ ] **(data loss) A malformed pending.json makes `abort` delete module files, or forget the change.** `parse_pending` returns `Some` for any JSON object. A missing `before` gives `[]`, and a bad entry gives `("", "")`. `unhex` maps a bad digit to 0 (`index_of(…) ?? 0`).
+  Where: pending.parse_pending, main.restore_files. Source: review tools. Confidence: likely.
+- [ ] **(data loss) `holeify` makes holes by short name, so unrelated code becomes holes.** `Var(n) => contains(names, short(n))`, `MethodCall { name, .. } => contains(names, short(name))` and `Call { callee: Var(n), .. }`. A changed `shop.get` turns every `get(...)` in a broken definition into a hole: std's `get`, another module's `get`, a local variable named `get`.
+  Where: pending.uses, pending.visit. Source: review tools. Confidence: sure.
+- [ ] **merge-file stores core files qualified, breaking core.** Neither path has the `of_core` case `edit_file` has (`codebase.merge_parsed`).
+  Where: main.resolve_command → main.encode_at; main.merge_file_command → kept_decls (`stored(others + mine, std, core)`). Source: review tools; ledger T7. Confidence: sure.
+- [ ] **`sync` checks every package in the repository, core included, with a reduced check.** It runs `discover` and then, for every package and script under the git top, `check_errors_of(program, std_imports(…), core, values)`. That includes `compiler/`, `core/` (checked like any package, though core "checks only as the runtime's compilation does"), `std/` and every example.
+  Where: main.merged_checks. Source: review tools. Confidence: likely.
+- [ ] **Git URLs and revs from strata.toml reach git without `--`.** `["clone", "--bare", "--quiet", url, repo]` and `["--git-dir", repo, "fetch", "--quiet", …, url, "+refs/heads/*:refs/heads/*"]` have no `--`. `rev-parse --verify --quiet asked^{commit}` uses a `rev` value taken from the manifest.
+  Where: deps.bare_repo, deps.checkout, deps.fetch_git. Source: review tools. Confidence: possible.
+- [ ] **Two dependencies with the same name: the first wins silently.** `if len(path) > 0 && !any(out, f -> f.name == at.name) { mut out.push(at) }`. A diamond in which two packages depend on different versions (or URLs) of `util` keeps whichever came first, with no conflict reported, and both lock pins are written.
+  Where: deps.visit, deps.fetched_visit. Source: review tools. Confidence: sure.
+- [ ] **(data loss) `revert` writes unchecked, in place, outside the log and the pending change.** `disk.write_bytes(p.path, written)`, with no check, no `write_file`, no log entry and no look at pending.json. A definition restored from an old commit that calls something since renamed or removed is written broken.
+  Where: main.revert_command, history.reverted. Source: review tools. Confidence: sure.
+- [ ] **`strata parse FILE` exits 0 when the file doesn't parse.** `main.front_command` ends with `parse_one(disk, file)` then `0`; the package branch returns 0 too.
+  Where: main.front_command. Source: ledger T1 (#577). Confidence: sure.
+- [ ] **Selectors split on `,`, so impls with a comma in their name can't be named.** `impl Json for Dict[String, V]` can't be selected in `view` or `verify` (`views.select` splits on `,`).
+  Where: views.select (compiler.views.st:46, 641); main.st:22846. Source: ledger T2 (#448). Confidence: sure.
+- [ ] **Round-tripping `core/builtins` through a non-core file loses overloads.**
+  Where: edit / view. Source: ledger T8. Confidence: likely.
+- [ ] **`strata upgrade` writes core's files without their dependency lists.** Fixed only on unmerged #562.
+  Where: upgrade. Source: ledger T10. Confidence: likely.
+- [ ] **(data loss) `--file std edit std.regex` rewrote all std files and lost the module name.** It also auto-committed; a file-mode edit stores references comptime's codegen can't compile. Recorded against an old seed.
+  Where: edit (file mode). Source: ledger T12 (#421). Confidence: possible.
+- [ ] **Adding an `all` overload for `Dict` by `edit` replaced the list one.** `edit` replaces a definition by name, so a new overload overwrote the existing one.
+  Where: edit (overloads). Source: ledger V15 (#488, #529). Confidence: likely.
+- [ ] **`strata init` in `.` names the package `.`.** `name := match last_slash(dir) { … None => dir }`. Called with `process.current_dir()` this is fine, but a relative `dir` without a slash (`"."`, `"foo"`) gives `name = "."` or the bare argument.
+  Where: codebase.init. Source: review tools. Confidence: possible.
+- [ ] **`strata --file F add MISSING` creates an empty module and exits 0.** `text := if cmd == "add" { disk.read(a.module ?? "") !! "" }`. A missing or unreadable FILE gives `""`, which parses to `[]`. If `path` exists, `new == old` and it prints "no changes", exit 0.
+  Where: main.edit_file. Source: review tools. Confidence: sure.
+- [ ] **Exit codes are inconsistent, and `fail_with`'s doc says 1 but it returns 2.** `/// … Returns exit code 1.` but the body ends in `2`. An edit rejected by the checker exits 1 (`Err(_) => 1`), a parse error in the same command exits 2 (`fail_with`), and a failed log append exits 1.
+  Where: main.fail_with, main.edit_command, main.apply_edit. Source: review tools. Confidence: sure.
+- [ ] **`piped_input` with `--rm` ignores slow piped input.** `if console.interactive() || driver_stdin_idle().to_int() == 1 { return if removing { Ok("") } … }`. `driver_stdin_idle` is "silent for 100 ms". `slow_producer | strata edit --rm X` then applies only the removal and drops the piped definitions without an error.
+  Where: main.piped_input. Source: review tools. Confidence: possible.
+- [ ] **`auto_commit = false` is found by substring, not by reading the TOML.** `index_of(manifest, "auto_commit = false") is Some`. `auto_commit=false` or extra spacing doesn't match. A comment containing the text does match, which turns commits off.
+  Where: main.git_commit. Source: review tools. Confidence: sure.
+- [ ] **A failed git commit is reported but the command exits 0.** `mut console.eprint(f"the change is made, but git commit failed: …")`, and no result is returned, so `edit`, `rename` and `done` all exit 0.
+  Where: main.git_commit (returns `()`), callers apply_edit, apply_change, done_command. Source: review tools. Confidence: sure.
+- [ ] **`rename` accepts keywords and builtin names as the new name.** `is_name` accepts any run of letters, digits and `_`. `strata rename f match` produces `fn match(...)`, which `view` prints and `parse` can't read back. Whether the checker catches it depends on resolve.
+  Where: refactor.is_name. Source: review tools. Confidence: possible.
+- [ ] **`move` leaves a type's derives and impls behind.** Only the definition itself moves (`Decl { ..y, module: target }`). The `derive Json for Point` and `impl Show for Point` declarations stay in the old module, and nothing says so.
+  Where: refactor.move_def, refactor.moved_names. Source: review tools. Confidence: possible.
+- [ ] **`done --keep-holes` can produce duplicate hole names.** Holes are numbered from `len(p.holes) + 1` within a pending change and renamed `pending_k` → `todo_k` at `done`. A second pending change starts again at `pending_1`, so the next `done --keep-holes` makes a second `?todo_1` next to the first.
+  Where: pending.keep_holes, main.apply_edit (`first`). Source: review tools. Confidence: likely.
+- [ ] **merge-file's scratch folder is named by string lengths.** `tmp := (TMPDIR ?? "/tmp") + "/strata-merge-" + f"{byte_len(path)}-{byte_len(o)}"`. Two merges with paths of the same length (any two concurrent repositories or worktrees) share the folder, and `line_merge` writes `ours`/`base`/`theirs` there and then runs `remove_all(tmp)`.
+  Where: main.merge_file_command (`tmp`), merge.line_merge. Source: review tools. Confidence: sure.
+- [ ] **Rename detection in merge is a similarity guess, and its errors are swallowed.** A definition deleted on one side and a similar one added (`sim >= 0.6 && followed`) is treated as a rename and applied to the base and the other side. `o = refactor.rename_all(o, …) !! o` hides a failure on the base.
+  Where: merge.renames, merge.merge. Source: review tools. Confidence: possible.
+- [ ] **(data loss) `resolve` stores the text unchecked and in place.** It rejects only lines starting with `<<<<<<<` or `>>>>>>>`, then writes `encode_at(...)` with `disk.write_bytes(f, …)` (not `write_file`). It never checks the result, unlike merge-file's final check.
+  Where: main.resolve_command. Source: review tools. Confidence: sure.
+- [ ] **`sync` ignores git merge's exit code.** `ran := mut launcher.run_with("git", […, "merge", "--no-ff", "--no-commit", target], …)`, then `match ran { Err(e) => …, Ok(_) => () }`.
+  Where: main.sync_command. Source: review tools. Confidence: sure.
+- [ ] **`setup-git` quotes the executable with single quotes.** `driver := f"'{exe}' merge-file %O %A %B %P"`. A path containing `'` breaks the driver. `setup-git` exits 0 when not in a git repository (`Err(_) => "."`), and it only prints a hint about `.gitattributes`.
+  Where: main.setup_git_command, main.sync_command. Source: review tools. Confidence: sure.
+- [ ] **Cache folders for git dependencies race between processes.** There is no lock. Two strata runs (parallel `tools/check` jobs) can both `git clone --bare` into the same `repo`. A clone that was interrupted leaves a `repo` folder that `disk.exists(repo)` takes as present.
+  Where: deps.bare_repo, deps.checkout. Source: review tools. Confidence: likely.
+- [ ] **`module_files` stops at depth 64 without a word.** `for _ in 0..64 { … }`. Deeper module files are left out of every package operation, including `upgrade` and `restore_files`, which deletes module files missing from `before`.
+  Where: deps.module_files. Source: review tools. Confidence: sure.
+- [ ] **(data loss) `upgrade` returns at the first write error after rewriting part of the tree.** `return fail_with(…)` inside the loop, after earlier files were already renamed. Its temp name `target + "-tmp"` (`x.strata-tmp`) is the name `codebase.write_file` uses, so a concurrent edit collides with it.
+  Where: main.upgrade_command. Source: review tools. Confidence: sure.
+- [ ] **(data loss) `pack` overwrites any path, including a module file of the package.** `disk.write_bytes(target, bytes)` with no check that `target` isn't one of the package's own module files. `strata pack main.strata` in a package replaces its root module with a bundle of the whole program.
+  Where: main.pack_command. Source: review tools. Confidence: likely.
+- [ ] **The shipped std library is preferred without checking it matches std's sources.** When `home/std/names`, `std.o` and `libstd.dylib` exist, they are returned at once (`return Some(shipped)`), before any key. In a checkout where a release's precompiled library was copied into `std/`, edits to std are ignored by JIT runs.
+  Where: main.std_library. Source: review tools. Confidence: possible.
+- [ ] **Unknown long options are accepted by the global parser.** `else if starts_with(a, "--") { mut flags.insert(a, …) }`. Any typo is kept as a flag and ignored by commands that only test `given(line, …)`, for example `strata check --with-dep`.
+  Where: driver.read_command_line, `strata_command` users. Source: review tools. Confidence: likely.
+- [ ] **(data loss) `skill install` overwrites the files without asking.** `disk.write(path, text)` replaces `SKILL.md` in every agent's skills folder, so a user's edits are lost. The skill text is hard-coded strings (its own copy of the CLI's usage), which can drift from `driver.usage_text`.
+  Where: skill.skill_command. Source: review tools. Confidence: sure.
+- [ ] **`edit` can't delete a detached `//` section banner.**
+  Where: edit. Source: ledger T4. Confidence: likely.
+- [ ] **`from m use f, g` with `--rm 'use m'` is refused.** `edit` reports "both given and removed".
+  Where: edit. Source: ledger T5. Confidence: likely.
+- [ ] **`strata diff` and `tour --check` report untouched `noalloc` functions as changed.** About 35 functions in untouched core modules show "signature changed".
+  Where: diff. Source: ledger T9. Confidence: likely.
+- [ ] **The merge driver re-encodes a definition with different bytes.** `smt.infer_invariants` came out with the same code and different bytes.
+  Where: merge-file. Source: ledger T11. Confidence: likely.
+- [ ] **An edit turns a compatibly broken use in an erroring definition into a hole.**
+  Where: edit (pending changes). Source: ledger T15. Confidence: likely.
+- [ ] **A run killed by SIGKILL leaves its `smt/PID` folder.**
+  Where: verify scratch. Source: ledger T23. Confidence: likely.
+
+## Test cases failing on main
+
+- [ ] **`build-jit-tests` fails.** `tests/data/build/expected/tests-tasks.out:9` still expects the `_ := model.run_worker(…)` warning that a96adb16 changed.
+  Where: tests/cases build-jit-tests. Source: ledger tests table (#557, #570, #608, #609). Confidence: sure.
+- [ ] **`cli-pack_a_package_into_one_file` fails.** It expects "69 definitions"; the packed tasks has 67 since #529/#530.
+  Where: tests/cases. Source: ledger tests table (#533). Confidence: sure.
+- [ ] **`cli-merge_file_keeps_overloads_and_module_names` fails.** The builtin count drifts: the case says 135, `core.builtins.st` has 143 `builtin` lines.
+  Where: tests/cases. Source: ledger tests table (#608). Confidence: likely.
+- [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
+  Where: std.orm. Source: ledger tests table (#513, #530). Confidence: likely.
+- [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
+  Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
+- [ ] **`cli-a_conflict_resolved_by_hand_stores_as_written` failed.** Seen failing only on std-math's head; not checked on main.
+  Where: tests/cases. Source: ledger tests table (#608). Confidence: possible.
+- [ ] **`cli-for_over_iterators` may fail.** A cached counterexample `pos: -265` instead of `-1` was reported.
+  Where: tests/cases. Source: ledger tests table (#492, #498). Confidence: possible.
+- [ ] **`cli-smt_tracks_list_elements_through_loops` was weakened.** `fill_wrong` is refuted by the fuzzer, not the solver; the case accepts either.
+  Where: tests/cases. Source: ledger tests table. Confidence: likely.
+
+## From the old IDEAS.md, to reconcile
+
+Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet checked against the entries above or against the code. Lines marked (issue) are design problems for ISSUES.md. Move each into its section, or drop it if fixed.
+
+
+## Verify and the prover
+- [Open questions] (issue) `extern_reach` is over-approximate by method name: `std.orm.read_column.for.Todo` is "not run" because `Row.value` is taken for `Statement.value`; typed method calls in std's code would remove it.
+- [Open questions] (issue) examples/tasks needed proof-shaped code: an opaque predicate over a value merged at a branch join compares arrays (timeouts); an `assert` with no `by` sees a helper only by its contract; a call made only by its contract is a new value at each use; refinement validity is stated per term, not once per type; encode time dominates.
+- [Open questions] Generic callee type arguments come only from a `let` annotation: `mut q := empty_queue(policy)` stays at the generic sort for the prover (also under "A script the solver rejects").
+- [Open questions] An `extern c` result can't be refined (`-> I32 where it >= 0` "doesn't cross to C").
+- [Open questions] `frequencies`' loop doesn't carry "every count is Positive" (a dict's values through a loop) nor `set(ws)` facts.
+- [Open questions] `wc` has an open `?unreachable` hole in derived code (`std.cli.value.for.Options`).
+- [Open questions] cvc5 still runs as a process per script.
+- [Open questions for the user] Graph moves needing unique ids stay unknown (`set` modelled by size); more than one list or dict on a path isn't followed.
+- [Open questions for the user] Trait-level `assumed invariant` is not built.
+- [Open questions for the user] A dict's size isn't derived from a set of distinct members.
+- [Open questions for the user] The checker doesn't type an `ensures` beyond its shape: `ensures n == "x"` on an `Int` passes `check`.
+- [Proven ensures narrow the result] std types' methods (`SortedDict.get`) and built-ins (`get`, `first`) have no facts, so matches on them are covered by neither checker nor `exhaustive`; a field read of a variable bound from an undecided call is an error; a trait's default method isn't narrowed.
+- [std.regex.samples matches its pattern] The law is unprovable: the invariant fails when the predicate's receiver is a sum-typed value (element facts dropped), and `matcher`/`run_matcher` aren't shown to terminate. WIP on branch `regex-samples-law` (714f5aa).
+- [Written proofs] `excluding` with `List` keys of a generic key type and `unique(xs + [x])` aren't modelled; the level-0 map says `fn` for a lemma; `view` of a module hides lemmas with no marker.
+- [String search with memchr] Encode path left: `piece`'s key lookups per line (index terms by key), `cone_in`, `keys_in`, `word_spans`, `command_heads`.
+- [A script the solver rejects] Termination's and the invariant search's rejected queries count as not proven but their message isn't shown.
+- [A for keeps its ensures] List-model limits: `ensures it == xs.map(f)` (whole-list equality) and counting through `filter` aren't proven; `ensures` that call functions leave a `for` unindexed (query size).
+- [Keys of tables] A trait model named `keys` is read as the builtin; the solver has no sets of `List`s nor of unions holding `Float`; contracts nest only 4 deep; an insert of a missing row is "possible counterexample", not confirmed; a concrete `Connection` doesn't carry its empty model through `create` and inserts; `delete`/`all` contracts aren't found (two traits declare those names).
+- [Shared laws] A caller relying on the model across calls gets "not proven", no counterexample.
+- [Trait models] Generic traits' mocks; models of std's traits when a program is desugared without std.
+- [Frames, key sets and uniqueness] (issue) A loop's queries carry the whole function's context (2-4 MB, no cone across a pass), so loop proofs over dict models time out.
+- [Frames, key sets and uniqueness] `old` inside a lambda of a trait `ensures` makes the method "skipped: `old` outside an `ensures`".
+- [Frames, key sets and uniqueness] `all(d, f)`/`any(d, f)` overloads on `Dict`/`Set` not added.
+- [Helpers in contracts as SMT definitions] Mutually recursive helpers aren't seen through.
+- [Nested quantifiers by polarity] A witness moved by a concatenation in front (`a + b`) isn't found; `drop_first` is neither proven nor refuted; helper calls in a body (not a contract) are known by contract only.
+- [Dicts and sets in the solver] `keys`/`values` known by length only; `map_values` not modelled; a dict nested in a datatype isn't shown in a counterexample.
+- [Verification: SMT] `to_upper`/`to_lower`/`is_alpha`, `trim`, `split`, `lines`, `repeat`, `reverse` left unknown to the prover.
+- [Tool fixes] A match on what the checker can't type from syntax (`match p.op`) is found only by `verify`; tests compiled bare aren't run.
+- [Termination and helpers] A lambda's call of another recursive helper is seen through at each element.
+- [verify's speed] std's termination cache is keyed by name and binary, so std edited without a rebuild keeps old findings.
+- [Proven checks leave the compiled code] Not yet for trait methods (compiled names differ from verify's labels).
+- [Loops and invariants] A non-empty list can't be shown as the solver's counterexample; nested quantified facts with strings time out; `lex.lex` and `main.verify_file` searches exceed 2M.
+- [Values made as they are read] A refinement calling a function with a `requires` is evaluated without the call site's path condition.
+- [Values as SMT datatypes] Values don't keep their facts through loops and `mut` calls (refreshed to their type's guarantees).
+- [Match coverage with the SMT solver] No obligation per arm that it can match (unreachable arms the checker can't see).
+- [Unions, variants as types] List length conditions are only "empty" or "not empty".
+- [Failures] A list from a dict gets a new length at each use, so `if len(xs) > 0 { xs[0] }` on it isn't proven.
+- [Running while verifying] `verify_file` called repeatedly in one process once reported a counterexample as proven; cause not found.
+- [Known gaps] `verify` behind the old Rust one: no solver-made inputs when random ones rarely pass; generic functions not fuzzed.
+- [Known gaps] A verify run naming only some functions doesn't analyse their callees' termination in other modules.
+- [Known gaps] `len(s) == 0` doesn't make a set empty in the encoding; a function returning `Set[TaskId]` isn't seen through (`list_set` drops element refinements).
+- [Known gaps] Lab-fleet verify bugs: value under `x!` lost for a capability call inside std; a nine-arm type match over `std.agent.Chunk` went past 8 GB; `verify` of `codegen.computed_value` and of many functions at once loops on LLVM pass-registry errors; fuzzing `std.array` passes 300 s (string concatenation in fuzz cases); `I64` counter loops "may not terminate".
+- [Known gaps] `markdown.inline` and `main.doc_command` not verified (time limit).
+- [Known limitations] (issue) Prover coverage: positions lost through `filter` and `sort`; floats, dicts and sets partly modelled.
+- [Known limitations] (issue) Verification is slow and little is cached (see the speed idea).
+
+## Checker, codegen and runtime
+- [Iterators and FiniteIterator] A nested comprehension whose inner source is an iterator needs a lazy `flat_map`; a user's own `it.next()` loop isn't shown to end.
+- [Builtins viewable] `mut console.print(n)` with `n: Int` passes `check` and crashes when run.
+- [Builtins viewable] `reverse` and `repeat` go through `join` (O(n log n)); `range(a, b)` outside a `for` builds the list.
+- [Web UIs] A `_ =>` arm of a union match doesn't narrow in compiled code; widening a union keeps tags (`List[Int] | List[String]` read under the wrong tag); the checker refuses `List[B[M]] =>` for a local generic record; a handler number can be stale if the page changes before its turn.
+- [Web UIs] A user module named `web` with `element`/`children` is shown as markup.
+- [strata repl] A function named `at` captured indexing (probably fixed by desugar-hygiene #617); `process.args()` under `--allow process` is the REPL's command line.
+- [Keys of tables] A user function named `insert` breaks `mut self.all.insert(..)` in an impl; `Set[KeyValue] {}` doesn't type-check; `with(s, ("p", 7))` on a `Set[(String, KeyValue)]` crashed in a cross-check.
+- [Spreading a record] `eval` and `comptime` code don't write spreads out; no spreading into built-ins.
+- [Structural records] Compiled code doesn't check refinements inside a generic record's type arguments (`Box[Cents]`).
+- [Unused values are errors] `build --no-verify` prints no warnings; checker errors labelled with the wrong module (`binary.stmt` for `eval.stmt`).
+- [Unused definitions] Methods of an inherent `impl` never called aren't reported.
+- [Integers and floats] A literal in a `Set {}`/`Dict {}` literal or a generic call's argument without a hint stays an `Int`.
+- [Foreign functions] `x := setting(k) ?? d` with `k` unset compiles to an undefined LLVM value; blobs don't cross `extern c`; a dependency's `[native]` C isn't linked.
+- [Derives written on the declaration] `stringify(x.to_json())` type-checks though `to_json` returns a `Result`, and crashes.
+- [Derives on functions] `verify` of examples/wasm reports `std.json.decode_as.for.Summary.10` refuted (decoder crashes on an integer too large for a Float); a release can't target wasm.
+- [Derived traits, comptime] Reading the i-th element when `i` is known only at compile time; "more than one `List` field" not reported; `setting(..)` reads no strata.toml.
+- [The strata command in Strata] The checker misses some errors once an import fails; verifying `codegen.read_slot` crashes (raw reads at arbitrary addresses).
+- [Long-term goal: self-hosting] (old notes, may be stale) A list of `Option[Int]` and `Option[Float]` makes LLVM refuse the IR; a private function captures calls to a built-in of the same name in other modules; `verify` stack-overflowed on nested closures over lists; `strata --file F edit` accepts a `comptime` `check` refuses; regex captures and `find` not supported by the VM.
+- [Concurrency] O(threads) look per blocking wait; `compiler/check` doesn't look inside `select`/`race`; `close` on every path not checked; `Task` not in written types.
+- [Error handling, strings and mutation] In-place updates not for paths deeper than one field, sums with several variants, or a `mut` field.
+- [Mutation at the call site] (issue) A `mut` argument is decided to be passed by reference without overlap, but each goes through its own slot, copied in and out.
+- [Memory in high-performance code] `_ := e` compiles through the refutable `let`; `compiler check core/rt.strata` reports core.rt's statics as unknown variables; the call stack and fault raising are still in C (open question).
+- [Memory: scoped allocation from roots] A miscompile found with regions forced on is not fixed.
+- [Memory: static uniqueness] Body-walking functions crashed the verifier at main b5ab99e1 (`smt.pass_walk`).
+- [A mut variable read by another argument] `mut v.m(…)` reading `v` in another argument still finds it shared.
+- [Desugared code calls the built-ins] compiler/smt's loop rewriting names (`$for_xs`, `take`, `len`) and check's/codegen's internal `to_list`/`real_of` aren't hygienic.
+- [A flaky dup of a freed object] `unique.proven_sites`' arena workaround can now go.
+- [Memory: small values] A union holding a tuple returned by a call prints its first element.
+- [Memory: fixes by per-site counters] The empty list literal `[]` is allocated each time.
+- [Memory: per-site counters] core.rt's and runtime.c's own operations, arena blocks, dups through trait tables aren't counted by site.
+- [Memory: where memory goes] Live objects by type, not just by site.
+- [std.collections] A lambda in a record field with no type wanted at all gets `()` parameters and LLVM rejects the IR.
+- [Floats in the prover] The section's "Left, in order" list is not carried here: check it in git.
+- [Known gaps] `float_from_bits` gives infinities; `Files.read`/`Console.read_line` don't check UTF-8; `d[k]` not accepted; a `_` type left in codegen makes `==` and hashing skip that part.
+- [Known gaps] Lab-fleet checker bugs: `"\r"` is a backslash and `r`; a trait and a type with one name pass check but codegen fails; mixed-union narrowing on verify's path; unknown types in a definition stored before its import aren't reported; non-exhaustive errors on the wrong function after a rejected edit; errors labelled by short name; `use binary` makes `take(...)` resolve to private `binary.take`; a `List` and a `String` overload let `xs["a"]` pass (fixed on std-math only).
+- [Known gaps] Lab-fleet codegen bugs: `Ok(())` pattern doesn't compile; `Shop.line(s, x)` doesn't compile; a `U64` match with literal `0` crashed; `parallel.map` with allocating functions crashed (cause found, fixed); producer/consumer programs grow without bound (per-thread free lists); every std-linked program counts as supervising; integer literals >= 2^62 re-parsed each time; the JIT never frees modules.
+- [Known gaps] Messages: an unknown error for an unused/typo `from std.io use Console`; `type Answer = Some(Int) | None` says "unknown type None".
+
+## Tools
+- [Removing or adding variants in a pending change] `let`/`for` patterns naming a removed variant still reject the edit.
+- [Pending changes] One pending change per package; a use the edit broke compatibly is also turned into a hole.
+- [Storage: the tree, in binary] The header hashes the stored bytes, the log and verdicts the written form; a module shown alone can't tell apart names from two `*` imports.
+- [Running while verifying] Hot swap misses lambdas, `main`, inlined functions and generic instances only the proven module makes.
+- [Speed] `strata --file std edit std.regex` auto-commits and rewrites all std files with the module name lost; `--file std edit` stores std modules under local names; the open-holes count after an edit covers only changed definitions; `desugar(lib)` runs twice per check; core.float's `float_show`/`float_fixed`/`float_parse` are unused; cancel points: methods by name (`Fixed.take` checks because `Line.take` waits), supervised programs keep every check.
+- [Generated docs] Pages of modules that are gone aren't removed; `std.regex` has no module doc.
+- [PR tours] A fold inside an open left-out change toggles only when first on screen; a diff fold holds one level; doc diffs show as one line.
+- [Docs in the terminal] `///` lines lose leading spaces on `edit` (indented examples become prose); a colored span wrapped keeps its color on the indentation; code in a heading isn't colored; core modules list no builtins.
+- [Builtins viewable] `refs` doesn't find a program's uses of a builtin.
+- [Web UIs] `strata parse FILE` exits 0 when the file doesn't parse.
+- [A failed edit writes nothing] `done`, `fix`, `rename`/`move` and `follow_renames` still write, check, then restore; `--file p/util.strata edit` writes unchecked.
+- [view in reading order] Header dependency lists go stale; `views.depth_first`'s worklist isn't shown to terminate.
+- [strata diff in seconds] About 2 s of a diff is outside it (std, hashing the tree, git); log-mode verdict lookups encode every definition.
+- [Diff and three-way merge on trees] `strata resolve core/rt.strata` stores core calls qualified, so core.rt's build drops every function.
+- [Written proofs] Round-trips need `--proofs`; CLAUDE.md's round-trip line doesn't say so.
+- [Keys of tables] Header deps of an unchanged module are kept stale on re-encode; `strata --file std view MODULE` names no module.
+- [Structural records] Highlight queries lack a capture for `rest`; VS Code's grammar isn't updated for records or spreads.
+- [Defaults for record fields] A `Bool` option defaulting to `true` can't be turned off (`--no-x`).
+- [Web UIs] `javascript:` URLs in `href` aren't rejected.
+- [Doc comments on union members] A type inlined into a union keeps its doc out.
+- [Git, diffs and review] A refused rename follow leaves references to the old name for `sync`'s check.
+- [Packages, modules and dependencies] (issue) Dependencies by git URL: fetching, `strata.lock` and `strata update` were not built per this file (check against compiler/deps).
+- [Packages] `run` subprocesses: no standard input, environment changes, streaming output or timeout.
+- [A release with nothing to install] The compiler finds its home from the current folder or `STRATA_HOME`; a killed run leaves `smt/PID`.
+- [The tools' output] `std.io.printed(console)` in a test crashed with signal 11.
+- [Networking] Two tasks using copies of one connection aren't synchronized; a root-module local named like a rewritten function is rewritten too.
+- [Known gaps] `--json` missing on `view`, `render`, `interface`, `status`, `done`, `test`, `run`.
+- [Known gaps] Lab-fleet tool bugs: `strata --file core check` never type-checks core; round-tripping `core/builtins` through a non-core file loses overloads; `diff`/`tour --check` report ~35 `noalloc` core functions as changed; `upgrade` writes core without dependency lists (fixed on stored-core only); the merge driver re-encoded `smt.infer_invariants` with different bytes; `edit` refuses `from m use f` with `--rm 'use m'`; `edit` can't delete a detached `//` banner; selectors split on `,` so `impl Json for Dict[String, V]` can't be named; `parse.debug_quoted` replaces `"\r"` with itself; `declarations.Names.open` is always false; unused prelude dict/set functions.
+- [Known gaps] Speed and memory: `view --graph` past 4.5 GB; long list literals need 5 GB at 20,000 elements; `containers` in `build-copies` quadratic; `std.json.parse` makes one-character strings (65% of peak on 8 MB); `check` of compiler keeps 112 MB read by `read_bytes`.
+- [Known gaps] Failing cases on main: `build-jit-tests` (expected warning removed), `cli-modules_contracts_and_files` (view order), `cli-merge_file_keeps_overloads_and_module_names`, `cli-pack_a_package_into_one_file`.
+- The format trials' "Found, not fixed" items (stored core, stable ids, operators, the trio's merge) are listed in REBUILD.md's appendix, "The format trials as recorded in the lab": to reconcile here.

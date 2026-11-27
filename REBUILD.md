@@ -1,0 +1,343 @@
+# Rebuilding Strata
+
+The plan for a Strata rebuilt in small layers, each read and understood before the next, with the lab (this repository's current compiler, core and std) as its template and testing ground. ISSUES.md lists the design problems the rebuild solves; BUGS.md the lab's bugs; IDEAS.md possible future changes.
+
+## Where it lives
+
+- In this repository, in its own folder (`next/`, name to settle), beside the lab. Releases stay the lab's until the rebuild can replace it; then the lab's folders are deleted in one PR, and history keeps them.
+- Each PR touches the lab or `next/`, never both. `strata upgrade` and `tools/check` are scoped to one of them.
+- The rebuild's code is edited with the lab's `strata` until the rebuild compiles itself (end of L2).
+
+## Rules
+
+1. **Same language, smaller.** The rebuild implements a subset of the lab's syntax and meaning. A difference from the lab is a decision written here.
+2. **Written in the layers before.** The compiler's own code uses only features of earlier layers, so it compiles itself at the end of L2. Sugar doesn't count: its stored form is the core.
+3. **One layer at a time, each complete**: its tests (proofs from L1 on) pass and the user has read its tours.
+4. **One module per concern.** A new command or feature is a new module.
+5. **Small PRs, each with a tour** (`strata tour`, `.tours/BRANCH.md`).
+6. **Simple before fast.** No optimization before the layer for it.
+7. **The stored tree is the core language.** Sugar exists only in the parser (sugar to core) and the printer (core to sugar), one builder/reader pair per form, tied by the law `parse(print(t)) == t`. Operators are trait methods: `a + b` is stored as `Add.add(a, b)`.
+8. **One way to call C.** The runtime is reached only through `extern c` declarations in core, each with `assumed` contracts: the trusted base under every proof.
+9. **Lab first.** Anything the lab doesn't have is tried there before the rebuild builds it.
+10. **No catch-all yes.** A pass that doesn't know answers "unknown" or reports an error where the unknown arises. No `TAny`, no fuel that answers true, no `_ => true`, no limit that answers "exhaustive" or "finite". (ISSUES 2)
+11. **Facts as code, not comments.** A property of the code is written as a contract, invariant, law or lemma, where it is checked. Comments never claim what code does. Doc comments: one line or a few for each module, type and function; a comment elsewhere only to name or sketch an algorithm. A lint enforces it.
+12. **No names in the compiler.** Built-in types and functions are declared once in core; the compiler finds them by id, never by spelling. (ISSUES 4)
+13. **Specification first.** Shapes and contracts come before code: types, signatures with `requires`/`ensures`, laws and invariants, with `?hole` bodies. `check` and the vacuity checks confirm they fit and say something; then each hole is filled on its own (by a smaller model, given its signature, contract and the types in scope), and `verify` judges it.
+14. **Proofs, not tests, for the compiler's own laws.** Sugar pairs: `desugar(sugar(t)) == t` and back, proven on trees. Printing and parsing: `parse_tokens(tokens_of(t)) == t` by structural induction, then `lex(render(ts)) == ts` at the string boundary. The validator: it accepts a tree only when each node's type follows from its children's. Compiler data is shaped to be provable: no floats in trees (literals stored as bits), postorder arrays with index refinements, small functions. Tests remain for what touches the outside world.
+15. **Everything recorded structurally.** No line-based diff anywhere: diffs, tours, merges and history compare trees node by node.
+
+## Decisions in force
+
+- **Storage**: a module file is its syntax tree in the binary format (header first, interface before bodies, self-contained definitions, canonical). References by stable id: every definition, variant, method and impl has a 32-bit id per module, kept through edits, renames and moves; the header maps ids to names. Hashes are of the named encoding. No `strata.log`: git is the history, one commit per change by default.
+- **Bindings**: `x := value` (type inferred) or `x: Type = value` (type written). No `let`. `mut x := value`, `mut x: Type = value`.
+- **The stored tree is fully typed** (to settle in the spec, sections 2, 3 and 6): every node carries its type, through a per-definition type table that each node indexes. Type inference is sugar: the printer leaves out each type inference would rebuild exactly, under the round-trip law, and `view --types` shows all of them. An expression's type is written `(e: Type)` in the canonical text. Stored with it: the impl each method call resolved to, each generic instantiation, each literal's type, each conversion.
+- **Checking happens at edit** (to settle in the spec): `edit` validates a changed definition before it can be stored, and records a stamp, the interface hashes of everything the check relied on. A read compares stamps with the current headers and re-validates only definitions whose stamps differ (after a pull, a merge, a checkout or a fetched dependency). Proof evidence carries the same stamps. `check --full` re-validates everything, as an audit before releases.
+- **Names in the tree** (user, 2026-11-27): a definition is a `Definition`, never a `Decl`, and nothing that carries fields is called a kind. To settle in the spec: either `Definition` is a union of full records (`TypeDefinition | FunctionDefinition | TestDefinition | …`), each carrying the shared fields (id, name, `public`, doc), with code that needs only those using a structural bound (preferred), or one record of the shared fields with the specific part in a `body`. The module isn't stored per definition (the file gives it).
+- **Sums with shared fields** (user, 2026-11-27; notation to settle in the spec): the variants first, then `with` and the fields every variant has: `type Definition = | Function { params: … } | Type { shape: … } | Test { body: Expr } with { id: Id, name: Name, public: Bool, doc: Doc }`. Shared fields work on any value of the sum (`d.name`); the variant is the discriminator (no `kind` field); each variant is a type holding all its fields. Stored core form: a plain sum whose variants all carry the shared fields; the printer recovers `with`.
+- **One walker** (user, 2026-11-27): one tree interface and one family of traversals (fold, rewrite, find, walk with scope), used for every read or change of a tree in the compiler. A second walker exists only for a stated reason, named for it.
+- **Calls record what they resolved to**: each call node of the stored tree holds its target, the impl method, and for built-in types the primitive operation's id (`Add.add` on two `I64`s carries the primitive `i64.add`). Analyses read that field; nothing recognizes an operation by its name. Resolved once, at edit time, by stable id, in one of three forms: static (the exact impl method or primitive), through a bound (the method of a type parameter's instance, made concrete when the function is compiled for a type, while lowering to the mid-level IR), or dynamic (a trait value's method table).
+- **Values**: immutable by default; `mut` variables and `mut` parameters (passed in place, never aliased); no shared mutable references, no cycles (a language invariant: counting frees everything only because no value reaches itself).
+- **Errors are values**: `Result`, `Option`, `!`, `?`, `except`, `or`; no error conversion; a panic ends the program and can't be caught.
+- **Numbers**: sized integers `I8`..`U64` from L0, overflow a panic proven absent where possible (explicit wrapping methods); arbitrary-size `Int` the default for programs at L4, the compiler's own code on sized integers; decimal literals are exact `Real` unless a `Float` is wanted; f-strings interpolate, no format specs.
+- **Types**: records, sums (unions of variants or of types), generics with trait bounds, structural record bounds, refinement types, contracts. One impl per trait and type, with an orphan rule. Dicts are hash maps with no order. **Variance is inferred** (to settle in the spec, section 6): per type definition, from the polarity of each type parameter's positions (only in results and read fields: covariant; only in function parameters: contravariant; both: invariant; the polarity flips left of each arrow). Stored in the type's interface, so a change of variance is a breaking interface change. Immutable values make containers covariant; `mut` parameters are invariant; function types are contravariant in their parameters. Subtyping comes from variants in their sum, members in their union and refinements in their base. Replaces the lab's "every type argument is covariant".
+- **Effects**: capabilities are ordinary traits passed as parameters; no effect system, no monads. Purity is inferred (no capability, no `extern`, no `spawn`) and shown.
+- **Verification, two tiers, no external solver** (user, 2026-11-27; direction, settled in the spec): (1) static analysis on the typed tree, deterministic and in process at edit time: facts per node (ranges, nonzero, variant sets, lengths), difference constraints, linear integer arithmetic, structural termination; (2) Strata's own dependent type theory for the rest (laws, invariants, induction, quantifiers, nonlinear and bit-level reasoning), with a small trusted kernel that checks proof terms. Tier 1 emits proof terms the kernel checks, so it isn't trusted either. Generics are functions over types, `comptime` is evaluation during checking, refinements are subtypes, traits with laws are records of functions and proofs, and proofs are erased from compiled code. The proof language keeps Lean's shapes (`theorem`, `induction`, `rw`, `simp`, `omega`) so agents' Lean skill transfers. Z3 and Lean are not dependencies; Z3 may remain an optional aid while the kernel matures. Prototyped in the lab first: a kernel and tier 1 on a fragment.
+- **Concurrency**: structured, uncolored tasks (`scope`, `spawn`, `await`), channels, `select`, `race`, supervised tasks. Channels close by counting, never by hand (user, 2026-11-27): a channel closes when its last sender is dropped (dropped at its last use, so a sender passed to `spawn` is gone there), and `for v in rx` then ends; once the last receiver is dropped, `send` returns `Err(Closed)`. There is no `close`; a task that is done with a sender it stored passes it to a function that consumes it. The runtime reports a receiver waiting on a channel no sender holds. Replaces the lab's explicit `close`; tried in the lab first. No object is ever counted by two threads: no atomic counts.
+- **Memory**: reference counting, with scoped allocation from roots layered on it where proven (designed and measured in the lab first).
+- **std** lives in this repository and is its own work stream.
+
+## Solutions to the issues
+
+| Issue (ISSUES.md) | Solution | Layer |
+|---|---|---|
+| 1. Facts by name and text | Node ids: (definition id, postorder index). Every pass returns side tables keyed by node id: types, verdicts, roots. Checks are removed by node id. | L0 |
+| 2. Default to yes | Rule 10. Unification with an occurs check; bidirectional checking (expected types down, inferred types up); exhaustiveness in one place, on every `match`. | L0 |
+| 3. Walks that drift | One traversal interface per tree type (named slots, rebuild from children), generated; folds and rewrites over it written once; dependencies computed through it. | L0 (written by the lab's `strata`), generated at L6 |
+| 4. String-keyed tables | Stable ids for definitions, variants, methods, impls; rule 12. | L0 |
+| 5. Modules with many jobs | A small mid-level IR between the typed tree and LLVM: blocks, typed values, explicit `dup`/`drop`. Lowering, counting and memory passes are separate modules over it. | L0, counts at L2 |
+| 6. Terms as strings | SMT terms as a hash-consed datatype, printed once. | L1 |
+| 7. Termination | A body is used in a proof only once its termination is proven: structural recursion on sums first, then inferred measures, then `decreases`. One transparency decision. | L1 |
+| 8. Three verdict paths | One function from solver answers to verdicts. | L1 |
+| 9. Cache keys | Proofs keyed by the definition's interface and its callees' interfaces; a body only when it is seen through. Headers checked on read. | L1 |
+| 10. Specs not checked | Vacuity checks: a `requires` that never holds, an `ensures` implied by types alone. Spec changes shown apart in tours. | L1 |
+| 11. One thread per task | A green-task scheduler, single-threaded first; every wait through one park interface; a finished task freed when its handle is dropped. | L3 |
+| 12. One global flag | The runtime's invariants as contracts on core.runtime; one owner per allocator. | L0, L3 |
+| 13. A word per field | Fields and elements at their own size; `Array[T]` with records inline; `Option` of a pointer as a nullable pointer; flat trees with interned names. | L4, L7 |
+| 14. Invisible copies | Frozen values (immutable, never counted) readable by any task; copies reported per `spawn` and `send`. | L3 |
+| 15. Strings trust bytes | One boundary from bytes to text returning a `Result`; a byte buffer type. | L0 |
+| 16. Write before check | Every command that changes code: merge in memory, check, write the change atomically. | L5 |
+| 17. Edits reach outside | An edit touches only its definitions; dependencies fetched on request only; merges on trees. | L5 |
+| 18–20. std | The std work stream, ordered by the layers each module needs. | std |
+
+## Layers
+
+Each layer lists what it adds; nothing else exists yet.
+
+### L0: a compiler that runs programs
+
+- Types: sized integers, `Bool`, `String` (UTF-8 bytes, checked at the boundary), `List[T]`, records, sums, `Option`, `Result`, generics without bounds.
+- Code: `fn`, `:=`, `mut`, `if`, `match` (exhaustive), `while`, `for x in list`, `return`, `break`, `continue`, calls, string interpolation. Operators as calls of core's operations on built-in types.
+- Modules, `use`, `pub`, a package with `strata.toml`, path dependencies.
+- Capabilities `Console`, `Files`, `Process` as concrete types; `extern c` with contracts.
+- The compiler: lex, parse (with the sugar pairs that exist), resolve (ids), check (bidirectional, side tables), print, binary read and write, the mid-level IR, LLVM IR text, link with `clang`.
+- Node ids and the generated traversal interface (generated by the lab's `strata` until L6).
+- Runtime: one region for the whole run, no counting, about 550 lines of C.
+- Commands: `view`, `edit`, `check`, `build`, `run`.
+
+### L1: verification
+
+- Refinement types, `requires`, `ensures`, `old`, named results; the implicit checks (overflow, division by zero, index range, exhaustiveness) as obligations.
+- The fast tier at edit time (facts per node, difference constraints, linear integer arithmetic); measure which tier closes each obligation on core and std.
+- The kernel: proof terms for what tier 1 leaves; written proofs (`lemma`, `assert … by`, `calc`) elaborate to them.
+- Termination before transparency (Issue 7). Loop invariants derived, then written.
+- Written proofs: `lemma`, `assert … by`, `calc`; deterministic steps `reveal f`, `by compute`, `by nonlinear`, `by bits` (every `*` on sized integers is a nonlinear obligation).
+- Proven checks removed by node id; the rest stay run-time checks.
+- Vacuity checks; proof stability checks (shuffled and renamed queries) on core and std.
+- Evidence beside the tree, keyed by hash: verdict, solver version, resource use, unsat core (facts used), so a re-proof sends those first.
+- Fuzzing for what the solver can't decide, reported as fuzzed, never as proven.
+
+### L2: enough to compile itself
+
+- Traits, impls, methods, bounds; one impl per trait and type, orphan rule. Generics verified once (user, 2026-11-27): a generic function is proven over any `T` meeting its bounds, using only the bounds' operations, contracts and laws (parametricity), so the proof holds for types written later; compiled per type.
+- `Console`, `Files`, `Process` as traits; `mock`.
+- `Dict`, `Set` as hash tables; lambdas and closures; `Display`/`Debug`.
+- Reference counting on the mid-level IR, parameters borrowed by default (inferred per function).
+- Milestone: the compiler builds itself, fixed-point bootstrap.
+
+### L3: tasks
+
+- `scope`, `spawn`, `await` on a single-threaded green scheduler; every wait and I/O wait through one park interface; a finished task freed when its handle is dropped.
+- Channels (a lock per channel, closed when the last sender is dropped), `select`, `race` and cancellation, supervised tasks; deadlines that nested calls inherit; a CPU loop cancellable at its back edge.
+- Values crossing tasks are copied, or frozen and shared; copies reported.
+- `Clock`, `VirtualClock`; a seeded scheduler for `strata test`, std mocks of network and files that inject faults.
+- Pinning a task to one thread, for C libraries with thread state.
+
+### L4: numbers and layout
+
+- `Int` (arbitrary size), `Real` (exact rationals), `Float` (opaque in the solver, interval facts).
+- Fields and list elements at their own size; `Array[T]` with records inline; `Option` of a pointer as a nullable pointer.
+
+### L5: tools
+
+- `diff` and `merge-file` on trees, node by node; `find`, `refs`, `rename`, `move`, holes and pending changes; `--json` on every command.
+- One write path for every command that changes code (Issue 16).
+- Threading a value up the call graph (user, 2026-11-27): an edit-level refactor that adds a parameter (a capability, a config, a logger, an allocator, a deadline) to a function and every caller up the chain, until one already has a value of that type or `main` is reached; and the reverse comes from dead-code removal: an unused parameter is a warning naming the fix, and `strata fix --dead` removes it and repeats until nothing more is unused, so a whole chain of parameters that only passed a value on goes in one pending change. Signatures stay explicit (no implicit context). A recursive group gets it at once; a function used as a value, a trait method or a `pub` function crossing makes it a pending change (holes, or the trait and its impls changed, with its version bump).
+- Semantic versioning computed from interfaces and contracts: a stronger `requires` or a weaker `ensures` is a breaking change.
+- `strata new MODULE`: an empty buffer whose definitions are added to the module.
+- `doc`, `docgen`, `skill`, `tour`; an LSP later.
+
+### L6: compile time
+
+- `comptime`, `derive` (derivable traits in Strata, each derive proven once), `std.typing` with trees, not source text.
+- The traversal interface generated by `derive Tree`.
+
+### L7: speed and memory
+
+- The memory model as settled in the lab: scoped allocation from roots, loop bodies as regions, static uniqueness, in-place updates, small values in registers, borrowing from the parent scope across tasks.
+- Flat trees with interned names; LLVM, lld and Z3 in process; content-addressed caches; parallel passes; more cores for the scheduler.
+
+## Work streams beside the layers
+
+- **Sugar**: each form a parser rule and a printer rule with the round-trip law. Handlers (`!`, `?`, `except`, `or`, `!!`, `??`) first, then defaults and `..r` updates, ranges and indexing, comprehensions, `loop`, spreads.
+- **std**: `derive Json` on a sum writes its variant as `"type": "snake_case_name"` beside the shared (`with`) and the variant's fields (user, 2026-11-27; `type` is a keyword, so no field can collide with it; positional variants as `"value"`; key and names overridable on the derive; a variant rename that changes the JSON is reported). io, fs, process with L0; collections, json, toml after L2; regex (search, captures, replace, compiled once) after L2; http with supervised connections, deadlines and a connection cap after L3; web with the Elm architecture's commands after L3; byte buffers, paths, dates, terminal input; Linux releases.
+
+## Before L0: the spec, then phase 0
+
+**The spec comes first** (user, 2026-11-27): one document, as short as it can be while explicit about everything, that a person can read end to end and an agent can build the language from. Written section by section with the user, working through problems as they come:
+
+1. Lexical structure: tokens, literals, comments, layout.
+2. Syntax: the core grammar, and every sugar with exactly the core form it is stored as.
+3. The tree: every node, its fields, how definitions are stored.
+4. The binary format and hashing: files, headers, ids, the three hashes.
+5. Names and modules: resolution, imports, visibility, packages.
+6. Types: the type language, checking rules, generics, traits and coherence, unions and narrowing, refinements.
+7. Semantics: evaluation, values, mutation, errors and panics.
+8. Verification: obligations, contracts, termination, written proofs, what "proven" means.
+9. Concurrency: tasks, channels, `select`, `race`, cancellation, supervision.
+10. Memory: values in memory, counting, regions, what crosses tasks.
+11. The runtime interface and `extern c`.
+12. The core library: built-in types and operations, with contracts.
+
+A test of the spec: an agent (Fable) builds the language from it in one go, with the lab's `strata`. How far it gets says what the spec leaves out.
+
+Phase 0, done: `view` in reading order (#547), fast `diff` with `--json` (#544), PR tours (#546, #550). Left:
+- The lab bugs that lose code or prove false facts (BUGS.md, first entries).
+- Format trials in the lab: stable ids (#559) and the stored core (#562), merged and released.
+- In the lab: `strata new MODULE`; `strata diff` and tours node by node by default (the tree diff exists, #569).
+- The rules 10 and 11 tried in the lab: a lint for claim-style comments; the remaining `TAny` and default-yes answers replaced by errors in one module, measured.
+
+## Appendix: decisions recorded in the lab, to review
+
+The decisions the old IDEAS.md recorded as in force (origin/main 1799da47). The ones above take precedence; each of these is kept, changed or dropped as the spec is written.
+
+
+## Values, errors and mutation
+- Errors are values (`Result`, `Option`); there are no exceptions. A panic can't be caught and ends the whole program.
+- An unproven contract or refinement stays a run-time check; a proven one leaves the compiled code.
+- Partial operations (`xs[i]`, `/`, `sqrt`, `ord`) carry preconditions that `verify` discharges at each use.
+- No error conversion: `!` passes an error on only when it fits the function's error type (same type, a variant into its sum, a member into a union).
+- Values are immutable by default; mutation is declared (`mut` variables, `mut` parameters, `mut self`) and written back to the caller's variable.
+- `mut` is marked at the call site: `f(mut x)`, `mut q.claim(2)`; results are not places. `mut` arguments come after the other arguments.
+- References are second-class: a mutable reference exists only as a `mut` parameter, never stored or returned; no borrow checker.
+- A `mut` argument is passed by reference and may not overlap another argument (decided, not built).
+- A field may be a `mut` argument (`shift(mut r.lo)`), checked as the equivalent assignment.
+- Collections change through `mut` methods (`mut xs.push(x)`); new values are expressions (`xs + [x]`, `xs.sorted()`); one way to say each thing.
+- `d.keys()` stays a `List`; `d.key_set()` is the set.
+- Bindings and assignment as decided 2026-11-21 (`x := e`, `mut x := e`, `x = e`).
+- Mutation is in place whenever nothing else holds the value (Perceus-style counting with reuse).
+
+## Types
+- Sums and unions are one thing; variants are types; `match` patterns test them.
+- Refinements are structural; `type X = Y` with no `where` is an error; `distinct type` is nominal.
+- Dicts and sets are unordered (hash tables); iteration order is promised nowhere; hashing is deterministic.
+- No explicit type arguments at calls: inferred from the arguments and the expected type. A `_` left in type arguments is not an error.
+- Integers are arbitrary precision; sized integers (`I8`..`U64`) wrap; `/` and `%` are Euclidean; `Float` is never NaN or infinite.
+- Exact rationals (`Real`) for decimal arithmetic where asked for; `Float` a type of its own.
+- Strings are not iterable or indexable; units are named (`bytes`, `code_points`, `graphemes`); positions are byte offsets; `byte_slice` is total.
+- Ranges: `a..b` excludes `b`, `a..=b` includes it; slices use ranges; no negative indices; `xs[i]` requires the index in range, `get` gives an `Option`.
+- Special methods `@range`, `@slice`, `@step` and `by` steps (decided 2026-11-21, not built); `map`/`filter`/`fold` are ordinary iterator methods.
+- `??` / `or {}` only on `Option`, `!!` / `except {}` only on `Result`.
+- `Iterator` and `FiniteIterator` (a supertrait); `map`/`filter` lazy; collections give iterators through `xs.iter()`.
+- `Debug` (the value as code) and `Display` (readable form) are derived traits every type has, overridable.
+- Record field defaults: any expression with no variables, evaluated at each use.
+- Structural records `{ f: T, .. }` as a parameter type or bound; closed anonymous records `{ f: v }`; nominal records stay nominal; compiled by monomorphization.
+- Spread `f(...x)` fills parameters by name, positional arguments win; decided by the checker.
+- Proven `ensures` narrow a call's result type; the callee's proof is not part of its interface hash.
+- `static` values: decided against.
+
+## Contracts and verification
+- Contracts relate values; refinements say what one value is (a one-parameter `requires` is that parameter's refinement: warnings fixed by `strata fix`).
+- Named results need two or more elements.
+- `old e` in `ensures`; trait models, trait-level `invariant` and `ensures`; code never reads a model.
+- `assumed` contracts are trusted: proven or refuted by `verify`, never checked at run time unless asked.
+- `shared` traits: each method is one atomic step; one write to outside state per path.
+- Laws are checked per impl and are not facts for callers.
+- No written `flow` blocks: state graphs are generated.
+- `verify` and `build` never search for loop invariants; the search runs on `edit` and `fix` and writes what it finds; a `for` gets its `ensures` over the elements visited.
+- Regex refinements are proven over ASCII by default and say so; full Unicode on request (decided 2026-11-20, not built).
+- Proof budget stays at 2M rlimit units; a query that ran out of time is told from one that gave up by the units used.
+- `verify` never gives a real capability and never runs code reaching an `extern`.
+- Optimization only with `--release`.
+
+## Capabilities, effects and concurrency
+- No effects: capabilities are traits passed as parameters or held in fields; `mock T` implements a trait from its contracts.
+- A `capability` can't be mocked, only made by the runtime; its traits can. `mock` declares a test-only type.
+- Concurrency: structured tasks without coloring (`scope`, `spawn`, `await`, channels, `select`, `race`, supervised tasks, a `Clock`); no `async` functions.
+- Tasks get copies; no atomic counts.
+- A REPL line gets the REPL's own capabilities unless `--allow` says otherwise.
+
+## Memory
+- Reference counting with reuse; no cycle collector (immutable values make no cycles); no manual memory, no unsafe mode; the escape hatch is `extern c`.
+- Next steps remove counting where the compiler sees it isn't needed, chosen by measurement.
+
+## Modules, packages and storage
+- A package is a folder with a `strata.toml`; a file is a module; module name is its path in the package; `core` and `std` names are reserved.
+- Imports are Python-like: `use std.time`, `use std.time as t`, `from std.time use Clock`.
+- Modules meet only through `pub` contracts.
+- Code is stored as a binary tree (`.strata`); text only through edits; references stored qualified, shown short; format version stays 1 until settled; no backward compatibility.
+- Definition hashes are SHA-256, computed when stored, trusted on read.
+- Markup is stored as calls to `std.web`; escaping by construction; verifying markup is not a goal.
+- Output is deterministic (the bootstrap needs the same bytes twice).
+
+## Tools
+- Git stays the base; each change is a commit; `.strata/` is a local cache; no CI.
+- The cache is cleaned by hand, never evicted.
+- A failed edit writes nothing; `--as-given` writes anyway.
+- A merge conflict inside a definition is a hole `?conflict_N(ours, base, theirs)`; merges work on stored forms.
+- `view` shows definitions in reading order (imports, types, functions, tests; depth first).
+- `revert` overwrites; `history` shows diffs by default.
+- Run first, verify alongside; never compile as if proofs will succeed.
+- Live edits swap bodies only; an interface change is refused.
+- Rendered code wraps at about 80 columns; the viewer has two levels and no Flow view.
+- `strata doc` sections are written `PAGE#SECTION` only.
+
+## The format trials as recorded in the lab (stored core, stable ids, operators; merged 2026-11-27)
+
+Moved here from the old IDEAS.md when the planning files were split. Built in the lab; their "defaults picked" are decisions to review, their "found, not fixed" items are bugs to reconcile into BUGS.md.
+
+### The stored tree is the core language (REBUILD.md rule 7, §4b, §5b item 2; built, branch `stored-core`, but for what needs declarations: below)
+The parser stores sugar as the core form it stands for, and the printer shows the core form as the sugar again (module `sugar`: each form's builder for the parser and reader for the printer). The passes after parsing see only core for these:
+- **Handlers** `x!`, `x?`, `x except e { b }`, `x or { b }`, `x !! v`, `x ?? v`: a `match` with `$v`/`$e` names, which no program can write (`handler_match`, `handler_of`). A hand-written `match` of a handler's shape is stored as the handler (`canonical`): it is the same program and is shown as `r!` (rule 7). The checker types both alike, with the handler's rules (decision, can change): typed from the value; `!` returns only the function's own error type. Some messages changed with it: `match o { Some(n) => n, None => "z" }` in a `String` function now says "`or` fallback: expected `Int`, found `String`" (and "function body"), not "match arm".
+- **Ranges** `a..b` → `range(a, b)`, `a..=b` → `range(a, b + 1)`; **elements** `xs[i]` → `at(xs, i)`; **slices** `xs[a..b]` → `slice(xs, a, b)` (`0` and `len(xs)` for missing ends, the list named `$sliced` first unless it is a place); **element assignments** `xs[i] = v` → `xs = set_at(xs, i, v)`, nested, through fields (`$elem_k` copies) and with indexes named once (`$index_k`); **comprehensions** → `map`/`filter`/`fold` with lambdas (`$acc`, `$item`), wrapped in `set`/`dict` for `Set {…}`/`Dict {…}` ones; **`Dict` and `Set` literals** → `dict([(k, v)])`, `set([x])` (with type arguments: a `$lit` let); **`loop`** → `while true` (messages still say `loop`: `text.while_head`). These were `desugar.unsugared`; the parser now does it, so `desugar` no longer does.
+- **A function can't take a builtin's name that sugar calls** (`range`, `at`, `slice`, `set_at`, `dict`, `set`, `map`, `filter`, `fold`): `capabilities` refuses it, so `xs[i]` in a module never calls the module's own `at`. Renamed for it: `eval.at` → `element_at`, `parallel.map` → `map_parallel`, `std.json.at` and `std.toml.at` → `at_path`, `std.regex.at` → `error_at`. Can change (a qualified builtin name instead).
+- **`ast.Expr` lost `Try`, `Except`, `Fallback`, `Range`, `Index`, `Comp`; `Stmt` lost `Loop`; `CompKind`, `CompFor` are gone.** `DictExpr` and `SetExpr` stay, for the dict and set values compile-time code gives back (`compiler/eval` represents values as literal code); the parser never writes them, and `desugar` turns those values into the calls. Old binary tags (24, 25, 27, 28, 29, 32, statement 5; 30 and 31 for literals) are read as their core forms, never written, so `diff`, `tour` and merges across the change read older files. Every `.strata` file is re-encoded.
+- **What stays recognised after parsing**, as fast paths or messages on core forms, not a second representation: `check.infer_handler` and `narrowed_in`; codegen's `try_want`, `except_expr` (and the general `match` for a constructor, as `setting(k) ?? d` leaves: `except_expr` compiled an unknown type to a variable never stored, which std.python had worked around), `result_kind`, `escapes`, `sub_exprs`; `smt.try_value`, `fallback_value`; capabilities (`!` in a task, noalloc sites); derive (`comptime v.name ?? ""`); exhaustive; graph; termination (`while true` without `decreases` is a bare `loop`); roots (a comprehension makes a list).
+- **The law** `parse(print(t)) == t` holds on every `.strata` file of the repository (125): `tools/roundtrip.sh` prints each module, reads it back into a copy and compares the trees. `--fix` stored files again where they held trees their text doesn't (66 times over both steps) (docs rewrapped to the width, `Block { stmts: [], last: e }`, hand-written handler matches). Fixed on the way: `(-1).abs()` was printed `-1.abs()`; core's `Option` and `Result` were shown as unions of member types in a view of the core folder (`resolve.union_members` now leaves core's own sums alone); `strata upgrade` dropped core's dependency lists (it now lists them as `edit` does). `sugar.handler_match` ensures a parser-made handler is read back as itself (proven for its kind, error name and fallback; the whole tree fuzzed: the solver doesn't model floats in `Expr`).
+- **Measured** (origin/main d69135bc built by itself vs this branch's fixed point, same machine, loaded by other agents; `/usr/bin/time -l`):
+  - compiler/ source, as `strata view` prints it: 127,348 → 126,613 lines (−735). The passes after parsing (all but ast, binary, parse, text, desugar, sugar) held 893 lines of arms for the sugar nodes; 323 lines now recognise a core form's shape (above), so 570 fewer. Per pass, before (arms) → now (recognition): check 231 → 111, roots 67 → 1, eval 64 → 4, smt 60 → 39, locate 59 → 0, capabilities 55 → 30, codegen 50 → 37, walk 48 → 0, mutability 41 → 0, resolve 39 → 0, pending 33 → 0, unique 32 → 1, declarations 27 → 0, exhaustive 25 → 42, termination 17 → 3, main 10 → 1, store 10 → 0, contracts 8 → 0, derive 6 → 40, unused 5 → 0, graph 3 → 13, views 3 → 0. `desugar` 1,464 → 1,168 lines; `sugar` is 817 (both directions), `text` +144, `parse` +21. (The total also counts views made shorter: hand-written matches now print as handlers.)
+  - `strata --file compiler check`: 5 runs each, median 5.16 s → 4.72 s (noisy: 4.7–5.8 before, 4.6–6.9 after); its `--timings` desugar phase 0.39 s → 0.33 s, decode 0.37 s → 0.39 s; peak memory 489 MB → 566 MB (+16%: the core trees are bigger, compiler/ and std/ files 4,056 KB → 4,168 KB).
+  - `build compiler --no-verify --release` with an empty cache: 37.0 s and 52.1 s before, 40.0 s and 48.6 s after: no difference above the noise; peak memory 2.1–2.3 GB both.
+  - `verify` of std.utf8.decode, std.collections.balance, std.regex.smt_ranges, std.toml.lookup `--no-cache`: 1.51 s → 1.54 s (3 runs, medians).
+- **Bootstrapping:** a strata from before this change can't build these sources (its codegen can't type `match get(out, i) { Some($v) => $v, None => (0, 0) }`, its derive reads `comptime Self.name ?? ""` as a type match). Bootstrap from a strata of this branch (`STRATA_SEED`); the next release is a seed again.
+
+- **Dict and set values** (second step): `DictExpr` and `SetExpr` are gone. `compiler/eval` writes a dict value as `dict([(k, v), …])` and a set as `set([x, …])`, the calls the parser makes of the literals (`eval.dict_value`, `set_value`, read back by `dict_entries`, `set_elems`), and so do codegen's reader of compile-time values and smt's counterexamples; `desugar.unsugared` and `derive.as_code` are gone with them.
+- **Field defaults and updates are core forms, stored as written** (user, 2026-11-27; REBUILD.md §4c). `T { names }` is stored without its defaults and `T { ..r, f: x }` as written (the record first, as a field named `..`: `sugar.update_field`), and `desugar` lowers both with the records' declarations of the moment (`desugar.records_lowered`: defaults filled in, every other field copied from `r`, a base that isn't a variable named `$base` first). Storing them lowered went stale: a record that gained a field left its stored updates copying the old fields, and storing such a tree again filled the new field's default (`Gen.live`, `diff.Item`). Now a field added to a record is filled or copied in every constructor with nothing stored again (`cli-record_defaults_and_updates_are_stored_as_written`). The in-place win stays: codegen still compiles the lowered `x = T { f: v, g: x.g, … }` as `x.f = v` (`build-record_update_is_in_place`: 1 allocation for a million updates). `resolve.raised` no longer shows constructors as updates or without defaults: the tree is what was written.
+- **Key paths stay lowered when stored** (`T.f` is `KeyPath { name: "f", get: ($r: T) -> $r.f }`): it names only `T` and `f`, not the record's other fields, so a field added doesn't make it stale. If `T` gains type parameters or loses `f`, the stored key path no longer checks, which `check` reports.
+- **Spreads are sugar** (user, 2026-11-27): `edit` stores `f(a, ...x)` as the call written out, `f(a, x.b, x.c)`. `resolve` stores each definition with `check.spreads_resolved` (it infers the records spread, so it has the types), then renames the values it bound `$spread0`, `$spread1`, … in the order a walk meets them (their names held the argument's position, which moves when a spread is shown written out). A spread in error is stored as written, the call `...(x)` the parser gives (`sugar.spread_of`), for `check` to report. `ast.Expr` lost `Spread`, and every pass its arm (21 modules). Shown again (`resolve.raised`): as `f(...x)` when every argument is a field of the same place (`x`, `x.a`) named like its parameter, the callee's parameters taken from the declarations (`spread_params_of`: a function by its qualified name, a method by its name when every method of that name has the same parameters); as `...make()` for a value bound first, which needs no declarations (`sugar.spread_block`, also in `text.unlowered` for a single file's view). Other calls with spreads are shown written out (`with_fee(5, o.qty, o.price, 1)`): decision, can change. So a hand-written `method_of(f.name)`, where `method_of`'s parameter is `name`, is shown `method_of(...f)`: it is the same tree (rule 7). A call shown that way is read back without types when the types aren't known (`sugar.spread_written`: a merge stores a module alone), since one spread of a place by itself fills every parameter from it.
+- **In place**: codegen compiles the lowered `x = T { f: v, g: x.g, … }` (every other field copied from `x` itself, a plain record type) as `x.f = v` (`codegen.record_update`), so a record only `x` holds is changed in place by `set_field_in_place` instead of copied whole. Measured: `p = P { ..p, n: p.n + i }` a million times makes 1 allocation (1,000,001 before), `set.here` in the IR (`build-record_update_is_in_place`). With several fields given, only when none of their values reads `x` (decision, can change).
+- **Named results and `extern python`** (second step), stored by `resolve` too (each needs only its own definition, but after resolution, as desugar did): `ensures` name the results as `it.0`, `it.1` (`sugar.results_lowered`), shown by their names (`results_raised`; a hand-written `it.1` is shown as `high`, the same tree); an `extern python` function is stored as the function calling the worker (`sugar.python_lowered`) and shown as the declaration when its body is exactly that call (`python_raised`). Checks on the declaration (`capabilities`: not `pub`, no type parameters, JSON types) and resolution of a stored one see it through `python_raised`, so std.python's private functions in its body are not refused.
+- `desugar` keeps trait models and mocks, refinements named as aliases, mixed unions, and the lowering of field defaults and updates (core forms).
+
+Not done, with why, in order:
+1. (done: spreads, above.)
+2. **Generators that add definitions** (not built; plan below, under "Generators stored").
+3. (done: field defaults and updates are core forms, lowered by `desugar`, so a record gaining a field no longer leaves stored updates stale.) Found by the change: `codegen.restore` and `check.lower` had been stored written out before `Gen.live` and `Types.narrows` were added on main; their defaults (`false`, empty) were filled in silently. That was `cli-run_live_frames`' failure: after `restore`, `g.live` was `false`, so `check_small`'s entry check was left out once every caller proved it, though the old frame still called it. Both are updates again; a comparison of every definition's updates with main's found no other.
+4. Patterns as parameters were already lowered by the parser (`$pN`, `text.lambda_view`); dot-chaining across lines is layout, nothing stored.
+5. Found, not fixed: `cli-smt_proves_nested_quantifiers`' `stray` is now found by the fuzzer before the solver (the case accepts either); not looked into.
+6. Found and fixed while merging: an earlier merge on this branch had dropped `Loaded.deps` from `main` (main's `check_keys` needed it). Gotcha: the merge driver reported none of it; comparing each definition three ways by its text (base, ours, theirs) showed every change of main's was in.
+
+**Generators stored (plan, not built).** Each of the four makes definitions or copies from other definitions, so storing it means keeping generated parts in step with their source. The common part, built once and used by all four: a stored definition (or a copied clause) carries a mark naming its source (`generated_from: Option[String]`, or `Assumed`-like `From(trait, e)` around a copied clause); `view`, `find`, the map, `refs` and diffs hide what is marked; `edit`, `--rm`, `rename`, `move` and the merge driver work on sources and regenerate what is marked from them (a pending change when the source is in another module). In order of cost:
+1. **Mixed unions**: `type Shape = Circle | Square { side: Float }` stored as the union `Shape = Circle | Shape$own` and the sum `Shape$own` (marked from `Shape`). The printer prints `Shape` with `Shape$own`'s variants inline. An edit of `Shape` replaces both (and removes `Shape$own` when `Shape` stops being mixed); `--rm`/rename take both; a merge regenerates `Shape$own` from the merged `Shape`. Cost: the mark, hiding in the views, and regeneration in `edit`/merge; `desugar.mixed_unions` (56 lines) goes.
+2. **Refinements as aliases**: `List[Int where it > 0]` stored as `List[$where_<hash of the text>]` with a marked alias per module, so the name no longer depends on other modules (today `$where_k` is numbered over the whole program). The printer prints the alias's refinement inline. An edit regenerates the module's aliases from its definitions (unused ones removed). Two modules with the same text get two aliases: their types must still be equal (`check` compares an alias to its refinement), which needs `$where_<hash>` aliases to be compared by text, not by name.
+3. **Mocks**: `mock T` stored as the marked `$mock_T` type and impl, in the module of the first definition that uses it. An edit of `T` (a method added) regenerates every `$mock_T`; an edit removing the last `mock T` removes it. Across modules this is a pending change like a breaking edit.
+4. **Trait models** (the hardest): `model m: T` stored as the method `fn m(self) -> T`, and each trait `invariant`/`ensures` copied into every `impl`'s methods and every function taking a value of the trait, each copy wrapped in a mark naming the trait and the clause (`From("Bounded", 2, e)`). How an edit of a trait updates the copies: the trait's edit is a breaking change over every impl and user, in any module, so it opens a pending change (as a changed signature does) whose fill is automatic: for each marked copy of that trait, replace it with the clause of the new trait (by index; a removed clause removes its copies, a new one is added to each), then re-check; a hand edit of a copy is refused (it isn't the source). How the printer strips them: a clause marked `From(trait, k, e)` is not printed; a method made from a model is printed as `model m: T` in the trait and `model m = e` in an impl. The law then holds when the reader regenerates the copies from the trait, which needs the trait's declaration at store time (it has it: `resolve` sees the program). Cost: every pass that reads contracts must see through the mark (as `Assumed` today), and the merge driver must regenerate copies after merging a trait.
+
+### References by stable id (REBUILD.md §3b, §5b item 1; built, branch `stable-ids`)
+Every definition and variant has an id, references in the stored tree hold ids, and each module file's header says which name each id has (docs/binary-format.md, "References by id"). The text form doesn't change. Defaults picked, each can change:
+- **An id is 32 random bits, never 0, unique within its module** (the user, 2026-11-26; a `U32`, `ast.Id`, never held in an `Int`, which is a machine word only in [-2^62, 2^62)). A reference names a module and an id (`ast.Key`), so 32 bits are plenty: the repository holds 7,174 ids (6,647 definitions, 527 variants); the largest module 673 (compiler/codegen), the largest package 4,834 (compiler/). The chance that two random 32-bit ids meet, summed over every pair that must differ: 2.0e-4 for the whole repository with ids unique per module (5.3e-5 for codegen alone), against 2.9e-3 per package and 6.0e-3 across the repository. A collision is caught where it can be: `edit` (any write: `assign_ids`) draws again when the module already has the id; the decoder refuses a key given twice in a file; merge-file, when two definitions of the module come with one id (one from each side), keeps it for the first, draws another for the second and says so (`rerolled`), and a module written apart that still refers to the second by its old key and name reads it by its name (`owner_names`). The width is `ast.Id`, `binary.id_bytes`, `byte_id`, `new_id` and c/cache.c's `binary_new_id`.
+- Found on the way: `cmp_helper` ordered no sized integer (every two compared equal: a `Dict`/`Set` keyed by one found every key, `sorted()` did nothing); fixed on this branch. The prover writes a query that mixes sorts (`Int` and `U32`) for a record field of a sized type (`binary.encode_module_kept`'s `e.offset + e.size`: "the prover wrote a query that mixes sorts"): not fixed, the function is fuzzed.
+- A move is another key: what refers to the moved definition is written again by `move`; code written apart from the move still names the old module, so `sync` puts the moved definition back and moves it again over the merged code (as before ids), and `diff` reports a move from the log, not by id.
+- **Not part of the hash.** `hash`, `interface_hash` and `code_hash` are of the *named* encoding (each reference as its name), as before ids. Reasons: every cache keyed by them (verdicts, compile-time values, std's library, closure keys) keeps its meaning, names included (codegen symbols, `Self`'s name in derived code); and "did this change" stays what text shows. So a rename changes the renamed definition's hashes and its users' (their text changes) but not the users' stored bytes. A store keyed by id-encoded bytes would make renames free for caches too, but every cache would have to stop depending on names first.
+- **Each file has its own copy of the names it refers to** (`refs` in the header), so a file reads alone (`git diff`'s textconv, `merge-file`, `header`). The module that has an id names it: a package is read with every module's header first, and a reference is read as its owner names it. A rename therefore rewrites the header of each module that refers to the definition (one name each), none of their definitions.
+- **What is written by id**: names that can refer to a definition (variables, constructors, types, patterns, `is`, an impl's trait, derives, `from m use x`, a definition's and a variant's own name). Methods, fields and locals stay text. A bare name (root module) that the definition also binds anywhere (a parameter, a local, a field, a type parameter, `self`/`it`) stays text: the encoder has no scopes, so a definition binding `total` refers to a root `total` by name. Found by a first, named encoding pass that collects the names bound; the second pass writes ids.
+- **std's ids for a package's references** are known for the names some module of the package already refers to (their headers' `refs`), and for all of std in `strata upgrade`. A first reference to a std name added by `edit` is text until then.
+- **diff**: pairs by id first (`diff.id_renames`, added to the logged renames), so a rename squashed with a body change, a moved definition and a renamed variant are reported exactly, with no log.
+- **merge-file**: each id reads by one name on the three sides (the name a side changed it to, ours first; else the working tree's owner's; else the base's), then the definition-by-definition merge runs as before. The rename guessing (`merge.renames`: similar body, the other side's code following) is gone. Two new definitions of one name on the two sides have different ids: a conflict, "a name clash". Identical text from both sides still merges (same definition, ours' id).
+- **sync after a move**: references follow by id, so `follow_move` only moves the imports (`from orders use charge` → `from billing use charge`).
+- **Format**: the header gets `variants` and `refs` (id and qualified name) and each entry an id; these, in that order, are the file's id table, where each 8-byte id is written once. A definition's string table item is one `uint`: twice a text's length (then its bytes), or twice an index into the file's id table plus one, so a reference costs 1 byte (the first 64 ids) or 2 (up to 8,192), where a name cost its length plus one in every definition using it. A definition's bytes therefore depend on its file's table: writing a module again rewrites the string tables of the definitions it keeps (`Part`, `stored_parts`, `part_bytes`); the rest of their bytes is copied.
+- **Size** (the repository's 124 module files, after merging origin/main): main 4,520,260 bytes; 8-byte ids in each definition's table (this branch's first version) 4,658,123 (+3.0%); 8-byte ids in the header only, references as indices 4,222,700 (−6.6%); 4-byte ids, references naming their module, now 4,185,702 (−7.4%). Of that: definitions 3,630,799 → 3,174,312 (−456,487: a reference to another module, `model.TaskId` written in each definition's table, is 1-2 bytes); headers 889,461 → 1,011,390 (+121,929): 6,647 entry ids (27 KB), 527 variants (4 bytes of id and an index into the header's strings, about 3 KB), 4,461 references (an index for the module, 4 bytes of id, an index for the name: about 27 KB), and those variants' and references' qualified names, once per file (about 65 KB).
+- Converting: each format change was done with a strata that read both formats for one commit (`STRATA_READ_V0`, `STRATA_READ_V1`, `STRATA_READ_V2`), removed in the next. Bootstrapping from a strata older than this branch takes a chain of seeds, each built by the one before (the chain this branch was built with): d73be6f8 (reads the format of main), cc0f1bd8, ec458456 (the first id format, sized integers ordered), 453b53f8 (references as indices), 1e20556c (4-byte ids, keys), which builds the branch's head.
+- Left, in order: (1) a rename merged from another branch is captured by a local of the new name in a root-module definition that also binds it (bare names stay text there, but a definition written by id that later gains such a local isn't rewritten): detect it on load; (2) `strata resolve FILE` gives the module new ids (the text it reads has none): take them from `git show HEAD:FILE`; (3) the edit path doesn't know std's ids for a first use; (4) ids of trait methods and fields, so their renames are free too; (5) a hash of the id-encoded bytes for "did this definition's stored bytes change", if a use appears.
+
+### Operators are trait methods (user, 2026-11-26: REBUILD.md §5b item 8, rule 7; built, branch `operators-traits`)
+`a + b` is `Add.add(a, b)`: an operator is a call of a trait's method, and a type gets the operator by implementing the trait. No special methods (this replaces the `@add` plan in "Derived traits, `comptime` and special methods").
+- **The traits** are core's, in `core/ops.strata` (a code module, global like `core.iter`): `Add`, `Sub`, `Mul`, `Div`, `Rem` (`fn add(self, other: Self) -> Self`, ...), `Neg` (`fn neg(self) -> Self`), `Eq` (`fn eq(self, other: Self) -> Bool`), `Ord` (`fn lt`; `le`, `gt`, `ge` default methods from it). Core implements them for `Int`, `Float`, the sized integers, `String` (`+`, `Eq`, `Ord`), `Bool` (`Eq`) and `List` (`+`), each body the operator itself (`self + other`), so generic code takes the built-in types (`total[T: Add]` on `Int`s).
+- **The stored tree has no arithmetic or comparison nodes.** The parser writes `a + b` as `Call(Var("Add.add"), [a, b])`, `-a` as `Neg.neg(a)`, `a != b` as `!Eq.eq(a, b)`; the encoder writes any such node it is given as the call (the invariant search and `fix` build nodes); the printer shows the calls as operators, with the same precedence and line breaking as before. The callee names are never resolved (`resolve.call`), so a module's own `Add` (the compiler's `ast.Add`) can't capture them. `strata upgrade` re-encoded every file; the format version stays 1.
+- **No operator nodes after parsing** (user, 2026-11-26, second round). `desugar` leaves the calls as they are; the checker, the prover, the code generator, termination, the state graphs and the ownership analyses work on `Add.add(a, b)`. Where a pass reasons about arithmetic as such (the checker's types and interval reasoning on refinements, the solver's encoding, loop bounds and invariant candidates, `/` and `%` that can fail, overflow checks and in-place `xs = xs + [x]`, whether a variable escapes, uniqueness), it reads the call through `operators.lowered_node`: a view of the call as the operator, made on the spot (a few string comparisons, nothing allocated), never stored. About 50 functions do; they kept their logic and changed only what they match on, which is what keeps proofs and code as they were. A few places matched a call generically and had to learn that an operator's call is not a function call: the wait graph (`codegen.wait_edges`: no cancellation points around `+`), `escapes` (`x + 1` doesn't let `x` escape), `unique.ex`, the runtime-call and `noalloc` rules, short names in messages, `calc` steps. What still builds `Binary` nodes for arithmetic are about 15 internal constructions (the prover's and termination's own terms, list built-ins' contracts in `builtins.changes_as`, a lint fix, refinements the checker makes for floats): the views take them as they take calls, and they never reach a file (the encoder writes calls). Turning them into calls is cosmetic, left.
+- **Intrinsics, generic over a family** (user, 2026-11-26, third round). core.ops declares 29 `builtin fn`s, one per operation and family: `integer_add` … (`Int`), `sized_add[T: SizedInt]` … (the sized integers: `SizedInt` is a built-in trait with no methods, implemented by `I8` … `U64`), `float_add[T: SizedFloat]` … (`Float`), `string_add`, `string_eq`, `string_lt`, `bool_eq`, `list_add`; each family has `add sub mul div rem neg eq lt` (`Ord`'s `le`, `gt`, `ge` come from its defaults). The impls are blanket impls, one per trait and family: `impl[T: SizedInt] Add for T { fn add(self, other: T) -> T = sized_add(self, other) }`; `Int`, `String`, `Bool` and `List` keep one-line impls. The checker supports such impls for bounds (`total[T: Add]` on `I32`) and, with one change (`code_method_problem` lets a sized integer's method through), for method calls (`b.add(5)` on a `U8`); code generation never calls them, so it needs no support for impls over a type parameter (it has none: a user's `impl[T: Fam] Show for T` checks but doesn't compile yet, `x.show()` is "not compiled yet"). An intrinsic's call reads as its operator everywhere (`lowered_node`), on the concrete type of its operands, so the code generator picks the width and signedness (`add i32`, the `I64` overflow helpers) and the prover the encoding for that type, as before. `Int`'s are `integer_*` because core.int's runtime functions are `int_add`, ...; `Float`'s `float_*` because core.mem's `f64_rem` is C's `fmod`. The printer shows an intrinsic's call as the call (`shown_node` shows only the trait calls as operators). `a + b` on two `Int`s compiles as the intrinsic directly, which is core's impl inlined; generic code calling `x.add(y)` on a built-in type is the operator inline too (`codegen.builtin_operator`).
+- **No overhead, measured.** The LLVM IR `strata build --emit-llvm` writes for five programs (`Int`, `I32`/`U8`/`I64`/`U64`, `Float`, `String` and `List`, and a tight loop over `Int`, `I64` and `Float`) is the same line for line before (origin/main's strata) and after, hashes masked. The loop at 30 million iterations: 3,772,225,268 instructions retired before, 3,777,690,358 after (the same code; the difference is the process around it). Compile time, in instructions (the least of three runs; the compiler checked is each side's own, so it grew with this change's code): `strata --file compiler check` 85.6 billion on origin/main, 91.8 billion with one intrinsic and impl per type (118 and 85), 91.2 billion with the families (29 and 30): +6.6% over main. `check` of a 10-line program: 0.570 billion on main, 0.700 billion per type (+23%), 0.621 billion with the families (+9%): the fixed cost of reading core.ops fell by more than half. Building the compiler from a cold cache, with one per type: 987.6 billion before, 1,022.9 billion after (+3.6%). Cutting the rest (left): make the built-in types' impls implicit, as `Debug` is for every type, or cache core's checked form (L7).
+- **Operands of two types** (user, 2026-11-26). An arithmetic trait takes arguments in an `impl`: `impl Mul[Int, Money] for Money { fn mul(self, k: Int) -> Money }` (the right operand's type, then the result's), `impl Mul[Float, Vec2] for Vec2`, `impl Mul[Vec2, Vec2] for Int` (`3 * v`). Without arguments it is `Self` on both sides, as before. Built as a desugaring: such an `impl` becomes the function `$Mul$Money$Int(self: Money, k: Int) -> Money` (`desugar.mixed_lowered`), since the lab allows one `impl` of a trait per type (`impl Scale[Int] for P` next to `impl Scale[Float] for P` is "already implemented") and none of a type's own methods on `Int`. What the checker infers: it types both operands first (an integer literal beside a value of another type stays an `Int`), and when their types differ and an `impl` joins them (`$Mul$` + the left type + `$` + the right type), the operator is that function's call and has its result type (`m * 4 + m` is `Money`, `3 * v` is `Vec2`); otherwise the rules above. `verify` proves the `impl`'s contract as that function's (shown as `$Mul$Money$Int`) and uses it at the call (`triple(m) = m * 3` proven from it). Limits: one `impl` per pair of types and operator; types joined by their names (`List[Int]` is `List`); no bound `T: Mul[Int, T]` in generic code yet; `==` and `<` stay `Self` on both sides.
+- **User types.** `check.operators_resolved` (run with the spreads, before checking) infers each function that uses an operator, only when the program implements an operator trait for a type of its own or bounds a type parameter by one, and writes an operator on such a type as the method's call: `a + b` on `Vec2`s is `a.add(b)`, `a > b` is `a.gt(b)`, `a != b` is `!a.eq(b)`, `-v` is `v.neg()`, in bodies and contracts. Everything after sees an ordinary method call. Without an `impl` it is an error (`` `<` on `P`: it needs `impl Ord for P` ``); `==` without one stays the structural comparison.
+- **Proofs.** A trait method's call with the receiver's type known now uses that `impl`'s `ensures` as well as the trait's (`smt.with_impl_contract`), so `double(m) = m + m` is proven from `Money.add`'s contract. This holds for any trait, not only operators (it was missing before: `m.plus(m)` on a user trait proved nothing).
+- **Defaults picked (each can change).** (1) The traits are declared over `Self`; an `impl` gives the right operand's and the result's types as arguments when they differ (`Mul[Int, Money]`), since the lab has no default type parameters. (2) `%` is `Rem.rem`. (3) `!=` has no method of its own: it is `!Eq.eq`, and `!(a == b)` is shown as `a != b` (the same tree). (4) `Ord` is `lt` plus defaults, with no `Ordering` type; `compare` stays the total order `sort` uses. (5) Every type has `==` built in (structural); an `impl Eq` is used where `==` compares two values of that type or of a type parameter bound by `Eq`; lists, dicts, `contains` and `sort` still compare part by part. (6) `&&`, `||`, `==>` and `!` stay core forms (they skip their right side); the bit operators `& | ^ << >>` stay nodes for now. (7) Writing `Add.add(a, b)` by hand is a static call on a type named `Add`, which isn't supported: write `a + b` or `a.add(b)`. (8) An operator on a type parameter becomes the bound's method (`a.add(b)`), which on a built-in type compiles to the operator inline.
+- **Cost** (measured on this machine while other agents ran, two runs each, alternating, so noisy): self-compile from a cold cache 70.6 s and 46.9 s before, 69.0 s and 64.8 s after (an earlier "before" run: 79.6 s); warm 7.6 s and 4.6 s before, 4.6 s and 5.0 s after. `verify --no-cache` of std: `std.utf8.*` 4.6 / 2.4 s before, 2.7 / 2.7 s after; `std.time.*` 2.0 / 1.3 s before, 1.4 / 1.7 s after; `std.json.quote` 1.9 / 1.3 s before, 2.3 / 1.7 s after, the same verdicts (all proven). The LLVM IR of a program of `Int`, `I32` and `String` operators is the same line for line. Within the noise, no change. A program without operator `impl`s of its own pays nothing more in the checker; one with them infers each function that uses an operator once more.
+- **Bootstrapping.** The compiler's own sources now store operators as calls, which a `strata` from before this change reads as calls of unknown functions: bootstrapping needs a seed built from this branch (or a release made after it merges). The latest release can't build `main` until then.
+- **Not yet**, in order: (1) generic bounds with arguments (`T: Mul[Int, T]`) and two `impl`s of one trait per type in general; (2) laws on the traits, proven for each `impl` (`Ord` irreflexive and transitive, `Eq` an equivalence, `Add` associative where it is); (3) an `impl Eq` / `impl Ord` used inside containers and `sort`, with a `Hash` that agrees with `Eq`; (4) the bit operators as traits; (5) the prover seeing through a trait's default method (`ge` from `lt`) instead of needing the `impl` to state it; (6) the evaluator (`compiler/eval`, compile-time code) dispatching operators on user types; (7) explicit `Add.add(a, b)` calls.
+
+
+### The format trio merged: stable-ids + stored-core + operators-traits (2026-11-27; built, branch `format-trio`)
+How it was made: every module viewed as text with its own branch's strata (`view --proofs`); merged definition by definition against each merge base (stable-ids, then stored-core, then operators-traits onto main), imports as sets; stored with a compiler built from the merged text by stored-core's strata (given stable-ids' `codegen.cmp_helper`: without it a `Dict` keyed by a `U32` finds every key, and the merged compiler hung reading headers); stored again with that compiler from the text, `strata upgrade`, bootstrapped. stable-ids' seed chain (d73be6f8 …) wasn't used: it can't read main's newer trees (structural records, `Real`), and the text route needs no old reader.
+What the composition needed:
+1. An operator's callee (`Eq.eq`) is written as its name, not by id (format-stack's fix).
+2. Nameless updates `{ ..x, f: v }` and a type parameter's `T { ..x }` (main's structural records) in stored-core's form, a constructor whose first field is `..`: `desugar.records_lowered` leaves them for the checker, and `check.infer_untagged`, `codegen.construct_want`, `smt.ctor` read them (main had them as `UpdateArgs`).
+3. `extern rust` / `extern ts` (main) through `sugar.python_lowered`/`python_raised` (`ast.foreign_of`).
+4. sugar's builders and readers use operator calls (`applied`, `lowered_node`): `a..=b`'s `+ 1`, a comprehension's `$acc + …`, `xs[f()] += 1`.
+5. `check.types_of` and codegen's `Shape { params: t.params, … }`: stored-core had stored them as `Shape { ..t, … }` from a `TypeDecl`, which lowers to a copy of fields the base lacks (`written`, main's).
+6. `resolve`: a spread in a method body, which `check.spreads_resolved` doesn't write out, is read back by the callee's parameter names (`strata upgrade`, which prints and reads back, stored std.array's `count(...self)` and std.orm's `quoted(...c)` as errors).
+Found, not fixed:
+1. In the runtime's own check (`main.core_rt_text`), `raw_alloc(1024 * 24)` is refused: an operator call of two literals is an `Int` where a builtin wants an `I64` (a plain function's argument is fine). core.rt writes `raw_alloc(24576)`.
+2. (fixed with #617) sugar is stored calling the built-ins by core names, `$core:at(xs, i)` for `xs[i]` (and `range`, `slice`, `len`, `set_at`, `map`, `filter`, `fold`, `dict`, `set`), which no local or function can take over; `desugar.core_refs_kept` gives each its own name back where nothing else has it. So a function may be named `at` again (stored-core's rule against it is gone). A call written `at(xs, i)` is a plain call, shown as written.
+3. (fixed) `std.agent` didn't round-trip, on main too: `resolve` named a mixed union's member type (`| ToolCall`) as a variant too, `std.agent.ToolCall`, so each store added a `std.agent.` (six by the time std's library stopped building).
+4. An assertion's message shows a record update lowered (`p == Point { y: 3, x: p.x }`, was `Point { ..p, y: 3 }`): `desugar.records_lowered` runs before codegen prints the expression (case `codegen-programs-4` blessed).
+5. A spread into a method is shown written out when another method of that name takes other parameters anywhere in the program or std (std.array's `add(self, other)` beside a program's `add(mut self, x, y)`): `cli-spread_a_record_into_a_call` now expects `mut t.add(p.x, p.y)`. Operator traits' impls don't count.
+6. Found while merging, fixed: stored-core's `T { ..p, f: v }` lowering read `p`'s other fields after `v`, which may assign `p` (`build-memory`'s `nested_assign` crashed in verify's fuzzing): the base is named `$base` first when a given value may assign (`sugar.update_of`). And `extern rust` is stored as the function calling std.rust, so `cargo.rust_fns` reads it back with `sugar.python_raised` (no crate was built).

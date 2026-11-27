@@ -1,0 +1,26 @@
+# `xs[i] = v` is `xs = set_at(xs, i, v)`, which codegen changes in place
+# when `xs` is held once. It used to leave that out whenever a variable or
+# function named `at` was in scope, since a nested store reads its inner
+# lists with `at`; a single store calls no `at`. So with `at := mut
+# open.pop() ?? -1`, each `ends[at] = k + 1` copied the list: 20,000 stores
+# into a list of 40,000 took 2.5 s (27.0G instructions) instead of 0.10G.
+# The stores whose value or index reads another list are in place too.
+
+[[step]]
+save = "held.strata"
+from = "held.st"
+
+[[step]]
+strata = ["--file", "held.strata", "build", "--no-verify", "--memory-sites", "-o", "prog"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./prog 2>/dev/null; cut -f1,2,3,4,6 sites.tsv | grep -E '\t(unique|owned)' | sort"]
+out = "2\n-1\n40000\n[5, 7]\n1\t0\towned\tmain\tset_at(xs, at, 7)\n20000\t20000\towned.p\tends_of\tpush(open, k)\n20000\t20000\towned.p\tends_of\tset_at(ends, at, k + 1)\n20000\t20000\towned.p\tends_of\ttake(open, len(open) - 1)\n40000\t40000\towned.p\tends_of\tpush(ends, -1)\n40000\t40000\towned.p\tmirrored\tpush(ends, 0)\n40000\t40000\towned.p\tmirrored\tpush(starts, i)\n40000\t40000\towned.p\tmirrored\tset_at(ends, $index_0, at(ends, i) + 1)\n40000\t40000\towned.p\tmirrored\tset_at(ends, i, at(starts, j))\n"
+
+[[step]]
+strata = ["--file", "held.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["perl", "-e", "alarm 10; exec @ARGV", "./plain"]
+memory = true
+stdout = "2\n-1\n40000\n[5, 7]\n"

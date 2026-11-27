@@ -1,0 +1,38 @@
+# smt: floats are reals within the largest double, each operation rounded by
+# its error bound; the check that a result is finite is exact (refuted with
+# an overflowing input, proven where bounds keep it finite)
+[[step]]
+save = "f.strata"
+text = '''
+type Small = Float where abs(it) <= 1000000.0
+
+fn sq(x: Small) -> Float where it >= 0.0 = x * x
+
+fn grow(x: Float) -> Float = x * x
+
+fn half(x: Float) -> Float ensures abs(it) <= abs(x) = x / 2.0
+
+fn neg(x: Float) -> Float = 0.0 - x
+
+fn next(x: Float) -> Float = x + 1.0
+
+fn avg(x: Small, y: Small) -> Float = (x + y) / 2.0
+
+fn lits() -> Bool where it = 0.1 + 0.2 > 0.3 - 0.0000001
+
+fn mean(s: Float, n: Natural where it > 0) -> Float = s / float(n)
+
+fn ratio(s: Float, n: Natural where it > 0 && it < 1 << 53) -> Float = s / float(n)
+
+fn whole(x: Small) -> Int where it <= 1000000 = floor(x)
+
+fn root(x: Small where it >= 0.0) -> Float = sqrt(x)
+
+fn rem(x: Float, y: Float) -> Float = x % y
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race", "--cases", "30"]
+fails = true
+has = ["✓ sq ", "✓ half ", "✓ neg ", "✓ next ", "✓ avg ", "✓ lits ", "✓ ratio ", "✓ whole ", "✓ root ", "✗ grow ", "✗ mean ", "✗ rem ", "is not a finite number (stack: grow)", "is too large for a Float (stack: mean)"]
+counts = { "found by the solver" = 3 }

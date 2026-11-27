@@ -48,6 +48,6 @@ fails = true
 has = [
   "✓ area ", "✓ pick ", "✓ pick_area ", "✓ make ", "✓ describe ", "✓ is_sq ", "✓ lit ", "✓ nonzero ", "✓ variants ", "✓ opt ", "✓ self_eq ", "✓ common ",
   "✗ bad_area ", "✗ bad_make ", "✗ bad_describe ", "✗ always_sq ", "✗ bad_nonzero ", "✗ bad_variants ", "✗ bad_opt ", "✗ bad_eq ", "✗ bad_field ", "✗ bad_common ",
-  "input:   Circle { radius: 1 }\n", "input:   C\n",
+  "input:   Square { side: 1 }\n", "input:   C\n",
 ]
 counts = { "found by the solver" = 10 }

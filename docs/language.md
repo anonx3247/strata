@@ -433,6 +433,21 @@ trait Empty: Combine {
 fn combine_any[T: Empty](xs: List[T]) -> T { fold(xs, T.empty(), (acc, x) -> acc.combine(x)) }
 ```
 
+**Operators are trait methods.** `a + b` is `Add.add(a, b)`, `-a` is `Neg.neg(a)`, `a == b` is `Eq.eq(a, b)`, `a < b` is `Ord.lt(a, b)` (and `Sub`, `Mul`, `Div`, `Rem`, `Ord.le`, `gt`, `ge`), all in core. Implementing the trait gives a type the operator; there are no special methods:
+
+```rust
+type Money = { cents: Int }
+impl Add for Money {
+  fn add(self, other: Money) -> Money ensures it.cents == self.cents + other.cents {
+    Money { cents: self.cents + other.cents }
+  }
+}
+impl Ord for Money { fn lt(self, other: Money) -> Bool = self.cents < other.cents }
+fn double(m: Money) -> Money ensures it.cents == 2 * m.cents { m + m }   // proven through `add`'s ensures
+```
+
+The numbers and strings have them built in, compiled and proven as plain arithmetic. `&&`, `||` and `!` stay operators of the language, since they skip their right side. See the [reference](language-reference.md#operators).
+
 ## Modules: units that meet only through contracts
 
 Each file is a module, named after its path in the package. `shop/orders.strata` is `shop.orders`, and `main.strata` is the root module. There are no `module { }` blocks.
@@ -556,6 +571,7 @@ These updates happen in place when nothing else holds the value:
 - `xs[i] = v` (`xs = set_at(xs, i, v)`) on a list: O(1).
 - `x.f = v` and `x.a.b = v`: a record or tuple field at any depth. The exception is a `distinct` record, or a record with its own refinement, where the check runs on the new record.
 - `mut xs.push(e)`, `mut xs.pop()`, `xs += ys`, `xs = xs + ys`, `xs = xs + [e]` on a list: O(1) average per element added, **even when `xs` is shared**. The list's buffer is extended past its end if no other list built from it has used those slots, and copied otherwise. A copy reserves room for as many elements again, so a list grown repeatedly is copied O(log n) times.
+- `mut xs.grow(n)` makes room for `n` more elements past the end (`n >= 0`), so the next `n` pushes copy nothing. The list's value doesn't change (`ensures xs == old xs`: capacity is not part of it), so `verify` sees through it. Held once, the buffer grows in place, or moves once into a buffer of the new size. Shared, `xs` becomes a copy with the room, as any change would make it. Before a loop of `n` pushes it saves the O(log n) copies and the buffers they leave.
 - `s += t` and `s = s + t` on a string: in place when only `s` holds the string (and, for a field, only one owner holds each record on the path to it). Otherwise the string is copied, with room to grow.
 - Containers and records with refined element types (`Dict[Int, Word]`): an update checks only what it adds (`insert`'s key and value, `push`'s element), not every element.
 
@@ -604,6 +620,7 @@ n := parse(s) except e { return describe_error(e) }      // ... or a block, with
 - `e or { fallback }` does the same for an `Option`. There is no error to bind.
 - `e !! value` and `e ?? value` are the short forms, for a fallback that is a single value on one line, and the printer always uses them for such fallbacks. They bind tighter than comparisons and looser than arithmetic: `n ?? 0 + 1` is `n ?? (0 + 1)`, and `n ?? 0 == 1` is `(n ?? 0) == 1`. They chain: `a ?? b ?? 0`.
 - `!` and `?` chain too: `load(path)!.lines()`, `find(xs, p)?.name`.
+- Each is stored as the `match` it stands for: `r!` is `match r { Ok(v) => v, Err(e) => return Err(e) }`, `o ?? d` is `match o { Some(v) => v, None => d }`. `view` shows it as written. A `match` written out in full in one of these shapes is the same program, and is shown as the handler: `match r { Ok(v) => v, Err(e) => return Err(e) }` is shown `r!`. A handler is typed from its value, so `!` returns only the function's own error type.
 
 ## Tasks: `scope`, `spawn` and `await`
 
@@ -758,7 +775,7 @@ Every program has these types without a `use`:
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` is arbitrary-precision, like Python's: a machine integer while it fits, a big integer when it doesn't. `Float` is never NaN or infinite. Ints and Floats never mix implicitly (`float(n)`, `round(x)`). Integer `/` and `%` are Euclidean, so the remainder is never negative: `-7 / 2 == -4`, `-7 % 3 == 2`, `7 % -3 == 1`. For C's truncating division, divide the magnitudes and restore the sign (`-(7 / 2) == -3`). `parse_int` accepts an optional `+` or `-` sign (`parse_int("+5") == Some(5)`), so check the first character when only digits are allowed. Strings are UTF-8, ordered (`<`, `<=`, `>`, `>=`, `compare`, `sort`) by code point, which matches UTF-8 byte order |
 | `Real` | exact rational numbers, the type of decimal literals: `0.1` is one tenth, so `0.1 + 0.2 == 0.3`. `+ - * / %` and comparisons are exact; `/` and `%` by zero is a check, as for `Int` ("division by zero", left out where `verify` proves the divisor nonzero). `1.0 / 3.0` prints `1/3`, a terminating decimal prints as one (`2.5`, `3.0`). `floor`, `ceil`, `round` give `Int`s; `abs`, `min`, `max`, `sum` work as on `Float`; `x.to_float()` is the nearest `Float` (`None` past the largest), `Real.from(n)` an `Int` as a `Real`, `Real.from_float(f)` a `Float`'s shortest digits, `Real.parse("1/3")` reads one (`-2.5`, `6.02e23` too). `match` takes decimal and integer literals as patterns (`0.5 =>`, `2 =>`). `sqrt`, `sin`, `exp` and the like are `Float`'s only. A `Real` is made only by literals, those functions and arithmetic, never from its parts (`r.num` and `r.den` can be read). JSON and TOML numbers and the ORM's `Real` columns are exact. Cost: two words; a literal is a constant, a result stays on the stack or in its variable's block; each operation is a few machine-word steps and a GCD while both parts fit in 62 bits (adding `0.1` takes about 15 ns, a `Float` addition about 1.5 ns). Values grow with the digits they need (100 compoundings of `x * 1.07` give a 200-digit denominator), so numeric code that can round says `Float` |
-| `I8` … `I64`, `U8` … `U64` | fixed-width integers. Their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`) |
+| `I8` … `I64`, `U8` … `U64` | fixed-width integers. Their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`). A list can be indexed by an `I64` (`xs[i]`), which makes no `Int`: a loop over `I64` indices compiles to plain machine arithmetic. A list's length fits one: `len(xs).to_i64()` always does, and `verify` proves it |
 | `()` | the unit type, for "no meaningful value". It plays the role of Python's `None` as a type |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
 | `Result[T, E]` | `Ok(x)` or `Err(e)`: the outcome of an operation that may fail |
@@ -835,7 +852,7 @@ cat README.md | strata run examples/wc
 
 **Command-line options** are a record that derives `CommandLine` (`std.cli`). Each field is parsed from the arguments according to its type: a `Bool` is a flag, a `List[T]` takes the remaining arguments, and a field with a default is an option. Every refinement is checked, and `--help` is generated from the `///` doc comments. A union that derives `CommandLine` defines subcommands (`Edit` becomes `edit`), each with its own options.
 
-`main` can also take a `Console` and capabilities (`Disk`, `Process`, or the program's own), in any order. It passes them on where a trait (`Files`, `Environment`) is expected, so tests can substitute their own implementations. `main` returns `()`, an `ExitCode`, or a `Result` of either. An `Err` is written to standard error and the exit code is 1.
+`main` can also take a `Console` and capabilities (`Disk`, `Process`, `Net`, or the program's own), in any order. It passes them on where a trait (`Files`, `Environment`) is expected, so tests can substitute their own implementations. `main` returns `()`, an `ExitCode`, or a `Result` of either. An `Err` is written to standard error and the exit code is 1.
 
 The **standard library** is the `std/` package. It is written in Strata and built into `strata`, so any program can `use std.…` without declaring a dependency. It covers:
 
@@ -843,8 +860,10 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - SQLite databases (`std.sqlite`), and records stored as tables (`std.orm`, `derive Table`)
 - command lines (`std.cli`)
 - sorted dictionaries and sets and a priority queue (`std.collections`)
+- n-dimensional arrays of floats and integers: broadcasting, reductions, `matmul` (`std.array`)
 - JSON and TOML (`std.json`, `std.toml`)
-- HTTP, and HTML pages written as markup (`std.http`, `std.web`)
+- TCP connections, HTTP clients and servers, HTTPS clients (`std.net`, `std.http`), and HTML pages written as markup (`std.web`)
+- an LLM agent loop with tools (`std.agent`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
 
 Each module has a [reference page](std/README.md), generated from its doc comments by `strata docgen`. `strata doc std.json` shows one in the terminal.
@@ -886,4 +905,4 @@ page := document("Languages", [], [<h1>Languages</h1>, table(ls)])
 - An element without children is written `<br />`, and `<>…</>` is a list of elements.
 - The module needs an import from `std.web` (such as `from std.web use Html`). The parser reads markup as calls to `std.web` (`std.web.element("td", [std.web.attr("class", "num")], std.web.children([l.year]))`), which is what is stored, checked and compiled; `view` shows those calls as markup again. A literal tag lets `verify` prove that void elements (`br`, `input`, …) get no children. Rendering is one pass over the tree (`render`, `document`).
 
-**Foreign functions.** C functions are declared with `extern c fn`: a signature with contracts and no body (see the [reference](language-reference.md#foreign-functions-extern-c)). Python functions are declared with `extern python "module" fn`. Their values cross the boundary as JSON (`Json`), and every call returns a `Result[T, PythonError]` (see the [reference](language-reference.md#foreign-functions-extern-python)).
+**Foreign functions.** C functions are declared with `extern c fn`: a signature with contracts and no body (see the [reference](language-reference.md#foreign-functions-extern-c)). Python, Rust and TypeScript functions are declared with `extern python "module" fn`, `extern rust "crate" fn` and `extern ts "module" fn`. Their values cross the boundary as JSON (`Json`), and every call returns a `Result[T, PythonError]` (`RustError`, `TsError`). Python and TypeScript run in a worker process; a Rust crate is built by cargo into a library loaded in the program's process (see the reference: [Python](language-reference.md#foreign-functions-extern-python), [Rust](language-reference.md#foreign-functions-extern-rust), [TypeScript](language-reference.md#foreign-functions-extern-ts)).

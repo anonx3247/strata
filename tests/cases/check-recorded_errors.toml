@@ -429,6 +429,8 @@ from = "results.st"
 [[step]]
 run = ["sh", "-c", "\"$STRATA\" --file results.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
 stdout = '''
+  at(List[A], I64) -> A
+  at(List[A], Int) -> A
 error in a: argument of `Ok`: expected `String`, found `Int`
 error in b: `except` fallback: expected `Int`, found `String`
 error in b: function body: expected `String`, found `Int`
@@ -436,7 +438,7 @@ error in c: `except` fallback: expected `Int`, found `String`
 error in d: function body: expected `String`, found `Int`
 error in e: function body: expected `Int`, found `List[Int]`
 error in f: function body: expected `String`, found `List[Int]`
-error in g: call to `at`, argument 2: expected `Int`, found `String`
+error in g: no version of `at` accepts (List[Int], String); available:
 error in h: argument of `Some`: expected `String`, found `Int`
 '''
 
@@ -501,7 +503,8 @@ run = ["sh", "-c", "\"$STRATA\" --file sums.strata check 2>&1 | grep -E \"^(erro
 stdout = '''
 error in a: function body: expected `Int`, found `Sh`
 error in e: function body: expected `String`, found `Option[Int]`
-error in f: match arm: expected `String`, found `Int`
+error in f: `or` fallback: expected `Int`, found `String`
+error in f: function body: expected `String`, found `Int`
 error in g: function body: expected `String`, found `Int`
 error in h: `==` operands: expected `Sh`, found `Int`
 '''
