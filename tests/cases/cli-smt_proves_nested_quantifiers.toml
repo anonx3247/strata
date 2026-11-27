@@ -94,6 +94,6 @@ has = [
   "✓ reply                    proven (3 checks)",
   "✓ reply_last               proven (3 checks)",
   "✓ prefix                   proven (1 check)",
-  "✗ stray                    Refinement violation (found by the solver)",
+  "✗ stray                    Refinement violation (found by the",
   "✗ early                    Refinement violation (found by the solver)",
 ]

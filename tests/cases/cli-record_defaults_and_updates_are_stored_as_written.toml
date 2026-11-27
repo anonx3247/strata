@@ -1,0 +1,65 @@
+# Field defaults and `..r` updates are stored as written and lowered by
+# `desugar` with the records' declarations of now, so a field a record
+# gains is filled or copied with no definition stored again. Key paths are
+# stored as the `KeyPath` constructor (`resolve`): it names only the record
+# and the field. `header --tree` shows the stored trees, `view` the code.
+
+[[step]]
+save = "r.strata"
+text = '''
+type Opts = { names: List[String], times: Int = 1 }
+
+type Pt = { x: Int, y: Int }
+
+fn opts() -> Opts {
+  Opts { names: [] }
+}
+
+fn moved(p: Pt) -> Pt {
+  Pt { ..p, x: p.x + 1 }
+}
+
+fn made() -> Pt {
+  Pt { ..moved(Pt { x: 1, y: 2 }), y: 0 }
+}
+
+fn by_x() -> KeyPath[Pt, Int] {
+  Pt.x
+}
+
+fn main() {
+  print(opts().times)
+  print(moved(Pt { x: 1, y: 2 }))
+  print(made())
+  print((by_x().get)(Pt { x: 7, y: 0 }))
+}
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "run"]
+stdout = "1\nPt { x: 2, y: 2 }\nPt { x: 2, y: 0 }\n7\n"
+
+[[step]]
+strata = ["--file", "r.strata", "view", "main"]
+has = ["Opts { names: [] }", "Pt { ..p, x: p.x + 1 }", "Pt { ..moved(Pt { x: 1, y: 2 }), y: 0 }", "  Pt.x\n"]
+
+[[step]]
+strata = ["header", "r.strata", "--tree"]
+has = ["KeyPath", 'RecordArgs([("..", Var("p"))', 'RecordArgs([("names", ListExpr([]))])']
+lacks = ["$base"]
+
+# `Pt` gains a field; `moved` and `made` are not stored again
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+text = '''
+type Pt = { x: Int, y: Int, z: Int = 5 }
+
+fn main() {
+  print(moved(Pt { x: 1, y: 2, z: 9 }))
+  print(made())
+}
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "run"]
+stdout = "Pt { x: 2, y: 2, z: 9 }\nPt { x: 2, y: 0, z: 5 }\n"

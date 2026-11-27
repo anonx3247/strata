@@ -79,7 +79,7 @@ has = [
   "error in made: `made` is `noalloc` but allocates: a closure (`(k: I64) -> k`)",
   "error in made: `made` is `noalloc` but allocates: `Some` made at run time (`Some(p)`)",
   "error in made: `made` is `noalloc` but allocates: a `for` over a `Set[Int]` (made into a list, or an iterator's `next` called): run over a list or `range(a, b)`",
-  "error in made: `made` is `noalloc` but allocates: a call to `range`, a built-in that may allocate (`range(0, 3)`)",
+  "error in made: `made` is `noalloc` but allocates: a call to `range`, a built-in that may allocate (`0..3`)",
   "error in updated: `updated` is `noalloc` but allocates: an element replaced (in place only when nothing else holds the list, which is known only when it runs; else in a copy) (`zs[0] = 1.to_i64()`)",
   "error in updated: `updated` is `noalloc` but allocates: `push` (it changes the collection in place only when nothing else holds it and it has room; else in a new one) (`zs.push(2.to_i64())`)",
   "error in updated: `updated` is `noalloc` but allocates: a field replaced (in place only when nothing else holds the value, which is known only when it runs; else in a copy) (`r.x = 3.to_i64()`)",

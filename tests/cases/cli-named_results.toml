@@ -1,5 +1,5 @@
-# named results (`-> (low: Int, high: Int)`): stored and shown as written, the
-# names bound in `ensures` to the tuple's elements (`it` is still the whole tuple),
+# named results (`-> (low: Int, high: Int)`): stored as the tuple's elements
+# (`low` is `it.0`) and shown by their names, `it.1` too (`it` is still the whole tuple),
 # proven by `verify` and checked at run time; callers destructure the tuple
 
 [[step]]
@@ -40,7 +40,7 @@ has = [
 fn split(n: Int) -> (low: Int, high: Int)
   requires n >= 0
   ensures low + high == n
-  ensures low <= high && it.1 == high {''',
+  ensures low <= high && high == high {''',
   "fn halves(self, n: Int) -> (a: Int, b: Int)\n    ensures a + b == n",
 ]
 
