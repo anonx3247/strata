@@ -44,8 +44,7 @@ stdout = '''
 ✓ named                    proven (1 check)
 ✓ joined                   proven (1 check)
 ✓ formatted                proven (1 check)
-~ floats                   fuzzed: 50 cases, 0 discarded by `requires`; 0 of 1 checks proven
-    not proven: `+` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+✓ floats                   proven (1 check)
 ✓ lits                     proven (nothing to check)
 ✓ masked                   proven (1 check)
 ✓ bounded                  proven (1 check)
@@ -427,12 +426,10 @@ stdout = '''
 ✗ divide_all               Runtime violation (found by the solver)
     input:   [0], 0
     division by zero (stack: divide_all)
-~ half                     fuzzed: 50 cases, 0 discarded by `requires`; 0 of 2 checks proven
-    not proven: `/` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-    not proven: ensures it <= x || x < 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-✗ wrong                    Ensures violation (found by the fuzzer)
-    input:   -999.2508503161262
-    postcondition of `wrong` violated: ensures it > x (it = -1998.5017006322523) (stack: wrong)
+✓ half                     proven (2 checks)
+✗ wrong                    Runtime violation (found by the solver)
+    input:   89884656743115800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0
+    89884656743115800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 * 2 is not a finite number (stack: wrong)
 ✓ checked                  proven (nothing to check)
 ✓ sum_to                   proven (5 checks)
 ✓ fact                     proven (2 checks)
@@ -475,14 +472,18 @@ strata = ["--file", "verify_capability.strata", "verify", "--no-cache", "--cases
 env = { "STRATA_CACHE" = "$TMP/cache" }
 any_code = true
 stdout = '''
-- top                      skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-- opt                      skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-- held                     skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-- nested                   skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-- files                    skipped: it takes the capability `Files`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet); ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-~ plain                    fuzzed: 50 cases, 0 discarded by `requires`; 0 of 2 checks proven
-    not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-    not proven: ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+- top                      skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express
+✗ opt                      Runtime violation (found by the solver)
+    input:   None, 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0
+    179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 * 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 is not a finite number (stack: opt)
+- held                     skipped: it takes the capability `Disk`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express
+✗ nested                   Runtime violation (found by the solver)
+    input:   [], 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0
+    179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 * 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 is not a finite number (stack: nested)
+- files                    skipped: it takes the capability `Files`, which only `strata run` gives, so it isn't fuzzed; not proven: `*` gives a finite number: the solver found a possible counterexample it could not express
+✗ plain                    Runtime violation (found by the solver)
+    input:   179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0
+    179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 * 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 is not a finite number (stack: plain)
 '''
 
 [[step]]
@@ -565,7 +566,7 @@ stdout = '''
     may not terminate: it calls `longer`, which may not terminate
 ✓ b                        proven (1 check)
 ✓ c                        proven (nothing to check)
-~ sq                       fuzzed: 50 cases, 0 discarded by `requires`; 0 of 2 checks proven
-    not proven: `*` gives a finite number: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
-    not proven: ensures it >= 0.0: the solver found a possible counterexample it could not express (depends on floats are not modelled yet)
+✗ sq                       Runtime violation (found by the solver)
+    input:   179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0
+    179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 * 179769313486231570000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 is not a finite number (stack: sq)
 '''
