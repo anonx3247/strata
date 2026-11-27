@@ -110,6 +110,14 @@ Lemmas are top-level only. Lemmas in `impl` and trait blocks, and a `calc` step 
 ### Revisit the `decreases` defaults
 Picked without asking: one clause per loop or function (a tuple for several), stored as the body's first statement, an unproven clause makes the verdict "may not terminate", and the runtime check covers only direct self-calls (mutual recursion has none). Each is easy to change. (Claude, 2026-11-25)
 
+### Proofs for the kernel: laws, obligations and tactics
+Proposed (user asked, 2026-11-28; spec section 8; tried by lab-trials.md trial 1).
+- **`law` is the one keyword for a named, proven statement**; `lemma` and a trait's `invariant` fold into it. `invariant` stays only on loops. A law has parameters (the universally quantified variables), optional `requires` (hypotheses), `holds` (the statement: an expression, or a block of statements ending in one, so `mut` methods can be stated without `old`), and an optional `by` proof; with no `by`, the ladder tries static analysis, then Z3.
+- **Where a law sits says who proves it**: at the top level or in a module, it is a theorem, proven once (generic laws by parametricity, from their bounds' laws); in a trait, an obligation every impl proves (`proof name by …` in the impl, or nothing for the ladder); `law[T: Eq + Hash] for T name(...)` at the top level is an obligation across traits, for every type that implements both. A proven law is a fact callers can use (the lab's laws aren't).
+- **A trait's invariant becomes a law over `Self`** (`law size_nonnegative(s: Self) holds s.size() >= 0`); each impl proves it, usually from a refinement on its own type. A type's own invariant is a refinement (`where`).
+- **Induction is recursion**: a proof calls the law on smaller arguments (`append_assoc(rest, b, c)`), checked for termination like any recursive function; `induction x { Variant(..) => … }` names the cases with match syntax.
+- **Tactics**, Lean's shapes in plain words: `auto` (the ladder), `unfold f` (the lab's `reveal`), `simp [laws]`, `rewrite law(args)` (`rw`), `cases e { … }`, `induction x { … }`, `use law(args)` (`exact`), `fact h: p by …` (`have`, the lab's `assert … by`), `calc`, `witness e` (`exists`), `arith` (linear integer arithmetic, `omega`), `nonlinear`, `bits`, `compute` (evaluation). Hypotheses are named by the law's parameters and `requires` clauses (`requires sorted: is_sorted(xs)`).
+
 ## Memory and speed
 
 ### Self-compile in under a second
