@@ -4,7 +4,10 @@
 ✓ a page
 ✓ requests
 ✓ attributes are escaped and events carry only their handler's number
+✓ values in braces are escaped too, attributes included
+✓ only raw_html is written as it is
+✓ numbers, flags and lists in braces
 
-6 passed, 0 failed
+9 passed, 0 failed
 
 --- exit 0
