@@ -1,0 +1,193 @@
+# termination answers "unknown" where it doesn't know (ISSUES 7): a `for` over
+# an iterator the code doesn't say is finite (a call's result, a field of a
+# record bound by a loop, an iterator reached through many `let`s, a lazy
+# `enumerate`), recursion through the function passed as a value, and calls
+# of a type's own method in std, whose method calls the checker leaves
+# unresolved
+[[step]]
+save = "t.strata"
+text = '''
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+type Holder = { it: Naturals }
+
+fn naturals() -> Naturals {
+  Naturals { at: 0 }
+}
+
+fn from_call(n: Int) -> Int {
+  for s in naturals() {
+    if s > n {
+      return s
+    }
+  }
+  0
+}
+
+fn from_field(hs: List[Holder], n: Int) -> Int {
+  for h in hs {
+    for s in h.it {
+      if s > n {
+        return s
+      }
+    }
+  }
+  0
+}
+
+fn from_deep_lets(n: Int) -> Int {
+  a := Naturals { at: 0 }
+  b := a
+  c := b
+  d := c
+  e := d
+  g := e
+  h := g
+  i := h
+  j := i
+  k := j
+  for s in k.map(x -> x + 1) {
+    if s > n {
+      return s
+    }
+  }
+  0
+}
+
+fn from_list(xs: List[Int]) -> Int {
+  mut t := 0
+  for x in xs {
+    t += x
+  }
+  t
+}
+
+type Counter = { n: Int }
+
+impl Counter {
+  fn spin(self) -> Int {
+    self.spin()
+  }
+}
+
+fn uses_spin(c: Counter) -> Int {
+  c.spin() + 1
+}
+
+type Tree =
+  | Leaf
+  | Node(Tree, Tree)
+
+fn apply(f: (Tree) -> Int, t: Tree) -> Int {
+  f(t)
+}
+
+fn walk(t: Tree) -> Int {
+  match t {
+    Leaf => 0,
+    Node(l, _) => walk(l) + apply(walk, t),
+  }
+}
+
+fn count(n: Natural) -> Natural {
+  if n == 0 {
+    0
+  } else {
+    count(n - 1) + [n].map(x -> count(x)).fold(0, (a, b) -> a + b)
+  }
+}
+
+fn from_field_map(hs: List[Holder], n: Int) -> Int {
+  for h in hs {
+    for s in h.it.map(x -> x + 1) {
+      if s > n {
+        return s
+      }
+    }
+  }
+  0
+}
+
+fn from_enumerate(n: Int) -> Int {
+  for (i, s) in naturals().enumerate() {
+    if s > n {
+      return i
+    }
+  }
+  0
+}
+
+fn from_list_enumerate(xs: List[Int]) -> Int {
+  mut t := 0
+  for (i, x) in xs.enumerate() {
+    t += i * x
+  }
+  t
+}
+
+fn from_range(n: Int) -> Int {
+  mut t := 0
+  for i in range(0, n) {
+    t += i
+  }
+  t
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--termination"]
+has = [
+  "fn from_call\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
+  "fn from_field\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
+  "fn from_deep_lets\n  unknown: it has a `for` over `c`, reached through more `let`s than are followed",
+  "fn from_field_map\n  unknown: it has a `for` over `h.it.map((x: Int) -> x + 1)`, made from a value whose type isn't known here",
+  "fn from_enumerate\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
+  "fn walk\n  unknown: it passes itself as a function value",
+  "fn uses_spin\n  unknown: it calls `Counter.spin`",
+  "fn from_list\n  proven: no recursion",
+  "fn from_list_enumerate\n  proven: no recursion",
+  "fn from_range\n  proven: no recursion",
+]
+
+# an own method in std that calls itself through method syntax
+[[step]]
+run = ["sh", "-c", "mkdir -p home && cp -R \"$ROOT/core\" \"$ROOT/std\" \"$ROOT/runtime\" home/"]
+
+[[step]]
+strata = ["--file", "home/std", "edit", "spinner"]
+env = { "STRATA_HOME" = "$TMP/home" }
+text = '''
+/// A counter that never stops.
+
+/// Counts.
+pub type Spinner = { n: Int }
+
+impl Spinner {
+  /// Spins.
+  fn spin(self) -> Int {
+    self.spin()
+  }
+}
+'''
+
+[[step]]
+save = "p.strata"
+text = '''
+from std.spinner use Spinner
+
+fn main() {
+  print(Spinner { n: 1 }.spin())
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--termination"]
+env = { "STRATA_HOME" = "$TMP/home" }
+has = ["fn main\n  unknown: it calls `std.spinner.Spinner.spin`, which may not terminate"]
