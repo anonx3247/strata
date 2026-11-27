@@ -62,6 +62,10 @@
     "named": true,
     "subtypes": [
       {
+        "type": "anonymous_record",
+        "named": true
+      },
+      {
         "type": "await_expression",
         "named": true
       },
@@ -294,6 +298,10 @@
         "named": true
       },
       {
+        "type": "record_type",
+        "named": true
+      },
+      {
         "type": "refined_type",
         "named": true
       },
@@ -314,6 +322,46 @@
         "named": true
       }
     ]
+  },
+  {
+    "type": "anonymous_record",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "field_identifier",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "_expression",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "base_record",
+          "named": true
+        },
+        {
+          "type": "field_initializer",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "arguments",
@@ -1071,6 +1119,10 @@
             "named": true
           },
           {
+            "type": "record_type",
+            "named": true
+          },
+          {
             "type": "scoped_type_identifier",
             "named": true
           },
@@ -1098,6 +1150,10 @@
           },
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "record_type",
             "named": true
           },
           {
@@ -1440,6 +1496,32 @@
     }
   },
   {
+    "type": "field_type",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "field_identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "_type",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "for_clause",
     "named": true,
     "fields": {
@@ -1749,6 +1831,10 @@
             "named": true
           },
           {
+            "type": "record_type",
+            "named": true
+          },
+          {
             "type": "scoped_type_identifier",
             "named": true
           },
@@ -1776,6 +1862,10 @@
           },
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "record_type",
             "named": true
           },
           {
@@ -2619,6 +2709,10 @@
             "named": true
           },
           {
+            "type": "record_type",
+            "named": true
+          },
+          {
             "type": "scoped_type_identifier",
             "named": true
           },
@@ -3070,6 +3164,25 @@
     }
   },
   {
+    "type": "record_type",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "field_type",
+          "named": true
+        },
+        {
+          "type": "rest",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "refined_type",
     "named": true,
     "fields": {
@@ -3087,6 +3200,10 @@
           },
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "record_type",
             "named": true
           },
           {
@@ -3463,6 +3580,10 @@
         },
         {
           "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "record_type",
           "named": true
         },
         {
@@ -3860,6 +3981,10 @@
           "named": true
         },
         {
+          "type": "record_type",
+          "named": true
+        },
+        {
           "type": "scoped_type_identifier",
           "named": true
         },
@@ -3993,6 +4118,10 @@
           },
           {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "record_type",
             "named": true
           },
           {
@@ -4468,6 +4597,10 @@
   {
     "type": "requires",
     "named": false
+  },
+  {
+    "type": "rest",
+    "named": true
   },
   {
     "type": "return",
