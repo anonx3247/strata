@@ -13,6 +13,7 @@
 #                                   (docs/std/ is left out: `strata doc
 #                                   std.MODULE` makes it from std's code)
 #     runtime/prelude.strata        the prelude codegen compiles programs with
+#     runtime/runtime.c, wasm.c, wasm.h  the C runtime, for WebAssembly modules
 #     runtime-lto.o                 the runtime every executable links: the C
 #                                   runtime (-DSTRATA_CORE_RT) and core.rt
 #                                   (the runtime written in Strata) in one
@@ -95,6 +96,8 @@ cp core/*.strata core/strata.toml "$HOME_DIR/core/"
 cp std/*.strata std/strata.toml "$HOME_DIR/std/"
 cp docs/*.md "$HOME_DIR/docs/"
 cp runtime/prelude.strata "$HOME_DIR/runtime/"
+# (`strata build --target wasm32` compiles these for each module, with Homebrew's clang)
+cp runtime/runtime.c runtime/wasm.c runtime/wasm.h "$HOME_DIR/runtime/"
 echo "$VERSION" > "$HOME_DIR/VERSION"
 
 # the man pages: `man strata`, `man std.io` (man looks in the share/man
@@ -120,9 +123,14 @@ LLVM_BIN=${LLVM_BIN:-$(brew --prefix llvm)/bin}
   || { cat "$DIST/llvm-link.log" >&2; exit 1; }
 "$S" object "$DIST/runtime-lto.ll" "$HOME_DIR/runtime-lto.o" -O 3
 
-# std, compiled by the compiler itself (its codegen, its LLVM)
-step "std (about 20 s)"
-"$S" codegen --library > "$DIST/std.ll"
+# std, compiled by the compiler itself (its codegen, its LLVM), without the
+# checks `verify` proves inside its functions: std is verified (no fuzzing),
+# and its proofs, entry checks left out (programs prove those), go to
+# codegen, as `strata`'s std library at first use does (`std_proofs`)
+step "std (verified, then compiled)"
+"$S" --file std verify --cases 0 --cross-check 0 > "$DIST/std-verify.txt" 2>&1 || true
+"$S" proofs std | grep -v "^entry	" > "$DIST/std-proofs.txt"
+"$S" codegen --proofs "$DIST/std-proofs.txt" --library > "$DIST/std.ll"
 ! grep -q '^error' "$DIST/std.ll" || { grep '^error' "$DIST/std.ll" >&2; exit 1; }
 "$S" object "$DIST/std.ll" "$HOME_DIR/std/std.o" -O 2
 sed -n 's/^; precompiled //p' "$DIST/std.ll" > "$HOME_DIR/std/names"

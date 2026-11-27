@@ -34,7 +34,7 @@ It can expect:
 
 Other fields:
 
-- `needs = "python3"` skips the rest of the case, which then passes, when that program isn't on the `PATH`.
+- `needs = "python3"` (`"node"`, `"cargo"`) skips the rest of the case, which then passes, when that program isn't on the `PATH`.
 - `memory = true` runs a built program with `STRATA_MEMORY=check`, which fails unless the program frees everything it allocated.
 
 Variables: `$ROOT` is the repository, `$TMP` the case's folder, and `$STRATA` (in `run`) the executable under test.
