@@ -53,6 +53,7 @@ run = ["sh", "-c", "\"$STRATA\" --file builtins.strata check 2>&1 | grep -E \"^(
 stdout = '''
   abs(Float) -> Float
   abs(Int) -> Int
+  abs(Real) -> Real
 error in a: function body: expected `String`, found `Int`
 error in b: no version of `abs` accepts (String); available:
 error in c: function body: expected `String`, found `Int`
@@ -338,7 +339,7 @@ error in d: `?` needs an Option, found `Result[Int, String]` (use `!` on a Resul
 error in e: `for` needs a List, Set, Dict or an `Iterator`, found `Int`
 error in f: cannot access field `size` on `Int`
 error in g: call to `n`: `Int` is not a function
-error in h: format spec `.2`: `.N` applies to a Float (decimal places) or a String (most characters), not `Int`
+error in h: format spec `.2`: `.N` applies to a Real or a Float (decimal places) or a String (most characters), not `Int`
 error in k: format spec `+`: `+` and `0` apply to numbers, not `String`
 '''
 
@@ -379,7 +380,7 @@ error in a: match arm: expected `Int`, found `Sq`
 error in b: match arm: expected `String`, found `Int`
 error in e: match arm: expected `Int`, found `Dot | Sq`
 error in f: variant `Rc` has no field `z`
-error in h: `return` value: expected `Int`, found `Sh`
+error in h: `return` value: expected `Int`, found `Sq`
 '''
 
 [[step]]
@@ -469,7 +470,7 @@ error in e: `return` value: expected `Int`, found `String`
 error in e: assert: expected `Bool`, found `Int`
 error in e: assignment: expected `Int`, found `String`
 error in e: operand of `!`: expected `Bool`, found `Int`
-error in e: operand of `-` must be Int or Float, found `Bool`
+error in e: operand of `-` must be Int, Real or Float, found `Bool`
 error in e: while condition: expected `Bool`, found `Int`
 error in h: match arm: expected `Int`, found `String`
 error in k: let annotation: expected `String`, found `Int`
@@ -560,7 +561,7 @@ error in d: `+` operands: expected `String`, found `Int`
 error in e: `+` operands: expected `Int`, found `String`
 error in f: `+` operands: expected `Int`, found `String`
 error in g: tuple `(Int, Int)` has no element 2
-error in h: `*` needs Int or Float operands, found `String` (convert with `float(n)` / `round(x)`)
+error in h: `*` needs Int, Real or Float operands, found `String` (convert with `float(n)` / `round(x)`)
 error in h: `*` operands: expected `String`, found `Int`
 error in h: function body: expected `List[Int]`, found `List[String]`
 '''
@@ -575,8 +576,8 @@ stdout = '''
 error in f: `+` operands: expected `Int`, found `String`
 error in g: function body: expected `String`, found `Int`
 error in h: call to `f`, argument 1: expected `Int`, found `String`
-error in k: `<` operands: expected `Int`, found `Float`
-error in m: `+` needs Int or Float operands, found `Bool` (convert with `float(n)` / `round(x)`)
+error in k: `<` operands: expected `Int`, found `Real`
+error in m: `+` needs Int, Real or Float operands, found `Bool` (convert with `float(n)` / `round(x)`)
 error in m: `+` operands: expected `Bool`, found `Int`
 error in m: function body: expected `Int`, found `Bool`
 error in n: list element: expected `Int`, found `String`
@@ -612,7 +613,7 @@ error in b2: if branch: expected `Float`, found `Int`
 error in b2: if branch: expected `Float`, found `String`
 error in c: function body: expected `Bool`, found `Int | String`
 error in d2: function body: expected `Float`, found `Int | String`
-error in d: function body: expected `Int | String`, found `Float`
+error in d: function body: expected `Int | String`, found `Real`
 error in e2: function body: expected `Float`, found `Int | String`
 error in f: function body: expected `String`, found `Int`
 error in h: refinement violated at compile time in the value `h` returns: -1 does not satisfy `Natural` (where it >= 0)

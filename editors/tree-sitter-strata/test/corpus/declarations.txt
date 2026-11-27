@@ -819,3 +819,106 @@ extern python "text_utils" fn slugify(title: String) -> Result[String, PythonErr
       (type_arguments
         (type_identifier)
         (type_identifier)))))
+
+================================================================================
+Structural types and anonymous records
+================================================================================
+
+fn due(x: { id: OrderId, total: Cents, .. }) -> Cents = x.total
+
+fn larger[T: { total: Cents, .. } + Display](a: T, b: T) -> T = a
+
+fn summary(o: Order) -> { id: Int, total: Cents } {
+  y := { ..o, total: 0 }
+  { id: o.id, total: o.total }
+}
+
+type Report = { best: { id: Int, total: Int }, count: Int }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (record_type
+          (field_type
+            (field_identifier)
+            (type_identifier))
+          (field_type
+            (field_identifier)
+            (type_identifier))
+          (rest))))
+    (type_identifier)
+    (field_expression
+      (identifier)
+      (field_identifier)))
+  (function_declaration
+    (identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)
+        (trait_bounds
+          (record_type
+            (field_type
+              (field_identifier)
+              (type_identifier))
+            (rest))
+          (type_identifier))))
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier))
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (type_identifier)
+    (identifier))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_identifier)))
+    (record_type
+      (field_type
+        (field_identifier)
+        (type_identifier))
+      (field_type
+        (field_identifier)
+        (type_identifier)))
+    (block
+      (binding
+        (identifier)
+        (anonymous_record
+          (base_record
+            (identifier))
+          (field_initializer
+            (field_identifier)
+            (integer))))
+      (anonymous_record
+        (field_identifier)
+        (field_expression
+          (identifier)
+          (field_identifier))
+        (field_identifier)
+        (field_expression
+          (identifier)
+          (field_identifier)))))
+  (type_declaration
+    (type_identifier)
+    (record_body
+      (field_declaration
+        (field_identifier)
+        (record_type
+          (field_type
+            (field_identifier)
+            (type_identifier))
+          (field_type
+            (field_identifier)
+            (type_identifier))))
+      (field_declaration
+        (field_identifier)
+        (type_identifier)))))

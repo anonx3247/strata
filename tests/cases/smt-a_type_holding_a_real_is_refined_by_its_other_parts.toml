@@ -1,0 +1,50 @@
+# A `Real` outside core.real is SMT's real, every one valid (core.real keeps
+# `den > 0`): a type holding one (`JsonValue`'s `Number(Real)`) is not
+# refined by it, so `Array(list)` built in a loop is proven without each
+# element; a refinement over a `Real` (`Price`) is still proven, and broken
+# where it doesn't hold
+
+[[step]]
+strata = ["--file", "r.strata", "edit"]
+text = '''
+from std.json use JsonValue, Array, Number
+
+type Price = Real where it > 0.0
+
+type Line = { price: Price, qty: Int }
+
+pub fn wrap(xs: List[JsonValue]) -> JsonValue {
+  mut out := []
+  for x in xs {
+    mut out.push(x)
+  }
+  Array(out)
+}
+
+pub fn half(x: Real) -> JsonValue {
+  Number(x / 2.0)
+}
+
+pub fn priced(p: Real) -> Line {
+  Line { price: p, qty: 1 }
+}
+
+pub fn priced_ok(p: Real where it > 1.0) -> Line {
+  Line { price: p, qty: 1 }
+}
+
+fn main() {
+  print(wrap([half(1.0)]))
+}
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "verify"]
+fails = true
+has = [
+  "✓ wrap ",
+  "✓ half ",
+  "✗ priced ",
+  "constructing `Line`: Line.price: -1000/31 does not satisfy `Price` (where it > 0.0)",
+  "✓ priced_ok ",
+]

@@ -122,6 +122,30 @@ Rules for `old`:
 
 Callers rely on the contract using the argument values before and after the call. `verify` does the same, including in a generic function that calls a trait's `mut self` method. A broken contract shows both values: `before: len(xs) = 2, after: len(xs) = 2`.
 
+**What a function or method says of its result's variant narrows its calls.** A result type `-> Order where it is Shipped`, or an `ensures` saying which variant the result is, gives the call that type where it is made:
+
+```rust
+fn ship(o: Order) -> Order
+  ensures (it is Shipped) == (o is Paid || o is Shipped) { ... }
+
+fn label(o: Order) -> String {
+  match o {
+    Paid => ship(o).tracking,               // a `Shipped`: no match needed
+    Pending => match ship(o) {              // not a `Shipped`: two arms cover it
+      Pending => "pending",
+      Paid => "paid",
+    },
+    Shipped => ship(o).tracking,
+  }
+}
+```
+
+- `strata check` narrows a call when its function's facts about `it` are `it is V` (with `!`, `&&`, `||`), `A ==> it is V`, or `(it is V) == A`, and the arguments' types decide `A`: `o is Paid` where `o` is narrowed to `Paid` (by a `match` arm or an `if o is Paid`). The narrowed result can read a field only those variants have, and a `match` on the call covers only them; an arm for a variant ruled out is an error.
+- When `A` is something else (`d.contains(k)`, a comparison), the checker leaves the match's coverage to `verify`, which proves that some arm matches from the callee's contract and the facts at the call (`if d.contains(k) { match lookup(d, k) { Some(v) => v } }`). Until it is proven, the compiled match faults with `no match arm` for a value no arm takes.
+- Methods narrow the same way, `self` being the receiver; a trait method's facts hold of every implementation. `Option`, `Result` and other generic sums keep their type arguments when narrowed (`match same(o) { Some(v) => v }` where `o` is a `Some`).
+- A field read of such a call (`find(d, k).tracking`) under a condition only `verify` decides reads the field of the variants left that have it. `verify` proves the result is one of them (`field `tracking` of a call's result`), and until it is proven the compiled code checks it there. A variable bound from such a call keeps the strict rule.
+- The callee's contract is taken as given, as for every call. `verify` proves it in the callee; while it isn't proven, the callee checks it when it returns, so the caller never sees another variant.
+
 ## Records and defaults
 
 A record field can have a default, written after its type:
@@ -161,6 +185,62 @@ The spread is expanded into the written-out call when the program is checked, so
 - Each remaining parameter must come from exactly one record. A parameter that no record provides, or that two records provide, is an error. So is a record that provides nothing.
 - A `mut` parameter cannot come from a spread. Pass it explicitly (`mut x`).
 - A spread value that isn't a variable or a field of one is evaluated once, before the call's other arguments.
+
+### Structural types: any record with these fields
+
+`{ id: OrderId, total: Cents, .. }` is any record that has at least these fields, with these types. The `..` stands for the other fields a record may have, and must be written. It is a parameter's type, or a type parameter's bound:
+
+```rust
+type Invoice = { id: OrderId, total: Cents, paid: Bool }
+type Quote = { id: OrderId, total: Cents, days: Int }
+
+fn due(x: { id: OrderId, total: Cents, .. }) -> Cents
+  ensures it <= x.total
+= discount(x.total)
+
+fn larger[T: { total: Cents, .. }](a: T, b: T) -> T { if a.total >= b.total { a } else { b } }
+fn totals(xs: List[{ total: Cents, .. }]) -> Int { … }        // one record type for the whole list
+fn named[T: { id: OrderId, .. } + Display](x: T) -> String { … }
+
+due(invoice)                        // an Invoice
+due(quote)                          // a Quote
+larger(invoice, other_invoice)      // an Invoice, returned as one
+```
+
+- **A parameter's type is a type parameter of its own.** `fn due(x: { id: OrderId, .. })` is `fn due[X: { id: OrderId, .. }](x: X)`. Name the type parameter when the same type comes back out (`-> T`) or must be shared (`a: T, b: T`).
+- **Only the named fields can be used.** `x.id` and `x.total` read the record's fields, `x.total = 5` changes a `mut` one, and `x` can be passed on to another function whose bound asks for no more. Anything else on `x` is an error. An open type (with `..`) has no values of its own: it can't be a result's, a variable's or a field's type. An anonymous record (below) can.
+- **A record fits when it has every field, of a type that fits.** A field whose type is refined (`Cents`, `Int where it > 0`) must be given by a field of that same type, since the function is proven knowing the refinement. An unrefined one takes what fits it the usual way. A record's other fields don't matter, nor their order. Records stay nominal otherwise: an `Invoice` is never a `Quote`, whatever their fields.
+- **Only records fit**, generic ones included (`Box[T]`). Variants, tuples, unions and other types don't, even with fields of those names. The bound is checked at every call: of a function, of a type's own method (on a value or on the type), and of a trait's method (through a trait value or a bound). A generic `impl`'s type parameters in a method's bound are the receiver's type arguments (`Store[String]`'s `put(x: { id: K, .. })` takes an `id: String`).
+- **Compiled once per record type.** A call with an `Invoice` compiles `due[Invoice]`, which reads `x.total` at the offset `Invoice` keeps it at, as if `due` had been written for `Invoice`. There is no cost at run time. The cost is code size: one copy of the function per record type it is called with.
+- **Verified once, for every record.** `verify` proves the function on a record holding exactly the named fields. The function can only read those fields, so what it proves holds for every record that has them. The fuzzer runs it with the first record type of the program that has the fields.
+
+### Anonymous records
+
+`{ id: 7, total: 10 }` is a record without a declared type. Its type is written without `..`: `{ id: Int, total: Int }`. That type can be a variable's, a result's or a field's type:
+
+```rust
+fn summary(o: Order) -> { id: Int, total: Cents } = { id: o.id, total: o.total }
+
+type Report = { best: { id: Int, total: Cents }, count: Int }
+
+let t: { id: Int, total: Int } = { total: 10, id: 7 }
+s == t                              // equal field by field
+to_string(s)                        // "{ id: 7, total: 10 }"
+total_of(s)                         // fits `{ total: Cents, .. }`
+```
+
+- **How a literal is told apart.** After `{`, a field's name followed by `:` starts an anonymous record. No statement starts that way: a typed variable is `let x: T = …`. A dict literal is always `Dict { … }`.
+- **One record type per set of field names.** `{ id: …, total: … }` is the generic record `type $rec:id:total[$id, $total] = { id: $id, total: $total }`, made by `desugar` once per program for each set of names it meets. Fields are laid out in order of name, so `{ total: 1, id: 2 }` has the same type, and the type prints in that order. Its fields' types are its type arguments: `{ id: Int, total: Cents }` is `$rec:id:total[Int, Cents]`. It costs what a declared generic record costs: one allocation, and fields read at fixed offsets.
+- **Equality and printing** are a record's: field by field, printed as written, with no type name.
+- **verify** sees an ordinary generic record. A refined field's type is a type argument, so `-> { id: Int, total: Cents }` is proven to give a non-negative `total`. An anonymous record given where a bound asks for a refined field (`total_of({ total: n, id: 1 })` against `{ total: Cents, .. }`) is proven to meet it at the call. The checker can't see the refinement of a type argument, so it leaves that to `verify`. A nominal record's field must be written with the same type instead.
+- **A nominal record is not an anonymous one.** An `Order { id, total, note }` fits `{ id: Int, total: Int, .. }`, but is not a `{ id: Int, total: Int }`, even with exactly those fields. Anonymous records with the same field names are the same type, wherever they are written.
+- **`derive Json`** reaches them: a type deriving `Json` that holds one derives it for the anonymous record too. Its JSON has no `"type"` key, since it has no name: `{"id": 1, "total": 2}`.
+
+### Updating a record without naming its type
+
+`{ ..x, total: 0 }` is `x` with `total` changed, of `x`'s type: a record, a structural parameter's type (`T` in `[T: { total: Int, .. }]`), or an anonymous record's. `x` itself is unchanged. On a `mut` variable, `x.total = 0` changes the field in place, and `x = { ..x, total: 0 }` (or `x = Order { ..x, total: 0 }`) is the same statement. `desugar` writes the assignment of an update of the same place as assignments to its fields, with each new value computed first from `x` as it was. So both forms compile to the same code: the field is set in place when `x` is held once, and copied otherwise. They also have the same proof.
+
+A spread into a structural parameter gives it the record itself, when no field has the parameter's name: `takes(5, ...o)` with `fn takes(n: Int, x: { id: Int, .. })` is `takes(5, o)`.
 
 ## Unions, variants and patterns
 
@@ -214,7 +294,7 @@ type Command =
 - alternatives that bind the same names: `Square | Triangle =>`, `0 | 1 | 2 =>`, `(0, x) | (x, 0) =>`
 - `_`
 
-**Narrowing.** Inside an arm, the matched variable has the arm's type, so `s` above is a `Square` with no new name needed. To match the result of an expression, name it: `match lines(text) as ls { … }`. Matching on a field narrows the field too (`match t.status { Closed => t.status.why, … }`). Assigning to a narrowed `mut` variable ends the narrowing.
+**Narrowing.** Inside an arm, the matched variable has the arm's type, so `s` above is a `Square` with no new name needed. `if s is Square { s.side }` narrows `s` in the branch taken (and to the other variants in the `else`). To match the result of an expression, name it: `match lines(text) as ls { … }`. Matching on a field narrows the field too (`match t.status { Closed => t.status.why, … }`). Assigning to a narrowed `mut` variable ends the narrowing. A field that not every variant has can be read only where the value is narrowed to variants that have it; a call is narrowed by what its function ensures of its result (see "What a function or method says of its result's variant").
 
 **Exhaustiveness and reachability.** The checker reports values that no arm matches (`` `where 3 <= it && it <= 5` is not covered``) and arms that earlier arms already cover (`unreachable match arm `Positive``). The matched value's refinement is taken into account: with `fn f(n: Positive)`, `match n { 1 => …, where it > 1 => … }` is exhaustive.
 
@@ -545,7 +625,7 @@ squares := scope { await [spawn x * x for x in xs] }
 - `await h` waits for the task and returns its result. `await (a, b)` returns a tuple of results, and `await hs` a list. `await` binds like unary `-`, so `(await hs).len()` needs the parentheses.
 - There are no `async` functions. Any function can run in a task, and a call that waits (a read, a long computation) is an ordinary call. Nothing in a function's signature says whether tasks run it.
 
-Tasks share no mutable state, so results don't depend on timing. `scope { a := spawn f(); b := spawn g(); await (a, b) }` equals `(f(), g())`, and `verify` treats it that way. A task captures what it uses as a copy at `spawn` time, like a lambda. It can't change outer variables (`spawn { n += 1 }` is an error), and `return`, `!` and `?` can't leave it. Handle errors inside the task, or make them its result.
+Tasks share no mutable state, so results don't depend on timing. `scope { a := spawn f(); b := spawn g(); await (a, b) }` equals `(f(), g())`, and `verify` treats it that way. A task captures what it uses as a copy at `spawn` time, like a lambda, and a value sent on a channel is the receiver's copy. The copy is real: a value the sender keeps is copied, block by block, and one it gives up on its last use moves for free (see [Values and copying](#values-and-copying)). It can't change outer variables (`spawn { n += 1 }` and `spawn f(mut xs)` are errors), and `return`, `!` and `?` can't leave it. Handle errors inside the task, or make them its result.
 
 A fault in a task ends the program, as anywhere else. [Supervised tasks](#supervised-tasks) are the exception. A deadlock, where every task waits and none can proceed, is reported as a panic instead of hanging.
 
@@ -677,6 +757,7 @@ Every program has these types without a `use`:
 | Type | Notes |
 |---|---|
 | `Int`, `Float`, `Bool`, `String` | `Int` is arbitrary-precision, like Python's: a machine integer while it fits, a big integer when it doesn't. `Float` is never NaN or infinite. Ints and Floats never mix implicitly (`float(n)`, `round(x)`). Integer `/` and `%` are Euclidean, so the remainder is never negative: `-7 / 2 == -4`, `-7 % 3 == 2`, `7 % -3 == 1`. For C's truncating division, divide the magnitudes and restore the sign (`-(7 / 2) == -3`). `parse_int` accepts an optional `+` or `-` sign (`parse_int("+5") == Some(5)`), so check the first character when only digits are allowed. Strings are UTF-8, ordered (`<`, `<=`, `>`, `>=`, `compare`, `sort`) by code point, which matches UTF-8 byte order |
+| `Real` | exact rational numbers, the type of decimal literals: `0.1` is one tenth, so `0.1 + 0.2 == 0.3`. `+ - * / %` and comparisons are exact; `/` and `%` by zero is a check, as for `Int` ("division by zero", left out where `verify` proves the divisor nonzero). `1.0 / 3.0` prints `1/3`, a terminating decimal prints as one (`2.5`, `3.0`). `floor`, `ceil`, `round` give `Int`s; `abs`, `min`, `max`, `sum` work as on `Float`; `x.to_float()` is the nearest `Float` (`None` past the largest), `Real.from(n)` an `Int` as a `Real`, `Real.from_float(f)` a `Float`'s shortest digits, `Real.parse("1/3")` reads one (`-2.5`, `6.02e23` too). `match` takes decimal and integer literals as patterns (`0.5 =>`, `2 =>`). `sqrt`, `sin`, `exp` and the like are `Float`'s only. A `Real` is made only by literals, those functions and arithmetic, never from its parts (`r.num` and `r.den` can be read). JSON and TOML numbers and the ORM's `Real` columns are exact. Cost: two words; a literal is a constant, a result stays on the stack or in its variable's block; each operation is a few machine-word steps and a GCD while both parts fit in 62 bits (adding `0.1` takes about 15 ns, a `Float` addition about 1.5 ns). Values grow with the digits they need (100 compoundings of `x * 1.07` give a 200-digit denominator), so numeric code that can round says `Float` |
 | `I8` … `I64`, `U8` … `U64` | fixed-width integers. Their arithmetic wraps around, and they never mix with `Int` (`x.to_int()`, `n.to_u32()`) |
 | `()` | the unit type, for "no meaningful value". It plays the role of Python's `None` as a type |
 | `Option[T]` | `None` or `Some(x)`: a value that may be absent |
@@ -685,6 +766,8 @@ Every program has these types without a `use`:
 | `(A, B, …)` | tuples, `(word, 3)`, destructured with `(w, n) := …` and accessed with `t.0` |
 | `Dict[K, V]` | a hash map, `Dict { "a": 1, "b": 2 }`, with `get`, `insert`, `remove`, `keys`, `values`, `items` |
 | `Set[T]` | a hash set, `Set { 1, 2 }`, with `insert`, `union`, `intersection`, `difference` |
+
+**Number literals.** A decimal literal is a `Float` where a `Float` is wanted: an annotation (`let x: Float = 0.5`), a parameter or field, a function's result, the other operand of an operator (`x * 0.5`), the other branch of an `if`, another argument of a builtin (`max(x, 0.5)`), or a later use of the variable it is in (`mut t := 0.0` then `t = t + x.area()`). Anywhere else it is a `Real`. An integer literal is an `Int`, a `Real` where a `Real` is wanted (`x * 2`, `let r: Real = 3`), or a sized integer where one is wanted. `verify` proves `Real` code exactly, as SMT's reals; `Float` code is not modelled.
 
 All values are immutable: `insert` returns a new dict. `+` adds numbers and concatenates strings and lists. String operations always name their unit: `s.bytes()`, `s.code_points()` or `s.graphemes()`.
 
@@ -761,7 +844,7 @@ The **standard library** is the `std/` package. It is written in Strata and buil
 - command lines (`std.cli`)
 - sorted dictionaries and sets and a priority queue (`std.collections`)
 - JSON and TOML (`std.json`, `std.toml`)
-- HTTP and HTML as values (`std.http`, `std.web`)
+- HTTP, and HTML pages written as markup (`std.http`, `std.web`)
 - regular expressions and Unicode (`std.regex`, `std.unicode`)
 
 Each module has a [reference page](std/README.md), generated from its doc comments by `strata docgen`. `strata doc std.json` shows one in the terminal.
@@ -778,4 +861,29 @@ signup := Signup.from_json(parse(body)!)!
 text := stringify(signup.to_json()!)  // {"type":"Signup","email":…,"age":…,"nickname":null}
 ```
 
-**Foreign functions.** C functions are declared with `extern c fn`: a signature with contracts and no body (see the [reference](language-reference.md#foreign-functions-extern-c)). Python functions are declared with `extern python "module" fn`. Their values cross the boundary as JSON (`Json`), and every call returns a `Result[T, PythonError]` (see the [reference](language-reference.md#foreign-functions-extern-python)).
+**HTML pages.** Markup is written in Strata code, as in JSX, and an element is an `Html[M]` value (`std.web`):
+
+```rust
+from std.web use Html, document
+
+fn row(l: Language) -> Html[()] {
+  <tr>
+    <td>{l.name}</td>
+    <td class="num">{l.year}</td>
+  </tr>
+}
+
+fn table(ls: List[Language]) -> Html[()] {
+  <table><tbody>{ls.map(l -> row(l))}</tbody></table>
+}
+
+page := document("Languages", [], [<h1>Languages</h1>, table(ls)])
+```
+
+- `{e}` puts a value in: a `String` or `Int` as text, an `Html` as an element, a list of them in its place. Text and values are escaped when rendered, attributes too, so a name like `<script>` shows as written. Only `raw_html(s)` writes HTML as it is.
+- An attribute is `name="text"`, `name={e}` (a `String`, an `Int`, or a `Bool` for a flag that is there when `true`), or a bare `name` (a flag). An event is `on_click={message}`. `onclick="…"` is refused: a page can't hold inline scripts.
+- A component is a function returning `Html`, called in braces: `{row(l)}`. A tag is lowercase (`<div>`, `<my-card>`).
+- An element without children is written `<br />`, and `<>…</>` is a list of elements.
+- The module needs an import from `std.web` (such as `from std.web use Html`). The parser reads markup as calls to `std.web` (`std.web.element("td", [std.web.attr("class", "num")], std.web.children([l.year]))`), which is what is stored, checked and compiled; `view` shows those calls as markup again. A literal tag lets `verify` prove that void elements (`br`, `input`, …) get no children. Rendering is one pass over the tree (`render`, `document`).
+
+**Foreign functions.** C functions are declared with `extern c fn`: a signature with contracts and no body (see the [reference](language-reference.md#foreign-functions-extern-c)). Python, Rust and TypeScript functions are declared with `extern python "module" fn`, `extern rust "crate" fn` and `extern ts "module" fn`. Their values cross the boundary as JSON (`Json`), and every call returns a `Result[T, PythonError]` (`RustError`, `TsError`). Python and TypeScript run in a worker process; a Rust crate is built by cargo into a library loaded in the program's process (see the reference: [Python](language-reference.md#foreign-functions-extern-python), [Rust](language-reference.md#foreign-functions-extern-rust), [TypeScript](language-reference.md#foreign-functions-extern-ts)).

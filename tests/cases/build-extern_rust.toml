@@ -1,0 +1,238 @@
+# extern rust: a package's module declares functions of a crate beside
+# strata.toml (worker/, a folder with a Cargo.toml) and turns them into the
+# `Worker` capability, which `main` and a test ask for. `strata run`, `test`
+# and `build` write a crate calling them into .strata/rust and build it
+# with cargo: `run` and `test` load its shared library on the first call,
+# a built executable has its static library linked in (it runs with
+# .strata deleted, moved to another folder).
+# Values cross as JSON (a record through `derive Json` and serde); every
+# failure is a `RustError` value: an `Err` the function returned, a panic
+# (caught: the next call works), arguments that aren't the Rust types, a
+# result that isn't the declared type, breaks its refinement or is beyond
+# 2^53, an argument beyond 2^53. A module of the crate (`worker::words`).
+# Calls from 20 tasks. Under `strata run` and built (every object freed);
+# `verify` takes the Rust functions as assumed and runs none. A declared
+# function the crate lacks is cargo's error; no cargo is an error saying
+# what to install. The declarations' rules are checked. Skipped without
+# cargo.
+
+[[step]]
+write = "p/strata.toml"
+text = 'name = "p"'
+needs = "cargo"
+
+[[step]]
+write = "p/worker/Cargo.toml"
+from = "Cargo.toml"
+
+[[step]]
+write = "p/worker/src/lib.rs"
+from = "lib.rs"
+
+[[step]]
+module = "m"
+into = "$TMP/p/"
+from = "m.st"
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+from = "main.st"
+
+[[step]]
+strata = ["--file", "p", "view", "m"]
+has = ['extern rust "worker" fn inc(x: Int) -> Result[Int, RustError]', 'extern rust "worker::words" fn count(s: String)']
+
+[[step]]
+strata = ["run"]
+dir = "p"
+stdout = '''
+Ok(42)
+Ok(Plain { x: 3 })
+Ok(Plain { x: 42 })
+Err(BadReply { message: "x: expected an integer, got \"not a number\"" })
+Err(BadReply { message: "-5 does not satisfy `Natural` (where it >= 0)" })
+Err(BadReply { message: "the result can't be read: at 6: 1152921504606846976 is beyond ±(2^53 - 1), the integers a JSON number holds exactly" })
+Ok(())
+Ok(12)
+Err(Failed { message: "\"twelve\": invalid digit found in string" })
+Ok(0)
+Err(Panicked { message: "x is 7" })
+Ok(0)
+Err(BadArguments { message: "argument 1: invalid type: string \"one\", expected i64" })
+Ok(3)
+Err(NotEncodable { message: "an argument of `huge`: 10000000000000000 is beyond ±(2^53 - 1), the integers a JSON number holds exactly" })
+[Ok(1), Ok(2), Ok(3), Ok(4), Ok(5), Ok(6), Ok(7), Ok(8), Ok(9), Ok(10), Ok(11), Ok(12), Ok(13), Ok(14), Ok(15), Ok(16), Ok(17), Ok(18), Ok(19), Ok(20)]
+'''
+
+# (the crate made for the declarations, and what Rust prints, on standard error)
+[[step]]
+run = ["ls", "p/.strata/rust"]
+has = ["Cargo.toml", "lib.rs"]
+
+[[step]]
+strata = ["run"]
+dir = "p"
+has = ["printed by Rust", "x is 7"]
+
+[[step]]
+strata = ["build", "-o", "prog"]
+dir = "p"
+
+# (the executable holds the library: it runs with .strata gone, from another folder)
+[[step]]
+run = ["rm", "-rf", "p/.strata"]
+
+[[step]]
+run = ["mkdir", "elsewhere"]
+
+[[step]]
+run = ["mv", "p/prog", "elsewhere/prog"]
+
+[[step]]
+run = ["otool", "-L", "elsewhere/prog"]
+lacks = ["strata_rust", ".strata"]
+
+[[step]]
+run = ["./elsewhere/prog"]
+memory = true
+has = ["Ok(Plain { x: 42 })", "Err(Panicked { message: \"x is 7\" })", "Ok(19), Ok(20)]"]
+
+[[step]]
+strata = ["test"]
+dir = "p"
+has = ["✓ a test asks for the capability", "1 passed, 0 failed"]
+
+[[step]]
+strata = ["verify"]
+dir = "p"
+has = ["≈ m.inc", "`inc` is a Rust function (`extern rust`): its contracts are checked when it runs"]
+lacks = ["✗", "skipped", "incomplete"]
+
+# a declared function the crate lacks: cargo's error
+[[step]]
+module = "m"
+into = "$TMP/p/"
+text = '''
+extern rust "worker" fn nowhere(x: Int) -> Result[Int, RustError]
+'''
+
+[[step]]
+strata = ["run"]
+dir = "p"
+fails = true
+has = ["`extern rust`: cargo couldn't build the crates", "cannot find function `nowhere` in crate `worker_crate`"]
+
+# no cargo
+[[step]]
+write = "q/strata.toml"
+text = '''
+name = "q"
+
+[rust]
+cargo = "no-such-cargo-for-strata"
+'''
+
+[[step]]
+write = "q/worker/Cargo.toml"
+from = "Cargo.toml"
+
+[[step]]
+module = "main"
+into = "$TMP/q/"
+text = '''
+from std.rust use RustError
+
+extern rust "worker" fn f(x: Int) -> Result[Int, RustError]
+
+capability Rs {
+  fn f(x: Int) -> Result[Int, RustError] {
+    f(x)
+  }
+}
+
+fn main(rs: Rs) {
+  print(rs.f(1))
+}
+'''
+
+[[step]]
+strata = ["run"]
+dir = "q"
+fails = true
+has = ["`extern rust` needs Rust's `no-such-cargo-for-strata`, not found on the PATH: install Rust (https://rustup.rs), or name it as `[rust] cargo` in strata.toml"]
+
+# a crate that isn't there
+[[step]]
+module = "main"
+into = "$TMP/q/"
+text = '''
+extern rust "crates/missing" fn f(x: Int) -> Result[Int, RustError]
+'''
+
+[[step]]
+strata = ["run"]
+dir = "q"
+fails = true
+has = ["`extern rust \"crates/missing\"`:", "crates/missing has no Cargo.toml"]
+
+# the rules on declarations, as for extern python
+[[step]]
+write = "r/strata.toml"
+text = 'name = "r"'
+
+[[step]]
+module = "m"
+into = "$TMP/r/"
+text = '''
+from std.rust use RustError
+
+type Plain = { x: Int }
+
+pub extern rust "c" fn a(x: Int) -> Result[Int, RustError]
+
+extern rust "c" fn b(p: Plain) -> Result[Int, RustError]
+
+extern rust "c" fn d(x: Int) -> Int
+
+extern rust "c" fn e(mut x: Int) -> Result[Int, RustError]
+
+fn helper() -> Result[Int, RustError] {
+  a(1)
+}
+'''
+
+[[step]]
+strata = ["check"]
+dir = "r"
+fails = true
+has = [
+  "error in m.a: `extern rust` definitions are never `pub`",
+  "error in m.b: `extern rust fn b`, parameter `p`: `Plain` has no JSON form, so it can't cross to Rust: derive `Json` for it (`derive Json for Plain`, std.json)",
+  "error in m.d: `extern rust fn d`: its result is `Result[T, RustError]`",
+  "error in m.e: `extern rust fn e`, parameter `x`: can't be `mut` (values cross to Rust as JSON, never back)",
+  "error in m.helper: calls `extern rust fn a`, which only this module's capabilities can call (`capability Name { ... }`): code that reaches Rust takes the capability",
+]
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+extern rust fn f(x: Int) -> Int
+'''
+fails = true
+has = ["`extern rust` needs the crate the function is in, a folder with a Cargo.toml: `extern rust \"text_tools\" fn ...`"]
+
+# the example
+[[step]]
+strata = ["run", "--file", "$ROOT/examples/rust"]
+stdout = '''
+hello-world-strata-calls-rust
+the: 2, cat: 1
+typed-json-at-the-boundary: 11 words, "Values cross as JSON through", tags ["json", "rust"]
+Ok(1965)
+no year in "no year here"
+'''
+
+[[step]]
+strata = ["--file", "$ROOT/examples/rust", "test"]
+has = ["✓ a slug, from Rust", "1 passed, 0 failed"]

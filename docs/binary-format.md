@@ -137,7 +137,7 @@ DeriveClause = comments:list(str)  name:str  names:list(str)    key code, key (s
 UseDecl     = path:str  alias:option(str)  items:option(list(UseItem))     use m [as a] (no items), from m use x, y as z
 UseItem     = name:str  alias:option(str)
 ExternDecl  = lang:Lang  item:ExternItem
-Lang        = 0 C | 1 Builtin | 2 Python(module:str)
+Lang        = 0 C | 1 Builtin | 2 Python(module:str) | 3 Rust(crate:str) | 4 Ts(module:str)
 CapabilityDecl = name:str  methods:list(FnDecl)
 DeriveFnDecl = trait_name:str  function:str  derived:bool  exports:list(str str)  files:list(str str)
 ExternItem  = 0 Fn(FnDecl) | 1 Type(name:str)
@@ -153,6 +153,7 @@ TypeExpr    = 0 Named(name:str, args:list(TypeExpr))      Int, List[T], T
             | 2 Unit                                      ()
             | 3 Refined(base:TypeExpr, pred:Expr)         Int where it > 0
             | 4 Union(list(TypeExpr))                     A | B
+            | 5 Row(list(str TypeExpr))                   { id: Int, total: Cents, .. } (a bound, or a parameter's type)
 ```
 
 ### Expressions
