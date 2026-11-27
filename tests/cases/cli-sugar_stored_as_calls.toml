@@ -71,7 +71,7 @@ out_file = "s.st"
 
 [[step]]
 strata = ["header", "s.strata", "--tree"]
-has = ['Call { callee: Var("set_at")', 'Call { callee: Var("slice")', 'Call { callee: Var("fold")', 'While { cond: BoolLit(true)']
+has = ['Call { callee: Var("$core:set_at")', 'Call { callee: Var("$core:slice")', 'Call { callee: Var("$core:fold")', 'While { cond: BoolLit(true)']
 
 [[step]]
 strata = ["--file", "s.strata", "run"]
@@ -97,5 +97,4 @@ fails = true
 
 [[step]]
 strata = ["--file", "at.strata", "check"]
-fails = true
-has = ["`at` is a builtin that sugar calls"]
+has = ["ok: 2 definitions check"]
