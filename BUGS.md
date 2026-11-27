@@ -378,6 +378,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Runtime and core
 
+- [ ] **A test's start forgets the senders its thread holds, so a later `close` of one faults.** `strata_run_begin` calls `forget_senders()`, which drops this thread's `held` entries without closing them (`senders` stays up). A `close` of such a sender after the test began fails `unhold_sender` and faults with "`close` of a sender this task doesn't hold, or has closed already", and the channel's receivers never see it end.
+  Where: runtime.c forget_senders, strata_run_begin, strata_channel_close. Source: PR #621 (runtime-uaf). Confidence: likely.
 - [ ] **Per-thread free lists only go back when the thread ends (producer/consumer grows without bound).** A freeing thread pushes onto its own `heap` list. `refill` only takes from the shared list, and `strata_memory_thread_end` gives lists back at thread end. A consumer that frees what a producer allocated hoards the blocks, and the producer keeps carving new chunks.
   Where: core.rt.strata_free (threaded branch), refill, strata_memory_thread_end. Source: review core-runtime; ledger R3. Confidence: sure.
 - [ ] **(memory) `join` is not synchronized: double `pthread_join` and a wrong `live_tasks`.** `static void join(Task *t) { if (t->joined) return; pthread_join(t->thread, NULL); t->joined = 1; if (__atomic_sub_fetch(&live_tasks, 1, …) == 0) set_threaded(0); …}`.
