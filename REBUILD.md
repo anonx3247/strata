@@ -22,6 +22,9 @@ The plan for a Strata rebuilt in small layers, each read and understood before t
 10. **No catch-all yes.** A pass that doesn't know answers "unknown" or reports an error where the unknown arises. No `TAny`, no fuel that answers true, no `_ => true`, no limit that answers "exhaustive" or "finite". (ISSUES 2)
 11. **Facts as code, not comments.** A property of the code is written as a contract, invariant, law or lemma, where it is checked. Comments never claim what code does. Doc comments: one line or a few for each module, type and function; a comment elsewhere only to name or sketch an algorithm. A lint enforces it.
 12. **No names in the compiler.** Built-in types and functions are declared once in core; the compiler finds them by id, never by spelling. (ISSUES 4)
+13. **Specification first.** Shapes and contracts come before code: types, signatures with `requires`/`ensures`, laws and invariants, with `?hole` bodies. `check` and the vacuity checks confirm they fit and say something; then each hole is filled on its own (by a smaller model, given its signature, contract and the types in scope), and `verify` judges it.
+14. **Proofs, not tests, for the compiler's own laws.** Sugar pairs: `desugar(sugar(t)) == t` and back, proven on trees. Printing and parsing: `parse_tokens(tokens_of(t)) == t` by structural induction, then `lex(render(ts)) == ts` at the string boundary. The validator: it accepts a tree only when each node's type follows from its children's. Compiler data is shaped to be provable: no floats in trees (literals stored as bits), postorder arrays with index refinements, small functions. Tests remain for what touches the outside world.
+15. **Everything recorded structurally.** No line-based diff anywhere: diffs, tours, merges and history compare trees node by node.
 
 ## Decisions in force
 
@@ -114,6 +117,7 @@ Each layer lists what it adds; nothing else exists yet.
 - `diff` and `merge-file` on trees, node by node; `find`, `refs`, `rename`, `move`, holes and pending changes; `--json` on every command.
 - One write path for every command that changes code (Issue 16).
 - Semantic versioning computed from interfaces and contracts: a stronger `requires` or a weaker `ensures` is a breaking change.
+- `strata new MODULE`: an empty buffer whose definitions are added to the module.
 - `doc`, `docgen`, `skill`, `tour`; an LSP later.
 
 ### L6: compile time
@@ -153,6 +157,7 @@ A test of the spec: an agent (Fable) builds the language from it in one go, with
 Phase 0, done: `view` in reading order (#547), fast `diff` with `--json` (#544), PR tours (#546, #550). Left:
 - The lab bugs that lose code or prove false facts (BUGS.md, first entries).
 - Format trials in the lab: stable ids (#559) and the stored core (#562), merged and released.
+- In the lab: `strata new MODULE`; `strata diff` and tours node by node by default (the tree diff exists, #569).
 - The rules 10 and 11 tried in the lab: a lint for claim-style comments; the remaining `TAny` and default-yes answers replaced by errors in one module, measured.
 
 ## Appendix: decisions recorded in the lab, to review

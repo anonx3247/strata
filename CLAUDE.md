@@ -13,6 +13,11 @@ Where things are tracked:
 - Doc comments: a line or a few on each module, type and function, saying what it is for. Elsewhere, a comment only to name or sketch an algorithm; prefer naming the function after it.
 - If a comment explains what something is, rename the thing instead.
 
+## Writing code
+
+- Specification first: types, signatures with contracts, laws and invariants, with `?hole` bodies; `strata check` until they fit; then fill each hole (`strata holes` gives its goal and context; a smaller model can fill one) and `verify`.
+- Prove instead of testing: properties as contracts, laws and lemmas proven by `verify`; tests only for what touches the outside world.
+
 Strata is written in Strata: the `strata` command is the `compiler/` package, built by a `strata` before it. There is no Rust any more (the last Rust implementation is the tag `last-rust`).
 
 ## Conventions
