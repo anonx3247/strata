@@ -38,9 +38,9 @@ smt.leaves_of smt.union_as smt.val_type smt.pairable smt.share_val smt.eq smt.su
 ```
 
 # What the prover can now carry
-Three fixes the std.array contracts needed: a type's own method called in a contract (`self.within(b)`) is that method's function; a call made twice on the same values that gives a list is that same list, so an `all` known in a `requires` holds of the list the body reads; a function whose body is a literal is a constant.
+Three fixes the std.array contracts needed: a type's own method called in a contract (`self.within(b)`) is that method's function; a call made twice on the same values that gives a list is that same list (outside quantifiers), so an `all` known in a `requires` holds of the list the body reads; a function whose body is a literal is a constant.
 
-```strata-diff smt.own_function smt.call_exprs smt.constant_body smt.same_call
+```strata-diff smt.own_function smt.call_exprs smt.constant_body
 ```
 
 # std.array: bounds on magnitudes
@@ -54,18 +54,22 @@ std.array.sub_lists std.array.mul_lists std.array.div_lists: the other element-w
 std.array.lane_sums std.array.transposed std.array.pair_rows: reductions along an axis, matmul's transposed copy, broadcasting typed lists
 std.array.add_bound std.array.factor_bound std.array.sum_bound std.array.dot_bound std.array.product_bound std.array.AddSample std.array.Factor std.array.Divisor std.array.SumSample std.array.DotSample: the bounds
 std.array.as_float std.array.Array: contracts and docs
-std.sqlite.*: `Row.float` converts the 64-bit integers SQLite stores (a larger Int faulted in `float`)
 ```
 
 # std's library without its proven checks
 The library was compiled with no proofs, so it kept every check. Building it now verifies std (no fuzzing; verdicts from the cache) and gives the proofs to codegen, which names library functions as `verify` does. A float operation proven finite compiles to the bare `fadd`. Each function with entry checks is also defined without them (`K#unchecked`), and a call whose checks its caller proved calls that one.
 
-```strata-diff main.std_library main.std_proofs codegen.finite codegen.entry_proven
+```strata-diff std_library std_proofs codegen.finite codegen.entry_proven
 ```
 
 ```strata-also
 codegen.function codegen.compiled_alone codegen.Gen codegen.unchecked_sym codegen.has_entry_checks codegen.call_fn_want: the second, unchecked definition and the calls of it
-main.verify_file: `--silent`, for the library's verify
-main.*_command main.static_graph: whether a command waits for std's proofs (`prove`)
+verify_file: `--silent`, for the library's verify
+*_command static_graph: whether a command waits for std's proofs (`prove`)
 store.refs: an impl method's contracts are among its references, so a caller's verify loads what they name
+```
+
+# Routine
+```strata-routine
+std.array.Length std.array.count std.array.row_major std.array.broadcast_shape std.array.in_bounds std.array.position std.array.gather std.array.stretched std.array.lanes std.array.floats std.array.ArrayI64 std.array.dot_run_i64 std.array.sum_run_i64 std.array.ArrayI32 std.array.dot_run_i32 std.array.sum_run_i32 std.array.inside: re-encoded by `strata upgrade` (their dependency lists, now with impl methods' contracts)
 ```
