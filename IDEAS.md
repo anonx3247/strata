@@ -161,12 +161,10 @@ The JIT runs `main` on a larger stack; a native binary could too, so recursion d
 ### Blocking `extern c` calls on a scheduler
 A blocked C call holds a whole OS thread. Go hands that thread's other tasks to a new one; Strata could do the same. (Claude, 2026-11-22)
 
-### Logging without passing a capability
-(user, 2026-11-27) Passing a logger to everything that logs is tiresome, and debug output belongs even in pure functions. Proposed: one ambient diagnostic channel any code may write to (`log.debug(…)`, `log.info(…)`), with no capability, because its rules keep it harmless:
-- write-only: nothing can read it back, it returns `()`, and it never fails visibly, so no result can depend on it and a function that logs stays pure (verify treats it as doing nothing);
-- where it goes (stderr, a file, nowhere) and which levels pass are set by the program's entry point or the runtime, never by the code that logs; tests capture it;
-- levels below the build's are compiled out.
-Real output stays a capability: `Console` for stdout and reading input, `Files` for log files the program itself manages. To check: what the lab's `print` needs today.
+### Logging as a value, and `debug`
+(user, 2026-11-27; replaces an ambient log channel)
+- **A log is a value**: `Logger` is a buffer of entries, made anywhere (`log := Logger {}`) and passed as `mut log: Logger` to what logs. Writing to it changes only that value, so a function that logs stays pure and verifiable, and its signature shows that it logs. Nothing is written out until a function with a capability does it: `fn main(cap files: Files) { … files.append("app.log", log.text()) }`. No singleton (an implicit global, written to by many tasks at once); a task logs into its own `Logger`, and the parts are joined when the tasks finish (in order, or by time).
+- **`debug e`**, a statement for looking at a value while developing: `debug f"step {i}: {total}"`, or `debug total`, shown with its expression's text, like Rust's `dbg!`. It prints to stderr under `strata run` only; `build`, `test` and `verify` remove it, so it can appear in any function without a capability and never changes a result. Its expression must be pure (no capability, no `mut`), since it is removed.
 
 ### Supervision beyond one task
 Memory budgets per supervised task (running out as that task's panic), restart helpers in std (one-for-one, all-for-one), supervised scopes, and cancelling every blocking I/O call, not only `read_line`. (user, 2026-11-22)
