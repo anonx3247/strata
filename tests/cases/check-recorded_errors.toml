@@ -503,7 +503,8 @@ run = ["sh", "-c", "\"$STRATA\" --file sums.strata check 2>&1 | grep -E \"^(erro
 stdout = '''
 error in a: function body: expected `Int`, found `Sh`
 error in e: function body: expected `String`, found `Option[Int]`
-error in f: match arm: expected `String`, found `Int`
+error in f: `or` fallback: expected `Int`, found `String`
+error in f: function body: expected `String`, found `Int`
 error in g: function body: expected `String`, found `Int`
 error in h: `==` operands: expected `Sh`, found `Int`
 '''

@@ -13,7 +13,7 @@ A default is checked where its type is defined. It must have the field's type, a
 - The checker expands it (`desugar.key_paths`) into `KeyPath { name: "title", get: ($r: Todo) -> $r.title }`. `view` still shows `Todo.title`, and nothing after the checker sees the short form.
 - Not supported: fields of a generic record (`Pair.first`), paths through several fields (`Todo.owner.name`), and assigning through a key path.
 
-**Spreading a record into a call.** The checker expands `f(a, ...x, ...y, b)` into the call written out by parameter name. Positional arguments before the spreads fill the first parameters, and those after the spreads fill the last ones. Each parameter in between takes the field with its name from the one spread record that has it (`x.qty`). Other fields are ignored. Everything after the checker (the compiler, `verify`, runtime checks) sees an ordinary call, while `view` shows the call as written. In the tree, a spread is `Spread(Expr)`, a call argument.
+**Spreading a record into a call.** The checker expands `f(a, ...x, ...y, b)` into the call written out by parameter name. Positional arguments before the spreads fill the first parameters, and those after the spreads fill the last ones. Each parameter in between takes the field with its name from the one spread record that has it (`x.qty`). Other fields are ignored. The call is stored written out (`edit` writes it, with the records' and callees' declarations), so everything after parsing sees an ordinary call. `view` shows `f(...x)` again when every argument is a field of the same variable (or field of one) named like its parameter, and a spread of a value that isn't a variable (`...make()`, bound first) always; other calls with spreads are shown written out (`f(5, x.qty, x.price)`).
 
 Spreads work in:
 
@@ -191,6 +191,37 @@ type Options = { count: Int, loud: Bool, name: String = "world" }
 - An edit replaces and adds derives by name, like any definition. A declaration given in an edit brings its derive line. A stored derive that would be shown on that line but whose trait the line no longer names, or whose line is missing, is removed with a warning (`warning: removed derive std.toml.Toml for Options (no longer on its derive line)`).
 - A declaration the edit doesn't give keeps its derives. Derives with a block, derives for another module's declaration, and `for module` derives are removed only with `strata edit --rm 'derive std.json.Json for Options'`.
 - `strata view Options`, and the editor `strata edit Options` opens, show the declaration with its derive line, so editing what they show keeps the derives.
+
+## Operators
+
+An operator is a call of a trait's method, from `core.ops`. A type gets an operator by implementing its trait, like any trait:
+
+| Written | Is | Trait's method |
+|---|---|---|
+| `a + b`, `a - b`, `a * b`, `a / b`, `a % b` | `Add.add(a, b)`, `Sub.sub`, `Mul.mul`, `Div.div`, `Rem.rem` | `fn add(self, other: Self) -> Self` |
+| `-a` | `Neg.neg(a)` | `fn neg(self) -> Self` |
+| `a == b`, `a != b` | `Eq.eq(a, b)`, `!Eq.eq(a, b)` | `fn eq(self, other: Self) -> Bool` |
+| `a < b`, `a <= b`, `a > b`, `a >= b` | `Ord.lt(a, b)`, `Ord.le`, `Ord.gt`, `Ord.ge` | `fn lt(self, other: Self) -> Bool`; `le`, `gt` and `ge` follow from it unless the `impl` gives them |
+
+```rust
+type Vec2 = { x: Int, y: Int }
+
+impl Add for Vec2 {
+  fn add(self, other: Vec2) -> Vec2 = Vec2 { x: self.x + other.x, y: self.y + other.y }
+}
+
+fn total[T: Add](xs: List[T], zero: T) -> T = xs.fold(zero, (a, b) -> a + b)
+
+print((Vec2 { x: 1, y: 2 } + Vec2 { x: 3, y: 4 }).x)   // 4
+```
+
+- The numbers have every operator built in, `String` has `+` and the orders (by code points), `List` has `+`. Core's `impl`s for them call intrinsics, one per operation and family: `impl[T: SizedInt] Add for T { fn add(self, other: T) -> T = sized_add(self, other) }` for `I8` … `U64` (`SizedInt`, a built-in trait), `float_*` (`SizedFloat`), `integer_*` for `Int`, `string_*`, `bool_eq`, `list_add`. An intrinsic compiles to its instruction inline for the concrete type (with `Int`'s overflow check), and `verify` reads it as integer or real arithmetic; so does an operator on a built-in type, and `x.add(y)` from generic code on one (`total([1, 2], 0)`).
+- On another type, `a + b` is the call `a.add(b)` of the type's `impl`. Without one it is an error: `` `<` on `P`: it needs `impl Ord for P` ``. `verify` proves such a call through the `impl`'s contracts (its `ensures`).
+- Operands of two types: an `impl` names the right operand's type and the result's: `impl Mul[Int, Money] for Money { fn mul(self, k: Int) -> Money { … } }` gives `m * 3`, `impl Mul[Vec2, Vec2] for Int` gives `3 * v`. The checker types both operands, then picks the `impl` that joins their types; one per pair of types and operator (`+ - * / %` only).
+- Every type has `==` built in, comparing values part by part. `impl Eq for T` replaces it where `==` compares two `T`s, or two values of a type parameter bound by `Eq`; inside a list, a dictionary, `contains` or `sort`, values still compare part by part.
+- `&&`, `||`, `==>` and `!` are not methods: they evaluate their right side only when needed. Nor, yet, are the bit operators (`& | ^ << >>`).
+- The stored tree holds the call (`Add.add(a, b)`); `strata view` shows `a + b`, and `!Eq.eq(a, b)` (written `a != b` or `!(a == b)`) as `a != b`.
+- Cost: on a built-in type, the operator itself. On another, one method call. Checking a program with such `impl`s infers the types of the operands of each function using an operator once more.
 
 ## Modules
 
@@ -400,7 +431,7 @@ print([Money { cents: 5 }])        // [Money { cents: 5 }]: parts by their `debu
 print(Some(Secret { key: "k" }))   // Some(Secret { key: *** })
 ```
 
-**Order.** `compare(a, b)` is the order `sort` uses, on any two values of the same type. It returns -1 when `a` comes first, 0 when they are equal, and 1 when `b` comes first. Generic code, including `std.collections`, orders by `compare`, because `<` and the other comparison operators work only on numbers. The order is:
+**Order.** `compare(a, b)` is the order `sort` uses, on any two values of the same type. It returns -1 when `a` comes first, 0 when they are equal, and 1 when `b` comes first. Generic code, including `std.collections`, orders by `compare`, because `<` and the other comparison operators work only on numbers, strings and types that implement `Ord` (see [Operators](#operators)). The order is:
 
 - numbers by value, strings by bytes
 - a `distinct` value as its underlying value
