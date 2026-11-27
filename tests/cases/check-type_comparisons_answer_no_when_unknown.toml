@@ -1,0 +1,128 @@
+# The checker's type comparisons answer no where they don't know, instead of
+# yes: a trait value that isn't the trait (or a subtrait), `()` or a
+# function used as a trait, a union some member of which lacks the trait, a
+# mismatch inside a type with a function in it, a narrowed value joined
+# with the whole sum, a type that would contain itself, and types nested
+# past the comparison's depth
+
+[[step]]
+save = "p.strata"
+text = '''
+trait Area {
+  fn area(self) -> Int
+}
+
+trait Named {
+  fn name(self) -> String
+}
+
+trait Labelled: Area {
+  fn label(self) -> String
+}
+
+type Sq = { side: Int }
+
+type Ci = { r: Int }
+
+type Dot = { x: Int }
+
+type Both = Sq | Ci
+
+type Mixed = Sq | Dot
+
+impl Area for Mixed {
+  fn area(self) -> Int = 0
+}
+
+impl Area for Sq {
+  fn area(self) -> Int = self.side * self.side
+}
+
+impl Area for Ci {
+  fn area(self) -> Int = 3 * self.r * self.r
+}
+
+impl Labelled for Sq {
+  fn label(self) -> String = "square"
+}
+
+type Shape = Circle { r: Int } | Square { side: Int } | Point
+
+fn total(a: Area) -> Int = a.area()
+
+fn unit_as_trait() -> Int = total(())
+
+fn fn_as_trait() -> Int = total((x: Int) -> x)
+
+fn union_some(b: Bool) -> Int {
+  v := if b { Ci { r: 1 } } else { Dot { x: 1 } }
+  total(v)
+}
+
+fn union_all(b: Bool) -> Int {
+  v := if b { Sq { side: 1 } } else { Ci { r: 1 } }
+  total(v)
+}
+
+fn other_trait(n: Named) -> Int = total(n)
+
+fn subtrait(l: Labelled) -> Int = total(l)
+
+fn takes_pair(p: (Int, (Int) -> Int)) -> Int = p.0
+
+fn unprinted() -> Int = takes_pair((1, 2))
+
+fn narrowed_join(s: Shape, t: Shape, b: Bool) -> Int {
+  if s is Circle {
+    u := if b { s } else { t }
+    u.r
+  } else {
+    0
+  }
+}
+
+fn self_list() -> Int {
+  mut xs := []
+  mut xs.push(xs)
+  0
+}
+
+
+fn deep(g: (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int = 0
+
+fn too_deep(h: (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((String) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int) -> Int = deep(h)
+
+fn named_union(m: Mixed) -> Int = total(m)
+
+fn union_param(b: Both) -> Int = total(b)
+
+fn narrowed_kept(s: Shape) -> Int {
+  if s is Circle {
+    u := if true { s } else { s }
+    u.r
+  } else {
+    0
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in unit_as_trait: using it as a `Area`: `()` does not implement `Area`",
+  "error in fn_as_trait: using it as a `Area`: `(Int) -> Int` does not implement `Area`",
+  "error in union_some: using it as a `Area`: `Ci | Dot` does not implement `Area`",
+  "error in other_trait: using it as a `Area`: `Named` does not implement `Area`",
+  "error in unprinted: call to `takes_pair`, argument 1: expected `(Int, (Int) -> Int)`, found `(Int, Int)`",
+  "error in narrowed_join: `Square` has no field `r`, so not every `Shape` does",
+  "error in self_list: a type that contains itself: `_` would be `List[_]`",
+  "error in too_deep: types too deeply nested to compare",
+]
+lacks = [
+  "error in union_all",
+  "error in subtrait",
+  "error in named_union",
+  "error in union_param",
+  "error in narrowed_kept",
+]
