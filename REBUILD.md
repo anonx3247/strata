@@ -94,7 +94,7 @@ Each layer lists what it adds; nothing else exists yet.
 
 ### L2: enough to compile itself
 
-- Traits, impls, methods, bounds; one impl per trait and type, orphan rule; generics verified once against their bounds, compiled per type.
+- Traits, impls, methods, bounds; one impl per trait and type, orphan rule. Generics verified once (user, 2026-11-27): a generic function is proven over any `T` meeting its bounds, using only the bounds' operations, contracts and laws (parametricity), so the proof holds for types written later; compiled per type.
 - `Console`, `Files`, `Process` as traits; `mock`.
 - `Dict`, `Set` as hash tables; lambdas and closures; `Display`/`Debug`.
 - Reference counting on the mid-level IR, parameters borrowed by default (inferred per function).
@@ -117,6 +117,7 @@ Each layer lists what it adds; nothing else exists yet.
 
 - `diff` and `merge-file` on trees, node by node; `find`, `refs`, `rename`, `move`, holes and pending changes; `--json` on every command.
 - One write path for every command that changes code (Issue 16).
+- Threading a value up the call graph (user, 2026-11-27): an edit-level refactor that adds a parameter (a capability, a config, a logger, an allocator, a deadline) to a function and every caller up the chain, until one already has a value of that type or `main` is reached; and the reverse, removing parameters a chain no longer needs. Signatures stay explicit (no implicit context). A recursive group gets it at once; a function used as a value, a trait method or a `pub` function crossing makes it a pending change (holes, or the trait and its impls changed, with its version bump).
 - Semantic versioning computed from interfaces and contracts: a stronger `requires` or a weaker `ensures` is a breaking change.
 - `strata new MODULE`: an empty buffer whose definitions are added to the module.
 - `doc`, `docgen`, `skill`, `tour`; an LSP later.
