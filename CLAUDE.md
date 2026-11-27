@@ -1,6 +1,22 @@
 # Working on Strata
 
-Keep track of decisions, open questions and ideas in [IDEAS.md](IDEAS.md); the README and `docs/` describe what is built.
+Where things are tracked:
+- [BUGS.md](BUGS.md): bugs to fix. A PR that fixes one removes its entry.
+- [ISSUES.md](ISSUES.md): larger design problems.
+- [REBUILD.md](REBUILD.md): the plan for rebuilding the language, its rules and the decisions in force.
+- [IDEAS.md](IDEAS.md): ideas for possible future changes, nothing else.
+- The README and `docs/` describe what is built.
+
+## Comments and docs
+
+- A comment never states a fact about the code ("this holds for all X", "every caller does Y", "we guarantee Z"). Write it as a contract, invariant, law or lemma, where it is checked.
+- Doc comments: a line or a few on each module, type and function, saying what it is for. Elsewhere, a comment only to name or sketch an algorithm; prefer naming the function after it.
+- If a comment explains what something is, rename the thing instead.
+
+## Writing code
+
+- Specification first: types, signatures with contracts, laws and invariants, with `?hole` bodies; `strata check` until they fit; then fill each hole (`strata holes` gives its goal and context; a smaller model can fill one) and `verify`.
+- Prove instead of testing: properties as contracts, laws and lemmas proven by `verify`; tests only for what touches the outside world.
 
 Strata is written in Strata: the `strata` command is the `compiler/` package, built by a `strata` before it. There is no Rust any more (the last Rust implementation is the tag `last-rust`).
 
