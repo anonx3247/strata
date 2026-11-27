@@ -24,7 +24,7 @@ fn main() {
 
 [[step]]
 strata = ["--file", "inv.strata", "build", "-o", "inv"]
-has = ["warning: in `total`, `invariant s == sum(xs[..i])` of `while i < len(xs)` isn't proven: it stays a runtime check that walks a list at every pass of the loop (O(n) a pass: the loop becomes quadratic); prove it, or write `assumed invariant`"]
+has = ["warning: in `total`, `invariant s == sum(slice(xs, 0, i))` of `while i < len(xs)` isn't proven: it stays a runtime check that walks a list at every pass of the loop (O(n) a pass: the loop becomes quadratic); prove it, or write `assumed invariant`"]
 counts = { "isn't proven" = 1 }
 
 [[step]]
