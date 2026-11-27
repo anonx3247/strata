@@ -11,7 +11,8 @@ type Length = I64
   where it >= 0
 ```
 
-A length, an index or a count of elements: a 64-bit integer that isn't negative.
+A length, an index or a count of elements: a 64-bit integer that isn't
+negative.
 
 ### Array
 
@@ -25,14 +26,31 @@ type Array = {
   where len(it.shape) == len(it.strides)
 ```
 
-An n-dimensional array of 64-bit floats (`Float`), NumPy's `float64`: a view of a flat list. A float operation whose result is not finite fails, as `Float`'s do.
+An n-dimensional array of 64-bit floats (`Float`), NumPy's `float64`: a
+view of a flat list. The arithmetic takes bounds on the elements'
+magnitudes (`within`), so that every float result is finite.
 
-- Element `(i0, i1, …)` is `data[offset + i0 * strides[0] + i1 * strides[1] + …]`. Shapes, strides, offsets and indices are `I64`s.
+- Element `(i0, i1, …)` is `data[offset + i0 * strides[0] + i1 *
+
+strides[1] + …]`. Shapes, strides, offsets and indices are `I64`s.
+
 - `shape` has one length per axis. A 0-axis array holds one value.
-- `transpose`, `slice`, `row` and `reshape` of a row-major array are views: O(number of axes), the data is shared.
-- Arithmetic, reductions and `matmul` read row-major data. A view that isn't row-major is copied once first (`compact`, O(n)).
-- The constructors (`Array.zeros`, `Array.full`, `Array.arange`, `Array.from_list`, `Array.from_rows`) keep strides and offset inside `data`.
-- Changing an element (`mut a.set`) copies the data first when another array shares it.
+- `transpose`, `slice`, `row` and `reshape` of a row-major array are
+
+views: O(number of axes), the data is shared.
+
+- Arithmetic, reductions and `matmul` read row-major data. A view that
+
+isn't row-major is copied once first (`compact`, O(n)).
+
+- The constructors (`Array.zeros`, `Array.full`, `Array.arange`,
+
+`Array.from_list`, `Array.from_rows`) keep strides and offset inside
+`data`.
+
+- Changing an element (`mut a.set`) copies the data first when another
+
+array shares it.
 
 ### ArrayI64
 
@@ -46,14 +64,30 @@ type ArrayI64 = {
   where len(it.shape) == len(it.strides)
 ```
 
-An n-dimensional array of 64-bit integers (`I64`), NumPy's `int64`: a view of a flat list. Arithmetic wraps modulo 2^64, as NumPy's does.
+An n-dimensional array of 64-bit integers (`I64`), NumPy's `int64`: a view
+of a flat list. Arithmetic wraps modulo 2^64, as NumPy's does.
 
-- Element `(i0, i1, …)` is `data[offset + i0 * strides[0] + i1 * strides[1] + …]`. Shapes, strides, offsets and indices are `I64`s.
+- Element `(i0, i1, …)` is `data[offset + i0 * strides[0] + i1 *
+
+strides[1] + …]`. Shapes, strides, offsets and indices are `I64`s.
+
 - `shape` has one length per axis. A 0-axis array holds one value.
-- `transpose`, `slice`, `row` and `reshape` of a row-major array are views: O(number of axes), the data is shared.
-- Arithmetic, reductions and `matmul` read row-major data. A view that isn't row-major is copied once first (`compact`, O(n)).
-- The constructors (`ArrayI64.zeros`, `ArrayI64.full`, `ArrayI64.arange`, `ArrayI64.from_list`, `ArrayI64.from_rows`) keep strides and offset inside `data`.
-- Changing an element (`mut a.set`) copies the data first when another array shares it.
+- `transpose`, `slice`, `row` and `reshape` of a row-major array are
+
+views: O(number of axes), the data is shared.
+
+- Arithmetic, reductions and `matmul` read row-major data. A view that
+
+isn't row-major is copied once first (`compact`, O(n)).
+
+- The constructors (`ArrayI64.zeros`, `ArrayI64.full`, `ArrayI64.arange`,
+
+`ArrayI64.from_list`, `ArrayI64.from_rows`) keep strides and offset inside
+`data`.
+
+- Changing an element (`mut a.set`) copies the data first when another
+
+array shares it.
 
 ### ArrayI32
 
@@ -67,14 +101,32 @@ type ArrayI32 = {
   where len(it.shape) == len(it.strides)
 ```
 
-An n-dimensional array of 32-bit integers (`I32`), NumPy's `int32`: a view of a flat list. Arithmetic wraps modulo 2^32, as NumPy's does. Sums are 64-bit (`I64`, an `ArrayI64` along an axis), as NumPy's `sum` of `int32` is.
+An n-dimensional array of 32-bit integers (`I32`), NumPy's `int32`: a view
+of a flat list. Arithmetic wraps modulo 2^32, as NumPy's does. Sums are
+64-bit (`I64`, an `ArrayI64` along an axis), as NumPy's `sum` of `int32`
+is.
 
-- Element `(i0, i1, …)` is `data[offset + i0 * strides[0] + i1 * strides[1] + …]`. Shapes, strides, offsets and indices are `I64`s.
+- Element `(i0, i1, …)` is `data[offset + i0 * strides[0] + i1 *
+
+strides[1] + …]`. Shapes, strides, offsets and indices are `I64`s.
+
 - `shape` has one length per axis. A 0-axis array holds one value.
-- `transpose`, `slice`, `row` and `reshape` of a row-major array are views: O(number of axes), the data is shared.
-- Arithmetic, reductions and `matmul` read row-major data. A view that isn't row-major is copied once first (`compact`, O(n)).
-- The constructors (`ArrayI32.zeros`, `ArrayI32.full`, `ArrayI32.arange`, `ArrayI32.from_list`, `ArrayI32.from_rows`) keep strides and offset inside `data`.
-- Changing an element (`mut a.set`) copies the data first when another array shares it.
+- `transpose`, `slice`, `row` and `reshape` of a row-major array are
+
+views: O(number of axes), the data is shared.
+
+- Arithmetic, reductions and `matmul` read row-major data. A view that
+
+isn't row-major is copied once first (`compact`, O(n)).
+
+- The constructors (`ArrayI32.zeros`, `ArrayI32.full`, `ArrayI32.arange`,
+
+`ArrayI32.from_list`, `ArrayI32.from_rows`) keep strides and offset inside
+`data`.
+
+- Changing an element (`mut a.set`) copies the data first when another
+
+array shares it.
 
 ## Methods
 
@@ -158,10 +210,31 @@ Cost: O(1).
 
 ```rust
 fn size(self) -> Length
+  ensures it == count(self.shape)
 ```
 
 The number of elements.
 Cost: O(number of axes).
+
+### Array.within
+
+```rust
+fn within(self, b: Float) -> Bool
+  assumed ensures it ==> all(self.to_list(), x -> abs(x) <= b)
+```
+
+Whether every element is at most `b` in magnitude. The float arithmetic's contracts use it, so that no result overflows.
+Cost: O(n), plus the copy `to_list` makes of a view that isn't row-major.
+
+### Array.at_least
+
+```rust
+fn at_least(self, m: Float) -> Bool
+  assumed ensures it ==> all(self.to_list(), x -> abs(x) >= m)
+```
+
+Whether every element is at least `m` in magnitude: `div`'s divisor is at least the inverse of `factor_bound`.
+Cost: O(n), as `within`.
 
 ### Array.is_compact
 
@@ -285,9 +358,10 @@ Cost: O(n) calls of `f`, n the size of the broadcast shape.
 ```rust
 fn add(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(add_bound()) && other.within(add_bound())
 ```
 
-Element by element, broadcast.
+Element by element, broadcast. Both `within(add_bound())`, so no sum overflows.
 Cost: O(n).
 
 ### Array.sub
@@ -295,9 +369,10 @@ Cost: O(n).
 ```rust
 fn sub(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(add_bound()) && other.within(add_bound())
 ```
 
-Element by element, broadcast.
+Element by element, broadcast. Both `within(add_bound())`, so no difference overflows.
 Cost: O(n).
 
 ### Array.mul
@@ -305,9 +380,10 @@ Cost: O(n).
 ```rust
 fn mul(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(factor_bound()) && other.within(factor_bound())
 ```
 
-Element by element, broadcast.
+Element by element, broadcast. Both `within(factor_bound())`, so no product overflows.
 Cost: O(n).
 
 ### Array.div
@@ -315,9 +391,11 @@ Cost: O(n).
 ```rust
 fn div(self, other: Array) -> Array
   requires broadcasts(self.shape, other.shape)
+  requires self.within(factor_bound())
+    && other.at_least(1.0 / factor_bound())
 ```
 
-Element by element, broadcast. A division by 0.0 fails, as `/` on floats does.
+Element by element, broadcast. `self` `within(factor_bound())` and `other` `at_least` its inverse (so no element of `other` is 0.0): no quotient overflows.
 Cost: O(n).
 
 ### Array.neg
@@ -334,29 +412,32 @@ Cost: O(n).
 
 ```rust
 fn scale(self, k: Float) -> Array
+  requires self.within(product_bound() / max(abs(k), 1.0))
   ensures it.shape == self.shape
 ```
 
-Each element times `k`.
+Each element times `k`. Every element times `abs(k)` (or 1.0, if larger) at most `product_bound` in magnitude.
 Cost: O(n).
 
 ### Array.shift
 
 ```rust
 fn shift(self, k: Float) -> Array
+  requires self.within(add_bound()) && abs(k) <= add_bound()
   ensures it.shape == self.shape
 ```
 
-`k` added to each element.
+`k` added to each element. Every element and `k` at most `add_bound` in magnitude.
 Cost: O(n).
 
 ### Array.sum
 
 ```rust
 fn sum(self) -> Float
+  requires self.size() < 1 << 40 && self.within(sum_bound())
 ```
 
-The sum of the elements; 0.0 when there are none. They are added in row-major order into four interleaved partial sums, then those four, so the result can differ from a left-to-right sum in the last bits.
+The sum of the elements; 0.0 when there are none. They are added in row-major order into four interleaved partial sums, then those four, so the result can differ from a left-to-right sum in the last bits. At most 2^40 elements, `within(sum_bound())`, so no partial sum overflows.
 Cost: O(n).
 
 ### Array.max
@@ -391,10 +472,11 @@ Cost: O(n).
 ```rust
 fn sum_axis(self, axis: Length) -> Array
   requires axis.to_int() < len(self.shape)
+  requires self.shape[axis.to_int()] < 1 << 40 && self.within(sum_bound())
   ensures it.shape == without_axis(self.shape, axis)
 ```
 
-The sums along axis `axis`: the result has the other axes. A matrix's `sum_axis(0)` sums each column.
+The sums along axis `axis`: the result has the other axes. A matrix's `sum_axis(0)` sums each column. The axis at most 2^40 long and the array `within(sum_bound())`, as `sum` requires.
 Cost: O(n).
 
 ### Array.max_axis
@@ -424,9 +506,12 @@ Cost: O(n).
 ```rust
 fn dot(self, other: Array) -> Float
   requires len(self.shape) == 1 && self.shape == other.shape
+  requires self.size() < 1 << 40
+    && self.within(dot_bound())
+    && other.within(dot_bound())
 ```
 
-The dot product of two arrays of one axis and the same length, added as `sum` adds.
+The dot product of two arrays of one axis and the same length, added as `sum` adds. At most 2^40 elements, both `within(dot_bound())`, so no partial sum overflows.
 Cost: O(n).
 
 ### Array.matmul
@@ -436,10 +521,13 @@ fn matmul(self, other: Array) -> Array
   requires len(self.shape) == 2
     && len(other.shape) == 2
     && self.shape[1] == other.shape[0]
+  requires self.shape[1] < 1 << 40
+    && self.within(dot_bound())
+    && other.within(dot_bound())
   ensures it.shape == [self.shape[0], other.shape[1]]
 ```
 
-The matrix product of an m×k and a k×n matrix: an m×n matrix, added as `sum` adds.
+The matrix product of an m×k and a k×n matrix: an m×n matrix, added as `sum` adds. At most 2^40 columns of `self`, both `within(dot_bound())`, as `dot` requires.
 Cost: O(m·k·n) multiply-adds, one dot product of a row of `self` and a column of `other` per element, after a row-major copy of `other`'s transpose (O(k·n)) so both are read in order.
 
 ### Array.mean
@@ -447,9 +535,10 @@ Cost: O(m·k·n) multiply-adds, one dot product of a row of `self` and a column 
 ```rust
 fn mean(self) -> Float
   requires count(self.shape) > 0
+  requires self.size() < 1 << 40 && self.within(sum_bound())
 ```
 
-The mean of the elements. The array must not be empty.
+The mean of the elements. The array must not be empty, and bounded as `sum` requires.
 Cost: O(n).
 
 ### Array.mean_axis
@@ -457,10 +546,11 @@ Cost: O(n).
 ```rust
 fn mean_axis(self, axis: Length) -> Array
   requires axis.to_int() < len(self.shape) && self.shape[axis.to_int()] > 0
+  requires self.shape[axis.to_int()] < 1 << 40 && self.within(sum_bound())
   ensures it.shape == without_axis(self.shape, axis)
 ```
 
-The means along axis `axis`, which must not be empty.
+The means along axis `axis`, which must not be empty, and bounded as `sum_axis` requires.
 Cost: O(n).
 
 ### ArrayI64.full
@@ -1209,7 +1299,9 @@ Cost: O(n).
 fn count(shape: List[Length]) -> Length
 ```
 
-The number of elements of an array of shape `shape`: the product of its lengths, 1 for no axes. A product past 2^62 gives 2^62, more than any list holds.
+The number of elements of an array of shape `shape`: the product of its
+lengths, 1 for no axes. A product past 2^62 gives 2^62, more than any list
+holds.
 Cost: O(number of axes).
 
 ### row_major
@@ -1219,7 +1311,8 @@ fn row_major(shape: List[Length]) -> List[I64]
   ensures len(it) == len(shape)
 ```
 
-The strides of a row-major array of shape `shape`: the last axis is 1, each axis before it the product of the lengths after it.
+The strides of a row-major array of shape `shape`: the last axis is 1,
+each axis before it the product of the lengths after it.
 Cost: O(number of axes).
 
 ### broadcast_shape
@@ -1228,7 +1321,9 @@ Cost: O(number of axes).
 fn broadcast_shape(a: List[Length], b: List[Length]) -> Option[List[Length]]
 ```
 
-The shape two arrays broadcast to, NumPy's rule: lengths are compared from the last axis, and a length of 1 stretches to the other's. `None` when two lengths differ and neither is 1.
+The shape two arrays broadcast to, NumPy's rule: lengths are compared from
+the last axis, and a length of 1 stretches to the other's. `None` when two
+lengths differ and neither is 1.
 Cost: O(number of axes).
 
 ### broadcasts
@@ -1254,7 +1349,8 @@ Cost: O(number of axes).
 fn in_bounds(shape: List[Length], idx: List[I64]) -> Bool
 ```
 
-Whether `idx` names an element of an array of `shape`: one index per axis, each from 0 to below its length.
+Whether `idx` names an element of an array of `shape`: one index per axis,
+each from 0 to below its length.
 
 ### full
 
@@ -1313,3 +1409,48 @@ fn from_rows(rows: List[List[Float]]) -> Option[Array]
 
 Two axes, one row per list. `None` when the rows differ in length.
 Cost: O(n).
+
+### add_bound
+
+```rust
+fn add_bound() -> Float
+```
+
+2^1022, about 4.5e307: the largest magnitude of the operands of `add`,
+`sub` and `shift`, so their sums stay finite.
+
+### product_bound
+
+```rust
+fn product_bound() -> Float
+```
+
+2^1023, about 9.0e307: the most `scale`'s products can reach.
+
+### factor_bound
+
+```rust
+fn factor_bound() -> Float
+```
+
+2^511, about 6.7e153: the largest magnitude of the operands of `mul`, and
+of `div`'s dividend; a divisor's are at least its inverse.
+
+### sum_bound
+
+```rust
+fn sum_bound() -> Float
+```
+
+2^960, about 9.7e288: the largest magnitude `sum`, `mean` and the
+reductions along an axis take, so that 2^40 elements add up to a finite
+number.
+
+### dot_bound
+
+```rust
+fn dot_bound() -> Float
+```
+
+2^480, about 3.1e144: the largest magnitude of the operands of `dot` and
+`matmul`, so that 2^40 products add up to a finite number.

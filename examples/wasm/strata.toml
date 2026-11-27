@@ -1,0 +1,5 @@
+name = "stats"
+
+# `strata build --target wasm32` makes stats.wasm and stats.ts (`derive
+# TypeScript`); `node test.ts` calls them. Needs Homebrew's llvm, lld and
+# binaryen (`brew install llvm lld binaryen`).

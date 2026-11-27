@@ -10,10 +10,16 @@
 // of the object's contents and `strata_free`. Objects never form cycles,
 // since values never change once built.
 
+#ifdef STRATA_WASM
+// A WebAssembly module (`strata build --target wasm64`): no C library, the
+// few functions this file needs from one in runtime/wasm.h and wasm.c.
+#include "wasm.h"
+#else
 #ifdef __linux__
 #define _GNU_SOURCE  // pthread_getattr_np
 #endif
 #include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -32,6 +38,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif  // STRATA_WASM
 
 // A string: its length in bytes, then its UTF-8 bytes (not NUL-terminated).
 // String literals are laid out the same way as constants in the IR.
@@ -40,12 +47,25 @@ typedef struct {
   char bytes[];
 } Str;
 
+#ifdef STRATA_WASM
+// (the faults' and the system's sections are left out of a module: these
+// come from wasm.c)
+_Noreturn void strata_fault(int32_t kind, Str *msg);
+_Bool strata_soft_fault(int64_t kind, Str *msg);
+#define soft_fault(kind, msg) strata_soft_fault(kind, msg)
+static char *cstr(Str *s);
+static int64_t no_str_words[2] = {0, 0};
+#define NO_STR ((Str *)&no_str_words[1])
+#endif
+
 // Fault kinds, in the order of the IR's constants.
 static const char *KINDS[] = {"Refinement", "Requires", "Ensures", "Assert", "Runtime", "Hole", "Limit"};
 
 // ---- memory ----
 
-#ifdef __APPLE__
+#if defined(STRATA_WASM)
+#define usable_size malloc_usable_size
+#elif defined(__APPLE__)
 #include <malloc/malloc.h>
 #define usable_size malloc_size
 #else
@@ -58,13 +78,14 @@ static int64_t allocated, freed;
 static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-// While a task runs (`spawn`), threads may hold the same objects. With
-// core.rt, only objects marked shared between threads (its `shared_bit`:
-// what crossed to another thread, and what that reaches) count atomically;
-// with this file's own counting, every object does. Either way a count of
-// 1 means only this thread can see the object. Set before the first task's
-// thread starts and cleared after the last one is joined, so it never
-// changes while another thread reads it.
+// While a task runs (`spawn`), each thread allocates from its own free
+// lists. No object is counted by two threads: what crosses to a task (its
+// captures, what is sent on a channel, a result awaited after its handle
+// crossed) is moved when held once, else copied, or frozen (never counted
+// again) while the program asks for that (core.rt's `strata_cross_block`,
+// `strata_memory_keep_shared`). So counts are plain. Set before the first
+// task's thread starts and cleared after the last one is joined, so it
+// never changes while another thread reads it.
 static int threaded;
 static int live_tasks;
 #define THREADED __atomic_load_n(&threaded, __ATOMIC_RELAXED)
@@ -76,51 +97,31 @@ static _Bool checking;
 #define FREED INT64_MIN
 
 // Whether counts must go through `strata_dup` / `strata_release`: in check
-// mode, and while tasks run when every object counts atomically
-// (`all_atomic`; with this file's own counting, always while tasks run).
-// The compiled code reads it and otherwise updates counts itself
-// (`strata.dup`, `strata.release` in the IR), sending only objects marked
-// shared to the runtime.
+// mode. The compiled code reads it and otherwise updates counts itself
+// (`strata.dup`, `strata.release` in the IR).
 int32_t strata_slow_counts = 0;
 
-// Whether every object counts atomically while tasks run, shared or not
-// (core.rt's `strata_memory_all_atomic`): a task was started by code that
-// doesn't mark what it captures (`strata_spawn`), or a value of a type the
-// compiled code can't walk crossed to another thread
-// (`strata_share_unknown`). Cleared when the last task ends.
-static int all_atomic;
-
 void strata_memory_threaded(_Bool on);
-void strata_memory_all_atomic(_Bool on);
 
 static void set_threaded(int v) {
-  if (!v) __atomic_store_n(&all_atomic, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&threaded, v, __ATOMIC_RELAXED);
+  __atomic_store_n(&strata_slow_counts, checking, __ATOMIC_RELAXED);
 #ifdef STRATA_CORE_RT
-  __atomic_store_n(&strata_slow_counts, checking || (v && __atomic_load_n(&all_atomic, __ATOMIC_RELAXED)), __ATOMIC_RELAXED);
   strata_memory_threaded(v);
-#else
-  __atomic_store_n(&strata_slow_counts, v || checking, __ATOMIC_RELAXED);
 #endif
 }
 
-// A value crossed to another thread unmarked: every object counts
-// atomically until the last task ends (`all_atomic`).
-void strata_share_unknown(void) {
-  __atomic_store_n(&all_atomic, 1, __ATOMIC_RELAXED);
-#ifdef STRATA_CORE_RT
-  strata_memory_all_atomic(1);
-  if (THREADED) __atomic_store_n(&strata_slow_counts, 1, __ATOMIC_RELAXED);
-#endif
-}
+// For code from a compiler that marked what crosses to a task shared, at a
+// type it couldn't walk: never reached by the compiler's own code, which
+// walks every type. Nothing to do.
+void strata_share_unknown(void) {}
 
 // The count word of an object.
 static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
 
-// The bit of a count word saying the object is shared between threads
-// (core.rt's `shared_bit`): the sign bit. A live object's count word is
-// positive unless it is shared; a freed one in check mode is this bit alone.
-#define SHARED INT64_MIN
+// A frozen object's count word (core.rt's `frozen_mark`): reached by more
+// than one thread, never counted again.
+#define FROZEN (INT64_MIN | ((int64_t)1 << 40))
 
 // A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
 // memory ends the program, as for any allocation.
@@ -158,8 +159,14 @@ int64_t strata_raw_size(void *p) { return (int64_t)usable_size(p); }
 // A reserved range of addresses, zeroed, paged in as it is touched (core.mem's
 // `raw_reserve`); NULL when the system refuses it.
 void *strata_raw_reserve(int64_t n) {
+#ifdef STRATA_WASM
+  // (no address space to reserve: core.rt's small objects come from malloc)
+  (void)n;
+  return NULL;
+#else
   void *r = n > 0 ? mmap(NULL, (size_t)n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0) : MAP_FAILED;
   return r == MAP_FAILED ? NULL : r;
+#endif
 }
 
 // core.rt (core/rt.strata) replaces these when it is linked in
@@ -250,8 +257,9 @@ void *strata_alloc(int64_t n) {
   }
   *c = 1;
   int th = THREADED;
-  if (th) __atomic_fetch_add(&allocated, 1, __ATOMIC_RELAXED);
-  else allocated++;
+  if (th) pthread_mutex_lock(&made_lock);
+  allocated++;
+  if (th) pthread_mutex_unlock(&made_lock);
   if (checking) {
     if (th) pthread_mutex_lock(&made_lock);
     if (nmade == capmade) made = realloc(made, (size_t)(capmade = capmade ? capmade * 2 : 1024) * sizeof *made);
@@ -264,33 +272,24 @@ void *strata_alloc(int64_t n) {
 // One more holder of `p`.
 void strata_dup(void *p) {
   int64_t *c = count_of(p);
-  if (THREADED) {
-    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
-    if (v == FREED) freed_again("dup");
-    else if (v) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
-    return;
-  }
   if (*c == FREED) freed_again("dup");
-  else if (*c) ++*c;
+  else if (*c > 0) ++*c;
 }
 
 // One holder fewer: whether that was the last one, in which case the caller
 // drops what the object holds and frees it.
 _Bool strata_release(void *p) {
   int64_t *c = count_of(p);
-  if (THREADED) {
-    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
-    if (v == FREED) freed_again("drop");
-    return v && (__atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) & ~SHARED) == 0;
-  }
   if (*c == FREED) freed_again("drop");
-  return *c && (--*c & ~SHARED) == 0;
+  return *c > 0 && --*c == 0;
 }
 
 // Frees an object whose contents are already dropped.
 void strata_free(void *p) {
-  if (THREADED) __atomic_fetch_add(&freed, 1, __ATOMIC_RELAXED);
-  else freed++;
+  int th = THREADED;
+  if (th) pthread_mutex_lock(&made_lock);
+  freed++;
+  if (th) pthread_mutex_unlock(&made_lock);
   int64_t *c = count_of(p);
   if (in_region(c)) {
     small_free(c);
@@ -304,14 +303,8 @@ void strata_free(void *p) {
   free(c);
 }
 
-// Whether `p` has a single holder, so it may be changed in place (its
-// shared bit cleared: this thread is the one holder).
-_Bool strata_unique(void *p) {
-  int64_t v = __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE);
-  if ((v & ~SHARED) != 1) return 0;
-  if (v & SHARED) *count_of(p) = 1;
-  return 1;
-}
+// Whether `p` has a single holder, so it may be changed in place.
+_Bool strata_unique(void *p) { return *count_of(p) == 1; }
 
 // `strata_dup` / `strata_release` of `p` whose count word the compiled code
 // read already (core.rt's take it, to read it once).
@@ -325,11 +318,12 @@ _Bool strata_release_word(void *p, int64_t v) {
   return strata_release(p);
 }
 
-// Marks `p` shared between threads: whether it wasn't yet.
+// Freezes `p` (code from a compiler that marked crossings shared): whether
+// it wasn't frozen or a constant yet.
 _Bool strata_share(void *p) {
-  int64_t v = __atomic_load_n(count_of(p), __ATOMIC_RELAXED);
-  if (v == 0 || (v & SHARED)) return 0;
-  __atomic_fetch_add(count_of(p), SHARED, __ATOMIC_RELAXED);
+  int64_t v = *count_of(p);
+  if (v == 0 || v == FROZEN) return 0;
+  *count_of(p) = FROZEN;
   return 1;
 }
 #else
@@ -563,6 +557,7 @@ static void print_stack(void) {
   free(t);
 }
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- tests ----
 //
 // `strata test` with the JIT calls each test's function through
@@ -982,10 +977,22 @@ typedef struct Channel {
   int64_t *items;            // a ring of slots
   int64_t head, len, size;
   int64_t senders;           // copies of the sender not closed yet: one per task holding it
+  int64_t ends;              // its ends (`End`) not dropped yet, on every thread
   int64_t sent, taken;       // values sent and received so far
   int64_t waiting;           // receivers waiting (an unbuffered send in a `select` can go)
   void (*drop)(int64_t);     // drops a value left in it (NULL: nothing to drop)
 } Channel;
+
+// A channel's end, as the compiled code holds it (a `Sender` or a
+// `Receiver`): a counted object of its thread pointing at the channel. An
+// end crossing to another thread is a new end (`strata_channel_cross`),
+// so no two threads count one; the channel counts its ends under
+// `chan_lock`.
+typedef struct {
+  Channel *c;
+} End;
+
+static Channel *chan_of(void *e) { return ((End *)e)->c; }
 
 // The senders this thread holds a copy of and hasn't closed: the channels
 // it made, or a task's shares (`strata_spawn`).
@@ -1113,7 +1120,7 @@ typedef struct Task {
   char *origin;               // the call stack where it was spawned
   Run *run_of;                // the run it belongs to
   Waiter w;                   // its place in that run's list
-  _Bool shared;               // its handle crossed to another thread: an `await` marks the result shared
+  _Bool shared;               // its handle crossed to another thread: each `await` copies the result
   struct Task *next;
 } Task;
 
@@ -1174,20 +1181,33 @@ static void unlink_reader(Reader *r) {
 // Wait until `fd` can be read from (or is at its end, or failed: the read
 // says which): 1; or until this thread is cancelled: 0. A thread nothing can
 // cancel (the main thread outside a test) doesn't wait here: 1 at once.
+// This thread's wake pipe, made at its first wait: 0 if it can't be made.
+static _Bool have_reader(void) {
+  if (my_reader) return 1;
+  Reader *r = calloc(1, sizeof *r);
+  if (!r || pipe(r->wake) != 0) {
+    free(r);
+    return 0;
+  }
+  for (int i = 0; i < 2; i++) {
+    fcntl(r->wake[i], F_SETFL, fcntl(r->wake[i], F_GETFL) | O_NONBLOCK);
+    fcntl(r->wake[i], F_SETFD, FD_CLOEXEC);
+  }
+  my_reader = r;
+  return 1;
+}
+
+static _Bool wait_fd_events(int fd, short events);
+
 static _Bool wait_readable(int fd) {
   if (!self_task && !contained) return 1;
-  if (!my_reader) {
-    Reader *r = calloc(1, sizeof *r);
-    if (!r || pipe(r->wake) != 0) {
-      free(r);
-      return 1;  // no pipe: an uncancellable wait
-    }
-    for (int i = 0; i < 2; i++) {
-      fcntl(r->wake[i], F_SETFL, fcntl(r->wake[i], F_GETFL) | O_NONBLOCK);
-      fcntl(r->wake[i], F_SETFD, FD_CLOEXEC);
-    }
-    my_reader = r;
-  }
+  if (!have_reader()) return 1;  // no pipe: an uncancellable wait
+  return wait_fd_events(fd, POLLIN);
+}
+
+// Wait, cancellably, until `fd` is ready for `events` (or failed): 1; or
+// until this thread is cancelled: 0. Needs the thread's wake pipe.
+static _Bool wait_fd_events(int fd, short events) {
   for (;;) {
     pthread_mutex_lock(&chan_lock);
     if (strata_cancelled()) {
@@ -1198,7 +1218,7 @@ static _Bool wait_readable(int fd) {
     if (readers) readers->prev = my_reader;
     readers = my_reader;
     pthread_mutex_unlock(&chan_lock);
-    struct pollfd p[2] = {{.fd = fd, .events = POLLIN}, {.fd = my_reader->wake[0], .events = POLLIN}};
+    struct pollfd p[2] = {{.fd = fd, .events = events}, {.fd = my_reader->wake[0], .events = POLLIN}};
     int n = poll(p, 2, -1);
     pthread_mutex_lock(&chan_lock);
     unlink_reader(my_reader);
@@ -1399,17 +1419,10 @@ void *strata_scope_begin(void) {
 // A task of the innermost scope open on this thread: the checker allows a
 // `spawn` only inside a `scope` (a lambda's included, as a comprehension's
 // body, which runs there).
-// `strata_spawn_shared` for code that doesn't mark what a task captures:
-// every object counts atomically until the last task ends.
-void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares);
-void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
-  strata_share_unknown();
-  return strata_spawn_shared(clo, run, drop, fail, shares, nshares);
-}
-
-// The compiled code marked the closure shared between threads (and what it
-// captures) before this call.
-void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
+// The closure `clo` is the task's alone: the compiled code moved or copied
+// what it captures (its `cross:T` helpers) before this call. `shares` are
+// the sender ends it captured.
+void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
   TaskScope *s = open_scopes;
   if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
   Task *t = calloc(1, sizeof *t);
@@ -1448,9 +1461,9 @@ void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(v
     t->shares = malloc((size_t)nshares * sizeof *shares);
     pthread_mutex_lock(&chan_lock);
     for (int64_t i = 0; i < nshares; i++)
-      if (holds_sender(shares[i])) {
-        shares[i]->senders++;
-        t->shares[t->nshares++] = shares[i];
+      if (holds_sender(shares[i]->c)) {
+        shares[i]->c->senders++;
+        t->shares[t->nshares++] = shares[i]->c;
       }
     pthread_mutex_unlock(&chan_lock);
   }
@@ -1492,6 +1505,30 @@ void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(v
   if (s->last) s->last->next = t;
   else s->first = t;
   s->last = t;
+  return t;
+}
+
+// For code from a compiler that marked what crosses to a task shared (a
+// bootstrap's first stage, built by such a seed): its marks froze it
+// (`strata_share`), so the task starts as any.
+void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
+  return strata_task_start(clo, run, drop, fail, shares, nshares);
+}
+
+static void join(Task *t);
+
+// For code from a compiler that neither copies nor marks what crosses to a
+// task (a bootstrap's first stage, built by a release from before tasks
+// counted their own objects): the task runs to its end before this
+// returns, so no two threads ever run such code at once. Slower, and a
+// task waiting for its parent would wait forever; the compiler's own tasks
+// never do.
+void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
+  Task *t = strata_task_start(clo, run, drop, fail, shares, nshares);
+  pthread_mutex_lock(&chan_lock);
+  while (!t->done) WAIT("a task of older code");
+  pthread_mutex_unlock(&chan_lock);
+  join(t);
   return t;
 }
 
@@ -1550,11 +1587,11 @@ void strata_scope_end(TaskScope *s) {
   release_scope(s);
 }
 
-// The handle of `t` crosses to another thread (captured, sent): from now
-// on each `await` of it marks the result shared (`strata_task_shared`), as
-// more than one thread may hold it. The result, when some `await` may
-// already hold it (`t` joined, with a result), for the caller to mark now;
-// else NULL.
+// The handle of `t` crosses to another thread (sent on a channel): from now
+// on each `await` of it copies the result (`strata_task_shared`), as more
+// than one thread may await it. The result, when some `await` may already
+// hold it (`t` joined, with a result), for the caller to replace with its
+// own copy now, under `strata_results_lock`; else NULL.
 void *strata_task_share(Task *t) {
   pthread_mutex_lock(&chan_lock);
   t->shared = 1;
@@ -1571,10 +1608,10 @@ _Bool strata_task_shared(Task *t) {
   return r;
 }
 
-// Held while a task's result is marked shared: more than one thread may
-// await the same task, and two marking one object at once would set its
-// bit twice. Recursive: a result may hold a handle whose result is marked
-// in turn.
+// Held while a task's result is copied for an `await` after its handle
+// crossed: more than one thread may await the same task, and one may be
+// replacing the result (`strata_task_share`) while another copies it.
+// Recursive: a result may hold a handle whose result is copied in turn.
 static pthread_mutex_t results_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 void strata_results_lock(void) { pthread_mutex_lock(&results_lock); }
 void strata_results_unlock(void) { pthread_mutex_unlock(&results_lock); }
@@ -1625,30 +1662,61 @@ static int64_t pop_item(Channel *c) {
   return v;
 }
 
-// A new channel, held twice (its sender and its receiver), and a copy of
-// its sender for this thread.
-Channel *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
+// A new channel: its one end, held twice (its sender and its receiver),
+// and a copy of its sender for this thread.
+End *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
   if (cap < 0 && soft_fault(4, str_c("a channel's buffer can't be negative"))) return NULL;
-  Channel *c = strata_alloc(sizeof(Channel));
-  memset(c, 0, sizeof *c);
-  *count_of(c) += 1;  // (keeping what else the count word holds: an arena's tag, an epoch)
+  Channel *c = calloc(1, sizeof(Channel));
+  if (!c) strata_fault(6, str_c("out of memory"));
   c->cap = cap;
   c->drop = drop;
   c->senders = 1;
+  c->ends = 1;
   hold_sender(c);
-  return c;
+  End *e = strata_alloc(sizeof(End));
+  e->c = c;
+  strata_dup(e);
+  return e;
 }
 
-// One end fewer: the last drops what is still in it.
-void strata_channel_drop(Channel *c) {
-  if (!strata_release(c)) return;
+// One holder of end `e` fewer. The last frees it; the channel's last end
+// drops what is still in it.
+void strata_channel_drop(End *e) {
+  if (!strata_release(e)) return;
+  Channel *c = e->c;
+  strata_free(e);
+  pthread_mutex_lock(&chan_lock);
+  _Bool last = --c->ends == 0;
+  pthread_mutex_unlock(&chan_lock);
+  if (!last) return;
   if (c->drop)
     for (int64_t i = 0; i < c->len; i++) c->drop(c->items[(c->head + i) % c->size]);
   free(c->items);
-  strata_free(c);
+  free(c);
 }
 
-void strata_channel_send(Channel *c, int64_t v) {
+// End `e` crossing to another thread (core.rt's `strata_cross_block` for
+// the other blocks): `e` itself when it isn't counted or, with `own`, is
+// held once (it moves); `e` frozen while freezing what crosses (the
+// channel then never ends); else a new end of the same channel, held once,
+// and `e` loses the caller's holder when `own`.
+void *strata_cross_flat(void *p, _Bool own);
+void *strata_heap_alloc(int64_t n);
+_Bool strata_freezing(void);
+End *strata_channel_cross(End *e, _Bool own) {
+  int64_t v = *count_of(e);
+  if (v <= 0 || (own && v == 1) || strata_freezing()) return strata_cross_flat(e, own);
+  End *n = strata_heap_alloc(sizeof(End));
+  n->c = e->c;
+  pthread_mutex_lock(&chan_lock);
+  n->c->ends++;
+  pthread_mutex_unlock(&chan_lock);
+  if (own) *count_of(e) = v - 1;
+  return n;
+}
+
+void strata_channel_send(End *e, int64_t v) {
+  Channel *c = e->c;
   pthread_mutex_lock(&chan_lock);
   if (c->senders == 0) {
     pthread_mutex_unlock(&chan_lock);
@@ -1672,7 +1740,8 @@ void strata_channel_send(Channel *c, int64_t v) {
 }
 
 // The next value (into `out`), or 0 once the channel has ended and is empty.
-_Bool strata_channel_recv(Channel *c, int64_t *out) {
+_Bool strata_channel_recv(End *e, int64_t *out) {
+  Channel *c = e->c;
   pthread_mutex_lock(&chan_lock);
   c->waiting++;
   wake_all();
@@ -1686,7 +1755,8 @@ _Bool strata_channel_recv(Channel *c, int64_t *out) {
   return got;
 }
 
-void strata_channel_close(Channel *c) {
+void strata_channel_close(End *e) {
+  Channel *c = e->c;
   if (!unhold_sender(c)) {
     soft_fault(4, str_c("`close` of a sender this task doesn't hold, or has closed already"));
     return;
@@ -1804,13 +1874,12 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
   pthread_mutex_lock(&chan_lock);
   if (strata_cancelled()) goto give_up;
   for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 1 && ((Channel *)ops[i].target)->senders == 0) {
+    if (ops[i].kind == 1 && chan_of(ops[i].target)->senders == 0) {
       pthread_mutex_unlock(&chan_lock);
       soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
       // (contained: nothing happened, as for a cancelled `select`)
       for (int64_t k = 0; k < n; k++) {
-        Channel *c = ops[k].target;
-        if (ops[k].kind == 1 && c->drop) c->drop(ops[k].slot);
+        if (ops[k].kind == 1 && chan_of(ops[k].target)->drop) chan_of(ops[k].target)->drop(ops[k].slot);
       }
       return -1;
     }
@@ -1825,7 +1894,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
     if (ops[i].kind == 4) other_clocks = 1;
   }
   for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting++;
+    if (ops[i].kind == 0) chan_of(ops[i].target)->waiting++;
   wake_all();
   int64_t chosen = -1;
   while (chosen < 0) {
@@ -1833,7 +1902,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
       int64_t i = (start + k) % n;
       SelectOp *op = &ops[i];
       if (op->kind == 0) {
-        Channel *c = op->target;
+        Channel *c = chan_of(op->target);
         if (c->len > 0) {
           op->slot = pop_item(c);
           op->ok = 1;
@@ -1843,7 +1912,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
           chosen = i;
         }
       } else if (op->kind == 1) {
-        Channel *c = op->target;
+        Channel *c = chan_of(op->target);
         if ((c->cap > 0 && c->len < c->cap) || (c->cap == 0 && c->waiting > c->len)) {
           push_item(c, op->slot);
           chosen = i;
@@ -1889,7 +1958,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
     }
   }
   for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
+    if (ops[i].kind == 0) chan_of(ops[i].target)->waiting--;
   wake_all();
   if (chosen >= 0 || chosen == -2) {
     pthread_mutex_unlock(&chan_lock);
@@ -1899,8 +1968,7 @@ give_up:
   // cancelled while it waited: nothing happened; the values its sends held are dropped
   pthread_mutex_unlock(&chan_lock);
   for (int64_t i = 0; i < n; i++) {
-    Channel *c = ops[i].target;
-    if (ops[i].kind == 1 && c->drop) c->drop(ops[i].slot);
+    if (ops[i].kind == 1 && chan_of(ops[i].target)->drop) chan_of(ops[i].target)->drop(ops[i].slot);
   }
   return -1;
 }
@@ -1967,6 +2035,7 @@ static void finish_open_scopes(void) {
   }
 }
 
+#endif  // STRATA_WASM
 // ---- integers ----
 //
 // core.int (core/int.strata) replaces these when core.rt is linked in, as
@@ -2015,7 +2084,7 @@ void strata_int_drop(int64_t v) {
   if (is_big(v) && strata_release(big_at(v))) strata_free(big_at(v));
 }
 
-// A big integer marked shared between threads.
+// A big integer frozen (code from a compiler that marked crossings shared).
 void strata_int_share(int64_t v) {
   if (is_big(v)) strata_share(big_at(v));
 }
@@ -2865,7 +2934,7 @@ List *strata_list_push(List *xs, int64_t x, int64_t counted) {
   Buf *b = xs->buf;
   int64_t end = xs->off + xs->len;
   List *l = strata_alloc(sizeof(List));
-  if (end == b->used && end < b->cap && !(*count_of(b) & SHARED)) {
+  if (end == b->used && end < b->cap && *count_of(b) != FROZEN) {
     // nothing else has used the slot after this list's end
     b->data[end] = x;
     b->used++;
@@ -3457,6 +3526,7 @@ List *strata_range(int64_t lo, int64_t hi) {
 }
 #endif
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- `--copies`: the copies of values a program makes, reported at its end ----
 //
 // Code compiled with `--copies` (`strata run`, `test` and `build`) calls
@@ -3536,7 +3606,10 @@ static void copies_report(void) {
 }
 
 // How many hold object `p` (its count word's count bits; 0 for a constant).
-static int64_t copies_held(void *p) { return __atomic_load_n((int64_t *)p - 1, __ATOMIC_ACQUIRE) & ((INT64_C(1) << 40) - 1); }
+static int64_t copies_held(void *p) {
+  int64_t v = *((int64_t *)p - 1);
+  return v > 0 ? v & ((INT64_C(1) << 48) - 1) : 0;
+}
 
 static void copies_note(int64_t kind, int64_t items, int64_t bytes, int64_t held, Str *what, Str *site, Str *why) {
   pthread_mutex_lock(&copies_lock);
@@ -3713,6 +3786,78 @@ static void roots_report(void) {
   fputc('\n', stderr);
 }
 
+// With STRATA_MEMORY_LIVE (core.rt's `strata_live_start`): the tables of
+// the heap's live objects by site, and the counts at their peak.
+static int64_t *live_tables;
+int64_t *strata_live_start(int64_t nsites);
+
+static int64_t *live_peak;
+static int live_by_bytes(const void *a, const void *b) {
+  int64_t x = live_peak[2 * *(const int64_t *)a + 1], y = live_peak[2 * *(const int64_t *)b + 1];
+  if (x != y) return x < y ? 1 : -1;
+  return *(const int64_t *)a < *(const int64_t *)b ? -1 : 1;
+}
+
+// The heap's live objects at their peak (bytes with count words, a small
+// object by its size class), by the site that made them: the 25 holding
+// the most, on stderr; with STRATA_MEMORY_LIVE=PATH (not `1`), every site
+// to PATH, most bytes first: objects and bytes at the peak, then at the
+// end, then the site's table line.
+// Objects made inside the runtime's functions are their caller's site's.
+// Statement regions and arenas are not counted.
+static void live_report(void) {
+  if (!live_tables) return;
+  int64_t n = live_tables[0];
+  live_peak = (int64_t *)live_tables[3];
+  int64_t *order = malloc((size_t)(n + 1) * sizeof(int64_t));
+  for (int64_t i = 0; i <= n; i++) order[i] = i;
+  qsort(order, (size_t)(n + 1), sizeof(int64_t), live_by_bytes);
+  fprintf(stderr, "live at the peak: %lld objects, %.1f MB (copied %lld times); now %lld objects, %.1f MB\n",
+          (long long)live_tables[11], (double)live_tables[5] / 1048576.0, (long long)live_tables[9],
+          (long long)live_tables[10], (double)live_tables[4] / 1048576.0);
+  char kind[64], fn[256], code[256];
+  for (int64_t j = 0, shown = 0; j <= n && shown < 25; j++) {
+    int64_t i = order[j];
+    if (live_peak[2 * i + 1] <= 0) break;
+    shown++;
+    fprintf(stderr, "  %8.1f MB %10lld  ", (double)live_peak[2 * i + 1] / 1048576.0, (long long)live_peak[2 * i]);
+    if (i == n) {
+      fprintf(stderr, "(no site: made before the first, or by code without sites)\n");
+      continue;
+    }
+    site_field(i, 0, kind, sizeof kind);
+    site_field(i, 1, fn, sizeof fn);
+    site_field(i, 3, code, sizeof code);
+    fprintf(stderr, "%-8s %s  %s\n", kind, fn, code);
+  }
+  const char *path = getenv("STRATA_MEMORY_LIVE");
+  if (path && strcmp(path, "1")) {
+    FILE *out = fopen(path, "w");
+    if (out) {
+      int64_t *end = (int64_t *)live_tables[2];
+      fputs("objects\tbytes\tobjects_at_end\tbytes_at_end\tkind\tfunction\tlocation\tcode\troot\n", out);
+      for (int64_t j = 0; j <= n; j++) {
+        int64_t i = order[j];
+        if (live_peak[2 * i] == 0 && live_peak[2 * i + 1] == 0) continue;
+        if (i == n) {
+          fprintf(out, "%lld\t%lld\t%lld\t%lld\tnone\t\t\t\t\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1],
+                  (long long)end[2 * i], (long long)end[2 * i + 1]);
+          continue;
+        }
+        const char *s = site_lines[i];
+        size_t m = 0;
+        while (s[m] && s[m] != '\n') m++;
+        fprintf(out, "%lld\t%lld\t%lld\t%lld\t%.*s\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1],
+                (long long)end[2 * i], (long long)end[2 * i + 1], (int)m, s);
+      }
+      fclose(out);
+    } else {
+      fprintf(stderr, "memory live: can't write %s\n", path);
+    }
+  }
+  free(order);
+}
+
 static void sites_report(void) {
   int64_t total[SITE_KINDS] = {0}, second[SITE_KINDS] = {0}, reached[SITE_KINDS] = {0}, sites[SITE_KINDS] = {0};
   int64_t *order = malloc((size_t)(site_n ? site_n : 1) * sizeof(int64_t));
@@ -3782,6 +3927,7 @@ static void sites_report(void) {
     fprintf(stderr, "memory sites: can't write %s\n", path);
   }
   roots_report();
+  live_report();
   fflush(stderr);
 }
 
@@ -3802,6 +3948,9 @@ void strata_sites_start(const char *text) {
     if (*s) s++;
   }
   strata_site_counts = calloc((size_t)(2 * site_n + 2), sizeof(int64_t));
+#ifdef STRATA_CORE_RT
+  if (getenv("STRATA_MEMORY_LIVE") && !checking) live_tables = strata_live_start(site_n);
+#endif
   atexit(sites_report);
 }
 
@@ -3846,9 +3995,15 @@ void strata_main_error(Str *shown) {
   else fprintf(stderr, "error: %.*s\n", (int)shown->len, shown->bytes);
 }
 
+#endif  // STRATA_WASM
 // ---- output ----
 
 void strata_print(Str *s) {
+#ifdef STRATA_WASM
+  // (to the host: no tests run in a module)
+  write(1, s->bytes, (size_t)s->len);
+  write(1, "\n", 1);
+#else
   if (RS->capturing) {
     keep_printed(s->bytes, (size_t)s->len);
     keep_printed("\n", 1);
@@ -3858,8 +4013,10 @@ void strata_print(Str *s) {
   fwrite(s->bytes, 1, (size_t)s->len, stdout);
   fputc('\n', stdout);
   funlockfile(stdout);
+#endif
 }
 
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
 // ---- the system (the `host_*` operations of std) ----
 //
 // A failure is a kind and a message, an OS error written as "No such file
@@ -4550,6 +4707,22 @@ List *strata_host_run(Str *program, List *args, Str *dir, Str *input, List *env,
   return l;
 }
 
+#endif  // STRATA_WASM
+
+#ifdef STRATA_WASM
+void strata_memory_start(_Bool check);
+
+// A module's start, before the host calls what it exports (the loader
+// `derive TypeScript` writes calls it once).
+void strata_lib_init(void) {
+  strata_memory_start(0);
+  set_threaded(0);
+}
+
+// A string an export returned, freed by the host.
+void strata_string_free(char *p) { free(p); }
+#endif
+
 // ---- strings ----
 //
 // The string built-ins. Strings are UTF-8, and these index them by
@@ -4830,6 +5003,18 @@ _Bool strata_parse_int(Str *s, int64_t *out) {
 }
 #endif
 
+#ifdef STRATA_WASM
+// `s` with a NUL after it, in a buffer kept for the next call.
+static char *cstr(Str *s) {
+  static char *c;
+  static size_t cap;
+  if ((size_t)s->len + 1 > cap) c = realloc(c, cap = (size_t)s->len + 1);
+  memcpy(c, s->bytes, (size_t)s->len);
+  c[s->len] = 0;
+  return c;
+}
+#endif
+
 // (the C library's with core.rt too, as `strata_show_float`)
 static _Bool parse_float_trimmed(Str *t, double *out);
 
@@ -4943,7 +5128,8 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
 }
 #endif
 
-// ---- `extern python`: a Python worker ----
+#ifndef STRATA_WASM  // (not in a WebAssembly module: runtime/wasm.h)
+// ---- `extern python` and `extern ts`: a worker process each ----
 //
 // std.python calls Python functions through one worker process for the whole
 // program: `PYTHON -c DRIVER PATH` (the driver below), started on the first
@@ -4951,12 +5137,15 @@ Str *strata_format(Str *body, _Bool numeric, int32_t fill, int32_t align, _Bool 
 // `{"module": m, "function": f, "args": [...]}`, a reply `{"ok": value}`,
 // `{"error": {"type", "message", "traceback"}}` (an exception), or
 // `{"unencodable": message}` (a result with no JSON form: a set, a NaN).
-// Calls from several tasks (threads) take turns (`py_lock`): one request and its reply at a time. A
-// worker that ends (killed, `os._exit`, a crash) fails the call it was
-// answering (`{"failed": message}`, made here) and the next call starts a
-// new one. Its standard error is the program's (what Python prints goes
-// there: the driver points `sys.stdout` at it, keeping the real one for
-// replies). The worker ends when this process does (its input closes).
+// std.ts does the same with `node -e DRIVER PATH` (`bun -e`, `deno eval`)
+// and the JavaScript driver below it.
+// Calls from several tasks (threads) take turns (the worker's `lock`): one
+// request and its reply at a time. A worker that ends (killed, `os._exit`,
+// a crash) fails the call it was answering (`{"failed": message}`, made
+// here) and the next call starts a new one. Its standard error is the
+// program's (what the code prints goes there: the drivers point standard
+// output at it, keeping the real one for replies). A worker ends when this
+// process does (its input closes).
 static const char *py_driver =
   "import sys, json, importlib, traceback\n"
   "out = sys.stdout\n"
@@ -4983,12 +5172,66 @@ static const char *py_driver =
   "    out.write(reply + '\\n')\n"
   "    out.flush()\n";
 
-static pthread_mutex_t py_lock = PTHREAD_MUTEX_INITIALIZER;
-static pid_t py_pid = -1;
-static int py_to = -1, py_from = -1;
-// (what was read and not yet handed back)
-static char *py_buf = NULL;
-static size_t py_len = 0, py_cap = 0;
+
+// The TypeScript driver: modules found in the `:`-separated folders of its
+// argument (`m`, `m.ts`, `m.mts`, `m.js`, `m.mjs`, else a package in their
+// `node_modules`), each imported once; a promise is awaited; requests
+// answered in order.
+static const char *ts_driver =
+  "(async () => {\n"
+  "const fs = await import('node:fs'), url = await import('node:url'), pth = await import('node:path'), mod = await import('node:module');\n"
+  "const arg = globalThis.Deno ? Deno.args[0] : process.argv[1];\n"
+  "const dirs = (arg || '').split(':').filter(x => x);\n"
+  "process.stdout.write = process.stderr.write.bind(process.stderr);\n"
+  "console.log = console.info = console.debug = console.error;\n"
+  "const find = (m) => {\n"
+  "  for (const d of dirs) for (const e of ['', '.ts', '.mts', '.js', '.mjs']) {\n"
+  "    const f = pth.resolve(d, m + e);\n"
+  "    if (fs.existsSync(f) && fs.statSync(f).isFile()) return url.pathToFileURL(f).href;\n"
+  "  }\n"
+  "  for (const d of dirs) { try { return url.pathToFileURL(mod.createRequire(pth.join(d, 'x.js')).resolve(m)).href; } catch (e) {} }\n"
+  "  return m;\n"
+  "};\n"
+  "const loaded = new Map();\n"
+  "const load = (m) => { if (!loaded.has(m)) loaded.set(m, import(find(m))); return loaded.get(m); };\n"
+  "const send = (o) => { let s; try { s = JSON.stringify(o); } catch (e) { s = JSON.stringify({unencodable: String(e && e.message || e)}); } fs.writeSync(1, s + '\\n'); };\n"
+  "const handle = async (line) => {\n"
+  "  try {\n"
+  "    const req = JSON.parse(line);\n"
+  "    const m = await load(req.module);\n"
+  "    const f = m[req.function];\n"
+  "    if (typeof f !== 'function') throw new TypeError('module `' + req.module + '` has no function `' + req.function + '`');\n"
+  "    let r = await f(...req.args);\n"
+  "    if (r === undefined) r = null;\n"
+  "    if (typeof r === 'number' && !Number.isFinite(r)) return send({unencodable: String(r) + ' is not a JSON number'});\n"
+  "    send({ok: r});\n"
+  "  } catch (e) {\n"
+  "    const err = e instanceof Error;\n"
+  "    send({error: {type: err ? e.name : typeof e, message: err ? e.message : String(e), traceback: err && e.stack ? String(e.stack) : ''}});\n"
+  "  }\n"
+  "};\n"
+  "let buf = '', chain = Promise.resolve();\n"
+  "process.stdin.setEncoding('utf8');\n"
+  "process.stdin.on('data', (d) => {\n"
+  "  buf += d;\n"
+  "  let i;\n"
+  "  while ((i = buf.indexOf('\\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); chain = chain.then(() => handle(l)); }\n"
+  "});\n"
+  "})();\n";
+
+// A worker process: its pipes, what was read and not yet handed back, and
+// the language named in its messages.
+typedef struct {
+  const char *lang;
+  pthread_mutex_t lock;
+  pid_t pid;
+  int to, from;
+  char *buf;
+  size_t len, cap;
+} Worker;
+
+static Worker py_worker = {"Python", PTHREAD_MUTEX_INITIALIZER, -1, -1, -1, NULL, 0, 0};
+static Worker ts_worker = {"TypeScript", PTHREAD_MUTEX_INITIALIZER, -1, -1, -1, NULL, 0, 0};
 // (the reply handed back: each thread's own, kept until its next call, so
 // the caller copies it after the lock is let go)
 static __thread char *py_reply = NULL;
@@ -5020,27 +5263,27 @@ static const char *py_failed(const char *why) {
 
 // The worker gone: its pipes closed, the process reaped; how it ended, in
 // `why`.
-static void py_stop(char *why, size_t n) {
-  if (py_to >= 0) close(py_to);
-  if (py_from >= 0) close(py_from);
-  py_to = py_from = -1;
-  py_len = 0;
-  snprintf(why, n, "the Python worker ended");
-  if (py_pid > 0) {
+static void worker_stop(Worker *w, char *why, size_t n) {
+  if (w->to >= 0) close(w->to);
+  if (w->from >= 0) close(w->from);
+  w->to = w->from = -1;
+  w->len = 0;
+  snprintf(why, n, "the %s worker ended", w->lang);
+  if (w->pid > 0) {
     int st = 0;
-    if (waitpid(py_pid, &st, 0) == py_pid) {
-      if (WIFEXITED(st)) snprintf(why, n, "the Python worker ended (exit code %d)", WEXITSTATUS(st));
-      else if (WIFSIGNALED(st)) snprintf(why, n, "the Python worker was killed (signal %d)", WTERMSIG(st));
+    if (waitpid(w->pid, &st, 0) == w->pid) {
+      if (WIFEXITED(st)) snprintf(why, n, "the %s worker ended (exit code %d)", w->lang, WEXITSTATUS(st));
+      else if (WIFSIGNALED(st)) snprintf(why, n, "the %s worker was killed (signal %d)", w->lang, WTERMSIG(st));
     }
   }
-  py_pid = -1;
+  w->pid = -1;
 }
 
-static int py_start(const char *python, const char *path, char *why, size_t n) {
+static int worker_start(Worker *w, char *const argv[], char *why, size_t n) {
   int in[2], out[2];
-  if (cloexec_pipe(in) != 0) return snprintf(why, n, "can't start the Python worker: %s", strerror(errno)), -1;
+  if (cloexec_pipe(in) != 0) return snprintf(why, n, "can't start the %s worker: %s", w->lang, strerror(errno)), -1;
   if (cloexec_pipe(out) != 0) {
-    snprintf(why, n, "can't start the Python worker: %s", strerror(errno));
+    snprintf(why, n, "can't start the %s worker: %s", w->lang, strerror(errno));
     close(in[0]);
     close(in[1]);
     return -1;
@@ -5054,10 +5297,9 @@ static int py_start(const char *python, const char *path, char *why, size_t n) {
   posix_spawn_file_actions_adddup2(&fa, in[0], 0);
   posix_spawn_file_actions_adddup2(&fa, out[1], 1);
   posix_spawn_file_actions_addinherit_np(&fa, 2);
-  char *argv[] = {(char *)python, "-c", (char *)py_driver, (char *)path, NULL};
   extern char **environ;
   pid_t pid;
-  int e = posix_spawnp(&pid, python, &fa, &at, argv, environ);
+  int e = posix_spawnp(&pid, argv[0], &fa, &at, argv, environ);
   posix_spawn_file_actions_destroy(&fa);
   posix_spawnattr_destroy(&at);
   close(in[0]);
@@ -5065,28 +5307,28 @@ static int py_start(const char *python, const char *path, char *why, size_t n) {
   if (e != 0) {
     close(in[1]);
     close(out[0]);
-    snprintf(why, n, "can't start `%s`: %s", python, strerror(e));
+    snprintf(why, n, "can't start `%s`: %s", argv[0], strerror(e));
     return -1;
   }
 #ifdef F_SETNOSIGPIPE
   // (a worker that died breaks its pipe: writing fails with EPIPE, no SIGPIPE)
   fcntl(in[1], F_SETNOSIGPIPE, 1);
 #endif
-  py_pid = pid;
-  py_to = in[1];
-  py_from = out[0];
-  py_len = 0;
+  w->pid = pid;
+  w->to = in[1];
+  w->from = out[0];
+  w->len = 0;
   return 0;
 }
 
 // Sends `request` (one line of JSON) to the worker, started first with
-// `python` and the module folders `path` (`:`-separated) if there is none,
-// and gives its reply line, or `{"failed": message}`.
-const char *python_worker_call(const char *python, const char *path, const char *request) {
-  pthread_mutex_lock(&py_lock);
+// `argv` if there is none, and gives its reply line, or `{"failed":
+// message}`.
+static const char *worker_call(Worker *w, char *const argv[], const char *request) {
+  pthread_mutex_lock(&w->lock);
   char why[700];
-  if (py_pid < 0 && py_start(python, path, why, sizeof why) != 0) {
-    pthread_mutex_unlock(&py_lock);
+  if (w->pid < 0 && worker_start(w, argv, why, sizeof why) != 0) {
+    pthread_mutex_unlock(&w->lock);
     return py_failed(why);
   }
   size_t len = strlen(request), sent = 0;
@@ -5095,38 +5337,851 @@ const char *python_worker_call(const char *python, const char *path, const char 
     // (the request, then its newline)
     const char *p = sent < len ? request + sent : "\n";
     size_t m = sent < len ? len - sent : 1;
-    ssize_t w = write(py_to, p, m);
-    if (w < 0 && errno == EINTR) continue;
-    if (w <= 0) ok = 0;
-    else sent += (size_t)w;
+    ssize_t r = write(w->to, p, m);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) ok = 0;
+    else sent += (size_t)r;
   }
   if (!ok) {
-    py_stop(why, sizeof why);
-    pthread_mutex_unlock(&py_lock);
+    worker_stop(w, why, sizeof why);
+    pthread_mutex_unlock(&w->lock);
     return py_failed(why);
   }
   for (;;) {
-    char *nl = py_len ? memchr(py_buf, '\n', py_len) : NULL;
+    char *nl = w->len ? memchr(w->buf, '\n', w->len) : NULL;
     if (nl) {
-      size_t k = (size_t)(nl - py_buf);
-      py_buf[k] = 0;
-      const char *r = py_give(py_buf);
-      memmove(py_buf, nl + 1, py_len - k - 1);
-      py_len -= k + 1;
-      pthread_mutex_unlock(&py_lock);
+      size_t k = (size_t)(nl - w->buf);
+      w->buf[k] = 0;
+      const char *r = py_give(w->buf);
+      memmove(w->buf, nl + 1, w->len - k - 1);
+      w->len -= k + 1;
+      pthread_mutex_unlock(&w->lock);
       return r;
     }
-    if (py_cap - py_len < 4096) {
-      py_cap = py_cap ? py_cap * 2 : 65536;
-      py_buf = realloc(py_buf, py_cap);
+    if (w->cap - w->len < 4096) {
+      w->cap = w->cap ? w->cap * 2 : 65536;
+      w->buf = realloc(w->buf, w->cap);
     }
-    ssize_t r = read(py_from, py_buf + py_len, py_cap - py_len - 1);
+    ssize_t r = read(w->from, w->buf + w->len, w->cap - w->len - 1);
     if (r < 0 && errno == EINTR) continue;
     if (r <= 0) {
-      py_stop(why, sizeof why);
-      pthread_mutex_unlock(&py_lock);
+      worker_stop(w, why, sizeof why);
+      pthread_mutex_unlock(&w->lock);
       return py_failed(why);
     }
-    py_len += (size_t)r;
+    w->len += (size_t)r;
   }
 }
+
+// std.python's call: the worker runs `python` with the module folders
+// `path` (`:`-separated).
+const char *python_worker_call(const char *python, const char *path, const char *request) {
+  char *argv[] = {(char *)python, "-c", (char *)py_driver, (char *)path, NULL};
+  return worker_call(&py_worker, argv, request);
+}
+
+// std.ts's call: the worker runs `node -e DRIVER PATH` (`bun` the same way,
+// `deno eval DRIVER PATH`).
+const char *ts_worker_call(const char *node, const char *path, const char *request) {
+  const char *base = strrchr(node, '/');
+  base = base ? base + 1 : node;
+  char *argv[] = {(char *)node, strcmp(base, "deno") == 0 ? "eval" : "-e", (char *)ts_driver, (char *)path, NULL};
+  return worker_call(&ts_worker, argv, request);
+}
+
+// ---- `extern rust`: a library made by cargo ----
+//
+// std.rust calls the C functions of the library cargo made from the
+// package's crates (compiler/cargo): linked into a built executable, found
+// with `dlsym`; under `strata run` and `test`, the shared library, loaded on
+// the first call and kept:
+// each takes its arguments as a JSON array and gives its reply, freed by
+// the library's `strata_rust_free` once copied. Calls aren't serialized.
+static pthread_mutex_t rust_lock = PTHREAD_MUTEX_INITIALIZER;
+static void *rust_handle = NULL;
+static char *rust_path = NULL;
+
+const char *rust_library_call(const char *library, const char *symbol, const char *args) {
+  pthread_mutex_lock(&rust_lock);
+  // (a built executable has the library linked in: its functions are the
+  // program's own. Under `strata run` it is loaded from `library`.)
+  if (!rust_handle && dlsym(RTLD_DEFAULT, "strata_rust_free")) {
+    rust_handle = RTLD_DEFAULT;
+    rust_path = strdup(library);
+  }
+  if (!rust_handle || (rust_handle != RTLD_DEFAULT && strcmp(rust_path, library) != 0)) {
+    void *h = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+      char why[1200];
+      const char *e = dlerror();
+      snprintf(why, sizeof why, "can't load the Rust library (`strata run` and `strata build` make it with cargo): %s", e ? e : library);
+      pthread_mutex_unlock(&rust_lock);
+      return py_failed(why);
+    }
+    rust_handle = h;
+    free(rust_path);
+    rust_path = strdup(library);
+  }
+  char *(*f)(const char *) = (char *(*)(const char *))dlsym(rust_handle, symbol);
+  void (*release)(char *) = (void (*)(char *))dlsym(rust_handle, "strata_rust_free");
+  pthread_mutex_unlock(&rust_lock);
+  if (!f || !release) {
+    char why[700];
+    snprintf(why, sizeof why, "the Rust library has no `%s`: it was made before this declaration (`strata run` and `strata build` make it again)", symbol);
+    return py_failed(why);
+  }
+  char *r = f(args);
+  const char *out = py_give(r ? r : "{\"failed\":\"the Rust function gave no reply\"}");
+  if (r) release(r);
+  return out;
+}
+
+// ---- sockets (std.net) ----
+//
+// TCP connections for std.net, called through `extern c`. A connection or
+// listener is a slot in a table, named by a 64-bit handle (its index and a
+// generation), so a handle used after `close` finds nothing and fails
+// instead of reaching a reused descriptor. Every socket is non-blocking:
+// an operation that would wait polls first (`wait_fd`), together with the
+// thread's wake pipe when the thread can be cancelled, so a task blocked in
+// a read, write, connect or accept stops when it is cancelled. A cancelled
+// read has consumed nothing. A cancelled write or connect may have sent part
+// of its bytes, so it marks the socket broken: every later operation on it
+// fails. Each call leaves its outcome in `net_status` / `net_msg`, read by
+// `std_net_status` and `std_net_message`; text results live in a
+// buffer per thread until its next call.
+
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+enum { NET_OK = 0, NET_END = 1, NET_CANCELLED = 2, NET_FAILED = 3, NET_NOT_TEXT = 4, NET_CLOSED = 5, NET_TOO_LONG = 6, NET_BROKEN = 7 };
+
+typedef struct NetSlot {
+  int fd;            // -1: free
+  uint32_t gen;      // bumped at each close
+  _Bool broken;      // an operation on it was cancelled half-way
+  char *in;          // bytes received, not read yet
+  size_t in_len, in_cap;
+  void *tls;         // Secure Transport's context, once `std_net_tls` started TLS
+  short want;        // what TLS waited for last: POLLIN or POLLOUT
+} NetSlot;
+
+static pthread_mutex_t net_lock = PTHREAD_MUTEX_INITIALIZER;
+static NetSlot **net_slots;  // never freed, so a slot pointer stays valid
+static size_t net_count, net_cap;
+
+static _Thread_local int net_status;
+static _Thread_local char net_msg[256];
+static _Thread_local char *net_reply;
+static _Thread_local uint8_t *net_bytes;  // `read_bytes`' result, or bytes pushed for a write
+static _Thread_local size_t net_bytes_len, net_bytes_cap;
+
+static void net_fail(int status, const char *what) {
+  net_status = status;
+  snprintf(net_msg, sizeof net_msg, "%s", what);
+}
+
+static void net_errno(const char *what) {
+  net_status = NET_FAILED;
+  snprintf(net_msg, sizeof net_msg, "%s: %s", what, strerror(errno));
+}
+
+static const char *net_give(const char *s, size_t n) {
+  free(net_reply);
+  net_reply = malloc(n + 1);
+  memcpy(net_reply, s, n);
+  net_reply[n] = 0;
+  return net_reply;
+}
+
+static uint64_t net_add(int fd) {
+  pthread_mutex_lock(&net_lock);
+  size_t i = 0;
+  while (i < net_count && net_slots[i]->fd >= 0) i++;
+  if (i == net_count) {
+    if (net_count == net_cap) {
+      net_cap = net_cap ? net_cap * 2 : 16;
+      net_slots = realloc(net_slots, net_cap * sizeof *net_slots);
+    }
+    net_slots[i] = calloc(1, sizeof(NetSlot));
+    net_count++;
+  }
+  NetSlot *s = net_slots[i];
+  s->fd = fd;
+  s->broken = 0;
+  s->in_len = 0;
+  s->tls = NULL;
+  uint64_t h = ((uint64_t)s->gen << 32) | (uint64_t)(i + 1);
+  pthread_mutex_unlock(&net_lock);
+  return h;
+}
+
+// The slot `h` names, or NULL (closed, or never made) with the status set.
+static NetSlot *net_get(uint64_t h) {
+  size_t i = (size_t)(h & 0xffffffffu);
+  uint32_t gen = (uint32_t)(h >> 32);
+  NetSlot *s = NULL;
+  pthread_mutex_lock(&net_lock);
+  if (i >= 1 && i <= net_count && net_slots[i - 1]->fd >= 0 && net_slots[i - 1]->gen == gen) s = net_slots[i - 1];
+  pthread_mutex_unlock(&net_lock);
+  if (!s) net_fail(NET_CLOSED, "the connection is closed");
+  else if (s->broken) {
+    net_fail(NET_BROKEN, "an operation on this connection was cancelled half-way");
+    return NULL;
+  } else
+    net_status = NET_OK;
+  return s;
+}
+
+static void net_setup(int fd) {
+  fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+  fcntl(fd, F_SETFD, FD_CLOEXEC);
+#ifdef SO_NOSIGPIPE
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+}
+
+// Wait until `fd` is ready for `events` (or failed: the call after says
+// which): 1; or until this thread is cancelled: 0. A thread nothing can
+// cancel just polls.
+static _Bool wait_fd(int fd, short events) {
+  if ((self_task || contained) && have_reader()) return wait_fd_events(fd, events);
+  struct pollfd p = {.fd = fd, .events = events};
+  while (poll(&p, 1, -1) < 0 && errno == EINTR) {}
+  return 1;
+}
+
+// A connection to `host` (a name or an address) on `port`, or 0. Looking
+// the name up waits without seeing a cancellation (getaddrinfo); connecting
+// sees it.
+uint64_t std_net_connect(const char *host, int32_t port) {
+  char ps[16];
+  snprintf(ps, sizeof ps, "%d", port);
+  struct addrinfo hints = {0}, *res = NULL;
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  int e = getaddrinfo(host, ps, &hints, &res);
+  if (e != 0) {
+    net_status = NET_FAILED;
+    snprintf(net_msg, sizeof net_msg, "%s: %s", host, gai_strerror(e));
+    return 0;
+  }
+  net_fail(NET_FAILED, "no address");
+  for (struct addrinfo *a = res; a; a = a->ai_next) {
+    int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    if (fd < 0) {
+      net_errno("socket");
+      continue;
+    }
+    net_setup(fd);
+    if (connect(fd, a->ai_addr, a->ai_addrlen) != 0) {
+      if (errno != EINPROGRESS) {
+        net_errno("connect");
+        close(fd);
+        continue;
+      }
+      if (!wait_fd(fd, POLLOUT)) {
+        close(fd);
+        freeaddrinfo(res);
+        net_fail(NET_CANCELLED, "cancelled");
+        return 0;
+      }
+      int err = 0;
+      socklen_t el = sizeof err;
+      getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el);
+      if (err != 0) {
+        errno = err;
+        net_errno("connect");
+        close(fd);
+        continue;
+      }
+    }
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    freeaddrinfo(res);
+    net_status = NET_OK;
+    return net_add(fd);
+  }
+  freeaddrinfo(res);
+  return 0;
+}
+
+// A listener on `host`'s address and `port` (0: one the system picks), or 0.
+uint64_t std_net_listen(const char *host, int32_t port, int32_t backlog) {
+  char ps[16];
+  snprintf(ps, sizeof ps, "%d", port);
+  struct addrinfo hints = {0}, *res = NULL;
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_PASSIVE;
+  int e = getaddrinfo(*host ? host : NULL, ps, &hints, &res);
+  if (e != 0) {
+    net_status = NET_FAILED;
+    snprintf(net_msg, sizeof net_msg, "%s: %s", host, gai_strerror(e));
+    return 0;
+  }
+  net_fail(NET_FAILED, "no address");
+  for (struct addrinfo *a = res; a; a = a->ai_next) {
+    int fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    if (fd < 0) {
+      net_errno("socket");
+      continue;
+    }
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (bind(fd, a->ai_addr, a->ai_addrlen) != 0) {
+      net_errno("bind");
+      close(fd);
+      continue;
+    }
+    if (listen(fd, backlog) != 0) {
+      net_errno("listen");
+      close(fd);
+      continue;
+    }
+    net_setup(fd);
+    freeaddrinfo(res);
+    net_status = NET_OK;
+    return net_add(fd);
+  }
+  freeaddrinfo(res);
+  return 0;
+}
+
+// The next connection a listener receives, or 0.
+uint64_t std_net_accept(uint64_t h) {
+  NetSlot *s = net_get(h);
+  if (!s) return 0;
+  for (;;) {
+    int fd = accept(s->fd, NULL, NULL);
+    if (fd >= 0) {
+      net_setup(fd);
+      int one = 1;
+      setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+      net_status = NET_OK;
+      return net_add(fd);
+    }
+    if (errno == EINTR || errno == ECONNABORTED) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+      net_errno("accept");
+      return 0;
+    }
+    if (!wait_fd(s->fd, POLLIN)) {
+      net_fail(NET_CANCELLED, "cancelled");
+      return 0;
+    }
+  }
+}
+
+// The local port of a socket (a listener's on port 0: the one picked), or -1.
+int32_t std_net_local_port(uint64_t h) {
+  NetSlot *s = net_get(h);
+  if (!s) return -1;
+  struct sockaddr_storage a;
+  socklen_t l = sizeof a;
+  if (getsockname(s->fd, (struct sockaddr *)&a, &l) != 0) {
+    net_errno("getsockname");
+    return -1;
+  }
+  if (a.ss_family == AF_INET) return ntohs(((struct sockaddr_in *)&a)->sin_port);
+  if (a.ss_family == AF_INET6) return ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+  return -1;
+}
+
+// The address of the other end, `address:port`, or NULL.
+const char *std_net_peer(uint64_t h) {
+  NetSlot *s = net_get(h);
+  if (!s) return "";
+  struct sockaddr_storage a;
+  socklen_t l = sizeof a;
+  if (getpeername(s->fd, (struct sockaddr *)&a, &l) != 0) {
+    net_errno("getpeername");
+    return "";
+  }
+  char ip[INET6_ADDRSTRLEN] = "?", out[INET6_ADDRSTRLEN + 16];
+  int port = 0;
+  if (a.ss_family == AF_INET) {
+    inet_ntop(AF_INET, &((struct sockaddr_in *)&a)->sin_addr, ip, sizeof ip);
+    port = ntohs(((struct sockaddr_in *)&a)->sin_port);
+    snprintf(out, sizeof out, "%s:%d", ip, port);
+  } else {
+    inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&a)->sin6_addr, ip, sizeof ip);
+    port = ntohs(((struct sockaddr_in6 *)&a)->sin6_port);
+    snprintf(out, sizeof out, "[%s]:%d", ip, port);
+  }
+  return net_give(out, strlen(out));
+}
+
+
+// ---- TLS (macOS: Secure Transport, loaded at the first use) ----
+//
+// The system's TLS, loaded with dlopen so that programs that don't use it
+// don't link Security.framework. Secure Transport checks the server's
+// certificate against the system's roots and its name. It speaks up to
+// TLS 1.2. Elsewhere TLS fails with a message (not built: OpenSSL's libssl
+// the same way).
+
+#include <dlfcn.h>
+
+enum { SSL_WOULD_BLOCK = -9803, SSL_CLOSED_GRACEFUL = -9805, SSL_CLOSED_ABORT = -9806, SSL_CLOSED_NO_NOTIFY = -9816 };
+typedef int32_t (*SslIo)(const void *conn, void *data, size_t *len);
+static struct {
+  _Bool tried, ok;
+  void *(*create)(void *alloc, int side, int type);
+  int32_t (*set_io)(void *ctx, SslIo rd, SslIo wr);
+  int32_t (*set_conn)(void *ctx, const void *conn);
+  int32_t (*set_name)(void *ctx, const char *name, size_t len);
+  int32_t (*handshake)(void *ctx);
+  int32_t (*read)(void *ctx, void *data, size_t len, size_t *done);
+  int32_t (*write)(void *ctx, const void *data, size_t len, size_t *done);
+  int32_t (*close)(void *ctx);
+  void (*release)(const void *cf);
+} st;
+static pthread_mutex_t st_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static _Bool tls_load(void) {
+  pthread_mutex_lock(&st_lock);
+  if (!st.tried) {
+    st.tried = 1;
+#ifdef __APPLE__
+    void *sec = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY);
+    void *cf = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+    if (sec && cf) {
+      st.create = (void *(*)(void *, int, int))dlsym(sec, "SSLCreateContext");
+      st.set_io = (int32_t (*)(void *, SslIo, SslIo))dlsym(sec, "SSLSetIOFuncs");
+      st.set_conn = (int32_t (*)(void *, const void *))dlsym(sec, "SSLSetConnection");
+      st.set_name = (int32_t (*)(void *, const char *, size_t))dlsym(sec, "SSLSetPeerDomainName");
+      st.handshake = (int32_t (*)(void *))dlsym(sec, "SSLHandshake");
+      st.read = (int32_t (*)(void *, void *, size_t, size_t *))dlsym(sec, "SSLRead");
+      st.write = (int32_t (*)(void *, const void *, size_t, size_t *))dlsym(sec, "SSLWrite");
+      st.close = (int32_t (*)(void *))dlsym(sec, "SSLClose");
+      st.release = (void (*)(const void *))dlsym(cf, "CFRelease");
+      st.ok = st.create && st.set_io && st.set_conn && st.set_name && st.handshake && st.read && st.write && st.close && st.release;
+    }
+#endif
+  }
+  pthread_mutex_unlock(&st_lock);
+  return st.ok;
+}
+
+// Secure Transport's reads and writes, on the slot's non-blocking socket.
+static int32_t tls_recv(const void *conn, void *data, size_t *len) {
+  NetSlot *s = (NetSlot *)conn;
+  size_t want = *len, got = 0;
+  while (got < want) {
+    ssize_t r = recv(s->fd, (char *)data + got, want - got, 0);
+    if (r > 0) {
+      got += (size_t)r;
+      continue;
+    }
+    if (r == 0) {
+      *len = got;
+      return SSL_CLOSED_GRACEFUL;
+    }
+    if (errno == EINTR) continue;
+    *len = got;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      s->want = POLLIN;
+      return SSL_WOULD_BLOCK;
+    }
+    return SSL_CLOSED_ABORT;
+  }
+  *len = got;
+  return 0;
+}
+
+static int32_t tls_send(const void *conn, void *data, size_t *len) {
+  NetSlot *s = (NetSlot *)conn;
+  size_t want = *len, sent = 0;
+  while (sent < want) {
+#ifdef MSG_NOSIGNAL
+    ssize_t w = send(s->fd, (char *)data + sent, want - sent, MSG_NOSIGNAL);
+#else
+    ssize_t w = send(s->fd, (char *)data + sent, want - sent, 0);
+#endif
+    if (w >= 0) {
+      sent += (size_t)w;
+      continue;
+    }
+    if (errno == EINTR) continue;
+    *len = sent;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      s->want = POLLOUT;
+      return SSL_WOULD_BLOCK;
+    }
+    return SSL_CLOSED_ABORT;
+  }
+  *len = sent;
+  return 0;
+}
+
+static void tls_failed(int32_t e) {
+  const char *why = e == -9807 ? "the server's certificate chain isn't trusted"
+                  : e == -9813 ? "the server's certificate has no trusted root"
+                  : e == -9814 ? "the server's certificate has expired"
+                  : e == -9843 ? "the server's certificate is for another name"
+                  : e == SSL_CLOSED_GRACEFUL || e == SSL_CLOSED_ABORT ? "the server closed the connection"
+                  : NULL;
+  net_status = NET_FAILED;
+  if (why) snprintf(net_msg, sizeof net_msg, "TLS: %s", why);
+  else snprintf(net_msg, sizeof net_msg, "TLS failed (Secure Transport error %d)", (int)e);
+}
+
+// Starts TLS on a connection, as a client of `host` (the name its
+// certificate must hold): 1, or 0 with the status set. A cancelled
+// handshake leaves the connection broken.
+_Bool std_net_tls(uint64_t h, const char *host) {
+  NetSlot *s = net_get(h);
+  if (!s) return 0;
+  if (s->tls) {
+    net_fail(NET_FAILED, "TLS is already on");
+    return 0;
+  }
+  if (!tls_load()) {
+    net_fail(NET_FAILED, "TLS isn't available on this system");
+    return 0;
+  }
+  void *ctx = st.create(NULL, 1 /* client */, 0 /* stream */);
+  if (!ctx) {
+    net_fail(NET_FAILED, "TLS: no context");
+    return 0;
+  }
+  st.set_io(ctx, tls_recv, (SslIo)tls_send);
+  st.set_conn(ctx, s);
+  st.set_name(ctx, host, strlen(host));
+  s->tls = ctx;
+  for (;;) {
+    s->want = POLLIN;
+    int32_t e = st.handshake(ctx);
+    if (e == 0) break;
+    if (e != SSL_WOULD_BLOCK) {
+      tls_failed(e);
+      s->broken = 1;
+      return 0;
+    }
+    if (!wait_fd(s->fd, s->want)) {
+      s->broken = 1;
+      net_fail(NET_CANCELLED, "cancelled");
+      return 0;
+    }
+  }
+  net_status = NET_OK;
+  return 1;
+}
+
+// Receive more bytes into the slot's buffer: how many (0 at the end), -1
+// failed, -2 cancelled (nothing received).
+static ssize_t net_fill(NetSlot *s) {
+  if (s->in_cap - s->in_len < 4096) {
+    s->in_cap = s->in_cap ? s->in_cap * 2 : 8192;
+    s->in = realloc(s->in, s->in_cap);
+  }
+  while (s->tls) {
+    size_t got = 0;
+    s->want = POLLIN;
+    int32_t e = st.read(s->tls, s->in + s->in_len, s->in_cap - s->in_len, &got);
+    s->in_len += got;
+    if (got > 0) return (ssize_t)got;
+    if (e == SSL_CLOSED_GRACEFUL || e == SSL_CLOSED_NO_NOTIFY) return 0;
+    if (e != 0 && e != SSL_WOULD_BLOCK) {
+      tls_failed(e);
+      return -1;
+    }
+    if (e == SSL_WOULD_BLOCK && !wait_fd(s->fd, s->want)) {
+      net_fail(NET_CANCELLED, "cancelled");
+      return -2;
+    }
+  }
+  for (;;) {
+    ssize_t r = recv(s->fd, s->in + s->in_len, s->in_cap - s->in_len, 0);
+    if (r >= 0) {
+      s->in_len += (size_t)r;
+      return r;
+    }
+    if (errno == EINTR) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+      net_errno("recv");
+      return -1;
+    }
+    if (!wait_fd(s->fd, POLLIN)) {
+      net_fail(NET_CANCELLED, "cancelled");
+      return -2;
+    }
+  }
+}
+
+static void net_consume(NetSlot *s, size_t n) {
+  memmove(s->in, s->in + n, s->in_len - n);
+  s->in_len -= n;
+}
+
+// How many of the first `n` bytes of `p` are whole UTF-8 characters (a
+// character cut at the end is left out), or -1: not UTF-8 text (or a NUL).
+static ssize_t utf8_prefix(const unsigned char *p, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    unsigned char c = p[i];
+    size_t k;
+    if (c == 0) return -1;
+    if (c < 0x80) k = 1;
+    else if (c >= 0xc2 && c < 0xe0) k = 2;
+    else if (c >= 0xe0 && c < 0xf0) k = 3;
+    else if (c >= 0xf0 && c < 0xf5) k = 4;
+    else return -1;
+    if (i + k > n) return (ssize_t)i;
+    for (size_t j = 1; j < k; j++)
+      if ((p[i + j] & 0xc0) != 0x80) return -1;
+    if (k == 3 && ((c == 0xe0 && p[i + 1] < 0xa0) || (c == 0xed && p[i + 1] >= 0xa0))) return -1;
+    if (k == 4 && ((c == 0xf0 && p[i + 1] < 0x90) || (c == 0xf4 && p[i + 1] >= 0x90))) return -1;
+    i += k;
+  }
+  return (ssize_t)i;
+}
+
+static const char *net_text(NetSlot *s, size_t n, size_t skip) {
+  ssize_t ok = utf8_prefix((unsigned char *)s->in, n);
+  if (ok != (ssize_t)n) {
+    net_fail(NET_NOT_TEXT, "the bytes received are not UTF-8 text");
+    return "";
+  }
+  const char *r = net_give(s->in, n);
+  net_consume(s, n + skip);
+  net_status = NET_OK;
+  return r;
+}
+
+// The next line, without its `\n` or `\r\n`; at the end, what is left
+// (status NET_END once nothing is). A line longer than `max` bytes fails.
+const char *std_net_read_line(uint64_t h, int64_t max) {
+  NetSlot *s = net_get(h);
+  if (!s) return "";
+  size_t looked = 0;
+  for (;;) {
+    char *nl = s->in_len > looked ? memchr(s->in + looked, '\n', s->in_len - looked) : NULL;
+    if (nl) {
+      size_t k = (size_t)(nl - s->in);
+      if ((int64_t)k > max) break;
+      size_t n = k > 0 && s->in[k - 1] == '\r' ? k - 1 : k;
+      return net_text(s, n, k + 1 - n);
+    }
+    looked = s->in_len;
+    if ((int64_t)s->in_len > max) break;
+    ssize_t r = net_fill(s);
+    if (r < 0) return "";
+    if (r == 0) {
+      if (s->in_len == 0) {
+        net_fail(NET_END, "the end of the stream");
+        return "";
+      }
+      return net_text(s, s->in_len, 0);
+    }
+  }
+  net_status = NET_TOO_LONG;
+  snprintf(net_msg, sizeof net_msg, "a line longer than %lld bytes", (long long)max);
+  return "";
+}
+
+// Some text: what has arrived, up to `max` bytes (waiting for at least one
+// character), cut before a character split across reads. "" at the end.
+const char *std_net_read_text(uint64_t h, int64_t max) {
+  NetSlot *s = net_get(h);
+  if (!s) return "";
+  for (;;) {
+    size_t n = s->in_len < (size_t)max ? s->in_len : (size_t)max;
+    ssize_t ok = utf8_prefix((unsigned char *)s->in, n);
+    if (ok < 0) {
+      net_fail(NET_NOT_TEXT, "the bytes received are not UTF-8 text");
+      return "";
+    }
+    if (ok > 0) return net_text(s, (size_t)ok, 0);
+    ssize_t r = net_fill(s);
+    if (r < 0) return "";
+    if (r == 0) {
+      if (s->in_len == 0) return net_give("", 0);
+      net_fail(NET_NOT_TEXT, "the stream ends inside a character");
+      return "";
+    }
+  }
+}
+
+// Exactly `n` bytes, as text; the end of the stream first fails (status
+// NET_END), and leaves what arrived to be read.
+const char *std_net_read_exact(uint64_t h, int64_t n) {
+  NetSlot *s = net_get(h);
+  if (!s) return "";
+  while ((int64_t)s->in_len < n) {
+    ssize_t r = net_fill(s);
+    if (r < 0) return "";
+    if (r == 0) {
+      net_fail(NET_END, "the stream ended early");
+      return "";
+    }
+  }
+  return net_text(s, (size_t)n, 0);
+}
+
+// Up to `max` bytes, at least one (0 at the end), into the thread's byte
+// buffer (`std_net_byte`); -1 on failure.
+int64_t std_net_read_bytes(uint64_t h, int64_t max) {
+  NetSlot *s = net_get(h);
+  if (!s) return -1;
+  if (s->in_len == 0) {
+    ssize_t r = net_fill(s);
+    if (r < 0) return -1;
+  }
+  size_t n = s->in_len < (size_t)max ? s->in_len : (size_t)max;
+  if (net_bytes_cap < n) {
+    net_bytes_cap = n;
+    net_bytes = realloc(net_bytes, n);
+  }
+  memcpy(net_bytes, s->in, n);
+  net_bytes_len = n;
+  net_consume(s, n);
+  return (int64_t)n;
+}
+
+// Exactly `n` bytes into the thread's byte buffer: `n`, or -1 (the end of
+// the stream first: status NET_END, and what arrived stays to be read).
+int64_t std_net_read_exact_bytes(uint64_t h, int64_t n) {
+  NetSlot *s = net_get(h);
+  if (!s) return -1;
+  while ((int64_t)s->in_len < n) {
+    ssize_t r = net_fill(s);
+    if (r < 0) return -1;
+    if (r == 0) {
+      net_fail(NET_END, "the stream ended early");
+      return -1;
+    }
+  }
+  if (net_bytes_cap < (size_t)n) {
+    net_bytes_cap = (size_t)n;
+    net_bytes = realloc(net_bytes, net_bytes_cap);
+  }
+  memcpy(net_bytes, s->in, (size_t)n);
+  net_bytes_len = (size_t)n;
+  net_consume(s, (size_t)n);
+  return n;
+}
+
+// Byte `i` of the thread's byte buffer.
+uint8_t std_net_byte(int64_t i) {
+  return i >= 0 && (size_t)i < net_bytes_len ? net_bytes[i] : 0;
+}
+
+// Adds a byte to the thread's byte buffer, for `std_net_write_pushed`.
+void std_net_push_byte(uint8_t b) {
+  if (net_bytes_len == net_bytes_cap) {
+    net_bytes_cap = net_bytes_cap ? net_bytes_cap * 2 : 4096;
+    net_bytes = realloc(net_bytes, net_bytes_cap);
+  }
+  net_bytes[net_bytes_len++] = b;
+}
+
+// Empties the thread's byte buffer, before pushing.
+void std_net_clear_bytes(void) { net_bytes_len = 0; }
+
+static _Bool net_send(NetSlot *s, const char *p, size_t n) {
+  size_t sent = 0;
+  while (s->tls) {
+    // (a write of what is left, or of nothing: Secure Transport sends what
+    // it holds back first)
+    size_t w = 0;
+    s->want = POLLOUT;
+    int32_t e = st.write(s->tls, p + sent, n - sent, &w);
+    sent += w;
+    if (e == 0 && sent == n) {
+      net_status = NET_OK;
+      return 1;
+    }
+    if (e == 0) continue;
+    if (e != SSL_WOULD_BLOCK) {
+      tls_failed(e);
+      return 0;
+    }
+    if (!wait_fd(s->fd, s->want)) {
+      s->broken = 1;
+      net_fail(NET_CANCELLED, "cancelled");
+      return 0;
+    }
+  }
+  while (!s->tls && sent < n) {
+#ifdef MSG_NOSIGNAL
+    ssize_t w = send(s->fd, p + sent, n - sent, MSG_NOSIGNAL);
+#else
+    ssize_t w = send(s->fd, p + sent, n - sent, 0);
+#endif
+    if (w >= 0) {
+      sent += (size_t)w;
+      continue;
+    }
+    if (errno == EINTR) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+      net_errno("send");
+      return 0;
+    }
+    if (!wait_fd(s->fd, POLLOUT)) {
+      if (sent > 0) s->broken = 1;
+      net_fail(NET_CANCELLED, "cancelled");
+      return 0;
+    }
+  }
+  net_status = NET_OK;
+  return 1;
+}
+
+// Sends `text` whole: 1, or 0 with the status set.
+_Bool std_net_write(uint64_t h, const char *text) {
+  NetSlot *s = net_get(h);
+  return s && net_send(s, text, strlen(text));
+}
+
+// Sends the thread's byte buffer whole, and empties it.
+_Bool std_net_write_pushed(uint64_t h) {
+  NetSlot *s = net_get(h);
+  _Bool ok = s && net_send(s, (const char *)net_bytes, net_bytes_len);
+  net_bytes_len = 0;
+  return ok;
+}
+
+// No more writes: the other end reads the end of the stream.
+_Bool std_net_shutdown_write(uint64_t h) {
+  NetSlot *s = net_get(h);
+  if (!s) return 0;
+  if (shutdown(s->fd, SHUT_WR) != 0) {
+    net_errno("shutdown");
+    return 0;
+  }
+  return 1;
+}
+
+// Closes a connection or listener. Closing one already closed does nothing.
+void std_net_close(uint64_t h) {
+  size_t i = (size_t)(h & 0xffffffffu);
+  uint32_t gen = (uint32_t)(h >> 32);
+  pthread_mutex_lock(&net_lock);
+  if (i >= 1 && i <= net_count && net_slots[i - 1]->fd >= 0 && net_slots[i - 1]->gen == gen) {
+    NetSlot *s = net_slots[i - 1];
+    if (s->tls) {
+      st.close(s->tls);
+      st.release(s->tls);
+      s->tls = NULL;
+    }
+    close(s->fd);
+    s->fd = -1;
+    s->gen++;
+    free(s->in);
+    s->in = NULL;
+    s->in_len = s->in_cap = 0;
+  }
+  pthread_mutex_unlock(&net_lock);
+  net_status = NET_OK;
+}
+
+int32_t std_net_status(void) { return net_status; }
+
+const char *std_net_message(void) { return net_give(net_msg, strlen(net_msg)); }
+#endif  // STRATA_WASM

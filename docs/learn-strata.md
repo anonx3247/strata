@@ -19,8 +19,10 @@ fn basics() -> Int {
   ok := true && !false || n == 42
   s := "hello"
 
-  // Int never overflows (it grows into a big integer). Float is never NaN.
-  // No implicit Int/Float mixing: convert with float(n), round(x), floor, ceil.
+  // A decimal literal is an exact Real (0.1 + 0.2 == 0.3) unless a Float is
+  // wanted, as here. Int never overflows (it grows into a big integer).
+  // Float is never NaN. No implicit Int/Float/Real mixing: convert with
+  // float(n), Real.from(n), r.to_float(), round(x), floor, ceil.
   mixed := float(n) * x
   back := round(mixed)
 

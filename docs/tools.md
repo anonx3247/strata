@@ -478,9 +478,11 @@ proven = ["core"]
 [json]                                 # how `std.json` reads JSON here
 unknown_keys = "error"                 # `from_json` refuses keys a record doesn't have (default: "ignore")
 integers = "proven"                    # integer fields must be proven to fit a JSON number (default: "checked", an error from `to_json`)
+reals = "proven"                       # `derive Json` refuses a `Real` field: only a `Float` is (default: "checked", an error from `to_json` for one a double can't give back)
 
 [toml]                                 # how `std.toml`'s derived `Toml` reads TOML here
 unknown_keys = "error"                 # `from_toml` refuses keys a record doesn't have (default: "ignore")
+reals = "proven"                       # `derive Toml` refuses a `Real` field (default: "checked", as `[json]`'s)
 
 [check]                                # what `strata check` reports here
 unused = "error"                       # unused definitions, fields, variants and variables are errors (default: "warn")
