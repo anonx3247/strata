@@ -1,6 +1,6 @@
 ---
 title: Floats in the prover
-base: 52cec923
+base: 58ddedfc
 packages: compiler std
 ---
 
@@ -44,16 +44,28 @@ Three fixes the std.array contracts needed: a type's own method called in a cont
 ```
 
 # std.array: bounds on magnitudes
-Each operation takes bounds on its arrays' elements (`within`), named by functions (`add_bound`, `factor_bound`, `sum_bound`, `dot_bound`, `product_bound`). The bounds reach the loops through refined element types (`AddSample`, `SumSample`…) on private helpers' parameters, and generic `gather` / `pair` keep them through a broadcast.
+Each float operation takes bounds on its arrays' elements (`within`, a loop), named by functions (`add_bound`, `factor_bound`, `sum_bound`, `dot_bound`, `product_bound`). The bounds reach the loops through refined element types (`AddSample`, `SumSample`…) on private helpers' parameters, and the generic `gather` / `pair_rows` keep them through a broadcast. The kernels' contracts and loop invariants are `assumed`: proven, never compiled.
 
-```strata-diff std.array.add_lists std.array.sum_run
+```strata-diff std.array.add_lists std.array.sum_run_f64 std.array.dot_run_f64
 ```
 
 ```strata-also
 std.array.sub_lists std.array.mul_lists std.array.div_lists: the other element-wise operations
-std.array.dot_run: the dot product's loops, bounded
-std.array.lane_sums std.array.transposed std.array.product: reductions along an axis, matmul's transposed copy, a bounded product
-std.array.gather std.array.pair: generic, so the element type says what holds of a copy
+std.array.lane_sums std.array.transposed std.array.pair_rows: reductions along an axis, matmul's transposed copy, broadcasting typed lists
 std.array.add_bound std.array.factor_bound std.array.sum_bound std.array.dot_bound std.array.product_bound std.array.AddSample std.array.Factor std.array.Divisor std.array.SumSample std.array.DotSample: the bounds
-std.array.dot std.array.matmul std.array.as_float std.array.Array: contracts and docs
+std.array.as_float std.array.Array: contracts and docs
+std.sqlite.*: `Row.float` converts the 64-bit integers SQLite stores (a larger Int faulted in `float`)
+```
+
+# std's library without its proven checks
+The library was compiled with no proofs, so it kept every check. Building it now verifies std (no fuzzing; verdicts from the cache) and gives the proofs to codegen, which names library functions as `verify` does. A float operation proven finite compiles to the bare `fadd`. Each function with entry checks is also defined without them (`K#unchecked`), and a call whose checks its caller proved calls that one.
+
+```strata-diff main.std_library main.std_proofs codegen.finite codegen.entry_proven
+```
+
+```strata-also
+codegen.function codegen.compiled_alone codegen.Gen codegen.unchecked_sym codegen.has_entry_checks codegen.call_fn_want: the second, unchecked definition and the calls of it
+main.verify_file: `--silent`, for the library's verify
+main.*_command main.static_graph: whether a command waits for std's proofs (`prove`)
+store.refs: an impl method's contracts are among its references, so a caller's verify loads what they name
 ```
