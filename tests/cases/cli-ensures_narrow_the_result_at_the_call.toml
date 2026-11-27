@@ -330,7 +330,7 @@ fn main() {
 strata = ["--file", "m.strata", "verify", "--checks", "--no-race"]
 fails = true
 has = [
-  "✓ by_method                proven (2 checks)\n    proven:  some arm of the `match` matches\n    proven:  field `tracking` of a call's result",
+  "✓ by_method                proven (3 checks)\n    proven:  field `tracking` of a call's result\n    proven:  some arm of the `match` matches\n    proven:  field `tracking` of a call's result",
   "✓ opt                      proven (1 check)",
   "✓ known                    proven (1 check)\n    proven:  field `tracking` of a call's result",
   "field `tracking` of a call's result: Pending { id: 0 } has no such field (stack: careless)",
