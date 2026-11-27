@@ -1,0 +1,29 @@
+# std.http's server keeps serving after `accept` fails (here because the
+# server has run out of file descriptors: `ulimit -n`), and after a handler
+# panics (that request gets a 500). A request with both `content-length`
+# and `transfer-encoding` gets a 400. Each server runs in the background on
+# a port the system picks, and is killed at the end of its step.
+
+[[step]]
+save = "server.strata"
+from = "server.st"
+
+[[step]]
+save = "client.strata"
+from = "client.st"
+
+[[step]]
+strata = ["build", "server.strata", "-o", "server", "--no-verify"]
+
+[[step]]
+strata = ["build", "client.strata", "-o", "client", "--no-verify"]
+
+# a handler's panic
+[[step]]
+run = ["sh", "-c", "rm -f port; ./server > server.out 2>&1 & s=$!; trap 'kill $s 2>/dev/null' EXIT; ./client"]
+stdout = "after running out of files: 200 up\na handler that fails: 500 internal server error\nafter it: 200 up\nboth content-length and chunks: HTTP/1.1 400 Bad Request\n"
+
+# failed accepts
+[[step]]
+run = ["sh", "-c", "rm -f port; (ulimit -n 24; exec ./server) > server.out 2>&1 & s=$!; trap 'kill $s 2>/dev/null' EXIT; ./client"]
+stdout = "after running out of files: 200 up\na handler that fails: 500 internal server error\nafter it: 200 up\nboth content-length and chunks: HTTP/1.1 400 Bad Request\n"
