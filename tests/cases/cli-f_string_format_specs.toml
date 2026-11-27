@@ -35,7 +35,7 @@ fn b(s: String) -> String { f"{s:05}" }
 [[step]]
 strata = ["--file", "e.strata", "check"]
 fails = true
-has = ["`.N` applies to a Float", "`+` and `0` apply to numbers"]
+has = ["`.N` applies to a Real or a Float", "`+` and `0` apply to numbers"]
 
 # a spec that doesn't parse can't be stored
 [[step]]
