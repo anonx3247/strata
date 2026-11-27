@@ -31,9 +31,7 @@ A nominal record's refined field must have the same written type as the structur
 
 
 ### Capabilities marked in types
-Capability traits and the values that carry them get a mark in the syntax, so a reader sees at once which parameters give access to the outside world: `fn main(console: @Console, fs: @Files)`, `capability trait Console`. `*Console` was the first suggestion; `*` reads as a pointer to C, Go and Zig readers, so `@` is proposed if the lexer leaves it free. To settle in the spec, sections 1 and 6. (user, 2026-11-27)
-## Verification
-
+A capability parameter is marked with a keyword, the way `mut` marks a parameter changed in place: `fn main(cap console: Console, cap fs: Files)`. A reader sees at once which parameters reach the outside world. Clearer than a sigil (`*Console` reads as a pointer, `@Console` as an annotation), and agents already know the `mut` pattern. Call sites need no mark, since capabilities are threaded up the call graph. To settle in the spec, sections 1 and 6: whether `cap` is also required on fields and locals that hold a capability. (user, 2026-11-27)
 ### Assurance levels
 Per package or module, like SPARK's levels: default (unproven checks run, a broken one panics); checked (a function with unproven contracts gives callers a `Result` with a contract error); proven (the build refuses any unproven contract or partial operation); bounded (termination, stack depth and memory proven too). Open: names, and whether "bounded" is within reach with counted, immutable values. (user, 2026-11-22)
 
@@ -242,6 +240,12 @@ impl Component for Button {
 
 - Encapsulation: the state type isn't public, so a parent sees only what goes in (the props, `Button`) and what comes out (`Clicked`), as an object's private fields and public methods would give.
 - State stays a value: `update` returns the new state; the runtime stores it. Nothing is mutated behind the program's back, so updates stay provable (`ensures` on `update`) and replayable.
+- When `update` runs: on events, not every frame. A `view` attaches each handler to its component's place in the tree (`on_down: Down`), so the runtime knows which component an event belongs to. Events are queued and handled one at a time on the UI's loop. For each event the runtime:
+  1. calls that component's `update` with its stored state;
+  2. stores the new state;
+  3. if the state changed (equality on immutable values is cheap), calls that component's `view` again, and its children's only where their props changed;
+  4. diffs the new tree against the old one and patches the screen.
+  An event the component sends out (`Clicked`) is delivered to its parent's `update` the same way. Async work (a request, a timer) is a task that posts an event back when it is done. Per-frame work (a game, an animation) subscribes to a `Tick(dt)` event, which only subscribed components receive. Finer-grained updates later, as in Solid or Svelte: record which state each part of a view reads and change only those nodes, with no diff.
 - Shared state (the signed-in user, a cart): one or two stores passed down as context, each an ordinary state and update, which any component may read and send events to. (user, 2026-11-27)
 ### `std.http` and `std.net`
 Streaming bodies (server-sent events), a client connection pool, `expect: 100-continue`, timeouts beyond a caller's `race`, binary bodies. (Claude, 2026-11-26)
