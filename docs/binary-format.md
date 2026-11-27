@@ -153,6 +153,7 @@ TypeExpr    = 0 Named(name:str, args:list(TypeExpr))      Int, List[T], T
             | 2 Unit                                      ()
             | 3 Refined(base:TypeExpr, pred:Expr)         Int where it > 0
             | 4 Union(list(TypeExpr))                     A | B
+            | 5 Row(list(str TypeExpr))                   { id: Int, total: Cents, .. } (a bound, or a parameter's type)
 ```
 
 ### Expressions

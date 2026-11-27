@@ -206,6 +206,100 @@ int32_t timings_end(const char *name) {
   return 0;
 }
 
+// ---- per definition: what verify spends on each (`timings_def_add`) ----
+//
+// Added to from any thread (the encoder's workers). The fields, by number:
+// nanoseconds of the symbolic run, of the cone, of the pieces, of
+// `shared_lines` and of `headed`; the batches built; the batch's bytes
+// before and after sharing, and its obligations (the largest seen, not a
+// sum: a batch is built more than once); the solver's nanoseconds and
+// resource units; the cross-check's nanoseconds and runs.
+
+#include <pthread.h>
+
+enum { DEF_FIELDS = 13, DEF_CAP = 8192 };
+typedef struct {
+  char *name;
+  int64_t v[DEF_FIELDS];
+} DefTimes;
+static DefTimes def_times[DEF_CAP];
+static int def_count;
+static pthread_mutex_t def_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// The time in nanoseconds (never 0), or 0 when timing is off.
+int64_t timings_clock(void) {
+  if (timings_enabled() <= 0) return 0;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec + 1;
+}
+
+int32_t timings_def_add(const char *name, int32_t field, int64_t amount) {
+  if (timings_enabled() <= 0 || field < 0 || field >= DEF_FIELDS) return 0;
+  uint64_t h = 1469598103934665603ULL;
+  for (const char *c = name; *c; c++) h = (h ^ (unsigned char)*c) * 1099511628211ULL;
+  pthread_mutex_lock(&def_lock);
+  size_t i = (size_t)(h % DEF_CAP);
+  while (def_times[i].name && strcmp(def_times[i].name, name) != 0) i = (i + 1) % DEF_CAP;
+  if (!def_times[i].name) {
+    if (2 * (def_count + 1) > DEF_CAP) {
+      pthread_mutex_unlock(&def_lock);
+      return 0;
+    }
+    def_times[i].name = strdup(name);
+    def_count++;
+  }
+  int64_t *v = &def_times[i].v[field];
+  if (field >= 6 && field <= 8) {
+    if (amount > *v) *v = amount;
+  } else {
+    *v += amount;
+  }
+  pthread_mutex_unlock(&def_lock);
+  return 0;
+}
+
+static int64_t def_build(const DefTimes *d) { return d->v[1] + d->v[2] + d->v[3] + d->v[4]; }
+static int64_t def_total(const DefTimes *d) { return d->v[0] + def_build(d) + d->v[9] + d->v[11]; }
+
+// The definitions, the largest (symbolic run + batch builds + solver +
+// cross-check) first: STRATA_TIMINGS_DEFS of them (default 25), then the
+// sum over all.
+static void defs_report(void) {
+  if (def_count == 0) return;
+  DefTimes *order[DEF_CAP];
+  int n = 0;
+  for (int i = 0; i < DEF_CAP; i++)
+    if (def_times[i].name) order[n++] = &def_times[i];
+  for (int i = 1; i < n; i++)
+    for (int j = i; j > 0 && def_total(order[j]) > def_total(order[j - 1]); j--) {
+      DefTimes *t = order[j];
+      order[j] = order[j - 1];
+      order[j - 1] = t;
+    }
+  const char *e = getenv("STRATA_TIMINGS_DEFS");
+  int top = e && *e ? atoi(e) : 25;
+  double ms = 1e6;
+  fprintf(stderr, "\nper definition (ms; all = symbolic + build + z3 + cross; build = cone + pieces + shared + headed over its B batch builds;\n"
+                  "KB, KB': its batch before and after sharing; obs: obligations; units: the solver's resource units; runs: cross-check runs):\n");
+  fprintf(stderr, "%8s %8s %8s %8s %8s %7s %7s %2s %7s %7s %4s %8s %9s %8s %6s  %s\n", "all", "symbolic", "build", "cone", "pieces", "shared", "headed", "B", "KB", "KB'", "obs", "z3", "units", "cross", "runs", "definition");
+  DefTimes sum = {0};
+  for (int i = 0; i < n; i++) {
+    DefTimes *d = order[i];
+    for (int f = 0; f < DEF_FIELDS; f++) sum.v[f] += d->v[f];
+    if (i < top)
+      fprintf(stderr, "%8.0f %8.0f %8.0f %8.0f %8.0f %7.0f %7.0f %2lld %7.0f %7.0f %4lld %8.0f %9lld %8.0f %6lld  %s\n",
+              def_total(d) / ms, d->v[0] / ms, def_build(d) / ms, d->v[1] / ms, d->v[2] / ms, d->v[3] / ms, d->v[4] / ms,
+              (long long)d->v[5], d->v[6] / 1024.0, d->v[7] / 1024.0, (long long)d->v[8], d->v[9] / ms,
+              (long long)d->v[10], d->v[11] / ms, (long long)d->v[12], d->name);
+  }
+  if (n > top) fprintf(stderr, "(%d more)\n", n - top);
+  fprintf(stderr, "%8.0f %8.0f %8.0f %8.0f %8.0f %7.0f %7.0f %2lld %7.0f %7.0f %4lld %8.0f %9lld %8.0f %6lld  (sum of %d)\n",
+          def_total(&sum) / ms, sum.v[0] / ms, def_build(&sum) / ms, sum.v[1] / ms, sum.v[2] / ms, sum.v[3] / ms, sum.v[4] / ms,
+          (long long)sum.v[5], sum.v[6] / 1024.0, sum.v[7] / 1024.0, (long long)sum.v[8], sum.v[9] / ms,
+          (long long)sum.v[10], sum.v[11] / ms, (long long)sum.v[12], n);
+}
+
 // The phases' times on stderr, the largest own time first (nothing when
 // they weren't timed).
 int32_t timings_report(void) {
@@ -228,6 +322,7 @@ int32_t timings_report(void) {
   }
   fprintf(stderr, "             %8.3f %8s %7s  (the rest)\n", wall - timed, "", "");
   fprintf(stderr, "             %8.3f %8s %7s  in all\n", wall, "", "");
+  defs_report();
   return 0;
 }
 
@@ -250,10 +345,10 @@ int64_t text_hash(const char *s) {
   return (int64_t)(h >> 4);
 }
 
-// While `on`, objects made before then that are shared while tasks run are
-// kept for good (core.rt's strata_memory_keep_shared): the compiler's
-// workers all read the same tables, whose counts would otherwise change
-// atomically from every core. What the workers make is counted as usual.
+// While `on`, what crosses to a task and is held more than once is frozen
+// instead of copied (core.rt's strata_memory_keep_shared): the compiler's
+// workers all read the same tables, which copying for each would cost more
+// than the work. What the workers make is counted as usual.
 void strata_memory_keep_shared(_Bool on);
 int32_t driver_keep_shared(int32_t on) {
   strata_memory_keep_shared(on != 0);

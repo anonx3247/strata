@@ -1,0 +1,49 @@
+Why  (1/5)
+──────────
+
+A pending order can be cancelled.
+
+Intuition  (2/5)
+────────────────
+
+cancel  (strata refs cancel)
+  uses       Order
+  used by    nothing in the package
+
+Code  (3/5)
+───────────
+
++ cancel  (added)
+  + /// A pending order cancelled, for `reason`; any other order as it was.
+  + fn cancel(o: Order, reason: NonEmptyString) -> Order
+    ▸ … body: 5 lines
+
+ship
+    /// Works with any `Db`: pass the real one in production, a fake in tests.
+    fn ship(
+      mut db: Db,
+      id: OrderId,
+      tracking: NonEmptyString,
+    ) -> Result[Order, ShipError] where match it {
+      Ok(o) => o is Shipped,
+      Err(_) => true,
+    }
+    ▸ … body: 11 lines
+
+The body  (4/5)
+───────────────
+
++ cancel  (added)
+  + fn cancel(o: Order, reason: NonEmptyString) -> Order {
+  +   match o {
+  +     Pending { id, .. } => Cancelled { id, reason },
+  +     _ => o,
+  +   }
+  + }
+
+Not in the tour  (5/5)
+──────────────────────
+
+Every changed definition is on a page of the tour.
+
+--- exit 0

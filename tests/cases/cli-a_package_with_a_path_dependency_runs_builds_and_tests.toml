@@ -26,7 +26,7 @@ write = "app/strata.toml"
 text = "name = \"app\"\n[deps]\njson = { path = \"../json\" }\n"
 
 [[step]]
-strata = ["--file", "app/", "edit", "main"]
+strata = ["--file", "app/", "edit", "main", "--as-given"]
 text = '''
 from json use parse
 use json.text

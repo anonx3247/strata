@@ -1,0 +1,77 @@
+# `strata run --live`: while the program runs, an edit of its file that
+# checks and verifies is swapped in (new calls run the new code); one that
+# doesn't check, changes a signature or a type, or has a counterexample is
+# refused with a note, and the program goes on with the code it had. The
+# program (a server-like loop) prints `message()` each time it changes.
+# drive.sh makes each edit once the run has said what it did with the last.
+[[step]]
+save = "srv.strata"
+from = "srv.st"
+
+[[step]]
+write = "drive.sh"
+from = "drive.sh"
+
+[[step]]
+write = "world.st"
+from = "world.st"
+
+[[step]]
+write = "unknown.st"
+from = "unknown.st"
+
+[[step]]
+write = "helper.st"
+from = "helper.st"
+
+[[step]]
+write = "louder.st"
+from = "louder.st"
+
+[[step]]
+write = "signature.st"
+from = "signature.st"
+
+[[step]]
+write = "type.st"
+from = "type.st"
+
+[[step]]
+write = "restored.st"
+from = "restored.st"
+
+[[step]]
+write = "counterexample.st"
+from = "counterexample.st"
+
+[[step]]
+write = "stop.st"
+from = "stop.st"
+
+[[step]]
+run = ["sh", "drive.sh", "$STRATA"]
+env = { STRATA_CACHE = "$TMP/cache" }
+out = '''
+exit 0
+hello
+world
+again!
+again!!
+back!
+stop
+note: live edits: when the program's files change, and they check and verify, the changed functions are swapped in
+note: live edit 1: `message` swapped in (verified 2 changed: 2 proven, 0 fuzzed), N ms after the change
+note: live edit 2 refused: it doesn't check:
+  error in message: unknown variable `greeting`
+note: the program goes on with its code as it was
+note: live edit 3: `message` swapped in (verified 3 changed: 3 proven, 0 fuzzed), N ms after the change
+note: live edit 4: `shout` swapped in (verified 3 changed: 3 proven, 0 fuzzed), N ms after the change
+note: live edit 5 refused: the signature of `shout` changed, and its callers in the running program were compiled for the old one: run the program again for it
+note: the program goes on with its code as it was
+note: live edit 6 refused: `Greeting` changed, and the running program holds values made with the old one: run the program again for it
+note: the program goes on with its code as it was
+note: live edit 7: `message`, `shout` swapped in (verified 2 changed: 2 proven, 0 fuzzed), N ms after the change
+note: live edit 8 refused: verify found a counterexample: verified 3 changed: 1 proven, 0 fuzzed, 2 with a counterexample (`message`, `doubled`: see `strata verify`)
+note: the program goes on with its code as it was
+note: live edit 9: `message` swapped in (verified 2 changed: 2 proven, 0 fuzzed), N ms after the change
+'''

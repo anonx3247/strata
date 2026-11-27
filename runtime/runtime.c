@@ -58,13 +58,14 @@ static int64_t allocated, freed;
 static pthread_mutex_t made_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-// While a task runs (`spawn`), threads may hold the same objects. With
-// core.rt, only objects marked shared between threads (its `shared_bit`:
-// what crossed to another thread, and what that reaches) count atomically;
-// with this file's own counting, every object does. Either way a count of
-// 1 means only this thread can see the object. Set before the first task's
-// thread starts and cleared after the last one is joined, so it never
-// changes while another thread reads it.
+// While a task runs (`spawn`), each thread allocates from its own free
+// lists. No object is counted by two threads: what crosses to a task (its
+// captures, what is sent on a channel, a result awaited after its handle
+// crossed) is moved when held once, else copied, or frozen (never counted
+// again) while the program asks for that (core.rt's `strata_cross_block`,
+// `strata_memory_keep_shared`). So counts are plain. Set before the first
+// task's thread starts and cleared after the last one is joined, so it
+// never changes while another thread reads it.
 static int threaded;
 static int live_tasks;
 #define THREADED __atomic_load_n(&threaded, __ATOMIC_RELAXED)
@@ -76,51 +77,31 @@ static _Bool checking;
 #define FREED INT64_MIN
 
 // Whether counts must go through `strata_dup` / `strata_release`: in check
-// mode, and while tasks run when every object counts atomically
-// (`all_atomic`; with this file's own counting, always while tasks run).
-// The compiled code reads it and otherwise updates counts itself
-// (`strata.dup`, `strata.release` in the IR), sending only objects marked
-// shared to the runtime.
+// mode. The compiled code reads it and otherwise updates counts itself
+// (`strata.dup`, `strata.release` in the IR).
 int32_t strata_slow_counts = 0;
 
-// Whether every object counts atomically while tasks run, shared or not
-// (core.rt's `strata_memory_all_atomic`): a task was started by code that
-// doesn't mark what it captures (`strata_spawn`), or a value of a type the
-// compiled code can't walk crossed to another thread
-// (`strata_share_unknown`). Cleared when the last task ends.
-static int all_atomic;
-
 void strata_memory_threaded(_Bool on);
-void strata_memory_all_atomic(_Bool on);
 
 static void set_threaded(int v) {
-  if (!v) __atomic_store_n(&all_atomic, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&threaded, v, __ATOMIC_RELAXED);
+  __atomic_store_n(&strata_slow_counts, checking, __ATOMIC_RELAXED);
 #ifdef STRATA_CORE_RT
-  __atomic_store_n(&strata_slow_counts, checking || (v && __atomic_load_n(&all_atomic, __ATOMIC_RELAXED)), __ATOMIC_RELAXED);
   strata_memory_threaded(v);
-#else
-  __atomic_store_n(&strata_slow_counts, v || checking, __ATOMIC_RELAXED);
 #endif
 }
 
-// A value crossed to another thread unmarked: every object counts
-// atomically until the last task ends (`all_atomic`).
-void strata_share_unknown(void) {
-  __atomic_store_n(&all_atomic, 1, __ATOMIC_RELAXED);
-#ifdef STRATA_CORE_RT
-  strata_memory_all_atomic(1);
-  if (THREADED) __atomic_store_n(&strata_slow_counts, 1, __ATOMIC_RELAXED);
-#endif
-}
+// For code from a compiler that marked what crosses to a task shared, at a
+// type it couldn't walk: never reached by the compiler's own code, which
+// walks every type. Nothing to do.
+void strata_share_unknown(void) {}
 
 // The count word of an object.
 static int64_t *count_of(void *p) { return (int64_t *)p - 1; }
 
-// The bit of a count word saying the object is shared between threads
-// (core.rt's `shared_bit`): the sign bit. A live object's count word is
-// positive unless it is shared; a freed one in check mode is this bit alone.
-#define SHARED INT64_MIN
+// A frozen object's count word (core.rt's `frozen_mark`): reached by more
+// than one thread, never counted again.
+#define FROZEN (INT64_MIN | ((int64_t)1 << 40))
 
 // A raw block (core.mem's `raw_alloc`): not counted, not cleared; out of
 // memory ends the program, as for any allocation.
@@ -250,8 +231,9 @@ void *strata_alloc(int64_t n) {
   }
   *c = 1;
   int th = THREADED;
-  if (th) __atomic_fetch_add(&allocated, 1, __ATOMIC_RELAXED);
-  else allocated++;
+  if (th) pthread_mutex_lock(&made_lock);
+  allocated++;
+  if (th) pthread_mutex_unlock(&made_lock);
   if (checking) {
     if (th) pthread_mutex_lock(&made_lock);
     if (nmade == capmade) made = realloc(made, (size_t)(capmade = capmade ? capmade * 2 : 1024) * sizeof *made);
@@ -264,33 +246,24 @@ void *strata_alloc(int64_t n) {
 // One more holder of `p`.
 void strata_dup(void *p) {
   int64_t *c = count_of(p);
-  if (THREADED) {
-    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
-    if (v == FREED) freed_again("dup");
-    else if (v) __atomic_fetch_add(c, 1, __ATOMIC_RELAXED);
-    return;
-  }
   if (*c == FREED) freed_again("dup");
-  else if (*c) ++*c;
+  else if (*c > 0) ++*c;
 }
 
 // One holder fewer: whether that was the last one, in which case the caller
 // drops what the object holds and frees it.
 _Bool strata_release(void *p) {
   int64_t *c = count_of(p);
-  if (THREADED) {
-    int64_t v = __atomic_load_n(c, __ATOMIC_RELAXED);
-    if (v == FREED) freed_again("drop");
-    return v && (__atomic_sub_fetch(c, 1, __ATOMIC_ACQ_REL) & ~SHARED) == 0;
-  }
   if (*c == FREED) freed_again("drop");
-  return *c && (--*c & ~SHARED) == 0;
+  return *c > 0 && --*c == 0;
 }
 
 // Frees an object whose contents are already dropped.
 void strata_free(void *p) {
-  if (THREADED) __atomic_fetch_add(&freed, 1, __ATOMIC_RELAXED);
-  else freed++;
+  int th = THREADED;
+  if (th) pthread_mutex_lock(&made_lock);
+  freed++;
+  if (th) pthread_mutex_unlock(&made_lock);
   int64_t *c = count_of(p);
   if (in_region(c)) {
     small_free(c);
@@ -304,14 +277,8 @@ void strata_free(void *p) {
   free(c);
 }
 
-// Whether `p` has a single holder, so it may be changed in place (its
-// shared bit cleared: this thread is the one holder).
-_Bool strata_unique(void *p) {
-  int64_t v = __atomic_load_n(count_of(p), __ATOMIC_ACQUIRE);
-  if ((v & ~SHARED) != 1) return 0;
-  if (v & SHARED) *count_of(p) = 1;
-  return 1;
-}
+// Whether `p` has a single holder, so it may be changed in place.
+_Bool strata_unique(void *p) { return *count_of(p) == 1; }
 
 // `strata_dup` / `strata_release` of `p` whose count word the compiled code
 // read already (core.rt's take it, to read it once).
@@ -325,11 +292,12 @@ _Bool strata_release_word(void *p, int64_t v) {
   return strata_release(p);
 }
 
-// Marks `p` shared between threads: whether it wasn't yet.
+// Freezes `p` (code from a compiler that marked crossings shared): whether
+// it wasn't frozen or a constant yet.
 _Bool strata_share(void *p) {
-  int64_t v = __atomic_load_n(count_of(p), __ATOMIC_RELAXED);
-  if (v == 0 || (v & SHARED)) return 0;
-  __atomic_fetch_add(count_of(p), SHARED, __ATOMIC_RELAXED);
+  int64_t v = *count_of(p);
+  if (v == 0 || v == FROZEN) return 0;
+  *count_of(p) = FROZEN;
   return 1;
 }
 #else
@@ -346,24 +314,6 @@ int64_t *strata_memory_made(int64_t i);
 void strata_memory_start(_Bool check);
 void strata_memory_threaded(_Bool on);
 void strata_memory_thread_end(void);
-void strata_region_thread_end(void);
-int64_t *strata_region_state(void);
-
-// A task's thread ends: the counts its statement regions still hold (a
-// cancelled task leaves its functions without resetting their regions) are
-// dropped. Word 3 of the region state is the release list; each record
-// holds the record before it, the value and the function that drops it
-// (core.rt's `strata_region_state`).
-#ifdef STRATA_CORE_RT
-static void region_drain(void) {
-  int64_t *st = strata_region_state();
-  while (st[3] != 0) {
-    int64_t *r = (int64_t *)st[3];
-    st[3] = r[0];
-    ((void (*)(void *))r[2])((void *)r[1]);
-  }
-}
-#endif
 void strata_memory_spawning(void);
 #endif
 
@@ -1000,10 +950,22 @@ typedef struct Channel {
   int64_t *items;            // a ring of slots
   int64_t head, len, size;
   int64_t senders;           // copies of the sender not closed yet: one per task holding it
+  int64_t ends;              // its ends (`End`) not dropped yet, on every thread
   int64_t sent, taken;       // values sent and received so far
   int64_t waiting;           // receivers waiting (an unbuffered send in a `select` can go)
   void (*drop)(int64_t);     // drops a value left in it (NULL: nothing to drop)
 } Channel;
+
+// A channel's end, as the compiled code holds it (a `Sender` or a
+// `Receiver`): a counted object of its thread pointing at the channel. An
+// end crossing to another thread is a new end (`strata_channel_cross`),
+// so no two threads count one; the channel counts its ends under
+// `chan_lock`.
+typedef struct {
+  Channel *c;
+} End;
+
+static Channel *chan_of(void *e) { return ((End *)e)->c; }
 
 // The senders this thread holds a copy of and hasn't closed: the channels
 // it made, or a task's shares (`strata_spawn`).
@@ -1131,7 +1093,7 @@ typedef struct Task {
   char *origin;               // the call stack where it was spawned
   Run *run_of;                // the run it belongs to
   Waiter w;                   // its place in that run's list
-  _Bool shared;               // its handle crossed to another thread: an `await` marks the result shared
+  _Bool shared;               // its handle crossed to another thread: each `await` copies the result
   struct Task *next;
 } Task;
 
@@ -1400,11 +1362,8 @@ static void *task_main(void *arg) {
   forget_reader();
   free_alt_stack();
 #ifdef STRATA_CORE_RT
-  // this thread's free lists and tallies back to the shared ones, and its
-  // statement regions' chunks to the free chunks
-  region_drain();
+  // this thread's free lists and tallies back to the shared ones
   strata_memory_thread_end();
-  strata_region_thread_end();
 #endif
   return NULL;
 }
@@ -1420,17 +1379,10 @@ void *strata_scope_begin(void) {
 // A task of the innermost scope open on this thread: the checker allows a
 // `spawn` only inside a `scope` (a lambda's included, as a comprehension's
 // body, which runs there).
-// `strata_spawn_shared` for code that doesn't mark what a task captures:
-// every object counts atomically until the last task ends.
-void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares);
-void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
-  strata_share_unknown();
-  return strata_spawn_shared(clo, run, drop, fail, shares, nshares);
-}
-
-// The compiled code marked the closure shared between threads (and what it
-// captures) before this call.
-void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), Channel **shares, int64_t nshares) {
+// The closure `clo` is the task's alone: the compiled code moved or copied
+// what it captures (its `cross:T` helpers) before this call. `shares` are
+// the sender ends it captured.
+void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
   TaskScope *s = open_scopes;
   if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
   Task *t = calloc(1, sizeof *t);
@@ -1469,9 +1421,9 @@ void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(v
     t->shares = malloc((size_t)nshares * sizeof *shares);
     pthread_mutex_lock(&chan_lock);
     for (int64_t i = 0; i < nshares; i++)
-      if (holds_sender(shares[i])) {
-        shares[i]->senders++;
-        t->shares[t->nshares++] = shares[i];
+      if (holds_sender(shares[i]->c)) {
+        shares[i]->c->senders++;
+        t->shares[t->nshares++] = shares[i]->c;
       }
     pthread_mutex_unlock(&chan_lock);
   }
@@ -1513,6 +1465,30 @@ void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(v
   if (s->last) s->last->next = t;
   else s->first = t;
   s->last = t;
+  return t;
+}
+
+// For code from a compiler that marked what crosses to a task shared (a
+// bootstrap's first stage, built by such a seed): its marks froze it
+// (`strata_share`), so the task starts as any.
+void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
+  return strata_task_start(clo, run, drop, fail, shares, nshares);
+}
+
+static void join(Task *t);
+
+// For code from a compiler that neither copies nor marks what crosses to a
+// task (a bootstrap's first stage, built by a release from before tasks
+// counted their own objects): the task runs to its end before this
+// returns, so no two threads ever run such code at once. Slower, and a
+// task waiting for its parent would wait forever; the compiler's own tasks
+// never do.
+void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
+  Task *t = strata_task_start(clo, run, drop, fail, shares, nshares);
+  pthread_mutex_lock(&chan_lock);
+  while (!t->done) WAIT("a task of older code");
+  pthread_mutex_unlock(&chan_lock);
+  join(t);
   return t;
 }
 
@@ -1571,11 +1547,11 @@ void strata_scope_end(TaskScope *s) {
   release_scope(s);
 }
 
-// The handle of `t` crosses to another thread (captured, sent): from now
-// on each `await` of it marks the result shared (`strata_task_shared`), as
-// more than one thread may hold it. The result, when some `await` may
-// already hold it (`t` joined, with a result), for the caller to mark now;
-// else NULL.
+// The handle of `t` crosses to another thread (sent on a channel): from now
+// on each `await` of it copies the result (`strata_task_shared`), as more
+// than one thread may await it. The result, when some `await` may already
+// hold it (`t` joined, with a result), for the caller to replace with its
+// own copy now, under `strata_results_lock`; else NULL.
 void *strata_task_share(Task *t) {
   pthread_mutex_lock(&chan_lock);
   t->shared = 1;
@@ -1592,10 +1568,10 @@ _Bool strata_task_shared(Task *t) {
   return r;
 }
 
-// Held while a task's result is marked shared: more than one thread may
-// await the same task, and two marking one object at once would set its
-// bit twice. Recursive: a result may hold a handle whose result is marked
-// in turn.
+// Held while a task's result is copied for an `await` after its handle
+// crossed: more than one thread may await the same task, and one may be
+// replacing the result (`strata_task_share`) while another copies it.
+// Recursive: a result may hold a handle whose result is copied in turn.
 static pthread_mutex_t results_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
 void strata_results_lock(void) { pthread_mutex_lock(&results_lock); }
 void strata_results_unlock(void) { pthread_mutex_unlock(&results_lock); }
@@ -1646,30 +1622,61 @@ static int64_t pop_item(Channel *c) {
   return v;
 }
 
-// A new channel, held twice (its sender and its receiver), and a copy of
-// its sender for this thread.
-Channel *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
+// A new channel: its one end, held twice (its sender and its receiver),
+// and a copy of its sender for this thread.
+End *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
   if (cap < 0 && soft_fault(4, str_c("a channel's buffer can't be negative"))) return NULL;
-  Channel *c = strata_alloc(sizeof(Channel));
-  memset(c, 0, sizeof *c);
-  *count_of(c) += 1;  // (keeping what else the count word holds: an arena's tag, an epoch)
+  Channel *c = calloc(1, sizeof(Channel));
+  if (!c) strata_fault(6, str_c("out of memory"));
   c->cap = cap;
   c->drop = drop;
   c->senders = 1;
+  c->ends = 1;
   hold_sender(c);
-  return c;
+  End *e = strata_alloc(sizeof(End));
+  e->c = c;
+  strata_dup(e);
+  return e;
 }
 
-// One end fewer: the last drops what is still in it.
-void strata_channel_drop(Channel *c) {
-  if (!strata_release(c)) return;
+// One holder of end `e` fewer. The last frees it; the channel's last end
+// drops what is still in it.
+void strata_channel_drop(End *e) {
+  if (!strata_release(e)) return;
+  Channel *c = e->c;
+  strata_free(e);
+  pthread_mutex_lock(&chan_lock);
+  _Bool last = --c->ends == 0;
+  pthread_mutex_unlock(&chan_lock);
+  if (!last) return;
   if (c->drop)
     for (int64_t i = 0; i < c->len; i++) c->drop(c->items[(c->head + i) % c->size]);
   free(c->items);
-  strata_free(c);
+  free(c);
 }
 
-void strata_channel_send(Channel *c, int64_t v) {
+// End `e` crossing to another thread (core.rt's `strata_cross_block` for
+// the other blocks): `e` itself when it isn't counted or, with `own`, is
+// held once (it moves); `e` frozen while freezing what crosses (the
+// channel then never ends); else a new end of the same channel, held once,
+// and `e` loses the caller's holder when `own`.
+void *strata_cross_flat(void *p, _Bool own);
+void *strata_heap_alloc(int64_t n);
+_Bool strata_freezing(void);
+End *strata_channel_cross(End *e, _Bool own) {
+  int64_t v = *count_of(e);
+  if (v <= 0 || (own && v == 1) || strata_freezing()) return strata_cross_flat(e, own);
+  End *n = strata_heap_alloc(sizeof(End));
+  n->c = e->c;
+  pthread_mutex_lock(&chan_lock);
+  n->c->ends++;
+  pthread_mutex_unlock(&chan_lock);
+  if (own) *count_of(e) = v - 1;
+  return n;
+}
+
+void strata_channel_send(End *e, int64_t v) {
+  Channel *c = e->c;
   pthread_mutex_lock(&chan_lock);
   if (c->senders == 0) {
     pthread_mutex_unlock(&chan_lock);
@@ -1693,7 +1700,8 @@ void strata_channel_send(Channel *c, int64_t v) {
 }
 
 // The next value (into `out`), or 0 once the channel has ended and is empty.
-_Bool strata_channel_recv(Channel *c, int64_t *out) {
+_Bool strata_channel_recv(End *e, int64_t *out) {
+  Channel *c = e->c;
   pthread_mutex_lock(&chan_lock);
   c->waiting++;
   wake_all();
@@ -1707,7 +1715,8 @@ _Bool strata_channel_recv(Channel *c, int64_t *out) {
   return got;
 }
 
-void strata_channel_close(Channel *c) {
+void strata_channel_close(End *e) {
+  Channel *c = e->c;
   if (!unhold_sender(c)) {
     soft_fault(4, str_c("`close` of a sender this task doesn't hold, or has closed already"));
     return;
@@ -1825,13 +1834,12 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
   pthread_mutex_lock(&chan_lock);
   if (strata_cancelled()) goto give_up;
   for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 1 && ((Channel *)ops[i].target)->senders == 0) {
+    if (ops[i].kind == 1 && chan_of(ops[i].target)->senders == 0) {
       pthread_mutex_unlock(&chan_lock);
       soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
       // (contained: nothing happened, as for a cancelled `select`)
       for (int64_t k = 0; k < n; k++) {
-        Channel *c = ops[k].target;
-        if (ops[k].kind == 1 && c->drop) c->drop(ops[k].slot);
+        if (ops[k].kind == 1 && chan_of(ops[k].target)->drop) chan_of(ops[k].target)->drop(ops[k].slot);
       }
       return -1;
     }
@@ -1846,7 +1854,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
     if (ops[i].kind == 4) other_clocks = 1;
   }
   for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting++;
+    if (ops[i].kind == 0) chan_of(ops[i].target)->waiting++;
   wake_all();
   int64_t chosen = -1;
   while (chosen < 0) {
@@ -1854,7 +1862,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
       int64_t i = (start + k) % n;
       SelectOp *op = &ops[i];
       if (op->kind == 0) {
-        Channel *c = op->target;
+        Channel *c = chan_of(op->target);
         if (c->len > 0) {
           op->slot = pop_item(c);
           op->ok = 1;
@@ -1864,7 +1872,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
           chosen = i;
         }
       } else if (op->kind == 1) {
-        Channel *c = op->target;
+        Channel *c = chan_of(op->target);
         if ((c->cap > 0 && c->len < c->cap) || (c->cap == 0 && c->waiting > c->len)) {
           push_item(c, op->slot);
           chosen = i;
@@ -1910,7 +1918,7 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
     }
   }
   for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 0) ((Channel *)ops[i].target)->waiting--;
+    if (ops[i].kind == 0) chan_of(ops[i].target)->waiting--;
   wake_all();
   if (chosen >= 0 || chosen == -2) {
     pthread_mutex_unlock(&chan_lock);
@@ -1920,8 +1928,7 @@ give_up:
   // cancelled while it waited: nothing happened; the values its sends held are dropped
   pthread_mutex_unlock(&chan_lock);
   for (int64_t i = 0; i < n; i++) {
-    Channel *c = ops[i].target;
-    if (ops[i].kind == 1 && c->drop) c->drop(ops[i].slot);
+    if (ops[i].kind == 1 && chan_of(ops[i].target)->drop) chan_of(ops[i].target)->drop(ops[i].slot);
   }
   return -1;
 }
@@ -2036,7 +2043,7 @@ void strata_int_drop(int64_t v) {
   if (is_big(v) && strata_release(big_at(v))) strata_free(big_at(v));
 }
 
-// A big integer marked shared between threads.
+// A big integer frozen (code from a compiler that marked crossings shared).
 void strata_int_share(int64_t v) {
   if (is_big(v)) strata_share(big_at(v));
 }
@@ -2886,7 +2893,7 @@ List *strata_list_push(List *xs, int64_t x, int64_t counted) {
   Buf *b = xs->buf;
   int64_t end = xs->off + xs->len;
   List *l = strata_alloc(sizeof(List));
-  if (end == b->used && end < b->cap && !(*count_of(b) & SHARED)) {
+  if (end == b->used && end < b->cap && *count_of(b) != FROZEN) {
     // nothing else has used the slot after this list's end
     b->data[end] = x;
     b->used++;
@@ -3557,7 +3564,10 @@ static void copies_report(void) {
 }
 
 // How many hold object `p` (its count word's count bits; 0 for a constant).
-static int64_t copies_held(void *p) { return __atomic_load_n((int64_t *)p - 1, __ATOMIC_ACQUIRE) & ((INT64_C(1) << 40) - 1); }
+static int64_t copies_held(void *p) {
+  int64_t v = *((int64_t *)p - 1);
+  return v > 0 ? v & ((INT64_C(1) << 48) - 1) : 0;
+}
 
 static void copies_note(int64_t kind, int64_t items, int64_t bytes, int64_t held, Str *what, Str *site, Str *why) {
   pthread_mutex_lock(&copies_lock);
@@ -3734,6 +3744,78 @@ static void roots_report(void) {
   fputc('\n', stderr);
 }
 
+// With STRATA_MEMORY_LIVE (core.rt's `strata_live_start`): the tables of
+// the heap's live objects by site, and the counts at their peak.
+static int64_t *live_tables;
+int64_t *strata_live_start(int64_t nsites);
+
+static int64_t *live_peak;
+static int live_by_bytes(const void *a, const void *b) {
+  int64_t x = live_peak[2 * *(const int64_t *)a + 1], y = live_peak[2 * *(const int64_t *)b + 1];
+  if (x != y) return x < y ? 1 : -1;
+  return *(const int64_t *)a < *(const int64_t *)b ? -1 : 1;
+}
+
+// The heap's live objects at their peak (bytes with count words, a small
+// object by its size class), by the site that made them: the 25 holding
+// the most, on stderr; with STRATA_MEMORY_LIVE=PATH (not `1`), every site
+// to PATH, most bytes first: objects and bytes at the peak, then at the
+// end, then the site's table line.
+// Objects made inside the runtime's functions are their caller's site's.
+// Statement regions and arenas are not counted.
+static void live_report(void) {
+  if (!live_tables) return;
+  int64_t n = live_tables[0];
+  live_peak = (int64_t *)live_tables[3];
+  int64_t *order = malloc((size_t)(n + 1) * sizeof(int64_t));
+  for (int64_t i = 0; i <= n; i++) order[i] = i;
+  qsort(order, (size_t)(n + 1), sizeof(int64_t), live_by_bytes);
+  fprintf(stderr, "live at the peak: %lld objects, %.1f MB (copied %lld times); now %lld objects, %.1f MB\n",
+          (long long)live_tables[11], (double)live_tables[5] / 1048576.0, (long long)live_tables[9],
+          (long long)live_tables[10], (double)live_tables[4] / 1048576.0);
+  char kind[64], fn[256], code[256];
+  for (int64_t j = 0, shown = 0; j <= n && shown < 25; j++) {
+    int64_t i = order[j];
+    if (live_peak[2 * i + 1] <= 0) break;
+    shown++;
+    fprintf(stderr, "  %8.1f MB %10lld  ", (double)live_peak[2 * i + 1] / 1048576.0, (long long)live_peak[2 * i]);
+    if (i == n) {
+      fprintf(stderr, "(no site: made before the first, or by code without sites)\n");
+      continue;
+    }
+    site_field(i, 0, kind, sizeof kind);
+    site_field(i, 1, fn, sizeof fn);
+    site_field(i, 3, code, sizeof code);
+    fprintf(stderr, "%-8s %s  %s\n", kind, fn, code);
+  }
+  const char *path = getenv("STRATA_MEMORY_LIVE");
+  if (path && strcmp(path, "1")) {
+    FILE *out = fopen(path, "w");
+    if (out) {
+      int64_t *end = (int64_t *)live_tables[2];
+      fputs("objects\tbytes\tobjects_at_end\tbytes_at_end\tkind\tfunction\tlocation\tcode\troot\n", out);
+      for (int64_t j = 0; j <= n; j++) {
+        int64_t i = order[j];
+        if (live_peak[2 * i] == 0 && live_peak[2 * i + 1] == 0) continue;
+        if (i == n) {
+          fprintf(out, "%lld\t%lld\t%lld\t%lld\tnone\t\t\t\t\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1],
+                  (long long)end[2 * i], (long long)end[2 * i + 1]);
+          continue;
+        }
+        const char *s = site_lines[i];
+        size_t m = 0;
+        while (s[m] && s[m] != '\n') m++;
+        fprintf(out, "%lld\t%lld\t%lld\t%lld\t%.*s\n", (long long)live_peak[2 * i], (long long)live_peak[2 * i + 1],
+                (long long)end[2 * i], (long long)end[2 * i + 1], (int)m, s);
+      }
+      fclose(out);
+    } else {
+      fprintf(stderr, "memory live: can't write %s\n", path);
+    }
+  }
+  free(order);
+}
+
 static void sites_report(void) {
   int64_t total[SITE_KINDS] = {0}, second[SITE_KINDS] = {0}, reached[SITE_KINDS] = {0}, sites[SITE_KINDS] = {0};
   int64_t *order = malloc((size_t)(site_n ? site_n : 1) * sizeof(int64_t));
@@ -3803,6 +3885,7 @@ static void sites_report(void) {
     fprintf(stderr, "memory sites: can't write %s\n", path);
   }
   roots_report();
+  live_report();
   fflush(stderr);
 }
 
@@ -3823,6 +3906,9 @@ void strata_sites_start(const char *text) {
     if (*s) s++;
   }
   strata_site_counts = calloc((size_t)(2 * site_n + 2), sizeof(int64_t));
+#ifdef STRATA_CORE_RT
+  if (getenv("STRATA_MEMORY_LIVE") && !checking) live_tables = strata_live_start(site_n);
+#endif
   atexit(sites_report);
 }
 
@@ -4816,6 +4902,26 @@ Str *strata_str_chr(int64_t c) {
   return str_from(b, utf8_put((int32_t)c, b));
 }
 #endif
+
+// The byte offset of the first `p` in `s` at or after `from`, or -1: the
+// prelude's `str_find_from`, which codegen calls this for. memchr finds each
+// place `p`'s first byte is, memcmp compares the rest there.
+int64_t strata_str_find(Str *s, Str *p, int64_t from) {
+  int64_t n = s->len, m = p->len;
+  if (from < 0) from = 0;
+  if (from > n - m) return -1;
+  if (m == 0) return from;
+  const char *b = s->bytes, *end = s->bytes + (n - m) + 1;
+  const char *at = b + from;
+  char first = p->bytes[0];
+  while (at < end) {
+    at = memchr(at, first, (size_t)(end - at));
+    if (!at) return -1;
+    if (memcmp(at + 1, p->bytes + 1, (size_t)(m - 1)) == 0) return at - b;
+    at++;
+  }
+  return -1;
+}
 
 #ifndef STRATA_CORE_RT
 // `parse_int` of the trimmed string: a sign, then a digit, then digits and
