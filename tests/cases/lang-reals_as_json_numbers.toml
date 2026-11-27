@@ -1,0 +1,82 @@
+# A `Real` is written as a JSON (or TOML) number only when a reader of IEEE
+# doubles gets exactly it back (`Real.fits_double`): `0.1` and an exact
+# double are, `1/3`, more digits than a double holds and past its range are
+# errors with the field's path; reading stays exact. With `reals =
+# "proven"` under `[json]`, `derive Json` refuses a `Real` field at
+# compile time: only a `Float` is allowed.
+
+[[step]]
+strata = ["--file", "j.strata", "edit"]
+text = '''
+from std.json use Json, parse, stringify
+
+from std.toml use Toml
+
+type P = { x: Real }
+
+derive Json for P
+
+derive Toml for P
+
+fn show(x: Real) -> String {
+  match (P { x }).to_json() {
+    Ok(j) => stringify(j),
+    Err(e) => "Err: " + e,
+  }
+}
+
+fn main() {
+  print(show(0.1))
+  print(show(1.0 / 3.0))
+  print(show(Real.parse("1.00000000000000001") ?? 0.0))
+  print(show(Real.from(1 << 60)))
+  print(show(Real.from(1 << 53) + 0.5))
+  print(show(Real.parse("1e400") ?? 0.0))
+  print(show(2.5))
+  print(P.from_json(parse("{\"x\": 0.30000000000000000001}") !! std.json.Null))
+  print((P { x: 1.0 / 3.0 }).to_toml() is Ok)
+}
+'''
+
+[[step]]
+strata = ["--file", "j.strata", "run"]
+stdout = '''
+{"type":"P","x":0.1}
+Err: x: 1/3 can't be a JSON number exactly: it has no terminating decimal (round it first)
+Err: x: 1.00000000000000001 can't be a JSON number exactly: a double holds about 17 digits at its size, and this has more (round it first)
+{"type":"P","x":1152921504606846976.0}
+Err: x: 9007199254740992.5 can't be a JSON number exactly: a double holds about 17 digits at its size, and this has more (round it first)
+Err: x: 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0 can't be a JSON number exactly: it is past a double's range
+{"type":"P","x":2.5}
+Ok(P { x: 0.30000000000000000001 })
+false
+'''
+
+[[step]]
+write = "proven/strata.toml"
+text = "name = \"proven\"\n\n[json]\nreals = \"proven\"\n"
+
+[[step]]
+strata = ["--file", "./", "edit", "main"]
+dir = "proven"
+text = '''
+from std.json use Json
+
+type A = { price: Real }
+
+derive Json for A
+
+type B = { price: Float }
+
+derive Json for B
+
+fn main() {
+  print(B { price: 0.5 }.to_json() is Ok)
+}
+'''
+
+[[step]]
+strata = ["check"]
+dir = "proven"
+fails = true
+has = ["error in derive std.json.Json for A: deriving `to_json_at`: `Real` can't be JSON with `reals = \"proven\"` under `[json]`: only a `Float` is. Make the field a `Float`, converting with `to_float()` where the value is built"]

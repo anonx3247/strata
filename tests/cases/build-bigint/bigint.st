@@ -37,7 +37,8 @@ fn main() {
   print(min(big, 3))
   print(max(-big, -3))
   print(float(big))
-  print(floor(1000000000000000000000000000000.0))
+  let huge: Float = 1000000000000000000000000000000.0
+  print(floor(huge))
   print(parse_int("99999999999999999999999"))
   print(parse_int("-4611686018427387905"))
   n := 4611686018427387903

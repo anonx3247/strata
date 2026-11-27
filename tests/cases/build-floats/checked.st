@@ -17,9 +17,8 @@ fn main() {
     checked_round(2.5),
     checked_round(-0.5),
   ])
-  print(
-    [f"{0.125:.2}", f"{2.675:.2}", f"{-0.0:.1}", f"{999.9995:.3}"],
-  )
+  let fs: List[Float] = [0.125, 2.675, -0.0, 999.9995]
+  print([f"{fs[0]:.2}", f"{fs[1]:.2}", f"{fs[2]:.1}", f"{fs[3]:.3}"])
   print(sqrt(2.25))
   print(big * big)
 }
