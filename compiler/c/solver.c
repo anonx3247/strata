@@ -872,3 +872,10 @@ int64_t solver_clock_ns(void) {
   clock_gettime(CLOCK_REALTIME, &ts);
   return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
 }
+
+// The value of the environment variable `name` for compiler/cores (lab
+// trial 1b), "" when unset.
+const char *cores_env(const char *name) {
+  const char *v = getenv(name);
+  return v ? v : "";
+}
