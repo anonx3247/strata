@@ -116,7 +116,7 @@ has = [
   "  print(with_fee(5, o.qty, o.price, 1))\n",
   "  print(total(...make(mut made, 4)))\n",
   "  print(Shop.new(...Shop { name: \"kiosk\" }).line(...o))\n",
-  "  mut t.add(...p)\n",
+  "  mut t.add(p.x, p.y)\n",
   "  assert with_fee(o.id, o.qty, o.price, 9) == with_fee(2, 4, 5, 9)\n",
   "  assert total(...o) == total(...o)\n",
 ]

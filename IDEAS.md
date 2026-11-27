@@ -2766,3 +2766,4 @@ Found, not fixed:
 2. `xs[i]` is stored as `at(xs, i)`, which a local named `at` takes over (locate's `replaced_type` has one; it reads back the same, but it is not the built-in).
 3. (fixed) `std.agent` didn't round-trip, on main too: `resolve` named a mixed union's member type (`| ToolCall`) as a variant too, `std.agent.ToolCall`, so each store added a `std.agent.` (six by the time std's library stopped building).
 4. An assertion's message shows a record update lowered (`p == Point { y: 3, x: p.x }`, was `Point { ..p, y: 3 }`): `desugar.records_lowered` runs before codegen prints the expression (case `codegen-programs-4` blessed).
+5. A spread into a method is shown written out when another method of that name takes other parameters anywhere in the program or std (std.array's `add(self, other)` beside a program's `add(mut self, x, y)`): `cli-spread_a_record_into_a_call` now expects `mut t.add(p.x, p.y)`. Operator traits' impls don't count.
