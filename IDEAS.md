@@ -40,14 +40,8 @@ Proposed (user, 2026-11-27; spec sections 2 and 6): `[]T` is sugar for `List[T]`
 - `[]T ! E` is `Result[List[T], E]` (`!` loosest, as above).
 Why `[]T` and not Swift's `[T]`: with types as values (generics as functions over types, `comptime`), `[I64]` would also read as a list holding the type `I64`; `[]I64` can't be an expression. It also leaves `[4]T` for a fixed-size array ("Unboxed fixed-size arrays in the language"). `Dict[K, V]` and `Set[T]` keep their names.
 
-### Comptime types: making a type from a type (lab trial)
-(user, 2026-11-27) The test case: `type Patch[T: Record] = comptime record(T.fields.map(f -> Field { ..f, type: Change[f.type], default: Some("Keep") }))` with `type Change[T] = | Keep | Set(T)`, and `derivable(Record) trait Patchable { derived fn patched(self, _patch: Patch[Self]) -> Self; derived fn apply(mut self, _patch: Patch[Self]) }`, so `Patch[User] { title: Set(None) }` exists for any record without a derive, and `derive Patchable for User` gives `bob.patched(p)`. The lab has `derived fn`, `Self.fields`, `f.of(x)`, `Self.make(f -> e)` and `comptime for`. Missing, in order of size:
-1. `comptime` in a type position and `record(fields)`: a `Type` value becoming a type (the rebuild's "generics are functions over types").
-2. A generic applied to a type known while compiling as a `Type` value (`Change[f.type]`).
-3. `T.field(name)`: a field of another type by name.
-4. `f.set(mut x, v)`: writing a field chosen while compiling.
-`Field.default` is source text (ISSUES.md 19); in the rebuild a default is a tree. Laws to prove once: `x.patched(Patch[T] {}) == x`; a `Set(v)` field is `v` and every other field is unchanged; `apply` agrees with `patched`.
-
+### Types as values (lab trial; REBUILD.md "Types are values")
+The test case (user, 2026-11-27): `fn Patch(T: Type) -> Type` building `Record { fields: [for f in T.fields: Field { name: f.name, type: Change[f.type], default: Change[f.type].Keep }] }`, and `impl[T: Record] Patchable for T` with `patched` and `apply` written once using `T.make(for f in T.fields: …)` and `self.(f.name)`. So `bob.patched(Patch[User] { title: Set(None) })` works for every record, with no derive. In the lab today only part of this exists (`derived fn`, `Self.fields`, `f.of(x)`, `Self.make`, `comptime for`); missing are types made by a function, generics applied to compile-time types, field access by a compile-time name, and writing a field by one. Laws to prove once: `x.patched(Patch[T] {}) == x`; a `Set(v)` field is `v` and the others unchanged; `apply` agrees with `patched`.
 ### Parameter defaults
 Only record fields have defaults. A parameter default would let a spread or a call leave that parameter out. Open: whether a default is filled in where it is stored or where it is called, as for record fields. (Claude, 2026-11-25)
 
