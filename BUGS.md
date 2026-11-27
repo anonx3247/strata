@@ -467,8 +467,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: std.unicode.is_alphabetic, is_white_space, is_alphanumeric, perl_word, perl_space, perl_digit. Source: review std. Confidence: sure.
 - [ ] **No timeouts and no connection limit.** `serve` spawns `answer(conn, handler)` for every accepted connection with no bound. The reads (`next_line`, `exact`) wait forever. A client that opens connections and sends nothing (slowloris) holds a task, which is an OS thread (IDEAS, Concurrency step 1), per connection.
   Where: std.http.serve, serve_connection, read_request. Source: review std. Confidence: sure.
-- [ ] **One failed `accept` stops the server.** `Err(e) => { stop = e; break }` on any `accept` error. Running out of file descriptors (EMFILE) or a connection aborted before accept (ECONNABORTED) is transient, yet it ends `serve` and returns.
-  Where: std.http.serve. Source: review std. Confidence: sure.
 - [ ] **`javascript:` URLs, `srcdoc` and `<script>` are allowed.** `AttrName` refuses only names matching `[oO][nN].*`. `href(url)` is `attr("href", url)` with no check. Recorded in IDEAS.md (Web UIs step 1: "Not yet: `javascript:` URLs in `href` are not rejected"), with no fix since.
   Where: std.web.href, src, attr, AttrName, TagName, element. Source: review std; ledger S5. Confidence: sure.
 - [ ] **`Real` columns are TEXT, so `CHECK`s and queries compare text.** A field `price: Real where 0 <= it && it <= 1000` gets the column `"price" TEXT … CHECK (0 <= "price" AND "price" <= 1000)`. In SQLite, comparing a TEXT-affinity column with an unaffiliated literal applies TEXT affinity to the literal, so this compares `'5' <= '1000'`, which is false.
@@ -477,8 +475,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: std.json.read_value (recursive). Source: review std. Confidence: likely.
 - [ ] **`encode` is quadratic for non-ASCII text.** `out = out + [192 + n / 64] + [128 + n % 64]`. This is reassignment rather than `push`, so each non-ASCII character copies the list built so far. It is used by `std.net.encode_bytes` (`write_bytes`, `read_bytes` defaults), `Files.read_bytes` and std.http, so sending a 1 MB non-ASCII body is O(n²).
   Where: std.utf8.encode. Source: review std. Confidence: likely.
-- [ ] **Request smuggling: `transfer-encoding` and `content-length` together.** `if contains(to_lower(get(headers, "transfer-encoding") ?? ""), "chunked") { return read_chunks(…) }`. A message with both headers is accepted and the connection is kept alive.
-  Where: std.http.read_body, start. Source: review std. Confidence: sure.
 - [ ] **Repeated headers are joined with commas.** `joined := … old + ", " + v`. `Set-Cookie` values can't be joined this way, because `Expires=Mon, 01 …` already holds a comma. On the way out, a `Dict` can't hold two `Set-Cookie` headers at all, so a server can't set two cookies.
   Where: std.http.read_headers; Request/Response `headers: Dict[String, String]`. Source: review std. Confidence: sure.
 - [ ] **A client `HEAD` request misreads the response.** `read_response` decides whether there is a body from the status alone (`status < 200 || status == 204 || status == 304`). For `HEAD`, it then waits for `content-length` bytes that never come.
