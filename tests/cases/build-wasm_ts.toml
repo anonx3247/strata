@@ -1,0 +1,69 @@
+# strata build --target wasm32: examples/wasm's three `derive TypeScript`
+# functions as stats.wasm, with stats.ts beside it (typed wrappers, a type
+# per record and union, the loader), called from TypeScript under node:
+# values both ways, an `Err` thrown as a StrataError with its value, a
+# refinement broken by an argument (an answer), a `requires` broken (a
+# fault, thrown; the next call works). The module imports nothing a host
+# lacks. An unknown target and a package with nothing to export are
+# errors. Skipped without node, wasm-ld or wasm-opt.
+
+[[step]]
+write = "w/package.json"
+text = '{ "type": "module" }'
+needs = "node"
+
+[[step]]
+write = "w/test.ts"
+from = "test.ts"
+needs = "wasm-ld"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/wasm", "build", "--target", "wasm32", "--no-verify", "-o", "$TMP/w/stats.wasm"]
+needs = "wasm-opt"
+has = ["built", "stats.wasm and stats.ts (compiler/codegen, wasm32)"]
+
+[[step]]
+run = ["grep", "-c", "export function", "w/stats.ts"]
+stdout = "3\n"
+
+[[step]]
+run = ["grep", "export type Grade = Pass | Fail | Absent;", "w/stats.ts"]
+
+[[step]]
+run = ["node", "w/test.ts"]
+stdout = '''
+ok   clamp(15, 0, 10) is 10
+ok   clamp(-3, 0, 10) is 0
+ok   summary of three scores
+ok   summary of none is an error
+ok   a pass
+ok   a fail
+ok   absent
+ok   a negative score is refused
+ok   clamp with lo > hi is a fault
+ok   calls work after a fault
+'''
+
+# (what the module imports: only the loader's host functions)
+[[step]]
+run = ["node", "-e", "const m = new WebAssembly.Module(require('fs').readFileSync('w/stats.wasm')); console.log(WebAssembly.Module.imports(m).map(i => i.module + '.' + i.name).sort().join(' '))"]
+stdout = "env.strata_wasm_exit env.strata_wasm_fault env.strata_wasm_float env.strata_wasm_strtod env.strata_wasm_write\n"
+
+[[step]]
+strata = ["--file", "$ROOT/examples/wasm", "build", "--target", "wasm99", "-o", "$TMP/x.wasm"]
+fails = true
+has = ["unknown target `wasm99`: `--target wasm32` makes a WebAssembly module"]
+
+[[step]]
+module = "main"
+into = "$TMP/none/"
+text = '''
+fn main() {
+  print(1)
+}
+'''
+
+[[step]]
+strata = ["--file", "none", "build", "--target", "wasm32", "--no-verify", "-o", "$TMP/none.wasm"]
+fails = true
+has = ["nothing to export: a module exports what `derive TypeScript for f` (std.ffi) names"]

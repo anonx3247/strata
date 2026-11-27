@@ -1,0 +1,48 @@
+# build.rs: what crosses to a task (captures, a send, a result) is copied
+# or moved, never counted by two threads: changes after the spawn stay on
+# their side, and every object is freed once (STRATA_MEMORY=check), on
+# every run. `mut` never crosses a spawn.
+
+[[step]]
+save = "copies.strata"
+from = "copies.st"
+
+[[step]]
+strata = ["build", "copies.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/task-copies.out"
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/task-copies.out"
+
+[[step]]
+strata = ["run", "copies.strata"]
+golden = "tests/data/build/expected/task-copies.out"
+
+[[step]]
+save = "lend.strata"
+text = '''
+fn bump(mut xs: List[Int]) -> Int {
+  mut xs.push(1)
+  len(xs)
+}
+
+fn main() {
+  mut xs := [1, 2]
+  r := scope {
+    h := spawn bump(mut xs)
+    await h
+  }
+  print(f"{r}")
+}
+'''
+
+[[step]]
+strata = ["--file", "lend.strata", "check"]
+fails = true
+has = ["error in main: a closure cannot change `xs`, which belongs to the enclosing function"]

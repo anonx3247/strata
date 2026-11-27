@@ -1,0 +1,97 @@
+# Markup in Strata code: the parser reads `<p>{x}</p>` as calls to std.web,
+# view shows those calls as markup again, text and values are escaped, and a
+# page written to a file is served by a static server.
+
+[[step]]
+save = "card.strata"
+text = '''
+from std.web use Html, render
+
+type Msg =
+  | Pick(String)
+
+/// A component: a function returning markup.
+fn card(name: String, n: Int, busy: Bool) -> Html[Msg] {
+  <div class="card" data-n={n}>
+    <h2>Hello, {name}!</h2>
+    <ul>{["a", "b"].map(i -> <li>{i}</li>)}</ul>
+    <button on_click={Pick(name)} disabled={busy}>Pick</button>
+    <br />
+  </div>
+}
+
+fn main() {
+  print(render(card("<script>", 3, false)))
+}
+'''
+
+[[step]]
+strata = ["--file", "card.strata", "run"]
+stdout = "<div class=\"card\" data-n=\"3\"><h2>Hello, &lt;script&gt;!</h2><ul><li>a</li><li>b</li></ul><button data-handle-click=\"0\">Pick</button><br></div>\n"
+
+# stored as calls, shown as markup
+[[step]]
+strata = ["--file", "card.strata", "view", "card", "--level", "2"]
+out = '''
+/// A component: a function returning markup.
+fn card(name: String, n: Int, busy: Bool) -> Html[Msg] {
+  <div class="card" data-n={n}>
+    <h2>Hello, {name}!</h2>
+    <ul>{["a", "b"].map(i -> <li>{i}</li>)}</ul>
+    <button on_click={Pick(name)} disabled={busy}>Pick</button>
+    <br />
+  </div>
+}
+'''
+
+[[step]]
+strata = ["--file", "card.strata", "view", "main", "--proofs"]
+capture = "card.st"
+
+[[step]]
+save = "again.strata"
+from_tmp = "card.st"
+
+[[step]]
+strata = ["--file", "again.strata", "view", "main", "--proofs"]
+out_file = "card.st"
+
+# the element names are literals, so the void-element check is proven
+[[step]]
+strata = ["--file", "card.strata", "verify", "card", "--require", "proven"]
+has = ["✓ card"]
+
+# what markup can't hold is a parse error
+[[step]]
+strata = ["--file", "bad1.strata", "edit"]
+text = '''
+fn f() -> Int { <div onclick="evil()"></div> }
+'''
+fails = true
+has = ["attributes starting with `on` are inline scripts"]
+
+[[step]]
+strata = ["--file", "bad2.strata", "edit"]
+text = '''
+fn f() -> Int { <div><p>x</div> }
+'''
+fails = true
+has = ["`</div>` ends `<p>`: expected `</p>`"]
+
+[[step]]
+strata = ["--file", "bad3.strata", "edit"]
+text = '''
+fn f() -> Int { <input type="text"> }
+'''
+fails = true
+has = ["`<input>` has no children and no end tag: write `<input />`"]
+
+# a page rendered to a file, served by a static server
+[[step]]
+strata = ["run", "$ROOT/examples/page"]
+capture = "index.html"
+
+[[step]]
+needs = "python3"
+run = ["sh", "-c", "python3 -u -m http.server 0 --bind 127.0.0.1 > server.log 2>&1 & pid=$!; for i in 1 2 3 4 5 6 7 8 9 10; do port=$(sed -n 's/.*port \\([0-9]*\\).*/\\1/p' server.log); [ -n \"$port\" ] && break; sleep 0.3; done; curl -s http://127.0.0.1:$port/index.html; kill $pid"]
+has = ["<!DOCTYPE html>", "<td class=\"num\">1958</td>", "<td>&lt;script&gt;alert(1)&lt;/script&gt;</td>"]

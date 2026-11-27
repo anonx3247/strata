@@ -39,6 +39,25 @@ derivable(Function) trait Python {
 A function Python calls. A library built with `strata build --lib` exports it as `NAME_json`, which takes and returns JSON (`json_call`).
 The library's Python module, `<name>.py`, wraps it in a typed function, with a class for each record and union that crosses.
 
+### TypeScript
+
+```rust
+derivable(Function) trait TypeScript {
+  /// `NAME_json(args)`, a pointer to a NUL-terminated string in the module's memory each way. The loader frees the answer with `strata_string_free`.
+  derived fn json(args: String) -> String
+  /// Its part of `<name>.ts`: the loader, a type for each record and union it takes or gives, and the function.
+  derived fn ts() -> String
+}
+```
+
+A function TypeScript (or JavaScript) calls, from a WebAssembly module
+built with `strata build --target wasm32`, which exports it as
+`NAME_json`, taking and returning JSON (`json_call`), as `derive Python`
+does. The module's TypeScript file, `<name>.ts`, loads `<name>.wasm`
+beside it with the standard WebAssembly API and wraps each function in a
+typed one, with a type for each record and union that crosses, so it runs
+in Node, Bun, Deno and browsers with no native code.
+
 ## Functions
 
 ### json_call

@@ -1,0 +1,27 @@
+# `f(mut v, size(v))`, `f(mut v, len(v.d))`, `f(mut v, next(mut v))`: the
+# other argument is worked out first and holds nothing of `v`, so `f` is
+# given `v`'s own slot and changes it in place (proven: `unique.p`), with no
+# copy. Before, `v` was copied into a slot of its own for the call, held
+# twice, so each insert copied the dict (20,000 inserts: 2.3 s instead of
+# 0.07 s). An argument that does share `v` or part of it (`v` itself,
+# `same(v)`, `v.xs`, `part(v)`) holds its value, so `f` still copies what
+# it shares before changing it, and the argument keeps the old value.
+
+[[step]]
+save = "held.strata"
+from = "held.st"
+
+[[step]]
+strata = ["--file", "held.strata", "build", "--no-verify", "--memory-sites", "-o", "prog"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./prog 2>/dev/null; cut -f1,2,3,4,6 sites.tsv | grep -E '\t(unique|owned)'"]
+out = "9000\n1\n2\n3\n4\n5\n6\n6\n0\n9000\t8999\towned\tput\tinsert(c.d, k, k)\n9000\t9000\tunique.p\tput\tinsert(c.d, k, k)\n9000\t9000\tunique.p\tput\tinsert(c.d, k, k)\n2\t1\towned\tgrow\tpush(c.xs, 1)\n2\t1\tunique\tgrow\tpush(c.xs, 1)\n2\t1\tunique\tgrow\tpush(c.xs, 1)\n2\t0\towned\tgrow_by\tpush(c.xs, 1)\n2\t2\tunique\tgrow_by\tpush(c.xs, 1)\n2\t2\tunique\tgrow_by\tpush(c.xs, 1)\n1\t0\towned\tC.add\tpush(self.xs, 1)\n1\t0\tunique\tC.add\tpush(self.xs, 1)\n1\t0\tunique\tC.add\tpush(self.xs, 1)\n"
+
+[[step]]
+strata = ["--file", "held.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["./plain"]
+memory = true
+stdout = "9000\n1\n2\n3\n4\n5\n6\n6\n0\n"
