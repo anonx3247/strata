@@ -15,7 +15,7 @@ strata = ["--file", "held.strata", "build", "--no-verify", "--memory-sites", "-o
 
 [[step]]
 run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./prog 2>/dev/null; cut -f1,2,3,4,6 sites.tsv | grep -E '\t(unique|owned)' | sort"]
-out = "2\n-1\n40000\n[5, 7]\n1\t0\towned\tmain\tset_at(xs, at, 7)\n20000\t20000\towned.p\tends_of\tpush(open, k)\n20000\t20000\towned.p\tends_of\tset_at(ends, at, k + 1)\n20000\t20000\towned.p\tends_of\ttake(open, len(open) - 1)\n40000\t40000\towned.p\tends_of\tpush(ends, -1)\n40000\t40000\towned.p\tmirrored\tpush(ends, 0)\n40000\t40000\towned.p\tmirrored\tpush(starts, i)\n40000\t40000\towned.p\tmirrored\tset_at(ends, $index_0, at(ends, i) + 1)\n40000\t40000\towned.p\tmirrored\tset_at(ends, i, at(starts, j))\n"
+out = "2\n-1\n40000\n[5, 7]\n1\t0\towned\tmain\tset_at(xs, at, 7)\n20000\t20000\towned.p\tends_of\tpush(open, k)\n20000\t20000\towned.p\tends_of\tset_at(ends, at, k + 1)\n20000\t20000\towned.p\tends_of\ttake(open, len(open) - 1)\n40000\t40000\towned.p\tends_of\tpush(ends, -1)\n40000\t40000\towned.p\tmirrored\tpush(ends, 0)\n40000\t40000\towned.p\tmirrored\tpush(starts, i)\n40000\t40000\towned.p\tmirrored\tset_at(ends, $index_0, ends[i] + 1)\n40000\t40000\towned.p\tmirrored\tset_at(ends, i, starts[j])\n"
 
 [[step]]
 strata = ["--file", "held.strata", "build", "--no-verify", "-o", "plain"]
