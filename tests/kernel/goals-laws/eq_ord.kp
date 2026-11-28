@@ -1,0 +1,59 @@
+-- `Eq` and `Ord` laws. `==` is built in for every type (part by part),
+-- which the logic reads as its equality, so `Eq`'s laws are about it; the
+-- lab has no derived `Ord`, so these types write `lt` by hand, as a
+-- derived one would (by variant order, then field by field).
+
+strata {
+type Priority = | Low | Mid | High
+
+fn rank(p: Priority) -> Int {
+  match p {
+    Low => 0,
+    Mid => 1,
+    High => 2,
+  }
+}
+
+impl Ord for Priority {
+  fn lt(self, other: Priority) -> Bool = rank(self) < rank(other)
+}
+
+type Task = { priority: Priority, due: Int }
+
+impl Ord for Task {
+  fn lt(self, other: Task) -> Bool = self.priority < other.priority || self.priority == other.priority && self.due < other.due
+}
+}
+
+law priority_eq_refl(p: Priority) holds p == p by
+
+law priority_eq_symm(p: Priority, q: Priority) holds p == q ==> q == p by
+
+law priority_eq_trans(p: Priority, q: Priority, r: Priority) holds p == q && q == r ==> p == r by
+
+law priority_lt_irrefl(p: Priority) holds !(p < p) by
+
+law priority_lt_trans(p: Priority, q: Priority, r: Priority) holds p < q && q < r ==> p < r by
+
+law priority_total(p: Priority, q: Priority) holds p < q || p == q || q < p by
+
+law task_eq_symm(s: Task, t: Task) holds s == t ==> t == s by
+
+law task_lt_irrefl(t: Task) holds !(t < t) by
+
+law task_lt_trans(s: Task, t: Task, u: Task) holds s < t && t < u ==> s < u by
+
+law task_total(s: Task, t: Task) holds s < t || s == t || t < s by
+
+-- each `impl Ord`'s obligations: Ord's laws (core/models.strata, `OrdLaws`)
+law Priority.irreflexive by
+
+law Priority.transitive by
+
+law Priority.total by
+
+law Task.irreflexive by
+
+law Task.transitive by
+
+law Task.total by

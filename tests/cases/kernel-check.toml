@@ -1,17 +1,32 @@
-# strata kernel check: the proof scripts in tests/kernel prove, a failed
-# step names its tactic and goal, and the goal set has no failures
+# strata kernel check: core/int.kp's lemmas and the proof scripts in
+# tests/kernel prove, by kernel steps alone; a failed step names its tactic
+# and goal; the goal sets (both syntaxes) have no failures
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/lists.kp"]
-has = ["proven reversed_reversed", "4 proven, 0 failed, 0 open"]
+has = ["core/int.kp: 36 lemmas proven", "proven reversed_reversed", "4 proven, 0 failed, 0 open"]
 
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/tactics.kp"]
-has = ["proven calc_steps", "proven omega_step", "[oracle: omega, 1 solver calls]", "13 proven, 0 failed, 0 open"]
+has = ["proven calc_steps", "proven omega_step", "13 proven, 0 failed, 0 open"]
+lacks = ["assumed"]
 
 [[step]]
-strata = ["kernel", "check", "$ROOT/tests/kernel/goals/lists.kp", "$ROOT/tests/kernel/goals/eq_ord.kp", "$ROOT/tests/kernel/goals/patch.kp"]
-has = ["4 proven, 0 failed, 9 open", "0 proven, 0 failed, 10 open", "0 proven, 0 failed, 4 open"]
-lacks = ["note:"]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/generic_sort.kp", "$ROOT/tests/kernel/proofs/laws.kp"]
+has = ["proven sorted_is_sorted_by", "proven sorted_count_of", "6 proven, 0 failed, 0 open", "proven leaves_all_pos", "proven len_nonneg", "[assumed: refinement: len]", "9 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "--z3-arith", "$ROOT/tests/kernel/proofs/tactics.kp"]
+has = ["proven omega_step", "[assumed: z3, 1 solver calls]", "13 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/goals/lists.kp", "$ROOT/tests/kernel/goals/eq_ord.kp", "$ROOT/tests/kernel/goals/patch.kp", "$ROOT/tests/kernel/goals/generic.kp", "$ROOT/tests/kernel/goals/exprs.kp"]
+has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 0 failed, 4 open", "0 proven, 0 failed, 3 open"]
+lacks = ["note:", "failed "]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/goals-laws/lists.kp", "$ROOT/tests/kernel/goals-laws/eq_ord.kp", "$ROOT/tests/kernel/goals-laws/patch.kp", "$ROOT/tests/kernel/goals-laws/generic.kp", "$ROOT/tests/kernel/goals-laws/exprs.kp"]
+has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 0 failed, 4 open", "0 proven, 0 failed, 3 open"]
+lacks = ["note:", "failed "]
 
 [[step]]
 write = "bad.kp"
@@ -19,10 +34,10 @@ text = '''
 theorem len_snoc[A](xs: List[A], y: A): len(xs + [y]) == len(xs) + 1 := by
   induction xs with
   | nil => simp
-  | cons x xs ih => simp [ih]; omega
+  | cons x xs ih => simp
 '''
 
 [[step]]
 strata = ["kernel", "check", "bad.kp"]
 code = 1
-has = ["failed len_snoc", "`induction` failed: unsolved goals:", "case nil", "⊢ 1 + 0 == 0 + 1"]
+has = ["failed len_snoc", "`induction` failed: unsolved goals:", "case cons", "(`len_snoc` may be called here on `xs`: it is `ih`)", "⊢ len(xs + [y]) + 1 == len(xs) + 2"]
