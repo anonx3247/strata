@@ -1,0 +1,58 @@
+# A function that isn't `pub` is invisible to the modules that import its
+# module: a private `len` or `print` there leaves the built-ins of those names
+# to the importers, by `use m` and by `from m use f` alike
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "util.strata"
+text = '''
+fn len(_xs: List[Int]) -> Int = 99
+
+fn print(_s: String) {
+}
+
+pub fn count(xs: List[Int]) -> Int = len(xs)
+
+pub fn say(s: String) {
+  print(s)
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+use util
+
+fn main() {
+  print(to_string(len([1, 2])))
+  print(to_string(util.count([1, 2, 3])))
+  util.say("never")
+}
+'''
+
+[[step]]
+strata = ["run"]
+out = "2\n99\n"
+
+[[step]]
+save = "main.strata"
+text = '''
+from util use count, say
+
+fn main() {
+  print(to_string(len([1, 2])))
+  print(to_string(count([1, 2, 3])))
+  say("never")
+}
+'''
+
+[[step]]
+strata = ["run"]
+out = "2\n99\n"
+
+# its own module still calls it
+[[step]]
+strata = ["check"]
+has = ["ok:"]

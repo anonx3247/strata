@@ -1,0 +1,50 @@
+# smt: `Entry { ..e, f: x }` copies `e`'s other fields as they are, so a
+# record field read from a dict entry stays one datatype term and the
+# `assert … by` through the helper is proven without taking it apart
+[[step]]
+save = "f.strata"
+text = '''
+type Id = String where matches(it, "[A-Za-z0-9_-]{1,64}")
+
+type Kind = String where it != ""
+
+type Job = { id: Id, kind: Kind, payload: Int }
+
+type Status = | Pending | Running { by: Int } | Done
+
+type Entry = { task: Job, status: Status, attempts: Natural, max: Positive }
+  where it.attempts <= it.max && (it.status is Running ==> it.attempts >= 1)
+
+type Attempt = { task: Job, attempt: Positive }
+
+fn locked(before: Dict[Id, Entry], after: Dict[Id, Entry], a: Attempt, by: Int) -> Bool {
+  match before.get(a.task.id) {
+    Some(e) => e.task == a.task
+      && e.status == Pending
+      && e.attempts + 1 == a.attempt
+      && after.get(a.task.id) == Some(Entry { ..e, status: Running { by }, attempts: a.attempt }),
+    None => false,
+  }
+}
+
+fn lock(table: Dict[Id, Entry], before: Dict[Id, Entry], id: Id, e: Entry, by: Int) -> Bool
+  requires before.get(id) == Some(e)
+  requires e.status == Pending && e.task.id == id && e.attempts < e.max {
+  ne := Entry { ..e, status: Running { by }, attempts: e.attempts + 1 }
+  a := Attempt { task: e.task, attempt: e.attempts + 1 }
+  assert table.with(id, ne).get(id) == Some(ne)
+  assert locked(before, table.with(id, ne), a, by) by {
+    assert before.get(id) == Some(e)
+  }
+  true
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+has = ["✓ lock "]
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+env = { "STRATA_TERMS" = "1" }
+has = ["✓ lock "]
