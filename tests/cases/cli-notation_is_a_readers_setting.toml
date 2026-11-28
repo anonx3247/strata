@@ -1,0 +1,43 @@
+# Both notations parse to the same tree; `view --notation` and
+# `STRATA_NOTATION` choose how it is printed (compiler/notation).
+
+[[step]]
+save = "users.strata"
+text = '''
+type User = { name: String }
+
+fn pick(us: []User?, all: ([]User)?, ids: []Int | Bool, f: []((Int) -> Int)) -> Option[List[User]] {
+  all
+}
+
+fn wrong(us: List[User]) -> ([]User)? {
+  us
+}
+'''
+
+[[step]]
+strata = ["--file", "users.strata", "view", "pick", "--level", "1"]
+has = ["us: List[Option[User]]", "all: Option[List[User]]", "ids: List[Int] | Bool", "f: List[(Int) -> Int]", ") -> Option[List[User]]"]
+
+[[step]]
+strata = ["--file", "users.strata", "view", "pick", "--level", "1", "--notation", "short"]
+has = ["us: []User?", "all: ([]User)?", "ids: []Int | Bool", "f: []((Int) -> Int)", ") -> ([]User)?"]
+
+[[step]]
+strata = ["--file", "users.strata", "view", "pick", "--level", "1", "--notation", "option=short"]
+has = ["us: List[User?]", "all: List[User]?"]
+
+# a view in short notation, read back, is the same tree
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file users.strata view main --notation short > short.st && cp users.strata back.strata && \"$STRATA\" --file back.strata edit --as-given < short.st > /dev/null 2>&1; \"$STRATA\" header users.strata --tree | sort > a.tree; \"$STRATA\" header back.strata --tree | sort > b.tree; cmp a.tree b.tree && echo same trees"]
+has = ["same trees"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_NOTATION=short \"$STRATA\" --file users.strata check"]
+fails = true
+has = ["expected `([]User)?`, found `[]User`"]
+
+[[step]]
+strata = ["--file", "users.strata", "view", "pick", "--notation", "list=tiny"]
+fails = true
+has = ["`list=tiny` isn't a notation setting"]
