@@ -147,7 +147,7 @@ has = [
   "fn from_call\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
   "fn from_field\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
   "fn from_deep_lets\n  unknown: it has a `for` over `c`, reached through more `let`s than are followed",
-  "fn from_field_map\n  unknown: it has a `for` over `h.it.map((x: Int) -> x + 1)`, made from a value whose type isn't known here",
+  "fn from_field_map\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
   "fn from_enumerate\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
   "fn walk\n  unknown: it passes itself as a function value",
   "fn uses_spin\n  unknown: it calls `Counter.spin`",
