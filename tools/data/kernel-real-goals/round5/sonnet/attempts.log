@@ -1,0 +1,31 @@
+09:09:08 ids_none 1 proven rc=0 wall=4.266s proven ids_none (89.8 ms)
+09:09:18 ids_step 1 proven rc=0 wall=4.141s proven ids_step (8.4 ms) [assumed: refinement: len]
+09:09:25 id_set_step 1 proven rc=0 wall=4.165s proven id_set_step (5.6 ms) [assumed: refinement: len]
+09:09:29 done_step 1 proven rc=0 wall=4.146s proven done_step (9.6 ms) [assumed: refinement: len]
+09:09:33 got_step 1 proven rc=0 wall=4.231s proven got_step (5.9 ms)
+09:09:42 frame_ids 1 proven rc=0 wall=4.127s proven frame_ids (8.4 ms) [assumed: refinement: len]
+09:09:46 frame_got 1 proven rc=0 wall=4.126s proven frame_got (7.7 ms)
+09:09:54 outside_ids 1 proven rc=0 wall=4.153s proven outside_ids (4.6 ms) [assumed: refinement: len]
+09:09:58 outside_done 1 proven rc=0 wall=4.137s proven outside_done (8.5 ms) [assumed: refinement: len]
+09:10:06 listed_push 1 failed rc=0 wall=4.201s failed listed_push (15.5 ms): `auto` failed: simplify, arithmetic and the solver found no proof; it may need a split first: `match` on `order` (nonlinear: the solver found no proof (sat))
+09:10:13 listed_push 2 failed rc=0 wall=4.186s failed listed_push (14.0 ms): `auto` failed: simplify, arithmetic and the solver found no proof; it may need a split first: `match` on `order` (nonlinear: the solver found no proof (sat))
+09:10:21 listed_push 3 failed rc=0 wall=4.178s failed listed_push (17.3 ms): `auto` failed: simplify, arithmetic and the solver found no proof; it may need a split first: `match` on `order` (nonlinear: the solver found no proof (sat))
+09:10:29 listed_push 4 proven rc=0 wall=4.284s proven listed_push (8.4 ms)
+09:10:38 some_new_here 1 proven rc=0 wall=4.266s proven some_new_here (5.5 ms) [assumed: refinement: len]
+09:10:46 some_new_kept 1 proven rc=0 wall=4.217s proven some_new_kept (8.9 ms) [assumed: refinement: len]
+09:10:59 settled_insert 1 failed rc=0 wall=4.129s failed settled_insert (7.5 ms): `simp` failed: `settled_list` failed above: fix its proof first
+09:11:10 settled_insert 2 failed rc=0 wall=4.146s failed settled_insert (7.6 ms): `simp` failed: `settled_list` failed above: fix its proof first
+09:11:20 settled_insert 3 failed rc=0 wall=4.207s failed settled_insert (39.7 ms): `simp` failed: `settled_list` failed above: fix its proof first
+09:11:29 settled_insert 4 failed rc=0 wall=4.229s failed settled_insert (7.9 ms): `simp` failed: `settled_list` failed above: fix its proof first
+09:11:39 settled_insert 5 failed rc=0 wall=5.300s failed settled_insert (7.9 ms): `simp` failed: `settled_list` failed above: fix its proof first
+09:11:50 settled_insert 6 failed rc=0 wall=4.135s failed settled_insert (7.7 ms): `simp` failed: `settled_list` failed above: fix its proof first
+09:11:59 settled_insert 7 failed rc=0 wall=4.146s failed settled_insert (7.6 ms): `simp` failed: `settled_list` failed above: fix its proof first
+09:12:08 settled_insert 8 failed rc=0 wall=5.386s failed settled_insert (40.1 ms): unsolved goals:
+09:12:19 settled_insert 9 proven rc=0 wall=4.297s proven settled_insert (63.4 ms)
+09:12:31 unlocked_insert 1 proven rc=0 wall=5.386s proven unlocked_insert (33.3 ms)
+09:12:46 locked_insert 1 proven rc=0 wall=8.601s proven locked_insert (153.2 ms)
+09:12:56 unique_push 1 failed rc=0 wall=5.329s failed unique_push (2.7 ms): `simp` failed: `unique_snoc` failed above: fix its proof first
+09:13:06 unique_push 2 proven rc=0 wall=5.216s proven unique_push (5.2 ms)
+09:13:16 taken_ensures 1 failed rc=1 wall=5.174s failed taken_ensures (0.6 ms): `simp` failed: simp made no progress
+09:13:29 taken_ensures 2 failed rc=1 wall=5.209s failed taken_ensures (0.2 ms): `use` failed: `taken_acc` failed above: fix its proof first
+09:13:41 taken_ensures 3 proven rc=0 wall=5.271s proven taken_ensures (1.9 ms)

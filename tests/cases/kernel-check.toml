@@ -65,3 +65,12 @@ theorem len_snoc[A](xs: List[A], y: A): len(xs + [y]) == len(xs) + 1 := by
 strata = ["kernel", "check", "bad.kp"]
 code = 1
 has = ["failed len_snoc", "`induction` failed: unsolved goals:", "case cons", "(`len_snoc` may be called here on `xs`: it is `ih`)", "⊢ len(xs + [y]) + 1 == len(xs) + 2"]
+
+# the real goals' proofs (tests/kernel/real), and the steps round 5 added:
+# a fact that would loop used right to left, `==` either way round, `&&` and
+# `||` sorted, `unfold` in facts, `auto` at the goal's terms, a conclusion
+# matched up to arithmetic
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/real/round5.strata", "$ROOT/tests/kernel/real/new.strata", "$ROOT/tests/kernel/real/memory.strata"]
+has = ["proven crash", "proven eq_fact", "proven or_ac", "proven known_push", "proven take_step2", "13 proven, 0 failed, 0 open", "proven taken_ensures", "3 proven, 0 failed, 0 open", "proven frame_got", "proven ids_none"]
+lacks = ["failed ", "fault"]
