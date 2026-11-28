@@ -138,7 +138,7 @@ impl Db for MemDb {
 
 An `impl` must define every model of its trait and no others. A mock type's `impl` may omit them.
 
-`mock Db` for a trait with models simulates the models. It stores each one, starting empty (`{}`, `[]`, `0`, `""`, `false`, `None`). A method whose `ensures` states the new value of a model (`self.orders == e`) and its result (`it == e`) does exactly that. Any other method returns a generated result that satisfies its contract, as with every mock. `mock Db` is therefore an in-memory reference implementation for tests.
+`mock Db with model`, for a trait with models, simulates the models. A plain `mock Db` does nothing and holds none: its models are not kept, so a `mut self` method whose `ensures` changes a model (`self.orders == old self.orders.with(id, o)`) is an error to leave doing nothing. It stores each one, starting empty (`{}`, `[]`, `0`, `""`, `false`, `None`). A method whose `ensures` states the new value of a model (`self.orders == e`) and its result (`it == e`) does exactly that. Any other method returns a generated result that satisfies its contract, as with every mock. `mock Db with model` is therefore an in-memory reference implementation for tests. A capability trait's models can't be simulated: its state is outside the program.
 
 **Laws made of statements.** A law is a `Bool` that every implementation must satisfy (`law associative(a: Self, b: Self, c: Self): …`). It can also be a block of statements, including `mut` method calls on copies of its parameters, that ends in the `Bool` that must hold:
 
@@ -368,7 +368,7 @@ fn stamp(clock: Clock) -> String {
 /// A clock stopped at one time.
 mock StoppedClock = { at: Instant }
 
-// (`sleep` is left out: a mock's missing methods are generated)
+// (`sleep` is left out: it does nothing)
 impl Clock for StoppedClock {
   fn now(self) -> Instant {
     self.at

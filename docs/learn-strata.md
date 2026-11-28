@@ -606,7 +606,7 @@ test "orders" {
 }
 
 test "a mocked capability" {
-  // `mock Db` is an implementation whose methods return arbitrary valid values.
+  // `mock Db` does nothing: `None`, an error, `()` or a zero from every method.
   mut db := mock Db
   r := ship(mut db, "ord_1", "TRK9")
   assert r is Ok || r is Err

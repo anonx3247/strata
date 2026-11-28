@@ -365,7 +365,7 @@ impl Files for MemDisk {
     mut self.files.insert(path, text)
     Ok(())
   }
-  // exists, list, ...: left out, generated
+  // exists, list, ...: left out, they do nothing
 }
 
 test "saving then loading" {
@@ -374,7 +374,9 @@ test "saving then loading" {
 }
 ```
 
-- An omitted method behaves like the method of `mock Files`: it checks the method's `requires` and returns a value that satisfies its type and `ensures`.
+- An omitted method does nothing, as every method of `mock Files` does. It checks its `requires` and returns by its result type alone: `()` for none, `None` for an `Option`, `Err` for a `Result` (the error type's first variant whose fields all have such values, each field its zero: `FsError` gives `NotFound { path: "" }`), and otherwise the type's zero (`0`, `0.0`, `false`, `""`, `[]`, `{}`, a record of its fields' defaults and zeros). A result with no such value (a sum outside an error, a trait, a type parameter, a refinement the zero breaks or might break), and a zero that breaks an `ensures` the checker can evaluate, are errors naming the methods that need a choice. An `ensures` it can't evaluate is checked when the method runs.
+- More is asked for: a method written in the `impl`, data in the mock's record, `mock T with model` (it simulates the trait's models, below) or `mock T with random` (each method returns a generated value satisfying its type and `ensures`, as `verify`'s fuzzing does).
+- `test "x" with mocks (out: Console, db: Db) { … }` gives each parameter a do-nothing mock of its type.
 - Only tests can use a mock. A `test`, another mock, or an `impl` for a mock may name it. Naming it anywhere else is an error, so a mock never reaches a real run.
 
 **Capabilities provided by the runtime.** A trait that reaches the outside world is declared `capability trait`. Any type can implement it, mocks included. The real implementation is a `capability`: a set of functions that reach the outside world and hold no data. Only the runtime creates one, for `main` or for a test that asks for it by name. Its functions are called on that value, so holding the value is the permission:
