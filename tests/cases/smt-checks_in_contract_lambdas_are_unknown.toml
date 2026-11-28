@@ -1,0 +1,26 @@
+# smt: a check inside a function value in a contract (`all`, `any`) is not
+# made an obligation of its own, so the contract's checks are unknown, with
+# the reason, never proven
+[[step]]
+save = "l.strata"
+text = '''
+fn all_pos(xs: List[Natural], ys: List[Int]) -> Int requires xs.all(i -> ys[i] > 0) = 0
+
+fn guarded(xs: List[Natural], ys: List[Int]) -> Int
+  requires xs.all(i -> i < len(ys) && ys[i] > 0)
+= 0
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn all_pos
+  unknown the checks inside `xs.all((i: Int) -> at(ys, i) > 0)`
+fn guarded
+  unknown the checks inside `xs.all((i: Int) -> i < len(ys) && at(ys, i) > 0)`
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "verify", "--no-cache", "--no-race", "--cross-check", "0", "guarded"]
+has = ["~ guarded", "0 of 1 checks proven", "a check inside a function value or a nested part of the function's contract is not made"]
+lacks = ["✓ guarded"]
