@@ -53,6 +53,27 @@ Strata expressions over `Int`, `Bool`, `String` (no operations), `List[T]`, func
 - A call of a computed function: `made(fs, v, b)(g)` (printed `made(fs, v, b, g)`).
 - A type made by a type function (`Patch[User]`, with `type Patch[T: Record] = …` and a blanket `impl[T: Record]`) is a datatype like any record, in a module file outside a package (a package's module is read back from its text, where a made type's name doesn't parse). A field left out of a record takes its default. A `mut self` method is left out.
 - A list of a type inside the type (`args: List[Expr]` in `Expr`) is a type of its own. It is still written `List[Expr]`, but `len`, `+` and `map` don't apply to it.
+- More list functions, each defined by a `match` on its list:
+  - `contains([], x) == false` and `contains([y] + rest, x) == (x == y || contains(rest, x))` (also `xs.contains(x)`)
+  - `all([], p) == true` and `all([y] + rest, p) == (p(y) && all(rest, p))`; `any` the same with `false` and `||`
+  - `unique([]) == true` and `unique([y] + rest) == (!contains(rest, y) && unique(rest))`
+  - `take([y] + rest, n)` is `[]` if `n <= 0`, else `[y] + take(rest, n - 1)`; `drop([y] + rest, n)` is `[y] + rest` if `n <= 0`, else `drop(rest, n - 1)`; both are `[]` on `[]`
+  - a slice `xs[a..b]` is `slice(xs, a, b)`: `take(xs, b)` if `a <= 0`, else `take(drop(xs, a), b - a)`. So `xs[..i]` is `take(xs, i)`.
+  - `xs[i]` is `at(xs, i)`: `at([y] + rest, i)` is `y` if `i == 0`, else `at(rest, i - 1)`. `at([], i)` is `unspecified`, a constant nothing is known about.
+  - `filter`, and `fold(xs, init, f)`: `fold([], init, f) == init` and `fold([y] + rest, init, f) == fold(rest, f(init, y), f)`.
+- A `Set[A]` is its membership predicate, a function `(A) -> Bool` (goals print its type so). Two sets are equal when they have the same members: prove it with `extensionality()`.
+  - `set(xs)` is `k -> contains(xs, k)`; `Set[A] {}` is `set([])`
+  - `s.contains(x)` is `set_contains(s, x)`, which is `s(x)`
+  - `s.with(x)` is `set_with(s, x)`: `k -> k == x || s(k)`; `s.without(x)` is `k -> k != x && s(k)`
+- A `Dict[K, V]` is a function `(K) -> Option[V]`, and `Option[T]` is the sum `Some(T) | None`.
+  - `d.get(k)` is `dict_get(d, k)`, which is `d(k)`
+  - `d.contains(k)` is `dict_contains(d, k)`: `match d(k) { Some(_) => true, None => false }`
+  - `d.with(k, v)` is `dict_with(d, k, v)`: `j -> if j == k { Some(v) } else { d(j) }`; `d.without(k)` the same with `None`
+  - `d.excluding(s)` is `dict_excluding(d, s)`: `j -> if s(j) { None } else { d(j) }`. With a list, `d.excluding(xs)` is `dict_excluding(d, set(xs))`.
+  - `all(d.items(), (k, v) -> p)` is `dict_all(d, (k, v) -> p)`: `forall(k -> match d(k) { Some(v) => p(k, v), None => true })`. `any` is `dict_any`, with `exists` and `false`.
+- `v is C` is `match v { C => true, _ => false }`.
+- A function's body may be a block of `mut x := e` and `for` loops that change one variable (by `mut x.push(e)`, `x = e`, or an `if` of these): the loop is a `fold` over its list, `x := fold(xs, x, (x, y) -> …)`.
+- A refinement the logic can't state (`TaskId = String where matches(it, …)`) is not assumed of a parameter.
 
 ## Proof steps
 
@@ -66,7 +87,7 @@ A proof is a block of steps, one per line. Each step works on what is left to pr
 | `simplify_once(l)` | One rewrite with `l`: the first instance of its left side, every copy of it. |
 | `unfold(f, g)` | Unfolds the definitions of `f` and `g` only. |
 | `law(args)` | Uses a law, or an assumption that is one (`transitive(a, b, c)`): its conclusion finishes the goal. Its `requires` are met by the facts known: the law's own `requires`, steps proven before, the branch's conditions, and what simplifying them gives. Arguments left out are found by matching the goal. Any law can be used inside a step: `assert a < c by { transitive(a, b, c) }`. |
-| `assume()` | A goal `p ==> q` (or `!p`) left by a step: `p` becomes a fact. |
+| `assume()`, `assume(x)` | A goal `p ==> q` (or `!p`) left by a step: `p` becomes a fact. On a goal `forall(x -> p)`, `assume(x)` takes `x` as a new variable (named as given). |
 | `assumption()` | Finishes the goal with a fact that is it. |
 | `assert p by { steps }` | Proves `p`, then knows it for the rest of the proof. `assert p` alone proves it by the ladder. |
 | `calc { a == b; _ == c }` | A chain of equations, each step proven by the ladder (which knows the facts in scope). It ends at the goal's two sides. |

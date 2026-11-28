@@ -1,0 +1,56 @@
+08:22:52 ids_none 1 failed rc=0 wall=4.233s failed ids_none (1.8 ms): unsolved goals:
+08:23:02 ids_none 2 proven rc=0 wall=4.162s proven ids_none (5.7 ms)
+08:23:14 ids_step 1 failed rc=0 wall=4.161s failed ids_step (1.0 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:23:25 ids_step 2 failed rc=0 wall=4.242s failed ids_step (0.9 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:23:35 ids_step 3 failed rc=0 wall=4.230s failed ids_step (0.9 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:23:44 ids_step 4 failed rc=0 wall=4.247s failed ids_step (0.9 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:23:54 ids_step 5 failed rc=0 wall=4.236s failed ids_step (0.9 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:24:03 ids_step 6 failed rc=0 wall=4.235s failed ids_step (1.3 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:24:13 ids_step 7 failed rc=0 wall=4.210s failed ids_step (0.9 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:24:21 ids_step 8 error rc=0 wall=4.107s 
+08:24:32 ids_step 9 failed rc=0 wall=4.175s failed ids_step (0.9 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:24:47 ids_step 10 failed rc=0 wall=4.196s failed ids_step (0.9 ms): `simp` failed: `take_step` failed above: fix its proof first
+08:25:00 id_set_step 1 open rc=0 wall=4.202s open   law id_set_step (ids: List[TaskId], i: Int) requires 0 <= i && i < len(ids) holds id_set(ids, i + 1) == id_set(ids, i).with(ids[i])
+08:25:13 id_set_step 2 failed rc=0 wall=4.182s failed id_set_step (0.9 ms): `simp` failed: `contains_append` failed above: fix its proof first
+08:25:24 id_set_step 3 failed rc=0 wall=4.121s failed id_set_step (0.9 ms): `simp` failed: `contains_append` failed above: fix its proof first
+08:25:34 id_set_step 4 failed rc=0 wall=6.265s failed id_set_step (1149.5 ms): `simp` failed: simp: no normal form within the rewrite budget (a rule that loops?)
+08:25:45 id_set_step 5 proven rc=0 wall=5.223s proven id_set_step (6.3 ms) [assumed: refinement: len]
+08:25:55 got_step 1 proven rc=0 wall=4.155s proven got_step (6.4 ms)
+08:26:08 frame_ids 1 failed rc=0 wall=4.210s failed frame_ids (5.7 ms): `simp` failed: `take_all` failed above: fix its proof first
+08:26:16 frame_ids 2 failed rc=0 wall=4.212s failed frame_ids (5.7 ms): `simp` failed: `take_all` failed above: fix its proof first
+08:26:24 frame_ids 3 failed rc=0 wall=4.205s failed frame_ids (8.1 ms): unsolved goals:
+08:26:37 frame_ids 4 failed rc=0 wall=5.224s failed frame_ids (1450.9 ms): `simp` failed: simp: no normal form within the rewrite budget (a rule that loops?)
+08:26:51 frame_ids 5 failed rc=0 wall=7.272s failed frame_ids (2938.4 ms): `calc` failed: `auto` failed: simplify, arithmetic and the solver found no proof; it may need a split first: `match` on `tasks` (nonlinear: the solver found no proof (sat))
+08:27:07 frame_ids 6 failed rc=0 wall=5.207s failed frame_ids (1506.6 ms): `simp` failed: simp: no normal form within the rewrite budget (a rule that loops?)
+08:27:18 frame_ids 7 proven rc=0 wall=4.170s proven frame_ids (8.0 ms) [assumed: refinement: len]
+08:27:27 frame_got 1 proven rc=0 wall=4.184s proven frame_got (5.8 ms)
+08:27:38 outside_ids 1 proven rc=0 wall=4.196s proven outside_ids (4.9 ms) [assumed: refinement: len]
+08:27:47 outside_done 1 proven rc=0 wall=4.170s proven outside_done (7.1 ms) [assumed: refinement: len]
+08:27:55 listed_push 1 failed rc=0 wall=4.169s failed listed_push (0.4 ms): `assume` failed: the goal is neither `forall`, `==>` nor `!`
+08:28:03 listed_push 2 failed rc=0 wall=4.201s failed listed_push (2.9 ms): unsolved goals:
+08:28:13 listed_push 3 failed rc=0 wall=4.199s failed listed_push (0.4 ms): `have` failed: `simp` failed: simp made no progress
+08:28:25 listed_push 4 failed rc=0 wall=4.182s failed listed_push (5.6 ms): `cases` failed: unsolved goals:
+08:28:34 listed_push 5 failed rc=0 wall=4.172s failed listed_push (10.1 ms): `cases` failed: `have` failed: `auto` failed: simplify, arithmetic and the solver found no proof; it may need a split first: `match` on `order` (nonlinear: the solver found no proof (sat))
+08:28:46 listed_push 6 failed rc=0 wall=4.191s failed listed_push (3.0 ms): `cases` failed: `use` failed: `listed_get` failed above: fix its proof first
+08:29:01 listed_push 7 failed rc=0 wall=4.230s failed listed_push (3.0 ms): `cases` failed: `use` failed: `listed_get` failed above: fix its proof first
+08:29:09 listed_push 8 failed rc=0 wall=4.151s failed listed_push (3.1 ms): `cases` failed: `use` failed: `listed_get` failed above: fix its proof first
+08:29:18 listed_push 9 failed rc=0 wall=4.238s failed listed_push (5.4 ms): `cases` failed: `use` failed: `listed_get(table, order, j, v)` concludes `contains(order, j)`, which doesn't match the goal
+08:29:26 listed_push 10 proven rc=0 wall=4.245s proven listed_push (11.9 ms)
+08:29:36 some_new_here 1 proven rc=0 wall=4.180s proven some_new_here (5.4 ms) [assumed: refinement: len]
+08:29:44 some_new_kept 1 failed rc=0 wall=4.248s failed some_new_kept (0.3 ms): `assume` failed: the goal is neither `forall`, `==>` nor `!`
+08:29:52 some_new_kept 2 proven rc=0 wall=4.226s proven some_new_kept (7.0 ms) [assumed: refinement: len]
+08:30:23 settled_insert 1 failed rc=0 wall=4.200s failed settled_insert (27.9 ms): `have` failed: `use` failed: `settled_all` failed above: fix its proof first
+08:30:38 settled_insert 2 failed rc=0 wall=4.249s failed settled_insert (28.2 ms): `have` failed: `use` failed: `settled_all` failed above: fix its proof first
+08:30:49 settled_insert 3 failed rc=0 wall=4.212s failed settled_insert (28.2 ms): `have` failed: `use` failed: `settled_all` failed above: fix its proof first
+08:31:01 settled_insert 4 failed rc=0 wall=4.253s failed settled_insert (28.2 ms): `have` failed: `use` failed: `settled_all` failed above: fix its proof first
+08:31:16 settled_insert 5 failed rc=0 wall=4.164s failed settled_insert (28.7 ms): `have` failed: `use` failed: `settled_all` failed above: fix its proof first
+08:31:26 settled_insert 6 failed rc=0 wall=4.212s failed settled_insert (28.2 ms): `have` failed: `use` failed: `settled_all` failed above: fix its proof first
+08:31:41 settled_insert 7 proven rc=0 wall=4.129s proven settled_insert (71.9 ms)
+08:31:57 unlocked_insert 1 proven rc=0 wall=5.161s proven unlocked_insert (51.0 ms)
+08:32:12 locked_insert 1 proven rc=0 wall=5.208s proven locked_insert (55.2 ms)
+08:32:25 unique_push 1 failed rc=0 wall=5.217s failed unique_push (4.3 ms): `have` failed: `use` failed: `unique_snoc` failed above: fix its proof first
+08:32:37 unique_push 2 proven rc=0 wall=5.230s proven unique_push (22.9 ms)
+08:32:47 taken_ensures 1 failed rc=1 wall=5.227s failed taken_ensures (0.2 ms): unsolved goals:
+08:33:00 taken_ensures 2 failed rc=1 wall=5.233s failed taken_ensures (0.2 ms): `use` failed: `taken_fold` failed above: fix its proof first
+08:33:09 taken_ensures 3 proven rc=0 wall=5.201s proven taken_ensures (1.6 ms)
+08:33:18 taken_ensures 4 proven rc=0 wall=5.269s proven taken_ensures (1.6 ms)

@@ -1,4 +1,5 @@
-# Under `STRATA_LISTS=patterns` each quantifier the list encoding sends
+# Under `STRATA_LISTS=patterns` (with `STRATA_QUANTIFIERS=forall`, which
+# states `all` facts as quantifiers) each quantifier the list encoding sends
 # without triggers gets `:pattern`s from its body (smt `listed`): `pick`'s
 # `xs.all(…)` fact is a `forall` over positions, instantiated at `xs[i]`
 # by matching instead of by model-based instantiation.
@@ -20,7 +21,7 @@ run = ["mkdir", "-p", "dump"]
 
 [[step]]
 strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
-env = { STRATA_LISTS = "patterns", STRATA_SOLVER_DUMP = "$TMP/dump" }
+env = { STRATA_LISTS = "patterns", STRATA_QUANTIFIERS = "forall", STRATA_SOLVER_DUMP = "$TMP/dump" }
 has = ["✓ pick ", "proven:  ensures it > 0", "proven:  index in range"]
 lacks = ["not proven"]
 

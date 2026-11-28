@@ -1,0 +1,27 @@
+# Two sets made of lists are equal when every key is in both or neither:
+# z3 compares them at a key it picks itself, which no term of the code
+# names, so the facts stated at the elements and keys the code reads
+# (smt `list_set`) don't reach it. The obligation is reported as needing a
+# lemma (smt `answer_of`): its counterexample is run, not trusted, and
+# it is never proven. Under
+# `STRATA_QUANTIFIERS=forall` the facts are `forall`s, and z3 proves it.
+
+[[step]]
+save = "t.strata"
+text = '''
+/// The set of no elements of a list is empty.
+pub fn none_taken(xs: List[Int]) -> Bool
+  ensures it {
+  set(xs.take(0)) == Set[Int] {}
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
+has = ["not proven: ensures it: needs a lemma: a fact about every element of a list is used where no position is named"]
+lacks = ["✓ none_taken", "violation"]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
+env = { STRATA_QUANTIFIERS = "forall" }
+has = ["✓ none_taken ", "proven:  ensures it"]

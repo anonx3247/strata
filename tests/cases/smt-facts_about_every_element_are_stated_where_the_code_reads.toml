@@ -1,0 +1,56 @@
+# A fact about every element of a list (`all`), or of every member of a
+# set made of one, is stated at the elements the code takes, with no
+# quantifier (smt `all_of`, `list_set`, `add_views`): `pick` gets it at
+# `xs[i]`, `in_set` at the key `contains` reads, `tail_positive` at the
+# tail's witness through `drop`. Under `STRATA_QUANTIFIERS=forall` it is a
+# `forall` over positions, as before.
+
+[[step]]
+save = "t.strata"
+text = '''
+/// The `i`th of a list of positive numbers.
+pub fn pick(xs: List[Int], i: Int) -> Int
+  requires xs.all(x -> x > 0)
+  requires 0 <= i && i < len(xs)
+  ensures it > 0 {
+  xs[i]
+}
+
+/// A member of the set of a list of positive numbers.
+pub fn in_set(xs: List[Int], y: Int) -> Bool
+  requires xs.all(x -> x > 0)
+  requires contains(set(xs), y)
+  ensures y > 0 {
+  true
+}
+
+/// A positive list's tail is positive.
+pub fn tail_positive(xs: List[Int]) -> List[Int]
+  requires xs.all(x -> x > 0)
+  ensures it.all(x -> x > 0) {
+  drop(xs, 1)
+}
+'''
+
+[[step]]
+run = ["mkdir", "-p", "dump", "dump2"]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
+env = { STRATA_SOLVER_DUMP = "$TMP/dump" }
+has = ["✓ pick ", "✓ in_set ", "✓ tail_positive ", "proven:  ensures it > 0", "proven:  ensures y > 0"]
+lacks = ["not proven"]
+
+[[step]]
+run = ["sh", "-c", "cat dump/*.smt2 | grep -c '(forall' || true"]
+stdout = "0\n"
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
+env = { STRATA_QUANTIFIERS = "forall", STRATA_SOLVER_DUMP = "$TMP/dump2" }
+has = ["✓ pick ", "✓ in_set ", "✓ tail_positive "]
+lacks = ["not proven"]
+
+[[step]]
+run = ["sh", "-c", "cat dump2/*.smt2 | grep -c '(forall ((q[0-9]* Int))' | sed 's/^[1-9][0-9]*$/some/'"]
+stdout = "some\n"
