@@ -283,31 +283,25 @@ Each difference is a decision recorded in REBUILD.md.
 
 A module is stored as a tree. This section lists every node and its fields. Section 4 gives the bytes, section 2 the text each node is written as, and section 6 the typing rules a stored tree obeys.
 
-The tree is written here as Strata types. `Natural` is a natural number of any size, `Int` an integer of any size. `Option[T]`, `List[T]` and `String` are core's.
+The tree is written here as Strata types. `Natural` is a natural number of any size, `Int` an integer of any size. `Option[T]`, `List[T]`, `Dict[K, V]` and `String` are core's. A field whose name would be a keyword takes a leading `_` (`_type`, `_trait`); a leading `_` means nothing on a field.
 
-### 3.1 Ids and keys
+### 3.1 Ids, keys and node indices
 
 ```strata
 distinct type Id = u32 where it != 0
+distinct type NodeIndex = u32
 type Key = { module: ModulePath, id: Id }
+type NodeKey = { definition: Id, node: NodeIndex }
 type ModulePath = { package: Name, path: List[Name] }
 type Name = String where is_identifier(it)
-distinct type NodeIndex = u32
 ```
 
-- These have an `Id`: definitions, variants, methods, fields of declared types, and parameters of functions and methods.
+- These have an `Id`: definitions (methods included), named types declared inside a sum (section 3.5), fields, and parameters of functions, methods and function types.
 - An id is unique among the ids of its module, and it stays the same through edits, renames and moves within the module. `edit` draws a new id at random, never 0, and draws again while it is taken.
 - A `Key` names something in any module: the module and the id.
-- A shared field of a sum (`with`, section 3.5) has one id, the same in every variant.
-- A local variable, a type parameter, a lambda's parameter and a pattern's binding have no id. Uses refer to them by their node (section 3.2).
-
-### 3.2 Nodes and node indices
-
-- A definition's nodes are every value of the types `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Variant`, `Arm` and `Contract` reachable from it, and the definition itself.
-- They are numbered from 0 in postorder: a node's children first, in the order of their fields in this section and of their lists, then the node. The definition is the last node.
-- A node is identified anywhere by `(definition key, node index)`. Passes keep their results in tables keyed by this pair.
-- `Local { binder }` holds the index of the node that binds the variable: a `Parameter`, a `TypeParameter`, or a pattern's `Binding`. The binder holds the name.
-- The printer writes a local by its binder's name. Where two binders in scope at a use have one name, it writes the inner one as is and renames the outer one in the text it prints, never in the tree.
+- A definition's nodes are every value of the types `Definition`, `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Arm` and `Contract` reachable from it. They are numbered from 0 in postorder: a node's children first, in the order of their fields in this section and of their lists, then the node. The definition is the last node.
+- A `NodeKey` names a node in its module: its definition's id and its index. Passes keep their results in tables keyed by it.
+- A local variable, a type parameter, a lambda's parameter and a pattern's binding have no id. A use refers to its binder by node index: `Local { binder }`.
 
 ```strata
 law children_first(d: Definition, parent: NodeIndex, child: NodeIndex)
@@ -321,13 +315,19 @@ law binder_in_scope(d: Definition, usage: NodeIndex)
 
 Section 5 defines `in_scope`.
 
-### 3.3 Modules and imports
+### 3.2 Modules, names, docs and comments
+
+No node holds a name, a doc or a comment. The module holds them in tables, keyed by id or by node.
 
 ```strata
 type Module = {
   doc: Doc,
   imports: List[Import],
   definitions: List[Definition],
+  names: Dict[Id, Name],
+  local_names: Dict[NodeKey, Name],
+  docs: Dict[NodeKey, Doc],
+  comments: Dict[NodeKey, Comment],
 }
 
 type Import =
@@ -342,36 +342,44 @@ type Comment = List[String]
 
 Example: `use std.time as t` is `WholeModule { module: std.time, alias: Some("t") }`. `from std.time use Clock` is `Names { module: std.time, names: [ImportedName { key: <Clock's key>, alias: None }] }`.
 
-- The file gives the module's path, so a module doesn't store it.
-- `Doc` holds the lines of `//!` or `///` comments. `Comment` holds the lines of `//` comments.
+- `names` gives the name of every id in the module, except an `Impl`'s, which has none.
+- `local_names` gives the name of every node that binds a variable without an id (`Binding`, `TypeParameter`, the elements of named results) and of every `Hole`.
+- `docs` holds the `///` lines of definitions and fields. `comments` holds the `//` lines of definitions, statements, arms, fields and parameters. A comment written above a node and one at the end of its line are both stored for that node. The printer chooses where to write it by the kind of node: above definitions and statements, at the end of the line for parameters and fields.
+- `doc` is the module's `//!` lines. The file gives the module's path, so a module doesn't store it.
+- A rename changes one entry of `names` or `local_names`, and no node.
 
-### 3.4 Definitions
+```strata
+law every_id_named(m: Module, id: Id)
+  requires declared_in(m, id) && !is_impl(m, id)
+  holds m.names.contains(id)
+
+law every_binder_named(m: Module, n: NodeKey)
+  requires binds_without_id(m, n) || node_of(m, n) is Hole
+  holds m.local_names.contains(n)
+```
+
+### 3.3 Definitions
 
 ```strata
 type Definition =
   | Function {
-      name: Name,
       type_parameters: List[TypeParameter],
       parameters: List[Parameter],
       result: Expression,
-      result_names: List[Name],
       contracts: List[Contract],
       body: Option[Expression],
     }
   | Extern {
-      name: Name,
       language: ForeignLanguage,
       parameters: List[Parameter],
       result: Expression,
       contracts: List[Contract],
     }
   | TypeDefinition {
-      name: Name,
       type_parameters: List[TypeParameter],
       value: Expression,
     }
   | Trait {
-      name: Name,
       type_parameters: List[TypeParameter],
       supertraits: List[Expression],
       methods: List[Definition.Function],
@@ -382,31 +390,29 @@ type Definition =
       target: Expression,
       methods: List[Definition.Function],
     }
-  | Test { name: Name, body: Expression }
+  | Test { body: Expression }
 with {
   id: Id,
   public: Bool,
-  doc: Doc,
-  comment: Comment,
 }
 
 type ForeignLanguage = | C | Rust | Python | TypeScript
 ```
 
 Examples:
-- `fn area(s: Shape) -> f64 { … }` is a `Function` with one parameter, `result` the expression `f64`, no contracts, and a body.
+- `fn area(s: Shape) -> f64 { … }` is a `Function` with one parameter, `result` the expression `f64`, no contracts, and a body. `names` maps its id to `area`.
 - `type Positive = Int where it > 0` is a `TypeDefinition` whose `value` is a `Refinement` (section 3.5).
 - `impl Mul[Int, Money] for Money { … }` is an `Impl` whose `_trait` is the expression `Mul[Int, Money]` and `target` the expression `Money`.
 
 - A `Function` at the top level, or in an `Impl`, has a body. A method of a `Trait` may have none; then each impl gives it.
-- `result_names` is empty, or holds two or more names: those of `-> (low: s64, high: s64)`. Contracts refer to the result as `it` (section 3.6), and to its parts as `it.0`, `it.1`. The printer writes them by these names.
+- Named results (`-> (low: s64, high: s64)`) are a `TupleType` result whose elements are named in `local_names`. Contracts refer to the result as `it` (section 3.7) and to its parts as `it.0`, `it.1`; the printer writes them by their names.
 - An `Impl` has no name. Section 5 states how a reader finds it, by its trait and target.
-- A method is a `Definition.Function`, so it has an id, a doc and a comment of its own. `public` on a method of a trait or impl is the trait's or impl's.
-- Laws, lemmas and proofs are definitions too. Section 8 adds them, with their nodes. Task expressions come with section 9.
+- A method is a `Definition.Function`, so it has an id of its own. `public` on a method of a trait or impl is the trait's or impl's.
+- Laws, lemmas and proofs are definitions too. Section 8 adds them. Task expressions come with section 9.
 
-### 3.5 Expressions
+### 3.4 Expressions
 
-Every expression has a type, which is itself an expression, in its field `_type` (section 6). `type` is a keyword, so the field is `_type`; a leading `_` means nothing on a field.
+Every expression has a type, which is itself an expression, in its field `_type` (section 6).
 
 ```strata
 type Expression =
@@ -422,10 +428,11 @@ type Expression =
   | Call { target: Target, arguments: List[Argument] }
   | Lambda { parameters: List[Parameter], body: Expression }
   // values made of parts
-  | Construct { variant: Option[Id], base: Option[Expression], fields: List[FieldValue] }
+  | Construct { named: Key, value: Expression }
+  | RecordLiteral { base: Option[Expression], fields: List[FieldValue] }
   | Tuple { elements: List[Expression] }
   | ListLiteral { elements: List[Expression] }
-  | FieldAccess { record: Expression, field: FieldReference }
+  | FieldAccess { record: Expression, field: Key }
   | TupleElement { tuple: Expression, index: u32 }
   // control
   | Block { statements: List[Statement], result: Expression }
@@ -445,16 +452,15 @@ type Expression =
   | Comptime { value: Expression }
   // types
   | RecordType { fields: List[Field] }
-  | SumType { variants: List[Variant] }
-  | UnionType { members: List[Expression] }
   | TupleType { elements: List[Expression] }
+  | Named { id: Id, _type: Expression }
+  | SumType { members: List[Expression] }
   | FunctionType { parameters: List[Parameter], result: Expression }
   | Refinement { base: Expression, predicate: Expression }
-  | TypeApplication { function: Expression, arguments: List[Expression] }
+  | TypeApplication { generic: Expression, arguments: List[Expression] }
   // unfinished code
-  | Hole { name: Name }
-  | Conflict { ours: Expression, base: Expression, theirs: Expression }
-  // markers, never stored (section 3.8)
+  | Hole { choices: List[Expression] }
+  // markers, never stored (section 3.7)
   | Inferred
   | ImplicitConstructor { value: Expression }
 with {
@@ -469,18 +475,17 @@ type Target =
 
 type Argument = { parameter: Id, value: Expression, mode: PassingMode }
 type PassingMode = | Plain | Mutable | Capability
-type FieldValue = { field: Id, value: Expression }
-type FieldReference = | Declared { key: Key } | Structural { name: Name }
+type FieldValue = { field: Key, value: Expression }
 ```
 
 Literals:
 - `Integer` holds the literal's value, with no sign. `-1` is the call `Neg.neg(1)`.
 - `Decimal` is the exact value `digits × 10^exponent`, with no trailing zero in `digits` (`1.50` is `{ digits: 15, exponent: -1 }`). No float is ever stored (rule 14).
 - `Text` holds valid UTF-8. An f-string is stored as calls (section 2).
-- `true` and `false` are core's `Bool` variants, stored as `Construct`.
 
 Names:
-- `Global` refers to a definition by its key: a function used as a value, a type, a trait.
+- `Local` is a use of a variable or parameter of this definition (`x` in `x + 1`). It holds the index of the node that binds it.
+- `Global` is a use of a definition by its key: a function passed as a value (`shapes.map(area)`), a type (`Shape`), a generic (`List` in `List[Int]`), a trait.
 - `SelfType` is `Self`: the type the enclosing trait or impl is for.
 
 Calls:
@@ -492,31 +497,37 @@ Calls:
 - `Call.arguments` holds the arguments given, in the order of the parameters. A parameter left out takes its default (section 7). A method's receiver is the first argument. `mode` records `mut` and `cap` as written at the call.
 
 Values made of parts:
-- `Construct` makes a record (`variant: None`) or a sum's variant. Its type, the node's `_type`, says which record or sum.
-  - `fields` holds the fields given, in the order the type declares them. Each field left out takes its value from `base` when there is one (`T { ...r, f: v }`), and otherwise its default.
-  - So a field added to a type later fills every stored `Construct` with no rewrite.
-- `FieldAccess` names a declared field by key, or a field of a structural record (`{ a: s64, .. }`) by name.
+- `Construct` makes a value of a named type from its contents: `Circle { r: 1.0 }` is `Construct { named: <Circle>, value: RecordLiteral { … } }`, `Some(x)` is `Construct { named: <Some>, value: Tuple { elements: [x] } }`, and `None`, `true` and `false` are `Construct` over the empty `Tuple`.
+- `RecordLiteral` holds the fields given, in the order the type declares them. Each field left out takes its value from `base` when there is one (`T { ...r, f: v }`), and otherwise its default. So a field added to a type later fills every stored literal with no rewrite. With no `Construct` around it, a `RecordLiteral` is a structural record (`{ x: 1, y: 2 }`).
+- `FieldAccess` names the field by key: the field of the record's type, or of the bound that declares it when the record's type is a type parameter.
 
 Control and logic:
 - `Return`, `Break` and `Continue` are expressions whose type is core's `Never`.
-- `And`, `Or`, `Implies` and `Not` are nodes, not trait calls, because `And`, `Or` and `Implies` don't evaluate their right side when the left decides.
+- `And`, `Or`, `Implies` and `Not` are nodes, not trait calls. `And`, `Or` and `Implies` evaluate their right side only when the left doesn't decide the result (`i < len(xs) && xs[i] > 0` never reads `xs[i]` out of range), and the prover uses the left side as a fact while proving the right.
 
 Types:
-- `RecordType`, `SumType` and the other type nodes are expressions whose type is `Type`. A type in a signature, a field, a parameter or a node's `_type` is such an expression, or a `Global` naming a type, or a `TypeApplication` (`List[Int]`).
-- A `SumType` with shared fields (`| A { x } | B with { id: Id }`) is stored with each shared field in every variant, under its one id. The printer writes `with` when every variant holds the same fields under the same ids.
+- There are no variants. A sum is a sum of types: `SumType { members }`. Each member is a type declared elsewhere (`Global`) or a `Named` type declared in the sum.
+- `Named { id, _type }` is a type with a name of its own, over a record (`Circle { r: f64 }`), a tuple (`Set(T)`), or the empty tuple, which makes an atom (`None`, `Never`, `True`). The printer writes an atom without `()`.
+- A record has named fields (`Field`, with ids). A tuple has unnamed elements, which are only types; `.0`, `.1` read them.
+- A sum with shared fields (`| A { x: s64 } | B with { id: Id }`) is stored with each shared field in every member's record, under one id. Every member must then be a `Named` record. The printer writes `with` when every member holds the same fields under the same ids.
+- `TypeApplication` is a generic type with its arguments: `List[Int]`, `Result[Config, NotFound]`, `Patch[User]`, `Matrix[3, 4]`. It isn't a `Call`, because a call's arguments are by parameter id and a type parameter has none.
 - `Refinement` binds `it` in its predicate. A `Local` for that `it` refers to the `Refinement` node.
 
 The `_type` field:
 - Every expression's `_type` is `Some(t)`, where `t` is an expression whose own type is `Type`.
 - The one exception is the expression naming core's `Type` itself, whose `_type` is `None`. So the chain of types ends: the type of `s64` is `Type`, and `Type` stores no type.
-- Nothing in the tree records whether a type was written. The printer leaves out every type that inference would give back exactly, and `view --types` writes them all, as `(e: T)` (section 2).
+- Nothing records whether a type was written. The printer leaves out every type that inference would give back exactly, and `view --types` writes them all, as `(e: T)` (section 2).
+
+Unfinished code:
+- A `Hole` is code still to write. `?body` is a `Hole` with no choices, named `body` in `local_names`.
+- A merge conflict inside a definition is a `Hole` whose choices are both sides' code, ours first, then the base's when it differs from both (`?conflict_1`). Filling the hole picks a choice or writes new code.
 
 ```strata
 law types_end(e: Expression)
   holds (e._type == None) == (e == Global { key: core.Type })
 ```
 
-### 3.6 Statements, patterns, arms
+### 3.5 Statements, patterns, arms
 
 ```strata
 type Statement =
@@ -537,53 +548,48 @@ type Statement =
     }
   | Assert { condition: Expression }
   | Evaluate { value: Expression }
-with {
-  comment: Comment,
-}
 
 type Pattern =
   | Wildcard
-  | Binding { name: Name, mutable: Bool }
+  | Binding { mutable: Bool }
   | LiteralPattern { value: Expression }
-  | ConstructorPattern { variant: Option[Id], fields: List[FieldPattern], rest: Bool }
+  | NamedPattern { named: Key, inner: Pattern }
+  | RecordPattern { fields: List[FieldPattern], rest: Bool }
   | TuplePattern { elements: List[Pattern] }
-  | TypePattern { type_test: Expression, binding: Option[Pattern] }
+  | TypeTest { tested: Expression, binding: Option[Pattern] }
   | Alternatives { patterns: List[Pattern] }
 with {
   _type: Option[Expression],
 }
 
-type FieldPattern = { field: Id, pattern: Pattern }
+type FieldPattern = { field: Key, pattern: Pattern }
 
-type Arm = { pattern: Pattern, guard: Option[Expression], body: Expression, comment: Comment }
+type Arm = { pattern: Pattern, guard: Option[Expression], body: Expression }
 ```
 
 Examples:
-- `x := f(y)` is `Bind { pattern: Binding { name: "x", mutable: false }, value: … }`.
+- `x := f(y)` is `Bind { pattern: Binding { mutable: false }, value: … }`, the binding named `x` in `local_names`.
 - `mut total: s64 = 0` is a `Bind` whose `Binding` is mutable and whose type is `s64`.
 - `x = e` is `Assign`. `x += e` is `Assign { place: x, value: Add.add(x, e) }`.
 - `loop { … }` is `While` with the condition `true`. `comptime for` is `For` with `unrolled: true`.
-- `e: NotFound => …` in a match is a `TypePattern`. `Some(x)` is a `ConstructorPattern`.
+- `Some(x)` as a pattern is `NamedPattern { named: <Some>, inner: TuplePattern { elements: [Binding] } }`. `e: NotFound => …` is a `TypeTest`.
 
 - A `Binding` binds a variable. Its type is the variable's.
 - `Assert`'s proof steps (`assert … by …`) come with section 8.
 - `Evaluate` is an expression used as a statement.
 
-### 3.7 Parameters, fields, variants, contracts
+### 3.6 Parameters, fields, contracts
 
 ```strata
 type Parameter = {
   id: Id,
-  name: Name,
   _type: Expression,
   mode: ParameterMode,
   default: Option[Expression],
-  comment: Comment,
 }
 type ParameterMode = | Plain | Mutable | Capability | Comptime
 
 type TypeParameter = {
-  name: Name,
   _type: Expression,
   bounds: List[Expression],
   variance: Variance,
@@ -592,19 +598,8 @@ type Variance = | Covariant | Contravariant | Invariant
 
 type Field = {
   id: Id,
-  name: Option[Name],
   _type: Expression,
   default: Option[Expression],
-  doc: Doc,
-  comment: Comment,
-}
-
-type Variant = {
-  id: Id,
-  name: Name,
-  fields: List[Field],
-  doc: Doc,
-  comment: Comment,
 }
 
 type Contract =
@@ -616,14 +611,13 @@ with {
 }
 ```
 
-- A parameter written `_x` is passed without its name (section 2). The name keeps its `_`.
+- A parameter named `_x` is passed without its name (section 2). Its name keeps the `_`.
 - A lambda's and a function type's parameters are `Parameter`s too. They have ids, because names are part of a function type.
 - A `TypeParameter`'s `_type` is `Type` for a type parameter, or an integer, `Bool` or atom type for a value parameter (`type Matrix[R: s64, C: s64]`).
 - `variance` is computed by elaborate (section 6) and is part of the type's interface.
-- A field with no name is positional: `Set(T)` is a variant with one unnamed field.
 - In an `ensures`, `it` is a `Local` whose binder is the `Function`. In a `requires` of a function with one parameter, `it` is that parameter.
 
-### 3.8 Parsed trees and stored trees
+### 3.7 Parsed trees and stored trees
 
 `parse` and `desugar` give a tree with markers for what is left to infer. `elaborate` fills them in and gives the stored tree.
 
