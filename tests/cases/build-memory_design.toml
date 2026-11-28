@@ -1,0 +1,26 @@
+# std.memory's frozen snapshots and roots (the memory design trial):
+# tasks of a scope read a frozen copy without copying it, nested
+# snapshots, the result copied out of the snapshot; roots copying in what
+# they capture and await, a record made in a root holding an awaited
+# value, the result copied out; the same with arenas off
+# (STRATA_MEMORY=check: everything made is freed) and on the JIT
+
+[[step]]
+save = "design.strata"
+from = "design.st"
+
+[[step]]
+strata = ["build", "design.strata", "-o", "prog", "--no-verify"]
+
+[[step]]
+run = ["./prog"]
+stdout = "1562\nhi site\n[\"t0\", \"t1\", \"t2\"]\n28000\n292\n"
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "1562\nhi site\n[\"t0\", \"t1\", \"t2\"]\n28000\n292\n"
+
+[[step]]
+strata = ["run", "design.strata"]
+stdout = "1562\nhi site\n[\"t0\", \"t1\", \"t2\"]\n28000\n292\n"

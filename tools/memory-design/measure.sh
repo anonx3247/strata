@@ -16,5 +16,5 @@ y=$(grep "cycles elapsed" time.out | awk '{print $1}')
 m=$(grep "peak memory footprint" time.out | awk '{print $1}')
 r=$(grep "maximum resident" time.out | awk '{print $1}')
 echo "$c | instr $i | cycles $y | peak-footprint $m | max-rss $r"
-grep -i "memory" time.out server.out | head -5
+cp time.out ${KEEP:-/dev/null} 2>/dev/null; grep -i "memory" time.out server.out | head -5
 cd /; rm -rf "$dir"
