@@ -171,11 +171,12 @@ Each layer lists what it adds; nothing else exists yet.
 
 A test of the spec: an agent (Fable) builds the language from it in one go, with the lab's `strata`. How far it gets says what the spec leaves out.
 
-Phase 0, done: `view` in reading order (#547), fast `diff` with `--json` (#544), PR tours (#546, #550). Left:
-- The lab bugs that lose code or prove false facts (BUGS.md, first entries).
-- Format trials in the lab: stable ids (#559) and the stored core (#562), merged and released.
-- In the lab: `strata new MODULE`; `strata diff` and tours node by node by default (the tree diff exists, #569).
-- The rules 10 and 11 tried in the lab: a lint for claim-style comments; the remaining `TAny` and default-yes answers replaced by errors in one module, measured.
+Phase 0, done: `view` in reading order (#547), fast `diff` with `--json` (#544), PR tours (#546, #550), the format trials (stable ids #559 and the stored core #562, released in v0.5.1), `strata new` (#625, #641), `diff` and tours node by node (#630), the claim lint (#622, off by default), the checker's default-yes answers replaced and measured (#628, #632, #645, #652), and the lab bugs that lose code or prove false facts (#621, #626, #627, #629, #633, #635, #636, #647, #649, #650, #654, #656, #660, #662, #663, #667, #668, #670, #675). Left:
+- The claim lint on by default (the user's call).
+- The last `TAny` in the checker: `comptime` parameters, which need dependent parameters, and unknown types (BUGS.md, Type checker).
+- The soundness entries in BUGS.md (Verification) and its data-loss entries (Tools).
+- The verification ladder's choices that #631 and #665 measured (the user's call).
+- Quantifiers stated per instance, with `forall` behind `STRATA_QUANTIFIERS=forall` (the user's choice, being built).
 
 ## Appendix: decisions recorded in the lab, to review
 
@@ -446,6 +447,7 @@ Found, not fixed:
 - **Found**:
   - `verify --smt` and `--obligations` analyse the whole package before the selection (`smt_file`: `analyze` over `shown_names(ctx, own)` of every definition), so on compiler/ one module printed nothing in 300 s; and they list only functions, not implementation methods (std.array: 323 obligations against 841 in `verify`).
   - z3 rejects 92 of compiler's queries: 58 mix sorts (`Int` and `|T:U32|`, mostly compiler/main), 34 declare a datatype z3 calls "not co-variant" (finding, smt, binary). The rest of each batch is answered.
+  - #636 fixed the 58 that mix sorts, and #660 brought the rejections to 0.
   - The `smt-long_terms_read_through_a_let` case ran out of its 60 s while the sweep ran (load), passed alone (below).
 - The obligations that need quantifiers or nonlinear arithmetic:
 - Quantifiers, 657 obligations, by module (function: obligations):

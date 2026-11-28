@@ -110,6 +110,12 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: smt.own_parts (called from smt.function and smt.annotated), smt.check_type_at (refinements evaluated through `pred`). Source: nested-refinements PR. Confidence: sure.
 - [ ] **A contract's function value passed to `find` leaves its checks unknown.** In a function's own contract, the checks of a function value passed to `map`, `filter`, `count`, `fold` or a function of the program are obligations for any element or argument. `find` applies its function itself, at a nested level, so it reports one unknown obligation, "the checks inside `…`". `fold`'s accumulator is an unknown value, so checks on it are unknown.
   Where: smt.builtin (`find`), smt.call_exprs (the `find` exception), smt.fn_arg_run (`fold`). Source: nested-refinements PR. Confidence: sure.
+- [ ] **Two sites with the same text can't be told apart, so a check can be left out where it wasn't proven.** A site is a hash of the expression's printed text (`text.check_site`). When the prover evaluates one of two same-text sites twice and skips the other, codegen counts two proofs at that site and leaves both checks out. The occurrence count only guards against a site skipped entirely. Node ids would close it.
+  Where: text.check_site, codegen.proven, smt (`Vc.here`, `given_sites`). Source: PR #633. Confidence: likely.
+- [ ] **A bound trait's methods in another module are not modelled.** A call of one is "`get` is not modelled", so an impl's or method's bound can't change a verdict the prover reaches.
+  Where: smt (methods of a bound's trait). Source: PR #629. Confidence: likely.
+- [ ] **Fuzzing crashes when a program method is named like a built-in.** A `--file` program with `type A = { x: Int }`, `impl A { fn max(self) -> Int }` and an unproven `fn t(k: Float) -> Float ensures it >= 1.0 = max(k, 1.0)` crashes in `jit_fuzz_case` (signal 10/11).
+  Where: fuzzer (`jit_fuzz_case`). Source: PR #670. Confidence: sure (on its base too).
 
 ## Type checker
 
@@ -217,6 +223,12 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: build. Source: ledger C24 (#459). Confidence: possible.
 - [ ] **A union of type parameters given a union before they are fixed is refused.** `fn same[T, E](v: T | E, t: T, e: E)` called as `same(x, 0, "")` with `x: Int | String` is "a value of `Int` fits more than one member of `_ | _`": the arguments are checked in order, and when `v` is, `T` and `E` are still open. With `v` last it checks.
   Where: check.members_fit / open_member (arguments unified in order in the call's inference). Source: generic-unions PR. Confidence: sure.
+- [ ] **`fits` compares nested types without fuel.** After its `TFn` arm, `fits` recurses with no fuel. `unify`'s fuel is reached only on speculative paths (overload search, joins), whose error is dropped.
+  Where: check.fits, check.unify. Source: PR #628. Confidence: likely.
+- [ ] **Trait methods are keyed by the trait's short name.** Two traits with one short name in different modules can't be told apart.
+  Where: check (trait method tables). Source: PR #626. Confidence: likely.
+- [ ] **A record's fields have no `pub` of their own.** Outside its module, a `pub` record shows every field and a private record none.
+  Where: check.closed_fields, check.Types.private. Source: PR #649. Confidence: sure.
 
 ## Front end
 
@@ -312,6 +324,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: edit. Source: ledger F7. Confidence: likely.
 - [ ] **The tree-sitter grammar doesn't know `decreases`.** Editors mis-highlight or mis-parse a `decreases` clause.
   Where: tree-sitter grammar. Source: ledger F10 (#461). Confidence: possible.
+- [ ] **A `use` after `fn main` in the root module is not seen.** A `use util` stored after `fn main` (an `--as-given` save) gives "unknown variable `util`". It works when the `use` comes first.
+  Where: resolve (root module's imports). Source: PR #651. Confidence: sure.
+- [ ] **A private std name imported while std is read as headers is "unknown variable".** With std read as precompiled headers (`edit` without `--as-given`), `from std.json use hex_digit` gives "unknown variable `hex_digit`": the header lacks the name, and `use_errors_from` drops "module `std.…` has no …". `strata check` names it as private.
+  Where: resolve.use_errors_from, std headers. Source: PR #651. Confidence: sure.
 
 ## Code generation
 
@@ -359,6 +375,14 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: codegen. Source: ledger G21 (#455 partial). Confidence: possible.
 - [ ] **Cold and warm builds of the same compiler differ by a few bytes.** `compile_part` reads parts with LLVM's IR parser, not c/ir.c's; one `eval` function's alignment differs.
   Where: codegen.compile_part. Source: ledger G26 (#434, #427). Confidence: likely.
+- [ ] **`f(mut v, g(v))` keeps `v`'s reference until `f` returns, so `f`'s first change copies.** Also `f(mut v, h(mut v))` and `f(mut v, len(v.d))`. 20,000 dict inserts took 0.07 s with the argument bound first, 2.3-6.6 s nested. smt binds these arguments first; main has a few dozen such calls.
+  Where: codegen (argument evaluation for `mut` arguments). Source: PR #607. Confidence: likely.
+- [ ] **`xs[i] = v` copies `xs` when `v` is read from another list.** 100,000 assignments took 26 s; the same loop with a dict takes 0.07 s.
+  Where: codegen (element assignment). Source: PR #613. Confidence: likely.
+- [ ] **Memory verdicts fall back to the worst case in five places.** Calls of a local closure keep every argument (`is_it(x)` in `codegen.hint_subject`). Operators other than comparisons keep their operands even when the result is only read, because an operator's `impl` isn't looked up. Built-ins that take a function (`map`, `filter`) count as storing their arguments. `stack_let` and `stack_arg` use roots' `kept` and run without types, so a kept field path also keeps a record off the stack. `builtin_head` counts the program's functions of that short name for a `String` receiver, so a std function named `split` makes `s.split(..)` keep `s`. An `Interp` with one part may give back its part, so `f"{p.name}"` stays kept.
+  Where: codegen.kept_by, codegen.escapes, codegen.stack_let, unique.head_of, unique.builtin_head. Source: PR #654, PR #662, PR #669. Confidence: sure.
+- [ ] **`mut_method` trusts `exit` of every short-name candidate for an unresolved receiver.** That is sound while every `impl` method is registered, and only while built-ins and mocks keep a `mut self` held once.
+  Where: unique.mut_method. Source: PR #647. Confidence: possible.
 
 ## Runtime and core
 
@@ -538,8 +562,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.edit_file. Source: review tools. Confidence: sure.
 - [ ] **(data loss) `fix --file` writes in place, not atomically, and removes "unused" definitions without any check.** `match mut disk.write_bytes(f, bytes)` writes the script in place (not `codebase.write_file`), after `unused.removable` and `lint.fixes`. Nothing is checked. The package branch goes through `apply_change` (write, then check).
   Where: main.fix_command (the `--file` branch). Source: review tools. Confidence: sure.
-- [ ] **`edit_scope` assumes a body change can't break other definitions.** Only `interface_hash` changes widen the check (`if interface_hash(o) != interface_hash(d) { wide… }`).
-  Where: main.edit_scope. Source: review tools. Confidence: possible.
 - [ ] **`git_commit` stages and commits everything under the package folder.** `["add", "-A", "--", ".", ":(exclude).strata"]`, then `["commit", "-q", "-m", message, "--", "."]`. Unrelated work-in-progress files, untracked notes, `.env` files, the strata.lock rewritten by dependency resolution, and C or doc files in the package folder are all committed under the edit's message.
   Where: main.git_commit. Source: review tools. Confidence: sure.
 - [ ] **`rename`, `move`, `fix` (package) and `done` write, then check, then restore.** `rename`, `move`, `fix` (package), `done` and `follow_renames` write first, then check, then restore on failure; `follow_renames` also writes without a check and without grouping the writes.
@@ -628,6 +650,36 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: edit (pending changes). Source: ledger T15. Confidence: likely.
 - [ ] **A run killed by SIGKILL leaves its `smt/PID` folder.**
   Where: verify scratch. Source: ledger T23. Confidence: likely.
+- [ ] **Calls in contracts are not marked before a rename.** `mark_method_calls` doesn't infer calls in `requires`, `ensures`, invariants and models, so a method rename there follows the "no other method of that name" rule. `merge.follow_rename` and `diff` call `rename_all` without marking calls at all. A missed call makes the post-rename check fail, so nothing is changed silently.
+  Where: check.mark_method_calls, rename.rename_all, merge.follow_rename, diff. Source: PR #626. Confidence: sure.
+- [ ] **Read-only commands skip a module they can't decode.** lint, unused, `codegen_with` and settings go through `package_decls` / `module_decls`, print the error naming the file, and go on without that module.
+  Where: main.package_decls, main.module_decls and their callers. Source: PR #626. Confidence: sure.
+- [ ] **An edit is accepted when the codebase already has a module-level error.** An error such as "`helper` is both a function and a method of `util.T`" hides the edit's own privacy error.
+  Where: edit (check of the edited package). Source: PR #651. Confidence: sure.
+- [ ] **Adding a definition that calls existing ones moves them below it.** `edit shop` with `fn c() = a() + 1` puts the callees, with the module's top comment, below the new definition. `strata new` does the same.
+  Where: edit (order of stored definitions). Source: PR #641. Confidence: sure.
+- [ ] **Inserting an `else if` shows edits to every later branch.** The tree nests the chain, so diff pairs branches by position. Lining chains up as lists would fix it.
+  Where: tree.changes, diff. Source: PR #630. Confidence: sure.
+- [ ] **`tree.changes` compares variant and method ids.** Only the definition's own id is skipped, so versions from the log report variants as `edited` in `--json`'s `nodes`. `hunks` hides them because they print the same.
+  Where: tree.changes. Source: PR #630. Confidence: sure.
+- [ ] **`strata tour` says "nothing else needs re-checking" for every body change.** A body a contract may see through or unfold changes its callers' proofs; `edit` says so.
+  Where: diff (tour's change labels). Source: PR #663. Confidence: sure.
+- [ ] **`verify 'module:main'` matches nothing for the root module.** `cd compiler && strata verify 'module:main' --termination` prints "error: `module:main` names no definition and no module" and exits 0.
+  Where: views (selectors). Source: PR #665. Confidence: sure.
+- [ ] **A selection error in `verify` exits 0.** A selector that names nothing prints its error, then `verify` exits 0.
+  Where: main.verify_program (selection). Source: PR #665. Confidence: sure.
+- [ ] **The claim lint is tested by examples only.** `compiler/claims` has `test` blocks and no contract. In a sample of 25 flags, 3 were false positives; rule lists and term definitions are the usual kind.
+  Where: claims. Source: PR #622. Confidence: sure.
+- [ ] **`strata edit`'s own commits carry no attribution trailer.** The auto-commit's message can't take `Co-Authored-By` or other trailers.
+  Where: main.git_commit. Source: PR #646. Confidence: sure.
+- [ ] **Nothing checks that compiler/ builds with the latest release.** Code that needs a newer checker builds on main's own build but fails stage 1 of `tools/bootstrap.sh` from the release (#668's `??` after `is Some`, rewritten in #672). Build one stage with the latest release before merging a change to compiler/.
+  Where: tools/bootstrap.sh. Source: PR #668, PR #672. Confidence: sure.
+- [ ] **A whole-std `verify --require proven` takes more than 300 s.**
+  Where: verify. Source: PR #627. Confidence: sure.
+- [ ] **Plain `verify` spends 6-9 s on compiler/ checking the program first.** It runs before the selection is used.
+  Where: main.verify_program (`verify: check the program`). Source: PR #667. Confidence: sure.
+- [ ] **`docs/std` is behind std.** Regenerating it rewrites 25 pages.
+  Where: docs/std. Source: PR #623. Confidence: possible.
 
 ## Test cases failing on main
 
@@ -682,7 +734,6 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [Verification: SMT] `to_upper`/`to_lower`/`is_alpha`, `trim`, `split`, `lines`, `repeat`, `reverse` left unknown to the prover.
 - [Tool fixes] A match on what the checker can't type from syntax (`match p.op`) is found only by `verify`; tests compiled bare aren't run.
 - [Termination and helpers] A lambda's call of another recursive helper is seen through at each element.
-- [verify's speed] std's termination cache is keyed by name and binary, so std edited without a rebuild keeps old findings.
 - [Proven checks leave the compiled code] Not yet for trait methods (compiled names differ from verify's labels).
 - [Loops and invariants] A non-empty list can't be shown as the solver's counterexample; nested quantified facts with strings time out; `lex.lex` and `main.verify_file` searches exceed 2M.
 - [Values made as they are read] A refinement calling a function with a `requires` is evaluated without the call site's path condition.
@@ -768,5 +819,5 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [Known gaps] `--json` missing on `view`, `render`, `interface`, `status`, `done`, `test`, `run`.
 - [Known gaps] Lab-fleet tool bugs: `strata --file core check` never type-checks core; round-tripping `core/builtins` through a non-core file loses overloads; `diff`/`tour --check` report ~35 `noalloc` core functions as changed; `upgrade` writes core without dependency lists (fixed on stored-core only); the merge driver re-encoded `smt.infer_invariants` with different bytes; `edit` refuses `from m use f` with `--rm 'use m'`; `edit` can't delete a detached `//` banner; selectors split on `,` so `impl Json for Dict[String, V]` can't be named; `parse.debug_quoted` replaces `"\r"` with itself; `declarations.Names.open` is always false; unused prelude dict/set functions.
 - [Known gaps] Speed and memory: `view --graph` past 4.5 GB; long list literals need 5 GB at 20,000 elements; `containers` in `build-copies` quadratic; `std.json.parse` makes one-character strings (65% of peak on 8 MB); `check` of compiler keeps 112 MB read by `read_bytes`.
-- [Known gaps] Failing cases on main: `build-jit-tests` (expected warning removed), `cli-modules_contracts_and_files` (view order), `cli-merge_file_keeps_overloads_and_module_names`, `cli-pack_a_package_into_one_file`.
+- [Known gaps] Failing cases on main: `cli-modules_contracts_and_files` (view order).
 - The format trials' "Found, not fixed" items (stored core, stable ids, operators, the trio's merge) are listed in REBUILD.md's appendix, "The format trials as recorded in the lab": to reconcile here.
