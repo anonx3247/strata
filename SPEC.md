@@ -278,3 +278,363 @@ Each difference is a decision recorded in REBUILD.md.
 | some keywords contextual | every keyword reserved, proof steps included | to try: measure the names it breaks |
 | newline continues only before an operator or `.` | also after an operator, `,` or `{`, and before a continuing keyword | to try |
 | CR, BOM: undefined | CR LF read as LF, BOM skipped at the start | to try |
+
+## 3. The tree
+
+A module is stored as a tree. This section lists every node and its fields. Section 4 gives the bytes, section 2 the text each node is written as, and section 6 the typing rules a stored tree obeys.
+
+The tree is written here as Strata types. `Natural` is a natural number of any size, `Int` an integer of any size. `Option[T]`, `List[T]` and `String` are core's.
+
+### 3.1 Ids and keys
+
+```strata
+type Id = u32 where it != 0
+type Key = { module: ModulePath, id: Id }
+type ModulePath = { package: Name, path: List[Name] }
+type Name = String where is_identifier(it)
+type NodeIndex = u32
+```
+
+- These have an `Id`: definitions, variants, methods, fields of declared types, and parameters of functions and methods.
+- An id is unique among the ids of its module, and it stays the same through edits, renames and moves within the module. `edit` draws a new id at random, never 0, and draws again while it is taken.
+- A `Key` names something in any module: the module and the id.
+- A shared field of a sum (`with`, section 3.5) has one id, the same in every variant.
+- A local variable, a type parameter, a lambda's parameter and a pattern's binding have no id. Uses refer to them by their node (section 3.2).
+
+### 3.2 Nodes and node indices
+
+- A definition's nodes are every value of the types `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Variant`, `Arm` and `Contract` reachable from it, and the definition itself.
+- They are numbered from 0 in postorder: a node's children first, in the order of their fields in this section and of their lists, then the node. The definition is the last node.
+- A node is identified anywhere by `(definition key, node index)`. Passes keep their results in tables keyed by this pair.
+- `Local { binder }` holds the index of the node that binds the variable: a `Parameter`, a `TypeParameter`, or a pattern's `Binding`. The binder holds the name.
+- The printer writes a local by its binder's name. Where two binders in scope at a use have one name, it writes the inner one as is and renames the outer one in the text it prints, never in the tree.
+
+```strata
+law children_first(d: Definition, parent: NodeIndex, child: NodeIndex)
+  requires is_child(d, parent, child)
+  holds child < parent
+
+law binder_in_scope(d: Definition, use: NodeIndex)
+  requires node(d, use) is Local
+  holds in_scope(d, binder_of(d, use), use)
+```
+
+Section 5 defines `in_scope`.
+
+### 3.3 Modules and imports
+
+```strata
+type Module = {
+  doc: Doc,
+  imports: List[Import],
+  definitions: List[Definition],
+}
+
+type Import =
+  | WholeModule { module: ModulePath, alias: Option[Name] }
+  | Names { module: ModulePath, names: List[ImportedName] }
+
+type ImportedName = { key: Key, alias: Option[Name] }
+
+type Doc = List[String]
+type Comment = List[String]
+```
+
+Example: `use std.time as t` is `WholeModule { module: std.time, alias: Some("t") }`. `from std.time use Clock` is `Names { module: std.time, names: [ImportedName { key: <Clock's key>, alias: None }] }`.
+
+- The file gives the module's path, so a module doesn't store it.
+- `Doc` holds the lines of `//!` or `///` comments. `Comment` holds the lines of `//` comments.
+
+### 3.4 Definitions
+
+```strata
+type Definition =
+  | Function {
+      name: Name,
+      type_parameters: List[TypeParameter],
+      parameters: List[Parameter],
+      result: Expression,
+      result_names: List[Name],
+      contracts: List[Contract],
+      body: Option[Expression],
+    }
+  | Extern {
+      name: Name,
+      language: ForeignLanguage,
+      parameters: List[Parameter],
+      result: Expression,
+      contracts: List[Contract],
+    }
+  | TypeDefinition {
+      name: Name,
+      type_parameters: List[TypeParameter],
+      value: Expression,
+    }
+  | Trait {
+      name: Name,
+      type_parameters: List[TypeParameter],
+      supertraits: List[Expression],
+      methods: List[Definition.Function],
+    }
+  | Impl {
+      type_parameters: List[TypeParameter],
+      trait: Expression,
+      target: Expression,
+      methods: List[Definition.Function],
+    }
+  | Test { name: Name, body: Expression }
+with {
+  id: Id,
+  public: Bool,
+  doc: Doc,
+  comment: Comment,
+}
+
+type ForeignLanguage = | C
+```
+
+Examples:
+- `fn area(s: Shape) -> f64 { … }` is a `Function` with one parameter, `result` the expression `f64`, no contracts, and a body.
+- `type Positive = Int where it > 0` is a `TypeDefinition` whose `value` is a `Refinement` (section 3.5).
+- `impl Mul[Int, Money] for Money { … }` is an `Impl` whose `trait` is the expression `Mul[Int, Money]` and `target` the expression `Money`.
+
+- A `Function` at the top level, or in an `Impl`, has a body. A method of a `Trait` may have none; then each impl gives it.
+- `result_names` is empty, or holds two or more names: those of `-> (low: s64, high: s64)`. Contracts refer to the result as `it` (section 3.6), and to its parts as `it.0`, `it.1`. The printer writes them by these names.
+- An `Impl` has no name. Section 5 states how a reader finds it, by its trait and target.
+- A method is a `Definition.Function`, so it has an id, a doc and a comment of its own. `public` on a method of a trait or impl is the trait's or impl's.
+- Laws, lemmas and proofs are definitions too. Section 8 adds them, with their nodes. Task expressions come with section 9.
+
+### 3.5 Expressions
+
+Every expression has a type, which is itself an expression, in its field `type_of` (section 6). The field can't be called `type`, which is a keyword.
+
+```strata
+type Expression =
+  // literals
+  | Integer { value: Natural }
+  | Decimal { digits: Natural, exponent: Int }
+  | Text { value: String }
+  // names
+  | Local { binder: NodeIndex }
+  | Global { key: Key }
+  | SelfType
+  // calls
+  | Call { target: Target, arguments: List[Argument] }
+  | Lambda { parameters: List[Parameter], body: Expression }
+  // values made of parts
+  | Construct { variant: Option[Id], base: Option[Expression], fields: List[FieldValue] }
+  | Tuple { elements: List[Expression] }
+  | ListLiteral { elements: List[Expression] }
+  | FieldAccess { record: Expression, field: FieldReference }
+  | TupleElement { tuple: Expression, index: u32 }
+  // control
+  | Block { statements: List[Statement], result: Expression }
+  | If { condition: Expression, then: Expression, otherwise: Expression }
+  | Match { subject: Expression, arms: List[Arm] }
+  | Return { value: Expression }
+  | Break
+  | Continue
+  // logic that skips its right side
+  | And { left: Expression, right: Expression }
+  | Or { left: Expression, right: Expression }
+  | Implies { left: Expression, right: Expression }
+  | Not { value: Expression }
+  | Is { subject: Expression, pattern: Pattern }
+  // contracts and compile time
+  | Old { value: Expression }
+  | Comptime { value: Expression }
+  // types
+  | RecordType { fields: List[Field] }
+  | SumType { variants: List[Variant] }
+  | UnionType { members: List[Expression] }
+  | TupleType { elements: List[Expression] }
+  | FunctionType { parameters: List[Parameter], result: Expression }
+  | Refinement { base: Expression, predicate: Expression }
+  | TypeApplication { function: Expression, arguments: List[Expression] }
+  // unfinished code
+  | Hole { name: Name }
+  | Conflict { ours: Expression, base: Expression, theirs: Expression }
+  // markers, never stored (section 3.8)
+  | Inferred
+  | ImplicitConstructor { value: Expression }
+with {
+  type_of: Option[Expression],
+}
+
+type Target =
+  | Static { definition: Key, written_as: Option[Key] }
+  | Bound { type_parameter: NodeIndex, method: Key }
+  | Dynamic { method: Key }
+  | Value { function: Expression }
+
+type Argument = { parameter: Id, value: Expression, mode: PassingMode }
+type PassingMode = | Plain | Mutable | Capability
+type FieldValue = { field: Id, value: Expression }
+type FieldReference = | Declared { key: Key } | Structural { name: Name }
+```
+
+Literals:
+- `Integer` holds the literal's value, with no sign. `-1` is the call `Neg.neg(1)`.
+- `Decimal` is the exact value `digits × 10^exponent`, with no trailing zero in `digits` (`1.50` is `{ digits: 15, exponent: -1 }`). No float is ever stored (rule 14).
+- `Text` holds valid UTF-8. An f-string is stored as calls (section 2).
+- `true` and `false` are core's `Bool` variants, stored as `Construct`.
+
+Names:
+- `Global` refers to a definition by its key: a function used as a value, a type, a trait.
+- `SelfType` is `Self`: the type the enclosing trait or impl is for.
+
+Calls:
+- `Call.target` is what the call runs, decided at edit time:
+  - `Static` names the definition that runs: a function, an impl's method, or core's primitive for an operator on a built-in type. `written_as` is the trait method the source named, so `a + b` on two `s64` is `Static { definition: <core's s64 addition>, written_as: Some(<Add.add>) }`. The printer writes `+` from `written_as`.
+  - `Bound` is a method of a type parameter's bound. It is made static when the function is compiled for a type.
+  - `Dynamic` calls a method through a trait value's method table. The trait value is the first argument.
+  - `Value` calls a function value.
+- `Call.arguments` holds the arguments given, in the order of the parameters. A parameter left out takes its default (section 7). A method's receiver is the first argument. `mode` records `mut` and `cap` as written at the call.
+
+Values made of parts:
+- `Construct` makes a record (`variant: None`) or a sum's variant. Its type, the node's `type_of`, says which record or sum.
+  - `fields` holds the fields given, in the order the type declares them. Each field left out takes its value from `base` when there is one (`T { ...r, f: v }`), and otherwise its default.
+  - So a field added to a type later fills every stored `Construct` with no rewrite.
+- `FieldAccess` names a declared field by key, or a field of a structural record (`{ a: s64, .. }`) by name.
+
+Control and logic:
+- `Return`, `Break` and `Continue` are expressions whose type is core's `Never`.
+- `And`, `Or`, `Implies` and `Not` are nodes, not trait calls, because `And`, `Or` and `Implies` don't evaluate their right side when the left decides.
+
+Types:
+- `RecordType`, `SumType` and the other type nodes are expressions whose type is `Type`. A type in a signature, a field, a parameter or a node's `type_of` is such an expression, or a `Global` naming a type, or a `TypeApplication` (`List[Int]`).
+- A `SumType` with shared fields (`| A { x } | B with { id: Id }`) is stored with each shared field in every variant, under its one id. The printer writes `with` when every variant holds the same fields under the same ids.
+- `Refinement` binds `it` in its predicate. A `Local` for that `it` refers to the `Refinement` node.
+
+The `type_of` field:
+- Every expression's `type_of` is `Some(t)`, where `t` is an expression whose own type is `Type`.
+- The one exception is the expression naming core's `Type` itself, whose `type_of` is `None`. So the chain of types ends: the type of `s64` is `Type`, and `Type` stores no type.
+- Nothing in the tree records whether a type was written. The printer leaves out every type that inference would give back exactly, and `view --types` writes them all, as `(e: T)` (section 2).
+
+```strata
+law types_end(e: Expression)
+  holds (e.type_of == None) == (e == Global { key: core.Type })
+```
+
+### 3.6 Statements, patterns, arms
+
+```strata
+type Statement =
+  | Bind { pattern: Pattern, value: Expression }
+  | Assign { place: Expression, value: Expression }
+  | While {
+      condition: Expression,
+      invariants: List[Expression],
+      decreases: List[Expression],
+      body: Expression,
+    }
+  | For {
+      pattern: Pattern,
+      iterable: Expression,
+      invariants: List[Expression],
+      unrolled: Bool,
+      body: Expression,
+    }
+  | Assert { condition: Expression }
+  | Evaluate { value: Expression }
+with {
+  comment: Comment,
+}
+
+type Pattern =
+  | Wildcard
+  | Binding { name: Name, mutable: Bool }
+  | LiteralPattern { value: Expression }
+  | ConstructorPattern { variant: Option[Id], fields: List[FieldPattern], rest: Bool }
+  | TuplePattern { elements: List[Pattern] }
+  | TypePattern { type_test: Expression, binding: Option[Pattern] }
+  | Alternatives { patterns: List[Pattern] }
+with {
+  type_of: Option[Expression],
+}
+
+type FieldPattern = { field: Id, pattern: Pattern }
+
+type Arm = { pattern: Pattern, guard: Option[Expression], body: Expression, comment: Comment }
+```
+
+Examples:
+- `x := f(y)` is `Bind { pattern: Binding { name: "x", mutable: false }, value: … }`.
+- `mut total: s64 = 0` is a `Bind` whose `Binding` is mutable and whose type is `s64`.
+- `x = e` is `Assign`. `x += e` is `Assign { place: x, value: Add.add(x, e) }`.
+- `loop { … }` is `While` with the condition `true`. `comptime for` is `For` with `unrolled: true`.
+- `e: NotFound => …` in a match is a `TypePattern`. `Some(x)` is a `ConstructorPattern`.
+
+- A `Binding` binds a variable. Its type is the variable's.
+- `Assert`'s proof steps (`assert … by …`) come with section 8.
+- `Evaluate` is an expression used as a statement.
+
+### 3.7 Parameters, fields, variants, contracts
+
+```strata
+type Parameter = {
+  id: Id,
+  name: Name,
+  type_of: Expression,
+  mode: ParameterMode,
+  default: Option[Expression],
+  comment: Comment,
+}
+type ParameterMode = | Plain | Mutable | Capability | Comptime
+
+type TypeParameter = {
+  name: Name,
+  type_of: Expression,
+  bounds: List[Expression],
+  variance: Variance,
+}
+type Variance = | Covariant | Contravariant | Invariant
+
+type Field = {
+  id: Id,
+  name: Option[Name],
+  type_of: Expression,
+  default: Option[Expression],
+  doc: Doc,
+  comment: Comment,
+}
+
+type Variant = {
+  id: Id,
+  name: Name,
+  fields: List[Field],
+  doc: Doc,
+  comment: Comment,
+}
+
+type Contract =
+  | Requires { condition: Expression }
+  | Ensures { condition: Expression }
+  | Decreases { measures: List[Expression] }
+with {
+  assumed: Bool,
+}
+```
+
+- A parameter written `_x` is passed without its name (section 2). The name keeps its `_`.
+- A lambda's and a function type's parameters are `Parameter`s too. They have ids, because names are part of a function type.
+- A `TypeParameter`'s `type` is `Type` for a type parameter, or an integer, `Bool` or atom type for a value parameter (`type Matrix[R: s64, C: s64]`).
+- `variance` is computed by elaborate (section 6) and is part of the type's interface.
+- A field with no name is positional: `Set(T)` is a variant with one unnamed field.
+- In an `ensures`, `it` is a `Local` whose binder is the `Function`. In a `requires` of a function with one parameter, `it` is that parameter.
+
+### 3.8 Parsed trees and stored trees
+
+`parse` and `desugar` give a tree with markers for what is left to infer. `elaborate` fills them in and gives the stored tree.
+
+- `Inferred` stands where a type was left out. Every expression whose type wasn't written gets `type_of: Some(Inferred)` from `parse`.
+- `ImplicitConstructor { value }` stands where a constructor was left out (`Some`, `Ok`, `Err`: section 6). `elaborate` replaces it by the `Construct` the types decide, or reports where they don't.
+- A stored tree has no markers. A `Call`'s target and a node's type are known in every stored tree.
+
+```strata
+law stored_has_no_markers(d: Definition)
+  requires stored(d)
+  holds !any_node(d, n -> n is Inferred || n is ImplicitConstructor)
+```
+
+Section 2 states how `print`, `parse`, `desugar` and `elaborate` round-trip on stored trees.

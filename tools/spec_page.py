@@ -7,7 +7,7 @@ import sys
 SECTIONS = [
     ("Lexical structure", "draft"),
     ("Syntax", "waits on lab trials 3, 4, 5"),
-    ("The tree", "next"),
+    ("The tree", "draft"),
     ("Binary format and hashing", "to write"),
     ("Names and modules", "to write"),
     ("Types", "to write"),
