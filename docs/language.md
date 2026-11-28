@@ -472,7 +472,7 @@ pub fn invoice(o: Order) -> Cents { ... }
   - A fully qualified name (`std.json.parse`) still needs a `use` of its module. `use std` covers `std.json` too. Without the `use`, the error says which one to add.
   - A long `from` list is printed wrapped to the line width.
 - Other modules see only a module's public contract: `pub` types, function signatures, `requires` and `ensures`, and trait laws. Everything else is private, and using it from another module is an error ("`secret` is private to module `a`"). A value of a private record type can pass through other modules, but only its own module and its submodules read, build, update or assign its fields, so the invariants its functions keep hold. A private function is invisible to importers: a private `len` leaves them the built-in `len`.
-- `strata interface orders` prints the public contract with its hash. Editing a private definition, or a function body without changing its signature, is reported as "implementation only", meaning nothing outside the module is affected. Changing a `pub` signature or type is reported too ("module core: its public contract changed").
+- `strata interface orders` prints the public contract with its hash. Editing a private definition, or a function body without changing its signature, is reported as "implementation only", meaning nothing outside the module is affected. A contract may still see through the body of a function with no `requires` and no `mut` parameter: the edit names what reaches it, and `verify` proves again the callers whose proofs see through it. Changing a `pub` signature or type is reported too ("module core: its public contract changed").
 
 ## Mutation: immutable by default, mutable when you say so
 
