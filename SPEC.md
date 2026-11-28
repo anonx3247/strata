@@ -51,7 +51,7 @@ The keywords are reserved: none of them can be an identifier anywhere, including
 
 | group | keywords |
 |---|---|
-| definitions | `fn` `type` `trait` `impl` `test` `law` `lemma` `extern` `pub` `use` `from` `as` `mock` `derive` `with` |
+| definitions | `fn` `type` `distinct` `trait` `impl` `test` `law` `lemma` `extern` `pub` `use` `from` `as` `mock` `derive` `with` |
 | bindings | `mut` `cap` `comptime` |
 | control | `if` `else` `match` `while` `for` `in` `loop` `return` `break` `continue` `assert` `except` `or` |
 | values | `true` `false` `is` `self` `Self` `it` `old` |
@@ -288,11 +288,11 @@ The tree is written here as Strata types. `Natural` is a natural number of any s
 ### 3.1 Ids and keys
 
 ```strata
-type Id = u32 where it != 0
+distinct type Id = u32 where it != 0
 type Key = { module: ModulePath, id: Id }
 type ModulePath = { package: Name, path: List[Name] }
 type Name = String where is_identifier(it)
-type NodeIndex = u32
+distinct type NodeIndex = u32
 ```
 
 - These have an `Id`: definitions, variants, methods, fields of declared types, and parameters of functions and methods.
@@ -314,9 +314,9 @@ law children_first(d: Definition, parent: NodeIndex, child: NodeIndex)
   requires is_child(d, parent, child)
   holds child < parent
 
-law binder_in_scope(d: Definition, use: NodeIndex)
-  requires node(d, use) is Local
-  holds in_scope(d, binder_of(d, use), use)
+law binder_in_scope(d: Definition, usage: NodeIndex)
+  requires node(d, usage) is Local
+  holds in_scope(d, binder_of(d, usage), usage)
 ```
 
 Section 5 defines `in_scope`.
@@ -378,7 +378,7 @@ type Definition =
     }
   | Impl {
       type_parameters: List[TypeParameter],
-      trait: Expression,
+      _trait: Expression,
       target: Expression,
       methods: List[Definition.Function],
     }
@@ -390,13 +390,13 @@ with {
   comment: Comment,
 }
 
-type ForeignLanguage = | C
+type ForeignLanguage = | C | Rust | Python | TypeScript
 ```
 
 Examples:
 - `fn area(s: Shape) -> f64 { … }` is a `Function` with one parameter, `result` the expression `f64`, no contracts, and a body.
 - `type Positive = Int where it > 0` is a `TypeDefinition` whose `value` is a `Refinement` (section 3.5).
-- `impl Mul[Int, Money] for Money { … }` is an `Impl` whose `trait` is the expression `Mul[Int, Money]` and `target` the expression `Money`.
+- `impl Mul[Int, Money] for Money { … }` is an `Impl` whose `_trait` is the expression `Mul[Int, Money]` and `target` the expression `Money`.
 
 - A `Function` at the top level, or in an `Impl`, has a body. A method of a `Trait` may have none; then each impl gives it.
 - `result_names` is empty, or holds two or more names: those of `-> (low: s64, high: s64)`. Contracts refer to the result as `it` (section 3.6), and to its parts as `it.0`, `it.1`. The printer writes them by these names.
@@ -525,7 +525,7 @@ type Statement =
   | While {
       condition: Expression,
       invariants: List[Expression],
-      decreases: List[Expression],
+      _decreases: List[Expression],
       body: Expression,
     }
   | For {
@@ -612,7 +612,7 @@ type Contract =
   | Ensures { condition: Expression }
   | Decreases { measures: List[Expression] }
 with {
-  assumed: Bool,
+  _assumed: Bool,
 }
 ```
 
