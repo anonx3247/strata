@@ -15,6 +15,9 @@ Proposed (user, 2026-11-27): arguments named at every call (`send(to: user, mess
 - A parameter's name is part of the interface: renaming it is a breaking change, and `rename` rewrites every call site in the package (user, 2026-11-27).
 - **Optional arguments can be left out**: a parameter with a default (`timeout: Duration = seconds(30)`, `limit: Option[I64] = None`) is omitted at calls that don't need it; no `None` written (user, 2026-11-27; see "Parameter defaults").
 - **An impl may add parameters to a trait's method only if they have defaults**, so a call through the trait still fits. A capability can't have a default (that would be authority from nowhere), so a method that may need capabilities takes them as a trait argument chosen per impl (`Component[E, O, C]` with `C` the exact record of capabilities, `{}` for none). Where that record type is `{}`, the argument is left out at calls (sugar for passing `{}`), so pure impls show no capabilities anywhere (user, 2026-11-27).
+### A power operator: `x ** 2` (user, 2026-11-28)
+`a ** b` is the trait call `Pow.pow(a, b)`, like every operator. It binds tighter than unary minus and is right-associative, as in Python: `-x ** 2` is `-(x ** 2)`, `2 ** 3 ** 2` is `2 ** (3 ** 2)`. Core implements it for the number types (integer powers with a natural exponent, floats); array types implement it per element, for NumPy-like code.
+
 ### Pipes: `print(t, view) |> parse |> desugar` (user, 2026-11-28; to try with lab trial 5)
 - `a |> f` is `f(a)`: the piped value fills `f`'s first `_` parameter; a later step's other arguments go in parentheses (`|> parse(mode: strict)`). A function with no `_` parameter can't be piped into: an error at the pipe.
 - A pipe starts from an ordinary call, whose arguments are all written as usual (`print(t, view) |> parse`). The parser also accepts a plain value first (`x |> print |> parse`), which gives the same tree.
