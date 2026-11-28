@@ -1,0 +1,25 @@
+# Scoped allocation from roots (compiler/roots, `--memory-sites`) finds a
+# call's callees as compiler/unique does: a method call by its receiver's
+# written type, a built-in's name by its first argument's (a string here),
+# and a local closure before a function of its name. `Bag.split` gives
+# back its bag, so the bag lives as long as `bags` (`function`); the
+# built-in `split` copies, so its string is the statement's.
+
+[[step]]
+save = "callees.strata"
+from = "callees.st"
+
+[[step]]
+strata = ["--file", "callees.strata", "build", "--no-verify", "--memory-sites", "-o", "sites"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./sites >/dev/null 2>&1; awk -F'\\t' '$4 == \"main\" && $5 != \"\" && ($3 == \"alloc\" || $3 == \"runtime\") { print $6 \"\\t\" $7 }' sites.tsv | LC_ALL=C sort -u"]
+out = "Bag { parts: [f\"b{i}\"] }\tfunction\n[]\tfunction\npick([f\"p{i}\"])\tfunction\nprint(len(bags))\tstatement\nsplit(f\"s{i},t\", \",\")\tstatement\n"
+
+[[step]]
+strata = ["--file", "callees.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["./plain"]
+memory = true
+stdout = "3\n[[\"s0\", \"t\"], [\"p0\"], [\"s1\", \"t\"], [\"p1\"], [\"s2\", \"t\"], [\"p2\"]]\n"

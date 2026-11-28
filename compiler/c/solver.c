@@ -365,6 +365,13 @@ static void solver_dump(const char *script, size_t n, uint64_t h, const char *ou
     if (j - i >= 7 && strncmp(out + i, "(error ", 7) == 0) fprintf(f, "; %.*s\n", (int)(j - i), out + i);
     i = j + 1;
   }
+  // then its whole output but `success`, a `; out: ` line each
+  for (size_t i = 0; out && i < len;) {
+    size_t j = i;
+    while (j < len && out[j] != '\n') j++;
+    if (!(j - i == 7 && memcmp(out + i, "success", 7) == 0)) fprintf(f, "; out: %.*s\n", (int)(j - i), out + i);
+    i = j + 1;
+  }
   fclose(f);
 }
 

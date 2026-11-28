@@ -1,0 +1,99 @@
+# A contract that unfolds a recursive helper (`sum`) relies on its body,
+# as one that sees through a helper does: a change to that body is a
+# change to its callers' proofs, and `edit` checks what may see through it
+# again. A helper seen only by its contract (`double`, with a `requires`)
+# has its body changed and its caller's proof is kept. (`--cross-check 0`:
+# a stale proof would otherwise be caught by running it.) A body that runs
+# while checking (`small`, in a type's refinement) has what reaches it
+# checked with it; one that doesn't (`sum`) is checked alone.
+
+[[step]]
+write = "strata.toml"
+text = '''
+name = "seen"
+'''
+
+[[step]]
+strata = ["edit", "main"]
+text = '''
+pub fn sum(n: Int) -> Int {
+  if n <= 0 { 0 } else { n + sum(n - 1) }
+}
+
+pub fn user(n: Int) -> Int
+  requires n >= 1
+  ensures sum(n) == n + sum(n - 1)
+{
+  0
+}
+
+pub fn double(x: Int) -> Int
+  requires x >= 0
+  ensures it >= x
+{
+  x + x
+}
+
+pub fn small(n: Int) -> Bool {
+  0 <= n && n < 10
+}
+
+pub type Digit = Int where small(it)
+
+pub fn five() -> Digit {
+  5
+}
+
+pub fn caller(n: Int) -> Int
+  requires n >= 0
+  ensures it >= 0
+{
+  double(n)
+}
+'''
+
+[[step]]
+strata = ["verify", "--cases", "20", "--cross-check", "0"]
+has = ["✓ user ", "✓ caller "]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["edit", "main"]
+text = '''
+pub fn double(x: Int) -> Int
+  requires x >= 0
+  ensures it >= x
+{
+  x * 2
+}
+'''
+has = ["dependents unaffected"]
+
+[[step]]
+strata = ["verify", "--cases", "20", "--cross-check", "0"]
+has = ["✓ caller                   proven (2 checks) (cached)", "✓ user                     proven (1 check) (cached)"]
+
+[[step]]
+strata = ["edit", "main"]
+text = '''
+pub fn sum(n: Int) -> Int {
+  if n <= 0 { 0 } else { n + n + sum(n - 1) }
+}
+'''
+has = ["(implementation only — contracts may see through it)", "re-check dependents: user", "checked 1 definition of"]
+lacks = ["dependents unaffected"]
+
+[[step]]
+strata = ["verify", "--cases", "20", "--cross-check", "0"]
+fails = true
+has = ["✓ caller                   proven (2 checks) (cached)", "user "]
+lacks = ["✓ user "]
+
+[[step]]
+strata = ["edit", "main"]
+text = '''
+pub fn small(n: Int) -> Bool {
+  0 <= n && n < 20
+}
+'''
+has = ["re-check dependents: Digit, five", "checked 3 definitions of"]

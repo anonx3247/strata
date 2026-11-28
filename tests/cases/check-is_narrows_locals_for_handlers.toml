@@ -1,0 +1,54 @@
+# A local narrowed to `Some` or `Ok` by `is` is still an Option or a Result
+# to `??`, `?`, `!` and `except`.
+
+[[step]]
+save = "p.strata"
+text = '''
+fn pick(b: Bool) -> Option[(String, String)] = if b { Some(("a", "b")) } else { None }
+
+fn defaulted(x: Option[Int]) -> Int {
+  if x is Some {
+    x ?? 0
+  } else {
+    1
+  }
+}
+
+fn pair(b: Bool) -> String {
+  s := pick(b)
+  if s is Some {
+    (r, m) := s ?? ("", "")
+    r + m
+  } else {
+    ""
+  }
+}
+
+fn passed(x: Option[Int]) -> Option[Int] {
+  if x is Some {
+    Some(x? + 1)
+  } else {
+    None
+  }
+}
+
+fn handled(r: Result[Int, String]) -> Int {
+  if r is Ok {
+    r except _ { 0 }
+  } else {
+    1
+  }
+}
+
+fn raised(r: Result[Int, String]) -> Result[Int, String] {
+  if r is Ok {
+    Ok(r! + 1)
+  } else {
+    r
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+has = ["ok:"]

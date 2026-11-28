@@ -1,0 +1,94 @@
+# A trait value is not taken where a concrete type is wanted, a bound is
+# checked for a type the checker can't print (a function), calling a value
+# of unknown type makes it a function (so `x -> x(x)` is a type that
+# contains itself), and a generic named union's `impl` covers the unions
+# it stands for, its own bounds met
+
+[[step]]
+save = "p.strata"
+text = '''
+trait Area {
+  fn area(self) -> Int
+}
+
+trait Show {
+  fn show(self) -> String
+}
+
+type Sq = { side: Int }
+
+impl Area for Sq {
+  fn area(self) -> Int = self.side * self.side
+}
+
+type Many[T] = List[T] | Option[T]
+
+impl[T] Show for Many[T] {
+  fn show(self) -> String = "many"
+}
+
+type Pair[A, B] = List[A] | Option[B]
+
+impl[A: Area, B] Show for Pair[A, B] {
+  fn show(self) -> String = "pair"
+}
+
+fn side(s: Sq) -> Int = s.side
+
+fn downcast(a: Area) -> Int = side(a)
+
+fn total(a: Area) -> Int = a.area()
+
+fn upcast(s: Sq) -> Int = total(s)
+
+fn measure[T: Area](x: T) -> Int = x.area()
+
+fn fn_for_bound() -> Int = measure((x: Int) -> x)
+
+fn sq_for_bound() -> Int = measure(Sq { side: 2 })
+
+fn self_apply() -> Int {
+  f := x -> x(x)
+  0
+}
+
+fn apply_twice() -> Int {
+  g := h -> h(h(1))
+  0
+}
+
+fn render(s: Show) -> String = s.show()
+
+fn many(b: Bool) -> String {
+  v := if b { [1] } else { Some(2) }
+  render(v)
+}
+
+fn many_mixed(b: Bool) -> String {
+  v := if b { [1] } else { Some("x") }
+  render(v)
+}
+
+fn pair_met(b: Bool) -> String {
+  v := if b { [Sq { side: 1 }] } else { Some("x") }
+  render(v)
+}'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in downcast: call to `side`, argument 1: expected `Sq`, found `Area`",
+  "error in fn_for_bound: calling `measure`: `(Int) -> Int` does not implement `Area`",
+  "error in self_apply: a type that contains itself",
+  "error in many_mixed: using it as a `Show`: `List[Int] | Option[String]` does not implement `Show`",
+]
+lacks = [
+  "error in upcast",
+  "error in sq_for_bound",
+  "error in apply_twice",
+  "error in many:",
+  "error in pair_met",
+  "error in Many",
+  "error in Pair",
+]
