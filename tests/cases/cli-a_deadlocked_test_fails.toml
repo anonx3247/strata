@@ -12,23 +12,19 @@ test "two tasks wait for each other" {
   scope {
     spawn {
       x := brx.recv() ?? 0
-      atx.send(x)
-      atx.close()
+      atx.send(x) except { () }
     }
     spawn {
       y := arx.recv() ?? 0
-      btx.send(y)
-      btx.close()
+      btx.send(y) except { () }
     }
   }
-  atx.close()
-  btx.close()
 }
 
 test "the test itself waits for nothing" {
   (tx, rx) := channel()
   x := rx.recv() ?? 0
-  tx.close()
+  _ := tx
   assert x == 0
 }
 
@@ -38,7 +34,7 @@ test "a timeout on a virtual clock" (clock: VirtualClock) {
     rx.recv() as v => v ?? 0,
     clock.sleep(seconds(5)) => -1,
   }
-  tx.close()
+  _ := tx
   assert r == -1
   assert clock.now().value == seconds(5).value
 }
@@ -53,4 +49,4 @@ test "each test has its own virtual time, from 0" (clock: VirtualClock) {
 [[step]]
 strata = ["--file", "t.strata", "test"]
 fails = true
-has = ["✗ two tasks wait for each other", "deadlock: every task is waiting, so none can go on: the test waits in the end of a `scope`", "the test waits in `recv`", "✓ a timeout on a virtual clock", "✓ each test has its own virtual time, from 0", "2 passed, 2 failed"]
+has = ["✗ two tasks wait for each other", "✗ the test itself waits for nothing", "the test waits in `recv` (its channel has 1 sender left", "deadlock: every task is waiting, so none can go on: the test waits in the end of a `scope`", "the test waits in `recv`", "✓ a timeout on a virtual clock", "✓ each test has its own virtual time, from 0", "2 passed, 2 failed"]

@@ -38,10 +38,9 @@ fn chans() -> Int {
   scope {
     (tx, rx) := channel(1)
     (ty, ry) := channel(1)
-    h := spawn { tx.send(1)
+    h := spawn { tx.send(1) except { () }
       0 }
-    g := spawn { ty.send(1)
-      ty.close()
+    g := spawn { ty.send(1) except { () }
       0 }
     ty.close()
     1

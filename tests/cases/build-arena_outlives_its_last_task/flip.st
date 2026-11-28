@@ -12,8 +12,7 @@ fn main() {
   got := scope {
     (tx, rx) := channel(1)
     t := spawn slow(1000)
-    tx.send(t)
-    tx.close()
+    tx.send(t) except { () }
     arena(() -> {
       a := "item " + to_string(len([1, 2, 3]))
       mut done := 0

@@ -33,12 +33,10 @@ fn main() {
   (tx, rx) := channel(4)
   (r, got) := scope {
     h := supervised spawn {
-      tx.send("one")
-      tx.send(f"two {pick([1], 0)}")
-      tx.close()
+      tx.send("one") except { () }
+      tx.send(f"two {pick([1], 0)}") except { () }
       0
     }
-    tx.close()
     mut got := []
     for s in rx {
       got += [s]
@@ -85,6 +83,6 @@ fn main() {
     },
     wait.recv() ?? "never" as x => x,
   }
-  hold.close()
+  _ := hold
   print(w)
 }

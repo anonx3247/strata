@@ -4,15 +4,11 @@ fn main() {
   scope {
     spawn {
       x := brx.recv() ?? 0
-      atx.send(x)
-      atx.close()
+      atx.send(x) except { () }
     }
     spawn {
       y := arx.recv() ?? 0
-      btx.send(y)
-      btx.close()
+      btx.send(y) except { () }
     }
   }
-  atx.close()
-  btx.close()
 }

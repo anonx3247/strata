@@ -1,3 +1,4 @@
-fault (Runtime): a task ended without closing its copy of a sender (`tx.close()`)
+1
+fault (Runtime): deadlock: every task is waiting, so none can go on: main waits in `recv` (its channel has 1 sender left, held by a task waiting here), at main -> Receiver.next
 
 --- exit 101

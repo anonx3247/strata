@@ -28,9 +28,8 @@ fn main() {
     fresh := Bag { __label: "fresh", items: [7] }
     moved := spawn len(fresh.items)
     // a send copies what the sender keeps
-    tx.send(b)
+    tx.send(b) except { () }
     mut b.items.push(40)
-    tx.close()
     got := spawn {
       mut n := 0
       for v in rx {

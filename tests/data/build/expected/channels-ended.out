@@ -1,3 +1,4 @@
-fault (Runtime): `send` on a channel that has ended (every copy of its sender was closed)
+(Some(1), Ok(()))
+Err(Closed)
 
---- exit 101
+--- exit 0

@@ -18,13 +18,10 @@ fn main(clock: VirtualClock) {
   (done_tx, done_rx) := channel()
   r := scope {
     h := spawn {
-      tx.send(41)
-      tx.close()
-      done_tx.close()
+      tx.send(41) except { () }
+      _ := done_tx
       7
     }
-    done_tx.close()
-    tx.close()
     mut total := 0
     mut going := true
     while going {
@@ -52,7 +49,7 @@ fn main(clock: VirtualClock) {
     answer(questions) as v => Some(v),
     clock.sleep(seconds(30)) => None,
   }
-  ask.close()
+  _ := ask
   print(w)
   print(clock.now().value)
   z := race {

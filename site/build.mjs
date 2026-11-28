@@ -959,12 +959,10 @@ fn with_progress(n: Int) -> (Int, List[Int]) {
       mut found := 0
       for c in 0..n / 500 {
         found += len([k for k in c * 500..(c + 1) * 500 where k >= 2 && all(2..k, d -> k % d != 0)])
-        tx.send((c + 1) * 500)
+        tx.send((c + 1) * 500) except { break }
       }
-      tx.close()
       found
     }
-    tx.close()
     mut reports := []
     mut primes := None
     while primes == None {
@@ -1013,7 +1011,7 @@ fn averages(batches: List[List[Int]]) -> List[String] {
 fn main(clock: VirtualClock) {
   (tx, rx) := channel()
   print(first_reading(rx, clock))
-  tx.close()
+  _ := tx
   print(clock.now().value / 1000000000)
   print(averages([[4, 6], [], [1, 2, 3]]))
 }

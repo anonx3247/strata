@@ -42,5 +42,5 @@ fn main(clock: SystemClock) {
   print(f"timeouts {timeouts}")
   took := elapsed(start, clock.now()).value
   print(took >= 650000000 && took < 4000000000)
-  tx.close()
+  _ := tx
 }

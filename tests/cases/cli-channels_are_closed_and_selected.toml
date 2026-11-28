@@ -1,33 +1,26 @@
-# cli.rs: channels_are_closed_and_selected: every sender made is closed where it is made, each task closes
-# its copy, a `spawn` captures a sender only on its own, and `select`'s arms
-# wait on `recv`, `send` or `await`
+# cli.rs: channels_are_closed_and_selected: a channel has no `close` (it
+# ends when its last sender is dropped), a `spawn` may capture a sender
+# inside another value, and `select`'s arms wait on `recv`, `send` or
+# `await`
 
 [[step]]
 save = "c.strata"
 text = '''
-fn never_closed() {
+fn closed_by_hand() {
   (tx, rx) := channel(1)
-  tx.send(1)
-}
-
-fn task_never_closes() {
-  (tx, rx) := channel(1)
-  scope {
-    spawn tx.send(1)
-  }
+  tx.send(1) except { () }
   tx.close()
 }
 
-fn nested_sender() {
+fn nested_sender() -> Int {
   (tx, rx) := channel(1)
   pair := (tx, 1)
   scope {
     spawn {
-      pair.0.send(1)
-      pair.0.close()
+      pair.0.send(1) except { () }
     }
   }
-  tx.close()
+  rx.recv() ?? 0
 }
 
 fn arms(rx: Receiver[Int]) -> Int {
@@ -50,25 +43,13 @@ fn race_return(x: Int) -> Int {
   }
 }
 
-fn race_sender() -> Int {
-  (tx, out) := channel()
-  r := race {
-    tx.send(1) as a => 1,
-    2 as b => b,
-  }
-  tx.close()
-  r
-}
-
 fn fine(rx: Receiver[Int]) -> Int {
   (tx, out) := channel()
   scope {
     spawn {
-      tx.send(1)
-      tx.close()
+      tx.send(1) except { () }
     }
   }
-  tx.close()
   select {
     rx.recv() as x => x ?? 0,
     out.recv() as y => y ?? 1,
@@ -79,5 +60,5 @@ fn fine(rx: Receiver[Int]) -> Int {
 [[step]]
 strata = ["--file", "c.strata", "check"]
 fails = true
-has = ["error in never_closed: `tx` is never closed here", "error in task_never_closes: the task holds a copy of `tx` and never closes it", "error in nested_sender: a task (a `spawn`, a `race` arm) can capture a sender only on its own", "error in arms: a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`", "error in named_send: a `send` arm gives nothing to name", "error in race_return: `return` can't leave a task (a `spawn`, a `race` arm)", "error in race_sender: the task holds a copy of `tx` and never closes it"]
-lacks = ["error in fine"]
+has = ["error in closed_by_hand: a channel has no `close`: it ends when its last sender is dropped", "error in arms: a `select` arm waits on `rx.recv()`, `tx.send(v)`, `await h` or `clock.after(d)`", "error in named_send: a `send` arm gives nothing to name", "error in race_return: `return` can't leave a task (a `spawn`, a `race` arm)"]
+lacks = ["error in fine", "error in nested_sender"]

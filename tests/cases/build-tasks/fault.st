@@ -10,5 +10,4 @@ fn main() {
       print(x)
     }
   }
-  tx.close()
 }

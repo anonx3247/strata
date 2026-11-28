@@ -1,0 +1,15 @@
+# A task drops a channel it made: its ends are dropped at their last use,
+# and neither touches the freed channel (guard malloc faults on a use after
+# free)
+
+[[step]]
+save = "made.strata"
+from = "made.st"
+
+[[step]]
+strata = ["build", "made.strata", "-o", "prog", "--no-verify"]
+
+[[step]]
+run = ["./prog"]
+env = { DYLD_INSERT_LIBRARIES = "/usr/lib/libgmalloc.dylib" }
+has = ["sent", "done"]

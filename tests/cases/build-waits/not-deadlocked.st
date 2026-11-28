@@ -14,10 +14,8 @@ fn main(clock: SystemClock) {
   scope {
     spawn {
       clock.sleep(ms(100))
-      tx.send(1)
-      tx.close()
+      tx.send(1) except { () }
     }
-    tx.close()
     print(rx.recv() ?? 0)
   }
   // a long computation while the main thread waits: not a deadlock

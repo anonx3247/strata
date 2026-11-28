@@ -16,7 +16,6 @@ test "a task panics while the test waits" {
       print(x)
     }
   }
-  tx.close()
 }
 
 test "the next test runs" {

@@ -43,8 +43,7 @@ fn main(clock: SystemClock) {
   r := scope {
     spawn {
       clock.sleep(ms(50))
-      tx.send(1)
-      tx.close()
+      tx.send(1) except { () }
     }
     select {
       rx.recv() as x => "received",
@@ -66,5 +65,5 @@ fn main(clock: SystemClock) {
   })
   print(elapsed(before, clock.now()).value < 2000000000)
   print(timer_of(clock, rx))
-  tx.close()
+  _ := tx
 }

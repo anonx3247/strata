@@ -359,8 +359,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Runtime and core
 
-- [ ] **A test's start forgets the senders its thread holds, so a later `close` of one faults.** `strata_run_begin` calls `forget_senders()`, which drops this thread's `held` entries without closing them (`senders` stays up). A `close` of such a sender after the test began fails `unhold_sender` and faults with "`close` of a sender this task doesn't hold, or has closed already", and the channel's receivers never see it end.
-  Where: runtime.c forget_senders, strata_run_begin, strata_channel_close. Source: PR #621 (runtime-uaf). Confidence: likely.
 - [ ] **Per-thread free lists only go back when the thread ends (producer/consumer grows without bound).** A freeing thread pushes onto its own `heap` list. `refill` only takes from the shared list, and `strata_memory_thread_end` gives lists back at thread end. A consumer that frees what a producer allocated hoards the blocks, and the producer keeps carving new chunks.
   Where: core.rt.strata_free (threaded branch), refill, strata_memory_thread_end. Source: review core-runtime; ledger R3. Confidence: sure.
 - [ ] **(memory) `join` is not synchronized: double `pthread_join` and a wrong `live_tasks`.** `static void join(Task *t) { if (t->joined) return; pthread_join(t->thread, NULL); t->joined = 1; if (__atomic_sub_fetch(&live_tasks, 1, …) == 0) set_threaded(0); …}`.
@@ -375,8 +373,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: compiler/c/jit.c. Source: ledger R2. Confidence: sure.
 - [ ] **(memory) A crossed task handle can outlive its `Task`.** `release_scope` frees each `Task` at scope end (`free(t)`). A handle sent on a channel (`strata_task_share`) to a thread outside the scope can be awaited after that, which dereferences freed memory.
   Where: runtime.c release_scope, strata_await, strata_task_share. Source: review core-runtime. Confidence: possible.
-- [ ] **`send` after this thread closed its sender still succeeds.** The only check is `if (c->senders == 0)`. core.channel says "A `send` after the channel has ended fails, and so does a second `close` of one sender". A send after the thread's own `close` passes while other copies are open, because `holds_sender` isn't checked.
-  Where: runtime.c strata_channel_send. Source: review core-runtime. Confidence: sure.
 - [ ] **An unbuffered send in `select` doesn't wait for its receiver, and can strand a value.** `(c->cap == 0 && c->waiting > c->len)` then `push_item` and return. `strata_channel_send` instead waits `while (c->cap == 0 && c->taken < mine …)`. A receiving `select` raises `waiting` on every channel it lists.
   Where: runtime.c strata_select (kind 1). Source: review core-runtime. Confidence: sure.
 - [ ] **Every program linked with std polls for cancellation after each runtime call that may panic.** Recorded in IDEAS.md lab-fleet bugs: "Every program linked with std counts as supervising, so it polls for cancellation after every runtime call that may panic".
@@ -419,8 +415,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: core.fault.stack_leave (core.fault.st:45). Source: review core-runtime. Confidence: possible.
 - [ ] **`test_run` doesn't restore the outer run's capture flag and leaks a failed test's arenas.** It sets `store_i64(st, 80, 1)`, then `store_i64(st, 80, 0)` instead of restoring the old value, so a nested run (compile-time code inside a test) turns capturing off for the outer one.
   Where: core.run.test_run. Source: review core-runtime. Confidence: sure.
-- [ ] **`strata_run_begin` forgets the thread's held senders without restoring them.** `nheld = 0` without saving the old list. After a test on a thread that held senders (a JIT host running compile-time code), that thread can no longer `close` them.
-  Where: runtime.c strata_run_begin (`forget_senders()`). Source: review core-runtime. Confidence: possible.
 - [ ] **`ord`'s `requires` and its runtime check differ on invalid UTF-8.** For `"\x80"`, `chars` gives one element, so the precondition holds, but `str_ord` sees `char_size` 2 ≠ 1 and faults. Code that verify proved safe faults anyway.
   Where: core.builtins `ord` (`requires len(chars(s)) == 1`) vs core.str.str_ord (`char_size(s, 0) == str_size(s)`). Source: review core-runtime. Confidence: sure.
 - [ ] **Float show and parse in C depend on the locale.** `snprintf("%.*e")` and `strtod` follow `LC_NUMERIC`. `shortest` copies every byte except `.` as a digit, so a C library loaded via FFI that calls `setlocale` changes `to_string(1.5)` and `parse_float("1.5")`.

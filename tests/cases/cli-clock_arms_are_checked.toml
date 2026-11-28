@@ -44,7 +44,7 @@ test "the clock in a test" (clock: SystemClock) {
     rx.recv() as x => 1,
     clock.after(ms(1)) => 2,
   }
-  tx.close()
+  _ := tx
   assert r == 2
 }
 '''

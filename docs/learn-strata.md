@@ -572,17 +572,16 @@ fn squares(xs: List[Int]) -> List[Int] {
 }
 
 // Tasks pass values through channels (`channel(n)` holds n waiting values).
-// Each task holding the sender closes it; `for` over the receiver stops then.
+// A channel ends when its last sender is dropped, after its last use; `for`
+// over the receiver stops then. `send` fails once no receiver is left.
 fn summed(xs: List[Int]) -> Int {
   (tx, rx) := channel(4)
   scope {
     spawn {
       for x in xs {
-        tx.send(x)
+        tx.send(x) except { break }
       }
-      tx.close()
     }
-    tx.close()
     mut acc := 0
     for v in rx {
       acc += v

@@ -656,17 +656,13 @@ fn squares(jobs: List[Int]) -> Int {
   (out, results) := channel()
   scope {
     spawn {
-      for j in jobs { tx.send(j) }
-      tx.close()
+      for j in jobs { tx.send(j) except { break } }
     }
     for _ in 0..4 {
       spawn {
-        for j in rx { out.send(j * j) }
-        out.close()
+        for j in rx { out.send(j * j) except { break } }
       }
     }
-    tx.close()
-    out.close()
     mut total := 0
     for r in results { total += r }
     total
@@ -674,8 +670,10 @@ fn squares(jobs: List[Int]) -> Int {
 }
 ```
 
-- `tx.send(v)` moves `v` into the channel, waiting while the buffer is full. `rx.recv()` returns `Some(v)`, or `None` once the channel has ended and is empty. `for v in rx` takes every value, then stops.
-- Closing is explicit, once per task. Each task holding the sender calls `tx.close()` when it has finished sending. The channel ends when all of them have closed it.
+- `tx.send(v)` moves `v` into the channel, waiting while the buffer is full. It returns `Ok(())`, or `Err(Closed)` (and drops `v`) once no receiver is left. `rx.recv()` returns `Some(v)`, or `None` once the channel has ended and is empty. `for v in rx` takes every value, then stops.
+- There is no `close`. A channel ends when its last sender is dropped. A variable holding a sender (or a receiver) is dropped right after the last statement that mentions it, unless that statement is inside a loop or a lambda the variable is declared outside of: then it lives until the loop's or lambda's statement ends. So `tx` above is gone once the first `spawn` has taken it, and `out` once the `for` that starts the workers ends; each task's copy is dropped after its own last use. A sender inside another value (a record field, a tuple, a lambda's captures) lives as long as that value. To end a channel whose sender a long-lived value holds, hold an `Option[Sender[T]]` and set it to `None`.
+- A sender kept only so that a channel stays open has to be used where it should end: `_ := tx`.
+- Each sender and receiver is a counted object of one thread; a copy that crosses to another task is a new one. Only the last drop of each takes the channel's lock, to count it out. A receiver that waits while every sender is held by a task that waits too (often its own) is a deadlock, reported with the count of senders left.
 
 `select` waits on several operations and performs only the first one that becomes possible:
 
@@ -694,7 +692,7 @@ loop {
 }
 ```
 
-An arm is `rx.recv()` (its `as` name is an `Option`), `tx.send(v)` (nothing to name) or `await h` (the task's result). An arm that is not chosen has no effect: its value is not sent, and the task it awaits keeps running. A `recv` on an ended channel is always ready and yields `None`, so a loop over several channels can tell when each one ends. When several arms are ready, which one runs is unspecified.
+An arm is `rx.recv()` (its `as` name is an `Option`), `tx.send(v)` (nothing to name) or `await h` (the task's result). An arm that is not chosen has no effect: its value is not sent, and the task it awaits keeps running. A `recv` on an ended channel is always ready and yields `None`, so a loop over several channels can tell when each one ends. A `send` on a channel with no receiver left is never ready. When several arms are ready, which one runs is unspecified.
 
 ### `race`
 
@@ -761,7 +759,7 @@ test "gives up after 30 seconds" (clock: VirtualClock) {
     answer(questions) as v => Some(v),
     clock.sleep(seconds(30)) => None,
   }
-  ask.close()
+  _ := ask
   assert r == None
   assert clock.now().value == seconds(30).value
 }

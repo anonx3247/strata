@@ -16,20 +16,16 @@ fn pool() {
   scope {
     spawn {
       for n in 1..=10 {
-        tx.send(n)
+        tx.send(n) except { () }
       }
-      tx.close()
     }
     for _ in 0..3 {
       spawn {
         for n in rx {
-          out.send(work(n))
+          out.send(work(n)) except { () }
         }
-        out.close()
       }
     }
-    tx.close()
-    out.close()
     mut total := 0
     for r in results {
       total += r
@@ -44,18 +40,14 @@ fn merge() {
   scope {
     spawn {
       for i in 0..5 {
-        nums.send(i)
+        nums.send(i) except { () }
       }
-      nums.close()
     }
     spawn {
       for w in ["a", "b", "c"] {
-        words.send(w)
+        words.send(w) except { () }
       }
-      words.close()
     }
-    nums.close()
-    words.close()
     mut got_nums := 0
     mut got_words: List[String] = []
     mut nums_open := true
@@ -100,15 +92,13 @@ fn ticks() {
     loop {
       select {
         await t as v => {
-          tx.close()
           break
         },
         tx.send(ticks) => {
           ticks += 1
           _ := rx.recv()
           if ticks == 1 {
-            go_tx.send(1)
-            go_tx.close()
+            go_tx.send(1) except { () }
           }
         },
       }

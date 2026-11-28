@@ -86,7 +86,6 @@ fn main() {
   }
   print(f"won {wins} of 50")
   // the losers left their waits: a value sent now is still there
-  tx.send("late")
+  tx.send("late") except { () }
   print(rx.recv() ?? "none")
-  tx.close()
 }

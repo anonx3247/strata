@@ -36,5 +36,5 @@ fn main(clock: VirtualClock) {
   }
   print(s)
   print(clock.now().value / 1000000000)
-  tx.close()
+  _ := tx
 }

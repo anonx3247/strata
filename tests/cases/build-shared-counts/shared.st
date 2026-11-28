@@ -69,7 +69,7 @@ fn churn(teams: List[Team], id: Int, rounds: Int) -> List[Person] {
 fn produce(tx: Sender[Note], teams: List[Team], id: Int) {
   for t in teams {
     for p in t.people {
-      tx.send(Note { who: p, _text: f"from {id}", _n: len(p.tags) })
+      tx.send(Note { who: p, _text: f"from {id}", _n: len(p.tags) }) except { () }
     }
   }
 }
@@ -107,10 +107,8 @@ fn round(teams: List[Team], j: Int) -> String {
     for id in 0..4 {
       spawn {
         produce(tx, teams, id)
-        tx.close()
       }
     }
-    tx.close()
     // tasks holding a closure and trait values that capture shared parts
     c := spawn sum(teams[1].people.map(p -> byte_len(tag(p))))
     d := spawn sum(labels.map(l -> byte_len(l.label())))
@@ -122,8 +120,7 @@ fn round(teams: List[Team], j: Int) -> String {
         None => 0,
       }
     }
-    htx.send(h)
-    htx.close()
+    htx.send(h) except { () }
     // the main thread counts the shared teams meanwhile
     mut mine := 0
     for t in teams {
@@ -150,7 +147,7 @@ fn round(teams: List[Team], j: Int) -> String {
     }
     (await hs, notes, (len(await h), await w, await c, await d), raced, failed, mine)
   }
-  quiet_tx.close()
+  _ := quiet_tx
   people := sum(kept.map(k -> len(k)))
   f"{people} kept, {len(notes)} notes ({notes[0].who.name}), {twice}, {raced}, {failed}, {mine}{suffix}"
 }

@@ -30,9 +30,8 @@ fn main() {
   for i in 0..100 {
     w := race {
       {
-        full.send(f"v{i}")
-        full.send(f"w{i}")
-        full.close()
+        full.send(f"v{i}") except { () }
+        full.send(f"w{i}") except { () }
         "sent"
       } as a => a,
       scope {
@@ -50,8 +49,7 @@ fn main() {
     }
   }
   print(f"won {wins} of 100")
-  full.close()
-  tx.close()
+  _ := tx
   mut n := 0
   for x in sink {
     n += 1

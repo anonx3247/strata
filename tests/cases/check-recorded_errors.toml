@@ -75,8 +75,7 @@ from = "capabilities.st"
 run = ["sh", "-c", "\"$STRATA\" --file capabilities.strata check 2>&1 | grep -E \"^(error in |  )\" | LC_ALL=C sort; true"]
 stdout = '''
 error in cabs: `extern c` definitions are never `pub`: wrap them in this module's own functions or a capability, which can be
-error in chans: `tx` is never closed here, so its receivers would wait forever: call `tx.close()` when this task is done sending (each task holding it closes its own)
-error in chans: the task holds a copy of `tx` and never closes it: call `tx.close()` in it when it is done sending
+error in chans: a channel has no `close`: it ends when its last sender is dropped, after the last statement that uses it (a task's, when the task is done with it). To end one held in a value that lives on, hold an `Option[Sender[T]]` and set it to `None`
 error in empty: a `select` needs at least one arm
 error in lamp: `NightLamp` is a capability: only the runtime makes one, for `main` or a test that asks for it (`night_lamp: NightLamp`); call its functions on that value
 error in loose: `spawn` outside a `scope`: tasks are started in a `scope { … }`, which waits for them (a function that starts tasks opens its own)

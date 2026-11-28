@@ -81,7 +81,7 @@ fn worker(jobs: Receiver[Int], out: Sender[Int]) {
   mut acc := 0
   for x in jobs {
     acc = fold_in(acc, x) + 0
-    out.send(acc)
+    out.send(acc) except { () }
   }
 }
 
@@ -94,7 +94,7 @@ fn tick(
   accs: Receiver[Int],
 ) -> String {
   step(mut s, t, scorer)
-  tx.send(t)
+  tx.send(t) except { () }
   s.acc = accs.recv() ?? -1
   show(s)
 }
@@ -134,9 +134,7 @@ fn main(mut term: Terminal) {
   scope {
     spawn {
       worker(jobs, out)
-      out.close()
     }
-    out.close()
     mut s := State {
       count: 0,
       table: Dict[String, Int] {},
@@ -166,6 +164,5 @@ fn main(mut term: Terminal) {
         },
       }
     }
-    tx.close()
   }
 }

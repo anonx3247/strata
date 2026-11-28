@@ -12,7 +12,6 @@ fn deep(c: VirtualClock, n: Int, held: String) -> String {
 
 fn wait_on(clock: Clock) -> String {
   (tx, rx) := channel()
-  tx.close()
   select {
     clock.after(seconds(1)) => "timer",
     rx.recv() as v => match v {
@@ -32,11 +31,9 @@ fn main(clock: VirtualClock) {
   got := scope {
     spawn {
       for i in 0..3 {
-        tx.send("item " + to_string(i))
+        tx.send("item " + to_string(i)) except { () }
       }
-      tx.close()
     }
-    tx.close()
     mut out := []
     for v in rx {
       mut out.push(v)
@@ -49,7 +46,6 @@ fn main(clock: VirtualClock) {
     out.send("x" + "y") => "sent",
     clock.after(seconds(2)) => "late",
   }
-  out.close()
   print(r)
   print(inp.recv())
   pair := scope {
