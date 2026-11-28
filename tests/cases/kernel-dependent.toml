@@ -1,0 +1,26 @@
+# strata kernel dependent: Patch's laws proven once for every record in the
+# dependently typed kernel (kernel_dependent), what it must refuse refused,
+# and the laws applied to `User` and its `Patch[User]` with no proof of their own
+[[step]]
+strata = ["kernel", "dependent", "$ROOT/tests/kernel/types/patch_user.strata"]
+has = [
+  "proven made_at",
+  "proven patched_nothing",
+  "proven patched_set",
+  "proven patched_keep",
+  "proven applied_at",
+  "proven applied_is_patched",
+  "6 laws proven for every record",
+  "refused: Type : Type",
+  "refused: Empty proven by star",
+  "refused: Bad = mk (Bad → Empty)",
+  "refused: Box : Type = mk Type",
+  "refused: λ b. #0",
+  "refused: true = false by refl",
+  "refused: any field patched is v, by refl",
+  "instance User.patched_nothing : Π (x : Π (g : User.Field), User.ty g)",
+  "instance User.patched_set.age : Π (x : User), Π (p : Patch[User]), Π (v : Int), (Eq.{0} (Change Int) (p User.age) (Set Int v)) → Eq.{0} Int",
+  "instance Patch[User] : made by the type function",
+  "opaque types: String, Int",
+]
+lacks = ["ACCEPTED", "failed"]
