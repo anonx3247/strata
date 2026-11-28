@@ -243,8 +243,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: eval.method_for (compiler.eval.st:1672), eval.method_typed. Source: review front-end. Confidence: likely.
 - [ ] **Two definitions with the same header name share an entry.** Header names come from `decl_name`: `impl Foo`, `impl Show for Pt`, `test "x"`.
   Where: binary.encode_module_kept (`match get(kept, name)`), desugar.decl_name. Source: review front-end. Confidence: likely.
-- [ ] **In a module with `use binary`, `take(...)` resolves to the private `binary.take`.** A plain call of a builtin picks a private function of the same name from an imported module, and a private `fn slice` in one module captures `slice` calls in others.
-  Where: resolver. Source: ledger F4. Confidence: likely.
 - [ ] **Script `edit` accepts a `comptime` that `check` refuses.** `strata --file F edit` of a script stores a `comptime` that `check` then refuses.
   Where: edit. Source: ledger F8. Confidence: likely.
 - [ ] **Columns are in characters, except after a string, where they move by bytes; multi-line strings don't reset the column.** `lx.col += 2 + byte_len(s)`. The module doc says columns count characters. Inside a string `\n` bumps `lx.line` but never resets `lx.col`, and an escape counts as one character instead of two.
@@ -703,7 +701,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [Derives on functions] `verify` of examples/wasm reports `std.json.decode_as.for.Summary.10` refuted (decoder crashes on an integer too large for a Float); a release can't target wasm.
 - [Derived traits, comptime] Reading the i-th element when `i` is known only at compile time; "more than one `List` field" not reported; `setting(..)` reads no strata.toml.
 - [The strata command in Strata] The checker misses some errors once an import fails; verifying `codegen.read_slot` crashes (raw reads at arbitrary addresses).
-- [Long-term goal: self-hosting] (old notes, may be stale) A list of `Option[Int]` and `Option[Float]` makes LLVM refuse the IR; a private function captures calls to a built-in of the same name in other modules; `verify` stack-overflowed on nested closures over lists; `strata --file F edit` accepts a `comptime` `check` refuses; regex captures and `find` not supported by the VM.
+- [Long-term goal: self-hosting] (old notes, may be stale) A list of `Option[Int]` and `Option[Float]` makes LLVM refuse the IR; `verify` stack-overflowed on nested closures over lists; `strata --file F edit` accepts a `comptime` `check` refuses; regex captures and `find` not supported by the VM.
 - [Concurrency] O(threads) look per blocking wait; `compiler/check` doesn't look inside `select`/`race`; `close` on every path not checked; `Task` not in written types.
 - [Error handling, strings and mutation] In-place updates not for paths deeper than one field, sums with several variants, or a `mut` field.
 - [Mutation at the call site] (issue) A `mut` argument is decided to be passed by reference without overlap, but each goes through its own slot, copied in and out.
@@ -720,7 +718,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [std.collections] A lambda in a record field with no type wanted at all gets `()` parameters and LLVM rejects the IR.
 - [Floats in the prover] The section's "Left, in order" list is not carried here: check it in git.
 - [Known gaps] `float_from_bits` gives infinities; `Files.read`/`Console.read_line` don't check UTF-8; `d[k]` not accepted; a `_` type left in codegen makes `==` and hashing skip that part.
-- [Known gaps] Lab-fleet checker bugs: `"\r"` is a backslash and `r`; a trait and a type with one name pass check but codegen fails; mixed-union narrowing on verify's path; unknown types in a definition stored before its import aren't reported; non-exhaustive errors on the wrong function after a rejected edit; errors labelled by short name; `use binary` makes `take(...)` resolve to private `binary.take`; a `List` and a `String` overload let `xs["a"]` pass (fixed on std-math only).
+- [Known gaps] Lab-fleet checker bugs: `"\r"` is a backslash and `r`; a trait and a type with one name pass check but codegen fails; mixed-union narrowing on verify's path; unknown types in a definition stored before its import aren't reported; non-exhaustive errors on the wrong function after a rejected edit; errors labelled by short name; a `List` and a `String` overload let `xs["a"]` pass (fixed on std-math only).
 - [Known gaps] Lab-fleet codegen bugs: `Ok(())` pattern doesn't compile; `Shop.line(s, x)` doesn't compile; a `U64` match with literal `0` crashed; `parallel.map` with allocating functions crashed (cause found, fixed); producer/consumer programs grow without bound (per-thread free lists); every std-linked program counts as supervising; integer literals >= 2^62 re-parsed each time; the JIT never frees modules.
 - [Known gaps] Messages: an unknown error for an unused/typo `from std.io use Console`; `type Answer = Some(Int) | None` says "unknown type None".
 
