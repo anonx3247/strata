@@ -50,6 +50,10 @@ has = [
   "instance User.applied_is_patched",
   "instance Point.patched_fields",
   "instance Address.patched_empty",
+  "instance Account.applied_is_patched",
+  "instance made.Patch[User].patched_fields",
+  "instance made.Patch[Point].applied_is_patched",
+  "instance made.Patch[Account].applied_is_patched",
 ]
 lacks = ["laws for every record: ", "ACCEPTED"]
 
