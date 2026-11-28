@@ -5,7 +5,8 @@ Ideas for possible future changes to Strata and its tools: not built, not decide
 ### Named arguments at calls
 Proposed (user, 2026-11-27): arguments named at every call (`send(to: user, message: text)`), as in Swift and Flutter, so parameters get full-word names that say what a comment would. Rules so far:
 - **Punning** as in records: an argument that is a variable of the parameter's name is written bare (`send(to: admin, message)`).
-- **One-parameter functions are named too** (the name is often useful). The first parameter (after `self` in a method) may have a name starting with `_`: it is then written without a name at calls (`fn sqrt(_x: Float)`, `sqrt(2.0)`) and read as `_x` in the body. Only that one slot, so it is not positional in general. A bare `_` keeps its one meaning, a value thrown away (user, 2026-11-27). Note: in Rust and Python `_x` means "unused", which agents may read into it.
+- **One-parameter functions are named too** (the name is often useful). A parameter whose name starts with `_` may be written without its name at calls: any parameter, not only the first (`fn max(_a, _b: T)` is called `max(x, y)`), read as `_a` in the body. Every other parameter is named at calls. Unnamed arguments fill the `_` parameters in order, named ones go by name; the `_` parameters come before the named ones, so `f(x, y, limit: 3)` reads left to right (to settle in the spec). A bare `_` keeps its one meaning, a value thrown away (user, 2026-11-28). Note: in Rust and Python `_x` means "unused", which agents may read into it.
+- **Grouped parameters**: `fn max(a, b: T)` means `a: T, b: T`, as in Go. Sugar only: the stored form lists each parameter with its type, and the printer groups them back (user, 2026-11-28).
 - **`self`** is never named (method calls use dot syntax). **Spreads** give no names (the spread record's type says which fields fill which parameters).
 - **`mut` and `cap` stay written**, on the value: `grow(items: mut list)`, punned `grow(mut items)`, the same text as the declaration `fn grow(mut items: List[T])`.
 - **Function types carry parameter names** (user, 2026-11-27): `(item: T) -> U`, so calls through a function value are named too, and a lambda's parameters take the names its expected type gives (`xs.map(item -> item.price)`): the lambda passed to `map` always reads the same. A lambda may bind its own names (`xs.map(p -> p.price)`); a named function passed as a value must have the expected type's parameter names as well as its types, since equal types can mean different things; otherwise the call site wraps it in a lambda that maps the arguments, where the call shows each name (user, 2026-11-27).
@@ -14,6 +15,16 @@ Proposed (user, 2026-11-27): arguments named at every call (`send(to: user, mess
 - A parameter's name is part of the interface: renaming it is a breaking change, and `rename` rewrites every call site in the package (user, 2026-11-27).
 - **Optional arguments can be left out**: a parameter with a default (`timeout: Duration = seconds(30)`, `limit: Option[I64] = None`) is omitted at calls that don't need it; no `None` written (user, 2026-11-27; see "Parameter defaults").
 - **An impl may add parameters to a trait's method only if they have defaults**, so a call through the trait still fits. A capability can't have a default (that would be authority from nowhere), so a method that may need capabilities takes them as a trait argument chosen per impl (`Component[E, O, C]` with `C` the exact record of capabilities, `{}` for none). Where that record type is `{}`, the argument is left out at calls (sugar for passing `{}`), so pure impls show no capabilities anywhere (user, 2026-11-27).
+### A power operator: `x ** 2` (user, 2026-11-28)
+`a ** b` is the trait call `Pow.pow(a, b)`, like every operator. It binds tighter than unary minus and is right-associative, as in Python: `-x ** 2` is `-(x ** 2)`, `2 ** 3 ** 2` is `2 ** (3 ** 2)`. Core implements it for the number types (integer powers with a natural exponent, floats); array types implement it per element, for NumPy-like code.
+
+### Pipes: `print(t, view) |> parse |> desugar` (user, 2026-11-28; to try with lab trial 5)
+- `a |> f` is `f(a)`: the piped value fills `f`'s first `_` parameter; a later step's other arguments go in parentheses (`|> parse(mode: strict)`). A function with no `_` parameter can't be piped into: an error at the pipe.
+- A pipe starts from an ordinary call, whose arguments are all written as usual (`print(t, view) |> parse`). The parser also accepts a plain value first (`x |> print |> parse`), which gives the same tree.
+- Sugar only: the stored form is the nested calls. The printer shows a call whose `_` argument is itself a call as a pipe, so only chains of two or more calls are piped (`print(x)` stays as it is). A call that gets the chain in another argument stays a call, with the pipe inside: `max(5, [x ** 2 for x in xs] |> sum |> sqrt)`.
+- `|>` binds more loosely than calls and `!`/`?`, more tightly than comparisons, so laws read without parentheses: `holds print(t, view) |> parse |> desugar |> elaborate == t`. A pipeline as a value is a lambda: `x -> x |> parse |> desugar`.
+- Open: `it` in a step's arguments to place the piped value elsewhere (`|> max(5, it)`); left out until the trial shows chains that read badly without it.
+
 ### `Option` and `Result` without wrapping
 Proposed (user, 2026-11-27; to settle in the spec, section 6). The type notations here (`T?`, `A ! E`) are optional view settings; the default shows `Option[T]` and `Result[A, E]`, which read clearer (REBUILD.md "Notation is a reader's setting"). Aim: no `Some`, `Ok` or `Err` written, and errors from callees added to a function's errors with no wrapper types or conversions.
 - **First idea: plain unions** (`T? = T | None`, `Result = T | E`). Two costs ended it: flattening (`T?` of a `U?` is `U?`, so `get` on a `Dict[K, V?]` can't tell a missing key from a stored `None`), and the need for success and error types to be disjoint, which needs negative bounds (`T` not `None`, `T` not `Error`). Negative bounds make adding an impl a breaking change and can't be checked once for generic code.
@@ -32,6 +43,28 @@ Proposed (user, 2026-11-27; to settle in the spec, section 6). The type notation
 - **An optional type always defaults to `None`** (user, 2026-11-27; replaces `p?: T`): a parameter or record field declared `Option[T]` (or `T?` in that view) may always be left out and is then `None`. One notation, one meaning: no TypeScript-style split between "may be left out" (`p?: T`) and "may hold nothing" (`p: T | undefined`, `null`). The default comes from the declared type as written, not from a type parameter that happens to be instantiated with an `Option`, so generic code means the same for every instance.
   Where `None` would carry a meaning that must not be forgotten ("never expires", "no timeout", "leave unchanged" in a patch), the type should be its own sum with no default (`Expiry = Never | At(Time)`, `Change[T] = Keep | Set(T)`), so every writer has to choose.
 - Aliases name groups (`type ConfigError = NotFound | Denied | BadToml`); a tool can show or write the union a body actually returns.
+
+### Sugar never depends on types (user, 2026-11-28, after lab trial 3, #648)
+The pipeline is `parse` (text to a surface tree: the core nodes plus markers for what is left to infer: a type, a constructor), `desugar` (surface to surface, by syntax only, never by types), `elaborate` (type check, fill the markers, record call targets; gives the stored, fully typed core) and `print` (core to text, with a reader's settings). Rules:
+1. Parsing only turns sugar into core, never the reverse: a hand-written `match` is stored as a `match` even when it has a handler's shape; only `except` makes an `except`.
+2. Choosing sugar is the printer's, on the typed core, where every constructor is explicit: it shows a sugar or hides a constructor only where reading the text back gives the same node.
+3. A left-out constructor is inference, like a left-out type: a marker the elaborator fills, not sugar.
+
+The laws, with `t` a stored core tree, `s` any text and `view` a reader's settings:
+```
+law stored_round_trip(t: Core, view: Settings)
+  holds elaborate(desugar(parse(print(t, view)))) == t
+
+law printing_is_stable(t: Core, view: Settings)
+  holds print(elaborate(desugar(parse(print(t, view)))), view) == print(t, view)   // follows from stored_round_trip
+
+law sugar_choice(n: Node, context: Context, view: Settings)
+  requires shown: chosen_sugar(n, context, view) == Some(text)
+  holds elaborate_in(context, desugar(parse_node(text))) == n
+```
+`stored_round_trip` holds for every tree and every setting; `sugar_choice` is the per-node form the printer is checked against, and the whole law follows from it by induction over the tree. The other direction, text back to the same text (`print(elaborate(desugar(parse(s))), view) == s`), does not hold and isn't wanted: layout, a written `Some` the types decide, a hand-written handler-shaped `match`, or a written type that inference gives are all printed in the one canonical form. What holds instead is `printing_is_stable`: text the printer made comes back unchanged. Also from `stored_round_trip`: two different trees never print the same under one setting.
+
+From #648 for the spec: constructors are decided at every path that stores a tree (`edit`, `merge-file`, upgrades); sites include list and dict elements and lambda bodies; traces cover sums as well as records; a pattern binding one member of an error union (`e: NotFound =>`) is needed; a hidden `Ok(())` prints as a plain `return`. Errors that must stay apart (a request never sent, a response failed) are different types; a union merges only values of one type.
 
 ### `derive Error` from a type's text
 `derive Error` makes `message` the value's ordinary text (its `Debug`/`Display` form: `NotFound { path: "app.toml" }`), so an error type needs no hand-written method unless it wants a better message (user, 2026-11-27).
@@ -110,7 +143,39 @@ Lemmas are top-level only. Lemmas in `impl` and trait blocks, and a `calc` step 
 ### Revisit the `decreases` defaults
 Picked without asking: one clause per loop or function (a tuple for several), stored as the body's first statement, an unproven clause makes the verdict "may not terminate", and the runtime check covers only direct self-calls (mutual recursion has none). Each is easy to change. (Claude, 2026-11-25)
 
+### Proofs for the kernel: laws, obligations and tactics
+Proposed (user asked, 2026-11-28; spec section 8; tried by lab-trials.md trial 1).
+- **`law` is the one keyword for a named, proven statement**; `lemma` and a trait's `invariant` fold into it. `invariant` stays only on loops. A law has parameters (the universally quantified variables), optional `requires` (hypotheses), `holds` (the statement: an expression, or a block of statements ending in one, so `mut` methods can be stated without `old`), and an optional `by` proof; with no `by`, the ladder tries static analysis, then Z3.
+- **Where a law sits says who proves it**: at the top level or in a module, it is a theorem, proven once (generic laws by parametricity, from their bounds' laws); in a trait, an obligation every impl proves (`proof name by …` in the impl, or nothing for the ladder); a generic law at the top level (`law equal_means_same_hash[T: Eq + Hash](a: T, b: T)`) is a theorem too: it must follow from its bounds' laws, and if it doesn't, that is an error, never a silent new obligation. An obligation across traits goes in a trait: `trait Hash: Eq { law agrees_with_eq(a: Self, b: Self) requires a == b holds a.hash() == b.hash() }`, so the trait that adds the requirement names the other as a supertrait (user, 2026-11-28). A proven law is a fact callers can use (the lab's laws aren't).
+- **A trait's invariant becomes a law over `Self`** (`law size_nonnegative(s: Self) holds s.size() >= 0`); each impl proves it, usually from a refinement on its own type. A type's own invariant is a refinement (`where`).
+- **Induction is recursion**: a proof is a `match` on the value, and a recursive variant's arm calls the law on the smaller value (`append_assoc(rest, b, c)`), checked for termination like any recursive function. There is no separate `induction` or `cases`: splitting on a value is `match`, splitting on a condition is `if`, as in code (user, 2026-11-28).
+- **Proof steps in programmers' words, not Lean's** (user, 2026-11-28): `match x { … }` and `if c { … } else { … }` split a proof; `simplify by law1, law2` rewrites with the named laws until nothing changes (`by` names laws as everywhere else; `simplify once by law` for a single step); `use law(args)` finishes with a proven law or a named assumption (Lean's `exact`/`apply`); `lemma h: p by …` proves and names a step; `unfold f` uses `f`'s definition; `calc` chains equalities and inequalities; `witness e` gives the value for an `exists`; `arithmetic` (linear integer arithmetic), `nonlinear`, `bits`, `compute` (evaluation); `auto` is the ladder. No `intro`: assumptions are named in `requires` and variables are the law's parameters, so nothing needs introducing; a `for all` or `==>` inside a goal is stated as a lemma with its own parameters and `requires` instead. Small Lean steps (`constructor`, `left`, `right`, `rfl`) are left to `simplify` and `auto` until a trial shows one is needed.
+- **Proofs are Strata code**: laws and their proofs are definitions in modules, stored in the tree and checked by `verify`; no separate proof file format. The lab's `.kp` files are a trial convenience only.
+- **Full names in the kernel** (user, 2026-11-28): `TypeVariable`, `TypeApplication { name, arguments }` (generic types and functions are both applications: `List[Int]` is `TypeApplication { name: "List", arguments: [Int] }`, `Int -> Bool` is `TypeApplication { name: "Function", arguments: [Int, Bool] }`); terms `Variable`, `Constant`, `Application`, `Lambda`, `LambdaParameter`; a theorem's parts `assumptions`, `conclusion`, `depends_on`; rules by what they do (`equal_to_itself`, `chain_equalities`, `for_all_from_arbitrary`, …), never `refl`, `mk`, `dest_eq`.
+
 ## Memory and speed
+
+### Axioms as definitions (user, 2026-11-28)
+Each kernel axiom is its own public function, taking the statements it is about and returning the theorem: `pub fn and_gives_left(p: Statement, q: Statement) -> Theorem` (`Statement`: a `Term` of type `Bool`, a refinement). No lookup by name (`axiom("…")`), no `Result` for a missing name, no placeholders `P`/`Q` substituted afterwards, no `axiom_names()` list (the list is made from the definitions). They are built as terms in the kernel, not written in law syntax, so the untrusted translator never makes an axiom.
+
+### Datatypes for the kernel from type values (user, 2026-11-28)
+The kernel's datatypes are made from the same `std.typing.Type` values as everything else ("Types are values"), by one ordinary function, replacing the type half of the lab's `kernel_translate`:
+```strata
+fn datatype_of(T: Type) -> DatatypeDefinition {
+  DatatypeDefinition {
+    name: T.name,
+    type_parameters: T.parameters,
+    variants: match T.kind {
+      Record => [(T.name, [for f in T.fields: logic_type(f.type)])],
+      Union => [for v in T.variants: (v.name, [for f in v.fields: logic_type(f.type)])],
+    },
+  }
+}
+```
+- A function over types whose result is a `Type` is written `type` (`Patch[T]`); one whose result is any other value is a `fn` (`datatype_of`). Both run at compile time; a `Type` parameter needs no `comptime`.
+- Made types (`Patch[User]`) become datatypes with no extra code.
+- `datatype_of` is untrusted; the kernel's `define_datatype` still checks what it is given (nesting it supports, an inhabited type) before stating any fact.
+- This gives laws per type. One law for every type (the Patch laws for every record `T`) needs the logic to talk about type values: records as maps from field names, `x.(f.name)` as a lookup. That is the Patch-laws trial's question.
 
 ### Self-compile in under a second
 `check` after a one-function edit is under a second; `build` after one is about 4 s. Left: keep resolver errors, lint and unused-definition results per definition; decode lazily or hold the trees in a long-running process; keep each definition's expanded and typed tree by its key; make `unique` and `kept_by` incremental over the call graph; reuse each function's IR; link packages with C through lld; compile std's library in parts. (user, 2026-11-24)
