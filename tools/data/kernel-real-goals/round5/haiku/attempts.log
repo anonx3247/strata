@@ -1,0 +1,33 @@
+09:09:12 ids_none 1 proven rc=0 wall=4.209s proven ids_none (2.0 ms)
+09:09:23 ids_step 1 proven rc=0 wall=4.253s proven ids_step (8.5 ms) [assumed: refinement: len]
+09:10:18 id_set_step 1 proven rc=0 wall=4.187s proven id_set_step (10.2 ms) [assumed: refinement: len]
+09:10:22 got_step 1 proven rc=0 wall=4.168s proven got_step (5.8 ms)
+09:10:26 done_step 1 proven rc=0 wall=4.218s proven done_step (12.1 ms) [assumed: refinement: len]
+09:10:31 frame_ids 1 failed rc=0 wall=4.212s failed frame_ids (15.2 ms): no goals left for `assumption` (the goal was closed by the tactics before it)
+09:10:35 frame_got 1 failed rc=0 wall=4.270s failed frame_got (26.0 ms): no goals left for `assumption` (the goal was closed by the tactics before it)
+09:10:39 outside_ids 1 failed rc=0 wall=4.195s failed outside_ids (4.9 ms): no goals left for `assumption` (the goal was closed by the tactics before it)
+09:10:44 outside_done 1 failed rc=0 wall=4.189s failed outside_done (24.5 ms): no goals left for `assumption` (the goal was closed by the tactics before it)
+09:11:17 frame_ids 2 proven rc=0 wall=4.167s proven frame_ids (9.2 ms) [assumed: refinement: len]
+09:11:22 frame_got 2 proven rc=0 wall=4.301s proven frame_got (8.2 ms)
+09:11:26 outside_ids 2 proven rc=0 wall=4.236s proven outside_ids (4.9 ms) [assumed: refinement: len]
+09:11:30 outside_done 2 proven rc=0 wall=4.209s proven outside_done (14.2 ms) [assumed: refinement: len]
+09:11:35 listed_push 1 proven rc=0 wall=4.233s proven listed_push (6.5 ms)
+09:11:39 some_new_here 1 proven rc=0 wall=4.252s proven some_new_here (23.7 ms) [assumed: refinement: len]
+09:11:43 some_new_kept 1 failed rc=0 wall=4.176s failed some_new_kept (0.4 ms): `assume` failed: the goal is neither `forall`, `==>` nor `!`
+09:13:00 some_new_kept 2 proven rc=0 wall=4.218s proven some_new_kept (14.6 ms) [assumed: refinement: len]
+09:13:05 settled_insert 1 failed rc=0 wall=4.273s failed settled_insert (1.0 ms): `use` failed: `settled_all` failed above: fix its proof first
+09:13:09 unlocked_insert 1 failed rc=0 wall=4.220s failed unlocked_insert (0.9 ms): `use` failed: `unlocked_all` failed above: fix its proof first
+09:13:13 locked_insert 1 failed rc=0 wall=4.164s failed locked_insert (0.6 ms): `use` failed: `locked_all` failed above: fix its proof first
+09:13:18 unique_push 1 failed rc=0 wall=4.140s failed unique_push (2.5 ms): `simp` failed: `unique_append` failed above: fix its proof first
+09:14:02 settled_insert 2 failed rc=0 wall=4.212s failed settled_insert (1.0 ms): `use` failed: `settled_all` failed above: fix its proof first
+09:14:38 settled_insert 3 failed rc=0 wall=4.187s failed settled_insert (0.9 ms): `use` failed: `settled_all` failed above: fix its proof first
+09:15:04 settled_insert 4 failed rc=0 wall=4.231s failed settled_insert (1.0 ms): `use` failed: `settled_all` failed above: fix its proof first
+09:15:33 settled_insert 5 failed rc=0 wall=4.226s failed settled_insert (1.0 ms): `use` failed: `settled_all` failed above: fix its proof first
+09:16:00 settled_insert 6 proven rc=0 wall=6.383s proven settled_insert (84.2 ms) [assumed: z3]
+09:16:16 taken_ensures 1 failed rc=1 wall=7.381s failed taken_ensures (0.7 ms): `simp` failed: simp made no progress
+09:16:24 unlocked_insert 2 proven rc=1 wall=7.399s proven unlocked_insert (106.5 ms) [assumed: z3]
+09:16:29 locked_insert 2 proven rc=1 wall=5.463s proven locked_insert (46.3 ms) [assumed: z3]
+09:16:35 unique_push 2 proven rc=1 wall=5.454s proven unique_push (5.3 ms)
+09:16:58 taken_ensures 2 failed rc=1 wall=5.334s failed taken_ensures (0.3 ms): `use` failed: `taken_fold` failed above: fix its proof first
+09:17:14 taken_ensures 3 failed rc=1 wall=5.247s failed taken_ensures (0.3 ms): `use` failed: `taken_fold` failed above: fix its proof first
+09:17:26 taken_ensures 4 proven rc=0 wall=6.313s proven taken_ensures (1.9 ms)
