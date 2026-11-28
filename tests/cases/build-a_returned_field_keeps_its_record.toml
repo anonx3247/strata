@@ -1,0 +1,26 @@
+# A function that gives back a field path of a parameter (`self.parts`,
+# `p.inner.parts`, through `if`, `match` and a pattern's names, in a tuple,
+# in a list `+`) keeps the parameter (codegen's `kept_by`), and so does
+# `xs + [..]` of a parameter `xs`. So a record or list made in a loop body
+# or a block has the verdict of the list taken from it (`function`), not
+# its scope's. One that only reads a field's length keeps its loop body's.
+# The lists are printed after their loops.
+
+[[step]]
+save = "fields.strata"
+from = "fields.st"
+
+[[step]]
+strata = ["--file", "fields.strata", "build", "--no-verify", "--memory-sites", "-o", "sites"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./sites >/dev/null 2>&1; awk -F'\\t' '$4 == \"main\" && $7 != \"\" && $6 ~ /^(Bag |Pair |\\[f\"x)/ { print $6 \"\\t\" $7 }' sites.tsv | LC_ALL=C sort -u"]
+out = "Bag { parts: [f\"a{i}\", f\"b{i}\"], name: f\"n{i}\" }\tfunction\nBag { parts: [f\"c{i}\"], name: f\"m{i}\" }\tfunction\nBag { parts: [f\"j{i}\"], name: \"q\" }\tfunction\nBag { parts: [f\"k{len(out)}\"], name: \"z\" }\tfunction\nBag { parts: [f\"s{i}\"], name: f\"v{i}\" }\tloop body\nBag { parts: [f\"t{i}\"], name: \"y\" }\tfunction\nBag { parts: [f\"u{i}\"], name: \"w\" }\tfunction\nPair { inner: Bag { parts: [f\"p{i}\"], name: \"x\" }, n: i }\tfunction\n[f\"x{i}\"]\tfunction\n"
+
+[[step]]
+strata = ["--file", "fields.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["./plain"]
+memory = true
+stdout = "6\n50\n[[\"a0\", \"b0\"], [\"a1\", \"b1\"], [\"a2\", \"b2\"], [\"p0\"], [\"p1\"], [\"c0\"], [\"c1\"], [\"t0\"], [\"t1\"], [\"u0\"], [\"u1\"], [\"j0\", \"z\"], [\"j1\", \"z\"], [\"x0\", \"y\"], [\"x1\", \"y\"]]\n[\"k15\"]\n"

@@ -1,0 +1,37 @@
+# Under `STRATA_LISTS=seq` a list of plain elements is a z3 sequence
+# (`(Seq Int)`, smt `seq_sorted`), a fresh one an unknown of that sort,
+# and lists made of sequences, concatenations and literals are equal as
+# sequences (`seq_equal`): `grouped`'s concatenations are equal for any
+# lists, which the default encoding (equal elements only where taken)
+# doesn't prove.
+
+[[step]]
+save = "t.strata"
+text = '''
+/// `xs` with `x` last.
+pub fn append(xs: List[Int], x: Int) -> List[Int]
+  ensures it == xs + [x] {
+  mut ys := xs
+  mut ys.push(x)
+  ys
+}
+
+/// `xs` then `ys` then `zs`, grouped either way.
+pub fn grouped(xs: List[Int], ys: List[Int], zs: List[Int]) -> Bool
+  ensures it {
+  (xs + ys) + zs == xs + (ys + zs)
+}
+'''
+
+[[step]]
+run = ["mkdir", "-p", "dump"]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
+env = { STRATA_LISTS = "seq", STRATA_SOLVER_DUMP = "$TMP/dump" }
+has = ["✓ append ", "✓ grouped ", "proven:  ensures it == xs + [x]"]
+lacks = ["not proven"]
+
+[[step]]
+run = ["sh", "-c", "cat dump/*.smt2 | grep -c '^(define-sort |T:List(Int)| () (Seq Int))' | sed 's/^[1-9][0-9]*$/some/'"]
+stdout = "some\n"

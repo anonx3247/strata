@@ -1,0 +1,93 @@
+# A record pattern that names some fields and ends with `..` reads each
+# named field, in a compiled program: fields of one type named out of
+# order, a rename, a nested pattern, a literal under a field, a `:=`, a
+# lambda's parameter and a generic record. Each printed value comes from one
+# field only.
+
+[[step]]
+save = "p.strata"
+text = '''
+type BinOp =
+  | Add
+  | Mul
+
+type Expr =
+  | Lit(Int)
+  | Binary { op: BinOp, left: Expr, right: Expr }
+
+type Node = { op: BinOp, left: Int, right: Int, name: String }
+
+type Wrap =
+  | W { tag: Int, inner: Node }
+
+type Pair[T] =
+  | P { first: Bool, a: T, b: T }
+
+fn nodes(e: Expr) -> Int {
+  match e {
+    Lit(_) => 1,
+    Binary { left, right, .. } => 1 + nodes(left) + nodes(right),
+  }
+}
+
+fn rightmost(e: Expr) -> Int {
+  match e {
+    Lit(n) => n,
+    Binary { right: r, .. } => rightmost(r),
+  }
+}
+
+fn digits(e: Expr) -> Int {
+  match e {
+    Lit(n) => n,
+    Binary { right, left, .. } => digits(left) * 10 + digits(right),
+  }
+}
+
+fn right_three(e: Expr) -> Bool {
+  match e {
+    Binary { right: Lit(3), .. } => true,
+    _ => false,
+  }
+}
+
+fn spread(n: Node) -> Int {
+  Node { right, left, .. } := n
+  left * 10 + right
+}
+
+fn inner_right(w: Wrap) -> Int {
+  match w {
+    W { inner: Node { right, name, .. }, .. } => right + len(name),
+  }
+}
+
+fn second(p: Pair[Int]) -> Int {
+  match p {
+    P { b, .. } => b,
+  }
+}
+
+fn rights(ns: List[Node]) -> List[Int] {
+  ns.map((Node { right, .. }) -> right)
+}
+
+fn main() {
+  e := Binary {
+    op: Add,
+    left: Lit(1),
+    right: Binary { op: Mul, left: Lit(2), right: Lit(3) },
+  }
+  n := Node { op: Mul, left: 4, right: 5, name: "abc" }
+  print(f"{nodes(e)} {rightmost(e)} {digits(e)} {right_three(e)} {right_three(Binary { op: Add, left: Lit(0), right: Lit(3) })}")
+  print(f"{spread(n)} {inner_right(W { tag: 9, inner: n })} {second(P { first: true, a: 6, b: 7 })} {rights([n])}")
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "build", "--no-verify", "-o", "p"]
+
+[[step]]
+run = ["./p"]
+memory = true
+stdout = "5 3 33 false true\n45 8 7 [5]\n"

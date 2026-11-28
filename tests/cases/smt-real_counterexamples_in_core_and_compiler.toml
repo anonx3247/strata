@@ -1,0 +1,17 @@
+# verify: counterexamples the solver found in core and compiler/ that were
+# real: `shift_out` and `two_to` took any shift (their range was only in a
+# comment), `lex.string` stepped past the end of an empty input, and
+# `check.sample` added two large finite bounds into infinity
+[[step]]
+strata = ["--file", "$ROOT/core", "verify", "core.gen.shift_out", "--no-race"]
+has = ["✓ core.gen.shift_out "]
+
+[[step]]
+strata = ["--file", "$ROOT/core", "verify", "core.float.two_to", "--no-race"]
+has = ["✓ core.float.two_to "]
+
+[[step]]
+strata = ["--file", "$ROOT/compiler", "verify", "lex.string,check.sample", "--no-race"]
+any_code = true
+has = ["lex.string ", "check.sample "]
+lacks = ["✗ lex.string ", "✗ check.sample ", "invariant failed", "is not a finite number"]
