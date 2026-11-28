@@ -1,0 +1,192 @@
+# Capabilities as written (compiler/capmarks, a lab trial), on when
+# strata.toml says `[check] capabilities = "marked"`: a capability
+# parameter is `cap name: T` and an argument handed on to one is `cap x`;
+# a named record can't hold one and a local can't keep one; a capability
+# handed on but never used, by the function or a callee, is an error.
+# `strata fix --marks` writes the marks, `strata fix --dead` removes the
+# unused ones with the arguments that passed them, `strata fix --thread F
+# NAME TYPE` threads a new one up the callers. `debug e` shows `e` on
+# standard error under `strata run` only, and must be pure.
+
+[[step]]
+write = "p/strata.toml"
+text = 'name = "p"'
+
+[[step]]
+module = "main"
+into = "$TMP/p/"
+text = '''
+from std.io use Console
+from std.fs use Files, Disk
+from std.time use Clock, SystemClock
+
+fn main(mut console: Console, disk: Disk, clock: SystemClock) {
+  greet(mut console, "world")
+  report(mut console, disk)
+  tick(clock, total([1, 2]))
+}
+
+fn greet(mut console: Console, name: String) {
+  mut console.print(f"hello {name}")
+}
+
+fn report(mut console: Console, files: Files) {
+  mut console.print("report")
+  relay(files, 2)
+}
+
+fn relay(files: Files, n: Int) {
+  if n > 0 {
+    relay(files, n - 1)
+  }
+}
+
+fn tick(clock: Clock, n: Int) {
+  print(clock.now().value > 0)
+  print(n)
+}
+
+fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs {
+    s += x
+    debug s * 10
+  }
+  s
+}
+
+fn seen(console: Console) -> Bool {
+  c := console
+  c.interactive()
+}
+
+type Holder = { console: Console, n: Int }
+
+test "total" {
+  assert total([1, 2]) == 3
+}
+'''
+
+[[step]]
+write = "p/strata.toml"
+text = '''
+name = "p"
+
+[check]
+capabilities = "marked"
+'''
+
+[[step]]
+strata = ["check"]
+dir = "p"
+code = 1
+has = [
+  "error in main: `console` is a capability (`std.io.Console`): write `cap console`",
+  "error in main: `greet` takes the capability `console`: write `cap mut console`",
+  "error in main: `report` takes the capability `files`: write `cap disk`",
+  "error in seen: `console` is a capability: it isn't kept in a local; hand it on as `cap console`",
+  "error in Holder: `Holder.console` holds a capability (`std.io.Console`): a named record can't",
+  "error in report: `report` takes the capability `files` but never uses it, itself or through a callee",
+  "error in relay: `relay` takes the capability `files` but never uses it",
+  "error in main: `main` takes the capability `disk` but never uses it",
+]
+lacks = ["`greet` takes the capability `console` but never", "`tick` takes the capability `clock` but never"]
+
+[[step]]
+strata = ["fix", "--marks", "--no-commit"]
+dir = "p"
+has = ["marked: main", "marked: relay"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "p"
+has = [
+  "fn main(cap mut console: Console, cap disk: Disk, cap clock: SystemClock) {",
+  "  report(cap mut console, cap disk)",
+  "    relay(cap files, n - 1)",
+  "    debug s * 10",
+]
+
+[[step]]
+strata = ["fix", "--dead", "--no-commit"]
+dir = "p"
+has = ["removed: main.disk", "removed: report.files", "removed: relay.files"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "p"
+has = ["fn main(cap mut console: Console, cap clock: SystemClock) {", "  report(cap mut console)", "fn relay(n: Int) {"]
+
+[[step]]
+strata = ["fix", "--thread", "total", "clock", "std.time.SystemClock", "--no-commit"]
+dir = "p"
+has = ["threaded: cap clock: std.time.SystemClock into total", "threaded: cap clock: std.time.SystemClock into test total"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "p"
+has = [
+  "  tick(cap clock, total([1, 2], cap clock))",
+  "fn total(xs: List[Int], cap clock: SystemClock) -> Int {",
+  "test \"total\" (cap clock: SystemClock) {",
+  "  assert total([1, 2], cap clock) == 3",
+]
+
+[[step]]
+write = "q/strata.toml"
+text = '''
+name = "q"
+
+[check]
+capabilities = "marked"
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/q/"
+text = '''
+from std.io use Console
+
+fn main(cap mut console: Console) {
+  mut console.print(f"{total([1, 2])}")
+}
+
+fn total(xs: List[Int]) -> Int {
+  mut s := 0
+  for x in xs {
+    s += x
+    debug s * 10
+  }
+  debug xs
+  s
+}
+
+test "total" {
+  assert total([1, 2]) == 3
+}
+'''
+
+[[step]]
+strata = ["run"]
+dir = "q"
+has = ["s * 10 = 10", "s * 10 = 30", "xs = [1, 2]", "3"]
+
+[[step]]
+strata = ["test"]
+dir = "q"
+has = ["1 passed"]
+lacks = ["s * 10"]
+
+[[step]]
+module = "main"
+into = "$TMP/q/"
+fails = true
+text = '''
+from std.io use Console
+
+fn main(cap mut console: Console) {
+  debug console.interactive()
+  mut console.print("x")
+}
+'''
+has = ["`debug console.interactive()`: what `debug` shows must be pure (no capability, no `mut`)"]
