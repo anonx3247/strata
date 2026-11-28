@@ -1,5 +1,5 @@
 # cli.rs: mocks_for_tests: fakes for tests, declared as types; their implementations may leave
-# methods out (generated); for tests only; hidden from views unless asked
+# methods out (they do nothing); for tests only; hidden from views unless asked
 
 [[step]]
 save = "m.strata"

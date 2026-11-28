@@ -313,8 +313,10 @@ Joins and relations (a project's to-dos), a `Key[T]` over several columns, `Weak
 ### Mocks do nothing by default
 (user, 2026-11-27) `mock T` with no methods written gives a value that does nothing and holds no state: `()` results do nothing, `Option` gives `None`, `Result` an error variant, other results a `Default` value or a compile error naming the methods that need a choice. Anything more is asked for: a method written in the mock, data in its record, a simulated model (today's `mock Db` for a trait with models simulates them by default; under this rule it would be opt-in), random answers. A test can take do-nothing mocks for every capability at once (`test "x" with mocks { … }`).
 
+Tried in the lab (branch `lab-mocks-do-nothing`, Claude, 2026-11-28): built as described, with `mock T with model` and `mock T with random` as the opt-ins and `test "x" with mocks (out: Console) { … }` naming its mocks as parameters. Left open: which variant an error type gives (the lab takes the first whose fields all have do-nothing values, so `SqlError` gives `CantOpen { path: "", message: "" }`; an error type could name its own), a `Default` trait in place of the built-in zeros, and proving a do-nothing mock's `ensures` and laws where it is written instead of checking them when it runs.
+
 ### Mocks: recording and inline mocks
-Recording a mock's calls (open: per value or per type), inline mocks (`mock Db { find(id) => None }`, the rest generated), and std's stand-ins as `pub mock`s. (user, 2026-11-21)
+Recording a mock's calls (open: per value or per type), inline mocks (`mock Db { find(id) => None }`, the rest doing nothing), and std's stand-ins as `pub mock`s. (user, 2026-11-21)
 
 ### `std.array`
 `exp`, `log` and the trigonometric functions, `concatenate`, masks, `cumsum`, `linspace`, `solve`, and operators once special methods exist. (user, 2026-11-26)

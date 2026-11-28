@@ -1,0 +1,232 @@
+# mocks do nothing by default: `mock T` and the methods a mock type's
+# `impl` leaves out answer from their result type alone (`()`, `None`,
+# `Err` of the error type's first variant that has a do-nothing value, a
+# zero); `test "x" with mocks (...)` gives each parameter one; what needs a
+# choice is an error naming the methods; an `ensures` the checker can't
+# evaluate is checked when the method runs; `with model` of a capability
+# trait is an error; verify checks a mock type's laws
+
+[[step]]
+strata = ["--file", "d.strata", "edit"]
+text = """
+from std.io use Console
+from std.fs use Files, FsError
+from std.time use Clock, Instant
+
+type Item = { name: String, qty: Natural = 1 }
+
+trait Store {
+  fn count(self) -> Natural
+  fn find(self, id: Int) -> Option[Item]
+    requires id > 0
+  fn all(self) -> List[Item]
+    ensures len(it) <= 3
+  fn first(self) -> Item
+  fn save(mut self, i: Item) -> Result[(), String]
+  fn rate(self) -> Float where 0.0 <= it && it <= 1.0
+  fn pair(self) -> (Int, Bool)
+}
+
+fn greet(mut c: Console, name: String) {
+  mut c.print(f"hi {name}")
+}
+
+fn load(fs: Files, p: String) -> String {
+  fs.read(p) except { "missing" }
+}
+
+test "a do-nothing store" {
+  mut s := mock Store
+  assert s.count() == 0
+  assert s.find(3) == None
+  assert s.all() == []
+  assert s.first() == Item { name: "", qty: 1 }
+  assert (mut s.save(Item { name: "a" })) == Err("")
+  assert s.rate() == 0.0
+  assert s.pair() == (0, false)
+}
+
+test "files that do nothing" {
+  fs := mock Files
+  assert fs.read("x") == Err(NotFound { path: "" })
+  assert load(fs, "x") == "missing"
+  assert !fs.exists("x")
+}
+
+test "a clock that stands still" {
+  c := mock Clock
+  assert c.now() == Instant(0)
+}
+
+test "the capabilities at once" with mocks (out: Console, fs: Files) {
+  greet(mut out, "x")
+  assert out.read_line() == None
+  assert load(fs, "x") == "missing"
+}
+"""
+
+[[step]]
+strata = ["--file", "d.strata", "test"]
+has = ["✓ a do-nothing store", "✓ files that do nothing", "✓ a clock that stands still", "✓ the capabilities at once", "4 passed, 0 failed"]
+
+[[step]]
+strata = ["--file", "d.strata", "view", "main"]
+has = ['test "the capabilities at once" with mocks (out: Console, fs: Files) {']
+
+# needing a choice: a sum, a refinement it can't tell, an `ensures` it breaks
+[[step]]
+strata = ["--file", "e.strata", "edit"]
+fails = true
+text = """
+type Color =
+  | Red
+  | Green
+
+trait Paint {
+  fn color(self) -> Color
+  fn code(self) -> String where matches(it, "[A-Z]{2}")
+  fn size(self) -> Int
+    ensures it > 0
+  fn name(self) -> String
+}
+
+test "paint" {
+  p := mock Paint
+  assert p.name() == ""
+}
+"""
+has = [
+  'error in test "paint": `mock Paint` does nothing, and these methods need a choice: `color` returns `Color`: `Color` is a sum: which variant to give is a choice;',
+  '`code` returns `String where matches(it, "[A-Z]{2}")`: whether `""` meets `where matches(it, "[A-Z]{2}")` is unknown;',
+  "do-nothing result `0` breaks `ensures it > 0`. Write them in a mock type, or opt in: `mock Paint with random`",
+]
+
+[[step]]
+strata = ["--file", "e.strata", "edit"]
+text = """
+type Color =
+  | Red
+  | Green
+
+trait Paint {
+  fn color(self) -> Color
+  fn name(self) -> String
+}
+
+test "paint" {
+  p := mock Paint with random
+  c := p.color()
+  assert c is Red || c is Green
+}
+"""
+
+[[step]]
+strata = ["--file", "e.strata", "test"]
+has = ["1 passed"]
+
+[[step]]
+strata = ["--file", "e.strata", "view", "main"]
+has = ["  p := mock Paint with random\n"]
+
+# a model a `mut self` method must change
+[[step]]
+strata = ["--file", "m.strata", "edit"]
+fails = true
+text = """
+trait Db {
+  model rows: Dict[Int, String]
+
+  fn save(mut self, id: Int, s: String)
+    ensures self.rows == old self.rows.with(id, s)
+  fn find(self, id: Int) -> Option[String]
+    ensures it == self.rows.get(id)
+}
+
+test "db" {
+  mut db := mock Db
+  mut db.save(1, "a")
+  assert db.find(1) == None
+}
+"""
+has = ["`mock Db` does nothing, and these methods need a choice: `save` must change the model `rows`", "and a do-nothing mock holds none. Write them in a mock type, or opt in: `mock Db with model`"]
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+fails = true
+text = """
+from std.sqlite use Database
+
+test "db" {
+  db := mock Database with model
+  assert true
+}
+"""
+has = ["`mock Database with model`: `Database` is a capability trait: its state is outside the program"]
+
+# an `ensures` the checker can't evaluate: checked when it runs
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = """
+trait Picker {
+  fn pick(self, xs: List[Int]) -> Int
+    requires len(xs) > 0
+    ensures xs.contains(it)
+}
+
+fn chosen(p: Picker) -> Int {
+  p.pick([4, 5])
+}
+
+test "a pick" {
+  p := mock Picker
+  assert chosen(p) >= 4
+}
+"""
+
+[[step]]
+strata = ["--file", "p.strata", "test"]
+fails = true
+has = ["✗ a pick", "Ensures: mock Picker.pick does nothing, and its result `0` breaks its `ensures`: write the method, or use `mock Picker with random`"]
+
+# a mock type's `impl` may leave out a method of the program's own trait;
+# verify finds the do-nothing `has` breaking the trait's law
+[[step]]
+strata = ["--file", "b.strata", "edit"]
+text = """
+trait Bag {
+  fn put(mut self, x: Int)
+  fn has(self, x: Int) -> Bool
+
+  law kept(b: Self, x: Int) {
+    mut r := b
+    mut r.put(x)
+    r.has(x)
+  }
+}
+
+mock Empty = {}
+
+impl Bag for Empty {
+  fn put(mut self, x: Int) {
+  }
+}
+
+fn stored(mut b: Bag, x: Int) -> Bool {
+  mut b.put(x)
+  b.has(x)
+}
+
+test "kept" {
+  mut b := mock Bag
+  assert !stored(mut b, 3)
+}
+"""
+
+[[step]]
+strata = ["--file", "b.strata", "test"]
+has = ["✓ kept"]
+
+[[step]]
+strata = ["--file", "b.strata", "verify", "--no-race"]
+fails = true
+has = ["✗ law kept for Empty       Law violation"]
