@@ -1,0 +1,17 @@
+# A local closure `pick` shadows the top-level function `pick`. The call
+# `pick(a)` runs the closure, which gives `a` back, so `b` shares `a`'s
+# list and `mut b.push(7)` must copy it. Escape analysis and static
+# uniqueness look the callee up as the closure, not by its name: `a` keeps
+# its old list.
+
+[[step]]
+save = "closure.strata"
+from = "closure.st"
+
+[[step]]
+strata = ["--file", "closure.strata", "build", "--no-verify", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "[0, 1, 2]\n[0, 1, 2, 7]\n"
