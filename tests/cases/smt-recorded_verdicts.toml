@@ -284,7 +284,7 @@ stdout = '''
 ✓ bag_first                proven (2 checks)
 ✓ bag_add                  proven (2 checks)
 ✓ found                    proven (1 check)
-✓ sorted_head              proven (3 checks)
+✓ sorted_head              proven (5 checks)
 ✓ lens                     proven (1 check)
 ✓ starts                   proven (1 check)
 ✓ digits                   proven (nothing to check)
@@ -346,7 +346,7 @@ stdout = '''
 ✗ wrong_quadruple          Ensures violation (found by the solver)
     input:   1
     postcondition of `wrong_quadruple` violated: ensures it == double(n) (it = 4) (stack: wrong_quadruple)
-~ halved                   fuzzed: 50 cases, 22 discarded by `requires`; 0 of 1 checks proven
+~ halved                   fuzzed: 50 cases, 22 discarded by `requires`; 1 of 2 checks proven
     not proven: ensures it == halve(n): the solver found a possible counterexample: n = 0 (depends on the result of `halve` (only its contract is known)), but running it did not fail
 '''
 

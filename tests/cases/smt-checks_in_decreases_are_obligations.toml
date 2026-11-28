@@ -1,0 +1,54 @@
+# smt: a check inside a written `decreases` (a function's, a loop's) is an
+# obligation, where the measure is taken
+[[step]]
+save = "d.strata"
+text = '''
+fn down(n: Natural, xs: List[Int]) -> Int decreases n + 0 * xs[0] {
+  if n == 0 { 0 } else { down(n - 1, xs) }
+}
+
+fn down_ok(n: Natural, xs: List[Int]) -> Int
+  requires len(xs) > 0
+  decreases n + 0 * xs[0]
+{
+  if n == 0 { 0 } else { down_ok(n - 1, xs) }
+}
+
+fn passes(xs: List[Int]) -> Int {
+  mut i := 0
+  while i < 3
+    decreases 3 - i + 0 * xs[0] {
+    i = i + 1
+  }
+  i
+}
+
+fn passes_ok(xs: List[Int]) -> Int {
+  mut i := 0
+  while i < len(xs)
+    decreases len(xs) - i + 0 * xs[i] {
+    i = i + 1
+  }
+  i
+}
+'''
+
+[[step]]
+strata = ["--file", "d.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn down
+  refuted index in range
+  proven decreases `n + 0 * at(xs, 0)` at a call of `down`
+  proven argument `n` of `down`: Natural
+fn down_ok
+  proven index in range
+  proven decreases `n + 0 * at(xs, 0)` at a call of `down_ok`
+  proven argument `n` of `down_ok`: Natural
+  proven precondition of `down_ok`: requires len(xs) > 0
+fn passes
+  refuted index in range
+  proven decreases `3 - i + 0 * at(xs, 0)` after a pass of `while i < 3`
+fn passes_ok
+  proven index in range
+  proven decreases `len(xs) - i + 0 * at(xs, i)` after a pass of `while i < len(xs)`
+'''
