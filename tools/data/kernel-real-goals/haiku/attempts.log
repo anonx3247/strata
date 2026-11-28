@@ -1,0 +1,48 @@
+08:23:05 ids_none 1 failed rc=0 wall=4.235s failed ids_none (1.8 ms): unsolved goals:
+08:23:16 ids_none 2 proven rc=0 wall=4.163s proven ids_none (5.2 ms)
+08:23:44 got_step 1 failed rc=0 wall=4.247s failed got_step (12.3 ms): `induction` failed: unsolved goals:
+08:24:10 got_step 2 failed rc=0 wall=4.168s failed got_step (0.3 ms): `simp` failed: `contains_snoc` failed above: fix its proof first
+08:24:21 got_step 3 failed rc=0 wall=4.208s failed got_step (0.4 ms): `simp` failed: `contains_snoc` failed above: fix its proof first
+08:24:31 got_step 4 failed rc=0 wall=4.207s failed got_step (3.9 ms): unsolved goals:
+08:24:41 got_step 5 proven rc=0 wall=4.204s proven got_step (6.3 ms) [assumed: z3]
+08:24:57 listed_push 1 failed rc=0 wall=4.173s failed listed_push (3.0 ms): unsolved goals:
+08:25:09 listed_push 2 failed rc=0 wall=4.182s failed listed_push (5.1 ms): `cases` failed: unsolved goals:
+08:25:25 listed_push 3 failed rc=0 wall=4.180s failed listed_push (13.5 ms): `cases` failed: `auto` failed: simplify, arithmetic and the solver found no proof; it may need a split first: `match` on `order` (nonlinear: the solver found no proof (sat))
+08:25:40 listed_push 4 failed rc=0 wall=4.199s failed listed_push (12.9 ms): `cases` failed: `auto` failed: simplify, arithmetic and the solver found no proof; it may need a split first: `match` on `order` (nonlinear: the solver found no proof (sat))
+08:25:53 unique_push 1 failed rc=0 wall=4.209s failed unique_push (3.0 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:26:08 unique_push 2 failed rc=0 wall=4.205s failed unique_push (2.7 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:26:21 unique_push 3 failed rc=0 wall=4.206s failed unique_push (2.7 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:26:32 unique_push 4 failed rc=0 wall=4.203s failed unique_push (2.8 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:26:47 unique_push 5 failed rc=0 wall=4.166s failed unique_push (2.7 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:27:00 unique_push 6 failed rc=0 wall=4.200s failed unique_push (2.9 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:27:09 unique_push 7 failed rc=0 wall=4.158s failed unique_push (3.1 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:27:19 unique_push 8 failed rc=0 wall=4.160s failed unique_push (2.7 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:27:27 unique_push 9 failed rc=0 wall=4.187s failed unique_push (2.8 ms): `use` failed: `unique_snoc` failed above: fix its proof first
+08:27:49 id_set_step 1 failed rc=0 wall=4.153s failed id_set_step (1.1 ms): `simp` failed: `take_snoc` failed above: fix its proof first
+08:27:58 id_set_step 2 failed rc=0 wall=4.204s failed id_set_step (1.1 ms): `simp` failed: `take_snoc` failed above: fix its proof first
+08:28:08 id_set_step 3 failed rc=0 wall=4.193s failed id_set_step (1.1 ms): `simp` failed: `take_snoc` failed above: fix its proof first
+08:28:19 id_set_step 4 failed rc=0 wall=4.206s failed id_set_step (1.1 ms): `simp` failed: `take_snoc` failed above: fix its proof first
+08:28:28 id_set_step 5 failed rc=0 wall=4.204s failed id_set_step (1.1 ms): `simp` failed: `take_snoc` failed above: fix its proof first
+08:28:39 id_set_step 6 failed rc=0 wall=4.187s failed id_set_step (1.0 ms): `simp` failed: `take_snoc` failed above: fix its proof first
+08:28:47 id_set_step 7 failed rc=0 wall=4.140s failed id_set_step (1.1 ms): `simp` failed: `take_snoc` failed above: fix its proof first
+08:28:58 id_set_step 8 proven rc=0 wall=4.214s proven id_set_step (6.4 ms) [assumed: refinement: len, z3]
+08:29:11 ids_step 1 proven rc=0 wall=4.235s proven ids_step (10.1 ms) [assumed: refinement: len, z3]
+08:29:20 done_step 1 proven rc=0 wall=4.222s proven done_step (10.9 ms) [assumed: refinement: len, z3]
+08:29:33 frame_got 1 failed rc=0 wall=4.210s failed frame_got (0.6 ms): `simp` failed: simp made no progress
+08:29:49 frame_got 2 failed rc=0 wall=4.241s failed frame_got (0.5 ms): `simp` failed: simp made no progress
+08:29:58 frame_got 3 failed rc=0 wall=4.221s failed frame_got (0.5 ms): `calc` failed: `Bool` is not `(String) -> Option[Entry[P]]`, in `a.excluding(set(got.map(x -> x.task.id))) == a.excluding(seen) == b.excluding(seen)`
+08:30:06 frame_got 4 proven rc=0 wall=4.242s proven frame_got (20.0 ms)
+08:30:26 frame_ids 1 failed rc=0 wall=4.252s failed frame_ids (5.9 ms): `have` failed: `simp` failed: `take_all` failed above: fix its proof first
+08:30:36 frame_ids 2 failed rc=0 wall=4.189s failed frame_ids (6.0 ms): `have` failed: `simp` failed: `take_all` failed above: fix its proof first
+08:30:53 frame_ids 3 proven rc=0 wall=4.249s proven frame_ids (30.0 ms) [assumed: refinement: len]
+08:31:05 outside_ids 1 proven rc=0 wall=4.206s proven outside_ids (16.9 ms) [assumed: refinement: len]
+08:31:14 outside_done 1 failed rc=0 wall=4.182s failed outside_done (29.8 ms): `calc` failed: the chain proves `dict_excluding(a, set(map(results, r -> task_of(r).id))) == dict_excluding(b, set(map(results, r -> task_of(r).id)))`, not the goal
+08:31:23 outside_done 2 proven rc=0 wall=4.207s proven outside_done (30.2 ms) [assumed: refinement: len]
+08:31:40 some_new_here 1 failed rc=0 wall=4.185s failed some_new_here (4.8 ms): `simp` failed: simp made no progress
+08:31:57 some_new_here 2 proven rc=0 wall=4.169s proven some_new_here (7.9 ms) [assumed: refinement: len, z3]
+08:32:10 some_new_kept 1 failed rc=0 wall=4.145s failed some_new_kept (4.5 ms): `assume` failed: the goal is neither `forall`, `==>` nor `!`
+08:32:19 some_new_kept 2 proven rc=0 wall=4.186s proven some_new_kept (10.4 ms) [assumed: refinement: len, z3]
+08:32:31 taken_ensures 1 failed rc=1 wall=4.194s failed taken_ensures (0.2 ms): unsolved goals:
+08:32:49 taken_ensures 2 failed rc=1 wall=4.189s failed taken_ensures (0.4 ms): `use` failed: `fold_members` failed above: fix its proof first
+08:32:59 taken_ensures 3 failed rc=1 wall=4.129s failed taken_ensures (0.4 ms): `use` failed: `fold_members` failed above: fix its proof first
+08:33:07 taken_ensures 4 proven rc=0 wall=4.231s proven taken_ensures (0.5 ms)
