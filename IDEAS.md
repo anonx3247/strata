@@ -155,6 +155,9 @@ Proposed (user asked, 2026-11-28; spec section 8; tried by lab-trials.md trial 1
 
 ## Memory and speed
 
+### Axioms as definitions (user, 2026-11-28)
+Each kernel axiom is its own public function, taking the statements it is about and returning the theorem: `pub fn and_gives_left(p: Statement, q: Statement) -> Theorem` (`Statement`: a `Term` of type `Bool`, a refinement). No lookup by name (`axiom("…")`), no `Result` for a missing name, no placeholders `P`/`Q` substituted afterwards, no `axiom_names()` list (the list is made from the definitions). They are built as terms in the kernel, not written in law syntax, so the untrusted translator never makes an axiom.
+
 ### Datatypes for the kernel from type values (user, 2026-11-28)
 The kernel's datatypes are made from the same `std.typing.Type` values as everything else ("Types are values"), by one ordinary function, replacing the type half of the lab's `kernel_translate`:
 ```strata
