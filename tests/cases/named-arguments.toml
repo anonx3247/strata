@@ -1,0 +1,69 @@
+# Named arguments at calls (lab trial, `STRATA_NAMED=1`): stored positional,
+# written named; puns, a bare `_x` first parameter, defaults, function types
+# naming their parameters.
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+env = { STRATA_NAMED = "1" }
+text = '''
+fn send(to: String, message: String) -> String {
+  to + ": " + message
+}
+
+fn half(_x: Int) -> Int {
+  _x / 2
+}
+
+fn fetch(url: String, timeout: Int = 30, limit: Option[Int] = None) -> Int {
+  timeout + byte_len(url) + (limit ?? 0)
+}
+
+fn total(xs: List[Int], cost: (item: Int) -> Int) -> Int {
+  xs.fold(init: 0, f: (acc, x) -> acc + cost(item: x))
+}
+
+fn twice(item: Int) -> Int {
+  item * 2
+}
+
+fn main() {
+  message := "hi"
+  print(send(to: "root", message))
+  print(half(16))
+  print(fetch(url: "abc"))
+  print(fetch(url: "abc", limit: Some(3)))
+  print(total(xs: [1, 2], cost: twice))
+  print(total(xs: [1, 2], cost: n -> n + 1))
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "run"]
+out = "root: hi\n8\n33\n36\n6\n5\n"
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+env = { STRATA_NAMED = "1" }
+has = ["send(to: \"root\", message)", "half(16)", "fetch(url: \"abc\", limit: Some(3))", "cost: (item: Int) -> Int"]
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+has = ["send(\"root\", message)", "fetch(\"abc\")", "fetch(url: \"abc\", limit: Some(3))"]
+
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+env = { STRATA_NAMED = "1" }
+fails = true
+has = ["argument 1 needs its name: `to: …`", "expected `to:` before `message:`", "no parameter is named `mesage`", "missing `message:`", "`weight` names its parameters (thing)"]
+text = '''
+fn weight(thing: Int) -> Int {
+  thing
+}
+
+fn main() {
+  print(send("a", "b"))
+  print(send(message: "a", to: "b"))
+  print(send(to: "a", mesage: "b"))
+  print(send(to: "a"))
+  print(total(xs: [1], cost: weight))
+}
+'''
