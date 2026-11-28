@@ -1,0 +1,25 @@
+moved and wrapped
+  step 2 one node  (1 definition)
+  step 3 moved and wrapped  (1 definition)
+
+1 changed  ·  0 interface changes
+
+IMPLEMENTATIONS
+
+~ score  (body changed)
+    implementation only · nothing else needs re-checking
+    fn score(xs: List[Int], bonus: Int) -> Int
+  +   if len(xs) > 0 {
+        for x in xs {
+          if x > 0 {
+            total += x
+            count += 1
+          } else {
+            total -= 2
+          }
+        }
+  +   }
+      kind := match count {
+  +     0 => "none"    ◀ moved
+
+--- exit 0

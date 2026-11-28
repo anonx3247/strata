@@ -1,6 +1,7 @@
-# The printer decides indentation, so `strata diff` compares lines without
-# it: a body wrapped in a new `if` shows the `if` and its closing brace
-# added, the lines inside unchanged.
+# The printer decides indentation, so `strata diff` never shows it: a
+# statement wrapped in a new `if` shows the `if` and its closing brace
+# added, the statement inside unchanged; `--lines` compares lines without
+# indentation, to the same effect.
 
 [[step]]
 strata = ["init"]
@@ -35,4 +36,8 @@ fn total(xs: List[Int]) -> Int {
 
 [[step]]
 strata = ["diff", "--step", "2"]
+golden = "tests/data/diff/indentation_nodes.out"
+
+[[step]]
+strata = ["diff", "--step", "2", "--lines"]
 golden = "tests/data/diff/indentation.out"
