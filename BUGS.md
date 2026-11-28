@@ -99,6 +99,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: verify. Source: ledger V14 (#529). Confidence: likely.
 - [ ] **`verify` reports an insert naming a missing row as "not proven" instead of refuted.** `sqlite.memory()` doesn't carry its empty model through `create`; a `delete` of a referenced row is refused only at run time.
   Where: std.sqlite models. Source: ledger V27. Confidence: likely.
+- [ ] **Refinements nested in a parameter's type make no obligation for the checks inside them.** A function's own contract (its `requires`, `ensures`, `decreases`, its loops' `decreases`, the refinements of its parameters' and result's types, its quantifiers over a list) makes each partial operation in it an obligation. A refinement nested inside a parameter's type does not: the element type of a list (`List[Head]` with `type Head = List[Int] where it[0] > 0`), a record's field or a variant's payload, and a `let` annotation. The checks inside those refinements are neither proven nor reported.
+  Where: smt.own_refined (top-level `Refined` and named types only), smt.check_type_at (refinements evaluated through `pred`, no obligations). Source: contract-obligations PR. Confidence: sure.
+- [ ] **Function values in contracts other than `all`/`any` leave their checks unknown.** In a function's own contract, `all` and `any` make the checks of their function value obligations for any element (`every`). `map`, `filter`, `count`, `sum`, `fold`, comprehensions and a quantifier nested in another make none: they report one unknown obligation, "the checks inside `…`".
+  Where: smt.start_goal (`Vc.own_lost`), smt.every (only outside other quantifiers). Source: contract-obligations PR. Confidence: sure.
 
 ## Type checker
 
@@ -164,18 +168,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker / codegen. Source: ledger C16 (#563, #565 partial). Confidence: likely.
 - [ ] **Names of builtins break models and methods.** A trait model named `keys` is never read through the model; a user `fn insert` breaks `mut self.all.insert(..)` in an impl; `Set[KeyValue] {}` (a set of a union) doesn't type-check.
   Where: checker. Source: ledger C19. Confidence: likely.
-- [ ] **A `comptime` parameter is `TAny`.** `fn_inferred` gives it `TAny` ("worked on while compiling: not modelled"), so a union asked for of it passes unchecked. Three comparisons in std: `std.orm.key_value` (twice) and `impl std.sqlite.Sql for Option[T]`, the last of the 18 that #628 let through as unknown.
+- [ ] **A `comptime` parameter is `TAny`.** `fn_inferred` gives it `TAny` ("worked on while compiling: not modelled"), so a union asked for of it passes unchecked. Three comparisons in std: `std.orm.key_value` (twice) and `impl std.sqlite.Sql for Option[T]`, the last of the 18 that #628 let through as unknown. Typing it needs dependent parameters: `comptime t: Type` typed as its declared type, `x: t` as an opaque type named by `t`, `match comptime t { Int => … }` arms substituting the arm's type for `t` in the environment (`Option[y]` binding `y` as a type parameter), and a call instantiating `t` in the later parameters' types with the type its argument names (`key_value(y, v)`).
   Where: compiler.check.fn_inferred (`p.compile_time`). Source: checker-narrowing. Confidence: sure.
-- [ ] **Messages are dropped for types `shown` can't print.** About 28 sites do `match shown(t) { Some(x) => error(…), None => () }` (a wrong `!`/`?`, `except` on a non-`Result`, a variant pattern against another sum, a field of a primitive), so a value whose type holds a function gets no error there. They should report with `printed`.
-  Where: compiler.check wrong_try, not_result, bind_typed (`wrong`), infer_untagged (field of a primitive), and the other `match shown(` sites. Source: checker-narrowing. Confidence: sure.
-- [ ] **`x is V` narrows variables only, not fields.** `match t.status { Closed => t.status.why }` narrows the field (`place_key`), but `if t.status is Closed { t.status.why }` doesn't (`variable_is` takes `ast.Var` only), so the read reports "`Open` has no field `why`". No program in compiler/, std/, core/ or tests/cases does this today.
-  Where: compiler.check.variable_is, is_narrowed. Source: checker-narrowing. Confidence: sure.
-- [ ] **A union member with type variables is matched by trying each member in turn.** `open_member` binds the first member that fits (`List[_] | Option[_]` given `List[String]`), with no check that only one could. Two members that both fit an unsolved value (`List[Int] | List[String]` given `[]`) pick the first.
-  Where: compiler.check.open_member, members_fit. Source: checker-narrowing. Confidence: sure.
-- [ ] **A call's bound is not checked when the argument's type is `TAny`.** `infer_call` checks a bound for every type worked out and pushes an obligation for a type variable, but skips `TAny` (from the `TAny` producers in this section), where it should report "could not work out".
-  Where: compiler.check.infer_call (the `bounds` loop, `if known(bt)`). Source: checker-followups. Confidence: sure.
-- [ ] **`x -> x(x)` reports two errors for one cause.** After the occurs error, `expect` reports the failed unification again as "call to `x`, argument 1: expected `_`, found `(_) -> _`".
-  Where: compiler.check.unify (occurs), expect. Source: checker-followups. Confidence: sure.
+- [ ] **A coverage message names a list of functions `_`.** `match xs { Some(_) => 1, None => 0 }` on a `List[(Int) -> Int]` reports "non-exhaustive match on `_`: `[]` is not covered" (and both arms unreachable) besides the pattern errors.
+  Where: compiler.check.cover_of / check_coverage (the scrutinee's type text). Source: checker-silent. Confidence: sure.
 - [ ] **Unknown types and wrong type-argument counts lower to `TAny`.** `Some(ps) => if len(ps) == len(args) {…} else { TAny }`, `None => TAny`, and `ast.RowType(_) => TAny`. A misspelled or imported-but-unmodelled type, or `Box[Int, Int]`, makes every value of it unchecked. A generic alias with the wrong number of arguments too.
   Where: compiler.check.lower. Source: review checker. Confidence: sure.
 - [ ] **The "can't be passed as a value" rule only sees generic functions among `decls`.** `on_type` is built from `decls` only. A generic function in `lib` that calls `T.empty()` and is passed as a value is never reported. That includes a definition of the same package that the check cache (main.loaded_check) put in `lib` because it was already checked.
@@ -206,6 +202,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker. Source: ledger C21 (#416). Confidence: likely.
 - [ ] **`build --no-verify` prints no warnings.** Warnings are lost when verification is skipped.
   Where: build. Source: ledger C24 (#459). Confidence: possible.
+- [ ] **A decimal literal beside `abs` of a `Float` is typed as a `Real`.** In `a := abs(k); a > 1.0` (and `max(abs(k), 1.0)`, `max(1.0, abs(k))`) with `k: Float`, the checker writes `1.0` as a `Real` literal (`Real { num, den }`), so smt reads it as an unknown `Real` beside a `Float` ("a value of an unexpected shape") and `max(abs(k), 1.0) >= 1.0` is not proven. `max(k, 1.0)` and `max(abs(k), float(1))` are. std.array's `Array.scale` writes `float(1)` for that reason.
+  Where: the checker's typing of a decimal literal next to an overloaded builtin's result (`abs`: Int, Float, Real); smt.eval_expr (`CtorExpr { name: "Real", .. }`), smt.as_real. Source: contract-obligations PR. Confidence: likely.
 
 ## Front end
 
@@ -312,8 +310,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: codegen (run-time checks). Source: ledger G5 (#570). Confidence: likely.
 - [ ] **A union holding a tuple returned by a call prints its first element.** `let u: Int | (Int, Int) = dm(8, 3)` prints `2`.
   Where: codegen (unions). Source: ledger G9 (#542). Confidence: likely.
-- [ ] **`roots` looks callees up by short name and doesn't see the `impl`s' methods.** compiler/roots (the `--memory-sites` verdicts) keeps its own `candidates` and `by_short` lookups, as unique did before it resolved callees, and codegen gives it the functions without the `impl`s' methods (with them its by-name lookup made every `len(..)` of a temporary keep it). A local closure takes a top-level function's verdict, and a call that runs an `impl` method is not seen.
-  Where: roots.candidates, roots.callees, codegen.generate (`verdicts(own, ...)`). Source: unique-callees PR. Confidence: likely.
 - [ ] **A `for i in a..b` counter adds 1 to the raw word, also when `a` is a big integer.** The counting path takes `lo` and `hi` as `Int` words, with no test that they are small. A big `Int` is a handle outside [-2^62, 2^62) (runtime.c `big_at`), so `add 1` turns it into another handle.
   Where: codegen.for_loop (st:15315, 15405 `{next} = add i64 {i}, 1`). Source: review codegen. Confidence: likely.
 - [ ] **A Float's hash is its bits, but `==` is `fcmp oeq`.** `0.0 == -0.0` holds, but their hashes differ. So a `Set[Float]` can hold both, and a `Dict` lookup of `-0.0` can miss the key `0.0`.

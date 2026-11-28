@@ -1,0 +1,47 @@
+# smt: a check inside a `requires` (an index, a division, a call's own
+# `requires`) is an obligation, under the `requires` before it and the
+# left side of `&&`
+[[step]]
+save = "r.strata"
+text = '''
+fn head_pos(xs: List[Int]) -> Int requires xs[0] > 0 = 1
+
+fn ratio(a: Int, b: Int) -> Int requires a / b > 0 = 1
+
+fn calls(xs: List[Int]) -> Int requires head_pos(xs) > 0 = 1
+
+fn guarded(xs: List[Int]) -> Int requires len(xs) > 0 && xs[0] > 0 = 1
+
+fn in_order(xs: List[Int], i: Natural) -> Int
+  requires i < len(xs)
+  requires xs[i] > 0
+= 1
+
+fn out_of_order(xs: List[Int], i: Natural) -> Int
+  requires xs[i] > 0
+  requires i < len(xs)
+= 1
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn head_pos
+  refuted index in range
+fn ratio
+  refuted no division by zero
+fn calls
+  refuted precondition of `head_pos`: requires at(xs, 0) > 0
+fn guarded
+  proven index in range
+fn in_order
+  proven index in range
+fn out_of_order
+  refuted index in range
+'''
+
+[[step]]
+strata = ["--file", "r.strata", "verify", "--no-cache", "--no-race", "head_pos"]
+fails = true
+has = ["✗ head_pos", "index 0 out of range (length 0) (stack: head_pos)"]
+lacks = ["The solver had proven every check"]
