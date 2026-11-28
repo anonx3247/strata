@@ -98,12 +98,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Type checker
 
-- [ ] **Every variable matched anywhere in a function is `TAny` everywhere in it.** `narrowed: narrowed_in(f.body, {})` collects every `x` in any `match x` anywhere in the body, with no scopes.
-  Where: compiler.check.var_type (4314), narrowed_in (2800), fn_inferred. Source: review checker. Confidence: sure.
-- [ ] **A field whose type is a sum or a union reads as `TAny`.** `if is_sum(i, t) || res(i, t) is TUnion { TAny } else { t }`. `order.status`, `p.1` of a tuple holding an `Option`, and any field of type `Option[T]` or `Result[T, E]` are untyped from then on.
-  Where: compiler.check.place (1270), and its uses in field access (3418-3517) and variants_field (9125). Source: review checker. Confidence: sure.
-- [ ] **A `match` without an expected type has type `TAny`.** The arms' types are never joined. `x := match o { A => 1, B => "s" }` is accepted, and `x` is `TAny` for the rest of the function. An `as` binding is `TAny` too (`mut copy.insert(b, TAny)`).
-  Where: compiler.check.infer_match (7698), last line `expected ?? TAny`. Source: review checker. Confidence: sure.
 - [ ] **Trait bounds are checked only for a few traits.** `if t.derivable is None && !t.capability && len(t.params) == 0 { checked.insert }`, and blanket-implemented traits are then removed. `infer_call` checks bounds only `if contains(i.methods.checked, b.1)`.
   Where: compiler.check.methods_of (`checked`, ~1989), infer_call (5732), own_trait_of. Source: review checker. Confidence: sure.
 - [ ] **The type tables are rebuilt by nine entry points, and they disagree.** `type_errors_with` builds `types_of(code + all)` and `with_code(Methods { ..methods_of(all), local, own_traits, noallocs }, methods_of(code))`.
@@ -120,12 +114,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker (calls). Source: ledger C3 (#497). Confidence: likely.
 - [ ] **Generic type arguments are covariant everywhere, including contravariant positions.** `ok = ok && fits(mut i, was[k], gas[k])` for every argument of every named type. The comment justifies this by value semantics ("values are never shared").
   Where: compiler.check.fits, the `(TNamed, TNamed)` arm. Source: review checker. Confidence: likely.
-- [ ] **A union with any member it can't print becomes `TAny`.** `match shown(t) { Some(x) => …, None => return TAny }`. `Int | (Int) -> Int`, or a union with a generic record holding a function, is `TAny` everywhere it is written, so nothing typed with it is checked.
-  Where: compiler.check.union_of (1755), join_union. Source: review checker. Confidence: sure.
 - [ ] **A field every member of a union (or every variant) has takes the last one's type.** Both loops do `out = Some(x)` for each member and never compare. The comments ("with the same type", and the IDEAS entry "a field all have, with one type, gets that type") claim a check the code doesn't make.
   Where: compiler.check field access on `TUnion` (3455-3480), variants_field (9093). Source: review checker. Confidence: sure.
-- [ ] **Narrowing ignores changes made through `mut`.** `assigns_to` only looks for `ast.Assign { place: ast.Var(y) }`. Neither `mut o.cancel()` (a `mut self` method that may change the variant) nor `refund(mut o)` counts.
-  Where: compiler.check.assigns_to (4948), narrowed_env, infer_match. Source: review checker. Confidence: likely.
 - [ ] **`solve_pending` skips obligations on generic and compound types.** `TNamed { name, args } => if len(args) == 0 && program_type(i, name) && …`. `Box[Int]`, `List[Foo]`, `Option[Foo]`, unions and functions fall into `_ => ()` and are accepted.
   Where: compiler.check.solve_pending (9641). Source: review checker. Confidence: sure.
 - [ ] **Trait obligations are not tracked in packages.** `ast.TraitDef(t) => if d.module == "" { own_traits.insert }`, with the comment "In a package, names are qualified in ways the obligations don't follow." In a package, `own_trait_of` always gives `None`, so a trait method used as a function (`price(x)`, `xs.map(price)`) is `TAny`, and `true.price()` makes no obligation.
@@ -170,15 +160,19 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker / codegen. Source: ledger C16 (#563, #565 partial). Confidence: likely.
 - [ ] **Names of builtins break models and methods.** A trait model named `keys` is never read through the model; a user `fn insert` breaks `mut self.all.insert(..)` in an impl; `Set[KeyValue] {}` (a set of a union) doesn't type-check.
   Where: checker. Source: ledger C19. Confidence: likely.
-- [ ] **`resolve` stops at its fuel and doesn't look into `TVariants`, `TUnion` or the arguments of `TVariants`.** `TVariants`, `TUnion`, `TTrait` and `TGen` fall into `_ => t`. A `TVariants.args` holding a `TVar` stays unresolved, and `unify`'s last arm `_ => ra == rb` then compares structurally, so two identical unions with an unresolved member are not equal.
-  Where: compiler.check.resolve (1292). Source: review checker. Confidence: likely.
-- [ ] **`VarDecl` widening drops a generic sum's type arguments.** `TVariants { owner, .. } => TNamed { name: owner, args: [] }` instead of `widened(...)`, which keeps `args`. `mut y := x`, with `x` narrowed to `Some` of an `Option[Int]`, gives `Option` with no arguments, which `unify` then refuses against `Option[Int]` (`len(xs) != len(ys)`).
-  Where: compiler.check.infer_block, the `VarDecl` arm (~5048). Source: review checker. Confidence: sure.
+- [ ] **A `comptime` parameter is `TAny`.** `fn_inferred` gives it `TAny` ("worked on while compiling: not modelled"), so a union asked for of it passes unchecked. Three comparisons in std: `std.orm.key_value` (twice) and `impl std.sqlite.Sql for Option[T]`, the last of the 18 that #628 let through as unknown.
+  Where: compiler.check.fn_inferred (`p.compile_time`). Source: checker-narrowing. Confidence: sure.
+- [ ] **Messages are dropped for types `shown` can't print.** About 28 sites do `match shown(t) { Some(x) => error(…), None => () }` (a wrong `!`/`?`, `except` on a non-`Result`, a variant pattern against another sum, a field of a primitive), so a value whose type holds a function gets no error there. They should report with `printed`.
+  Where: compiler.check wrong_try, not_result, bind_typed (`wrong`), infer_untagged (field of a primitive), and the other `match shown(` sites. Source: checker-narrowing. Confidence: sure.
+- [ ] **`x is V` narrows variables only, not fields.** `match t.status { Closed => t.status.why }` narrows the field (`place_key`), but `if t.status is Closed { t.status.why }` doesn't (`variable_is` takes `ast.Var` only), so the read reports "`Open` has no field `why`". No program in compiler/, std/, core/ or tests/cases does this today.
+  Where: compiler.check.variable_is, is_narrowed. Source: checker-narrowing. Confidence: sure.
+- [ ] **A union member with type variables is matched by trying each member in turn.** `open_member` binds the first member that fits (`List[_] | Option[_]` given `List[String]`), with no check that only one could. Two members that both fit an unsolved value (`List[Int] | List[String]` given `[]`) pick the first.
+  Where: compiler.check.open_member, members_fit. Source: checker-narrowing. Confidence: sure.
 - [ ] **A call's bound is not checked when the argument's type is `TAny`.** `infer_call` checks a bound for every type worked out and pushes an obligation for a type variable, but skips `TAny` (from the `TAny` producers in this section), where it should report "could not work out".
   Where: compiler.check.infer_call (the `bounds` loop, `if known(bt)`). Source: checker-followups. Confidence: sure.
 - [ ] **`x -> x(x)` reports two errors for one cause.** After the occurs error, `expect` reports the failed unification again as "call to `x`, argument 1: expected `_`, found `(_) -> _`".
   Where: compiler.check.unify (occurs), expect. Source: checker-followups. Confidence: sure.
-- [ ] **Unknown types and wrong type-argument counts lower to `TAny`.** `Some(ps) => if len(ps) == len(args) {…} else { TAny }`, `None => TAny`, and `ast.RowType(_) => TAny`. A misspelled or imported-but-unmodelled type, or `Box[Int, Int]`, makes every value of it unchecked. So does a generic alias written as a type (`m: Many[Int]`, `type Many[T] = List[T] | Option[T]`): `implementation` models its `impl`s for a union inferred from values, but a value declared `Many[Int]` is `TAny`.
+- [ ] **Unknown types and wrong type-argument counts lower to `TAny`.** `Some(ps) => if len(ps) == len(args) {…} else { TAny }`, `None => TAny`, and `ast.RowType(_) => TAny`. A misspelled or imported-but-unmodelled type, or `Box[Int, Int]`, makes every value of it unchecked. A generic alias with the wrong number of arguments too.
   Where: compiler.check.lower. Source: review checker. Confidence: sure.
 - [ ] **The "can't be passed as a value" rule only sees generic functions among `decls`.** `on_type` is built from `decls` only. A generic function in `lib` that calls `T.empty()` and is passed as a value is never reported. That includes a definition of the same package that the check cache (main.loaded_check) put in `lib` because it was already checked.
   Where: compiler.check.type_errors_with (`on_type`). Source: review checker. Confidence: sure.

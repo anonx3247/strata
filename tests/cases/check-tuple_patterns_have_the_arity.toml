@@ -29,6 +29,17 @@ fn short_for(xs: List[(String, Int, Int)]) -> Int {
   n
 }
 
+type Gen = { proofs: Dict[String, List[(String, String, String)]], at: String }
+
+fn short_lookup(g: Gen, what: String) -> Bool {
+  for (kind, e) in get(g.proofs, g.at) ?? [] {
+    if kind == "entry" && e == what {
+      return true
+    }
+  }
+  false
+}
+
 fn long_let() -> Int {
   (a, b, c, d) := triple()
   a
@@ -50,6 +61,7 @@ has = [
   "error in short_let: a pattern of 2 elements against `(Int, Int, Int)`, a tuple of 3",
   "error in short_arm: a pattern of 2 elements against `(String, Int, Int)`, a tuple of 3",
   "error in short_for: a pattern of 2 elements against `(String, Int, Int)`, a tuple of 3",
+  "error in short_lookup: a pattern of 2 elements against `(String, String, String)`, a tuple of 3",
   "error in long_let: a pattern of 4 elements against `(Int, Int, Int)`, a tuple of 3",
 ]
 lacks = [

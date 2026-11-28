@@ -1,7 +1,8 @@
 # A matched variable is narrowed only in the arms (and `is` branches) that
 # narrow it, and has its declared type elsewhere. Passing it as `mut x`, or
 # calling a `mut self` method on it, ends the narrowing like an assignment.
-# A matched field (`t.shape`) is narrowed the same way.
+# A matched field (`t.shape`) is narrowed the same way. A variable made
+# from a narrowed one holds any variant of its sum, type arguments kept.
 
 [[step]]
 save = "p.strata"
@@ -109,6 +110,28 @@ fn field_reset(t: Ticket) -> Int {
     },
     Circle(_) => 0,
   }
+}
+
+fn copied(o: Option[Int]) -> Int {
+  match o {
+    Some(_) => {
+      mut y := o
+      y = None
+      want(y)
+    },
+    None => 0,
+  }
+}
+
+fn copied_kept(o: Option[Int]) -> Int {
+  match o {
+    Some(_) => {
+      mut y := o
+      y = Some(3)
+      y ?? 0
+    },
+    None => 0,
+  }
 }'''
 
 [[step]]
@@ -121,10 +144,13 @@ has = [
   "error in mut_method: `Circle` has no field `w`, so not every `Shape` does",
   "error in is_mut: `Circle` has no field `w`, so not every `Shape` does",
   "error in field_reset: `Circle` has no field `w`, so not every `Shape` does",
+  "error in copied: call to `want`, argument 1: expected `Bool`, found `Option[Int]`",
 ]
 lacks = [
   "error in kept",
   "error in field_arm",
+  "error in copied_kept",
+  "error in copied: assignment",
   "error in reread",
   "error in reset",
   "error in Shape",
