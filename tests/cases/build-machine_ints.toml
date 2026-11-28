@@ -1,0 +1,35 @@
+# machine integers `sN` and `uN`: packed in records, checked arithmetic
+# (`+` on a `u3` that overflows faults), value type parameters compared by
+# linear arithmetic
+
+[[step]]
+save = "prog.strata"
+from = "prog.st"
+
+[[step]]
+strata = ["build", "prog.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+code = 101
+out = """
+P { a: 5, name: "x", b: 17, c: -100, d: 1 }
+P { a: 7, name: "x", b: 20, c: 2047, d: 1 }
+false
+x1
+7
+12
+fault (Refinement): `+` on `u3`: 4 overflows
+    stack: main
+"""
+
+[[step]]
+save = "errors.strata"
+from = "errors.st"
+fails = true
+has = [
+  "function body: expected `Matrix[R + 1, C]`, found `Matrix[R, C]`",
+  "`R * C` multiplies two values not known while compiling",
+  "`u8` is a machine integer type: it can't name a variable",
+]
