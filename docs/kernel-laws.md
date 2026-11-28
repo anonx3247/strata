@@ -51,7 +51,7 @@ Strata expressions over `Int`, `Bool`, `String` (no operations), `List[T]`, func
   - `[].map(f) == []` and `([x] + xs).map(f) == [f(x)] + xs.map(f)`
   - `sorted` is insertion sort: `([x] + xs).sorted() == insert_sorted(x, xs.sorted())`. `insert_sorted(x, [y] + ys)` is `[x, y] + ys` if `x <= y`, else `[y] + insert_sorted(x, ys)`.
 - A call of a computed function: `made(fs, v, b)(g)` (printed `made(fs, v, b, g)`).
-- A type made by a type function (`Patch[User]`, with `type Patch[T: Record] = …` and a blanket `impl[T: Record]`) is a datatype like any record, in a module file outside a package (a package's module is read back from its text, where a made type's name doesn't parse). A field left out of a record takes its default. A `mut self` method is left out.
+- A type made by a type function (`Patch[User]`, with `type Patch[T: Record] = …` and a blanket `impl[T: Record]`) is a datatype like any record, in a script module or a package's. A field left out of a record takes its default. A `mut self` method with no result (`fn apply(mut self, p: P)`) is the function giving the changed value: `y.apply(p)` in a block (`{ mut y := x; y.apply(p); y }`) is `y := y.apply(p)`. Its field assignments become one update per statement, each field's new value a term of its own.
 - A list of a type inside the type (`args: List[Expr]` in `Expr`) is a type of its own. It is still written `List[Expr]`, but `len`, `+` and `map` don't apply to it.
 
 ## Proof steps
@@ -71,6 +71,7 @@ A proof is a block of steps, one per line. Each step works on what is left to pr
 | `assert p by { steps }` | Proves `p`, then knows it for the rest of the proof. `assert p` alone proves it by the ladder. |
 | `calc { a == b; _ == c }` | A chain of equations, each step proven by the ladder (which knows the facts in scope). It ends at the goal's two sides. |
 | `extensionality()` | On `f == g` between functions: proves `f(x) == g(x)` for a new `x` (kernel steps: the equation under a lambda, then `eta` on both sides). |
+| `fields()` | On `a == b` between records: one goal per field, `a.f == b.f`, in the record's order (kernel steps: eta on both sides, the constructor applied to equal fields). |
 | `witness(e)` | On `exists(x -> p)`: proves `p` at `e`. |
 | `arithmetic()` | Linear integer arithmetic, by kernel steps. It first simplifies the facts and the goal (`Task { priority: Low, due: a } < Task { priority: Low, due: b }` becomes `a < b`), then refutes the goal's negation from them. `len(xs) >= 0` holds, since `len` returns a `Natural`. |
 | `nonlinear()` | Asks Z3 (strings, products of unknowns). The law is marked `[assumed: z3]`. |
@@ -132,3 +133,27 @@ lemma insert_keeps_sorted(x: Int, xs: List[Int]) requires is_sorted(xs) ensures 
   }
 }
 ```
+
+## Laws for every record
+
+A law with a type parameter of the kind `Record` is written once and checked at each record of the module:
+
+```
+lemma applied_is_patched[T: Record](x: T, p: Patch[T])
+  ensures {
+    mut y := x
+    y.apply(p)
+    y
+  } == x.patched(p) {
+  fields()
+  comptime for f in T.fields {
+    simplify()
+  }
+}
+```
+
+- Its types are the module's records at which each type function the law applies to `T` makes a type: for `Patch[T]`, every `X` with a `Patch[X]`, made records (`Patch[User]`) included. At each, `T` is that record, `T.fields.all(f -> e)` is `e` at each field joined by `&&`, `comptime for f in T.fields { steps }` is the steps once per field, and `x.(f.name)` is `x.age`. The law at `User` is proven as `applied_is_patched[User]`, by the same steps.
+- It is reported once: `proven applied_is_patched: proven for 7 derived types`, or `failed …: proven for 2 of 4 derived types; fails for `Point``, then for each type it fails at, the step and its goal. `--instances` lists each type's result, time and stamp.
+- Each type's result is kept in `MODULE.strata.instances`, by law, type and stamp. The stamp hashes the law at that type and the module's definitions that name that type or no record. A type proven before with the same stamp isn't checked again.
+- A proof replays at every record only if it names no field or type of one record: write `T.fields` and `x.(f.name)`, not `x.age`.
+- A record's field of a `match` is the field of each arm: `match c { Keep => r, Set(v) => s }.age` simplifies as `match c { Keep => r.age, Set(v) => s.age }` (proven per sum and record field, untrusted).
