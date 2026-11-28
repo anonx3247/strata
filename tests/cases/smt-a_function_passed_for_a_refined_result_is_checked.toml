@@ -1,0 +1,38 @@
+# smt: a function parameter whose results are refined (`f: (Int) -> Nat`)
+# gives valid results in its callee's proof, so each caller must show what
+# it passes gives them: a lambda's body on any argument, a function of the
+# same type, or a function value it was given itself
+[[step]]
+save = "f.strata"
+text = '''
+type Nat = Int where it >= 0
+
+fn apply(f: (Int) -> Nat, x: Int) -> Int
+  ensures it >= 0
+{
+  f(x)
+}
+
+fn bad() -> Int {
+  apply(y -> y - 10, 0)
+}
+
+fn good() -> Int {
+  apply(y -> y * y, 3)
+}
+
+fn square(y: Int) -> Nat = y * y
+
+fn named() -> Int {
+  apply(square, 3)
+}
+
+fn passed(f: (Int) -> Nat) -> Int {
+  apply(f, 3)
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--cases", "20"]
+has = ["✓ apply ", "✗ bad                      Ensures violation (found by the solver)", "✓ good                     proven (1 check)", "✓ named ", "✓ passed "]
+code = 1

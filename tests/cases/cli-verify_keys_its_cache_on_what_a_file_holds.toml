@@ -1,0 +1,25 @@
+# verify keys a verdict on the definitions a module file holds, not on the
+# hashes its header gives: a body changed under an unchanged header is
+# proven again
+[[step]]
+save = "p.strata"
+text = '''
+fn word() -> String
+  ensures starts_with(it, "q")
+{
+  "qzzzz"
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ word "]
+
+[[step]]
+run = ["perl", "-pi", "-e", "s/qzzzz/zzzzz/", "p.strata"]
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✗ word ", "it = \"zzzzz\""]
+lacks = ["(cached)"]
+code = 1

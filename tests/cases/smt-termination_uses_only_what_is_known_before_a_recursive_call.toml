@@ -1,0 +1,40 @@
+# smt: a measure goes down at a recursive call by what is known before the
+# call: what follows it (the call's own `ensures`, a later callee's) holds
+# only once the call returns
+[[step]]
+save = "f.strata"
+text = '''
+fn spin(n: Int) -> Int
+  ensures n < 0 && n > 0
+{
+  spin(n)
+}
+
+fn later(n: Int) -> Int {
+  r := later(n)
+  stop(n) + r
+}
+
+fn stop(n: Int) -> Int
+  ensures n < 0 && n > 0
+{
+  n
+}
+
+fn down(n: Int) -> Int
+  requires n >= 0
+  ensures it >= 0
+{
+  if n == 0 {
+    0
+  } else {
+    down(n - 1)
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--cases", "20"]
+has = ["✓ spin ", "✓ later ", "✓ down "]
+counts = { "may not terminate: it calls itself" = 2 }
+code = 1

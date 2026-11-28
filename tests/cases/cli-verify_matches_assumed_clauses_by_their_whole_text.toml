@@ -1,0 +1,19 @@
+# an unproven check counts as an assumed contract's only when it is that
+# clause, not a longer one starting with its text (`ensures it >= 0 && …`
+# isn't the assumed `ensures it >= 0`)
+[[step]]
+save = "p.strata"
+text = '''
+fn h(s: String) -> Int
+  assumed ensures it >= 0
+  ensures it >= 0 && reverse(reverse(s)) == s
+{
+  1
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--no-cache", "--cases", "20", "--require", "proven"]
+has = ["~ h ", "not proven: ensures it >= 0 && reverse(reverse(s)) == s", "policy: `h` is not proven"]
+lacks = ["≈ h", "accepts `h` as assumed"]
+code = 1

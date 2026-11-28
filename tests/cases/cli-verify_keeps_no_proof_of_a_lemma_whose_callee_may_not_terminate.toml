@@ -1,0 +1,55 @@
+# a lemma is proven only once it is shown to terminate, a cached proof too:
+# its callee's body changes (its contract not) and may no longer end, so
+# the proof kept for its unchanged contract is incomplete
+[[step]]
+save = "p.strata"
+text = '''
+fn g(n: Int) -> Int
+  requires n >= 0
+  ensures it >= 0
+{
+  if n == 0 {
+    0
+  } else {
+    g(n - 1)
+  }
+}
+
+lemma l(n: Int)
+  requires n >= 0
+  ensures g(n) >= 0
+{
+  _x := g(n)
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ g ", "✓ l "]
+
+[[step]]
+save = "p.strata"
+text = '''
+fn g(n: Int) -> Int
+  requires n >= 0
+  ensures it >= 0
+{
+  if n == 0 {
+    0
+  } else {
+    g(n)
+  }
+}
+
+lemma l(n: Int)
+  requires n >= 0
+  ensures g(n) >= 0
+{
+  _x := g(n)
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["○ l ", "a lemma is proven only once it is shown to terminate"]
+lacks = ["✓ l "]
