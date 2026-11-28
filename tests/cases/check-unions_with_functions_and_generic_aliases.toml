@@ -1,0 +1,82 @@
+# A union with a member `check` can't print (a function) keeps its
+# members, and a generic alias written as a type (`Many[Int]`) is the union
+# it stands for, so values of both are checked.
+
+[[step]]
+save = "u.strata"
+text = '''
+type Rule = { name: String, check: (Int) -> Bool }
+
+fn want(_b: Bool) -> Int = 0
+
+fn written(o: Int | (Int) -> Int) -> Int = want(o)
+
+fn joined(b: Bool) -> Int {
+  x := if b {
+    1
+  } else {
+    (n: Int) -> n
+  }
+  want(x)
+}
+
+fn wrong() -> Int = written("s")
+
+fn records(r: Rule | String) -> Int = want(r)
+
+fn fine() -> Int {
+  a := written((n: Int) -> n + 1)
+  b := written(3)
+  c := records("x")
+  a + b + c
+}'''
+
+[[step]]
+strata = ["--file", "u.strata", "check"]
+fails = true
+has = [
+  "error in written: call to `want`, argument 1: expected `Bool`, found `((Int) -> Int) | Int`",
+  "error in joined: call to `want`, argument 1: expected `Bool`, found `((Int) -> Int) | Int`",
+  "error in wrong: call to `written`, argument 1: expected `((Int) -> Int) | Int`, found `String`",
+  "error in records: call to `want`, argument 1: expected `Bool`, found `Rule | String`",
+]
+lacks = [
+  "error in fine",
+]
+
+[[step]]
+save = "g.strata"
+text = '''
+type Many[T] = List[T] | Option[T]
+
+fn want(_b: Bool) -> Int = 0
+
+fn written(m: Many[Int]) -> Int = want(m)
+
+fn wrong() -> Int = written(["s"])
+
+fn count[T](m: Many[T]) -> Int {
+  match m {
+    List[T] => 2,
+    Option[T] => 1,
+  }
+}
+
+fn fine() -> Int {
+  a := written([1])
+  b := written(Some(1))
+  c := count(["s"])
+  a + b + c
+}'''
+
+[[step]]
+strata = ["--file", "g.strata", "check"]
+fails = true
+has = [
+  "error in written: call to `want`, argument 1: expected `Bool`, found `List[Int] | Option[Int]`",
+  "error in wrong: call to `written`, argument 1: expected `List[Int] | Option[Int]`, found `List[String]`",
+]
+lacks = [
+  "error in fine",
+  "error in count",
+]
