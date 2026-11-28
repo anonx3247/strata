@@ -56,6 +56,9 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: verify paths (see "Three different ways to turn solver output into verdicts"). Source: review prover; ledger V22. Confidence: sure.
 - [ ] **Refined fields of recursive types make the solver reject checks; `Set[Value]` inside a recursive type can't be encoded.** STRATA-ISSUES.md (sql arms): "the solver itself reported this as its own bug" and "The SMT encoding rejects a `Set[Value]` inside the recursive expression type".
   Where: smt sorts / datatype declarations. Source: review prover; ledger V8, V9. Confidence: sure.
+  Found again 2026-11-28 (prover-followups): a recursive type holding a `Set` or `Dict` keyed by itself (`type Value = | Num(Int) | Group(Set[Value])`) declares a datatype with a field `(Array |T:Value| Bool)`, which z3 refuses ("datatype is not co-variant"). It is answered unknown with that reason. In compiler/ it is 34 queries (finding, smt, binary: `main.header_command`, `main.call_command`, `finding.view_location`, `binary.encode_module_kept`). Giving such a field an opaque sort alone moves the error to a sort mix where the field is read as a set; the field needs a sort that names it (an uninterpreted sort with its own membership function), used wherever its values are read.
+- [ ] **`memory.lock_one` (examples/tasks) is no longer proven: its `assert model.locked(…) by …` makes the solver give up (61.6 G instructions against 26.7 G).** Proven by v0.5.0 (5f039e07) and by a build of 1799da47 (#617); not by v0.5.1 (f951fd6a), so it came with #559 (the format trio: stable ids, stored core, operators as trait calls). A smaller function with the same assert (`lock_probe`) shows it: 15.1 G and proven at 1799da47, 43.6 G and given up now. In the query, the `Entry { ..e, status: Running { by, until }, attempts: a.attempt }` built inside `locked` is merged with a fresh `Entry` (valid ? built : fresh); its `task` is now a record value (`VRec model.Task`) where it was a datatype term, so `merge` takes the fresh `Task` apart into its fields and the merged task is compared field by field (named strings) instead of as one `ite` of terms with `valid2`. Making the record one term in `merge` (`pure_term`) didn't help (64.9 G). Left: find where the `Task` became a record value (the update's lowering, `sugar.update_of`, or a field read after the operator change).
+  Where: smt.merge, smt.ctor, smt.check_type of a constructed refined record; examples/tasks/memory.lock_one. Source: prover-followups. Confidence: sure (bisected).
 - [ ] **`verify` loses the value under `x!` for capability or trait calls in std.** When `x` is a call on a capability or a trait inside std, the facts about `x!` are lost.
   Where: verify. Source: ledger V3 (#574). Confidence: likely.
 - [ ] **`verify` of a nine-arm type match over `std.agent.Chunk` goes past 8 GB.** Memory explodes in seconds.
@@ -95,12 +98,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Type checker
 
-- [ ] **Every variable matched anywhere in a function is `TAny` everywhere in it.** `narrowed: narrowed_in(f.body, {})` collects every `x` in any `match x` anywhere in the body, with no scopes.
-  Where: compiler.check.var_type (4314), narrowed_in (2800), fn_inferred. Source: review checker. Confidence: sure.
-- [ ] **A field whose type is a sum or a union reads as `TAny`.** `if is_sum(i, t) || res(i, t) is TUnion { TAny } else { t }`. `order.status`, `p.1` of a tuple holding an `Option`, and any field of type `Option[T]` or `Result[T, E]` are untyped from then on.
-  Where: compiler.check.place (1270), and its uses in field access (3418-3517) and variants_field (9125). Source: review checker. Confidence: sure.
-- [ ] **A `match` without an expected type has type `TAny`.** The arms' types are never joined. `x := match o { A => 1, B => "s" }` is accepted, and `x` is `TAny` for the rest of the function. An `as` binding is `TAny` too (`mut copy.insert(b, TAny)`).
-  Where: compiler.check.infer_match (7698), last line `expected ?? TAny`. Source: review checker. Confidence: sure.
 - [ ] **Trait bounds are checked only for a few traits.** `if t.derivable is None && !t.capability && len(t.params) == 0 { checked.insert }`, and blanket-implemented traits are then removed. `infer_call` checks bounds only `if contains(i.methods.checked, b.1)`.
   Where: compiler.check.methods_of (`checked`, ~1989), infer_call (5732), own_trait_of. Source: review checker. Confidence: sure.
 - [ ] **The type tables are rebuilt by nine entry points, and they disagree.** `type_errors_with` builds `types_of(code + all)` and `with_code(Methods { ..methods_of(all), local, own_traits, noallocs }, methods_of(code))`.
@@ -117,12 +114,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker (calls). Source: ledger C3 (#497). Confidence: likely.
 - [ ] **Generic type arguments are covariant everywhere, including contravariant positions.** `ok = ok && fits(mut i, was[k], gas[k])` for every argument of every named type. The comment justifies this by value semantics ("values are never shared").
   Where: compiler.check.fits, the `(TNamed, TNamed)` arm. Source: review checker. Confidence: likely.
-- [ ] **A union with any member it can't print becomes `TAny`.** `match shown(t) { Some(x) => …, None => return TAny }`. `Int | (Int) -> Int`, or a union with a generic record holding a function, is `TAny` everywhere it is written, so nothing typed with it is checked.
-  Where: compiler.check.union_of (1755), join_union. Source: review checker. Confidence: sure.
 - [ ] **A field every member of a union (or every variant) has takes the last one's type.** Both loops do `out = Some(x)` for each member and never compare. The comments ("with the same type", and the IDEAS entry "a field all have, with one type, gets that type") claim a check the code doesn't make.
   Where: compiler.check field access on `TUnion` (3455-3480), variants_field (9093). Source: review checker. Confidence: sure.
-- [ ] **Narrowing ignores changes made through `mut`.** `assigns_to` only looks for `ast.Assign { place: ast.Var(y) }`. Neither `mut o.cancel()` (a `mut self` method that may change the variant) nor `refund(mut o)` counts.
-  Where: compiler.check.assigns_to (4948), narrowed_env, infer_match. Source: review checker. Confidence: likely.
 - [ ] **`solve_pending` skips obligations on generic and compound types.** `TNamed { name, args } => if len(args) == 0 && program_type(i, name) && …`. `Box[Int]`, `List[Foo]`, `Option[Foo]`, unions and functions fall into `_ => ()` and are accepted.
   Where: compiler.check.solve_pending (9641). Source: review checker. Confidence: sure.
 - [ ] **Trait obligations are not tracked in packages.** `ast.TraitDef(t) => if d.module == "" { own_traits.insert }`, with the comment "In a package, names are qualified in ways the obligations don't follow." In a package, `own_trait_of` always gives `None`, so a trait method used as a function (`price(x)`, `xs.map(price)`) is `TAny`, and `true.price()` makes no obligation.
@@ -167,15 +160,19 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker / codegen. Source: ledger C16 (#563, #565 partial). Confidence: likely.
 - [ ] **Names of builtins break models and methods.** A trait model named `keys` is never read through the model; a user `fn insert` breaks `mut self.all.insert(..)` in an impl; `Set[KeyValue] {}` (a set of a union) doesn't type-check.
   Where: checker. Source: ledger C19. Confidence: likely.
-- [ ] **`resolve` stops at its fuel and doesn't look into `TVariants`, `TUnion` or the arguments of `TVariants`.** `TVariants`, `TUnion`, `TTrait` and `TGen` fall into `_ => t`. A `TVariants.args` holding a `TVar` stays unresolved, and `unify`'s last arm `_ => ra == rb` then compares structurally, so two identical unions with an unresolved member are not equal.
-  Where: compiler.check.resolve (1292). Source: review checker. Confidence: likely.
-- [ ] **`VarDecl` widening drops a generic sum's type arguments.** `TVariants { owner, .. } => TNamed { name: owner, args: [] }` instead of `widened(...)`, which keeps `args`. `mut y := x`, with `x` narrowed to `Some` of an `Option[Int]`, gives `Option` with no arguments, which `unify` then refuses against `Option[Int]` (`len(xs) != len(ys)`).
-  Where: compiler.check.infer_block, the `VarDecl` arm (~5048). Source: review checker. Confidence: sure.
+- [ ] **A `comptime` parameter is `TAny`.** `fn_inferred` gives it `TAny` ("worked on while compiling: not modelled"), so a union asked for of it passes unchecked. Three comparisons in std: `std.orm.key_value` (twice) and `impl std.sqlite.Sql for Option[T]`, the last of the 18 that #628 let through as unknown.
+  Where: compiler.check.fn_inferred (`p.compile_time`). Source: checker-narrowing. Confidence: sure.
+- [ ] **Messages are dropped for types `shown` can't print.** About 28 sites do `match shown(t) { Some(x) => error(…), None => () }` (a wrong `!`/`?`, `except` on a non-`Result`, a variant pattern against another sum, a field of a primitive), so a value whose type holds a function gets no error there. They should report with `printed`.
+  Where: compiler.check wrong_try, not_result, bind_typed (`wrong`), infer_untagged (field of a primitive), and the other `match shown(` sites. Source: checker-narrowing. Confidence: sure.
+- [ ] **`x is V` narrows variables only, not fields.** `match t.status { Closed => t.status.why }` narrows the field (`place_key`), but `if t.status is Closed { t.status.why }` doesn't (`variable_is` takes `ast.Var` only), so the read reports "`Open` has no field `why`". No program in compiler/, std/, core/ or tests/cases does this today.
+  Where: compiler.check.variable_is, is_narrowed. Source: checker-narrowing. Confidence: sure.
+- [ ] **A union member with type variables is matched by trying each member in turn.** `open_member` binds the first member that fits (`List[_] | Option[_]` given `List[String]`), with no check that only one could. Two members that both fit an unsolved value (`List[Int] | List[String]` given `[]`) pick the first.
+  Where: compiler.check.open_member, members_fit. Source: checker-narrowing. Confidence: sure.
 - [ ] **A call's bound is not checked when the argument's type is `TAny`.** `infer_call` checks a bound for every type worked out and pushes an obligation for a type variable, but skips `TAny` (from the `TAny` producers in this section), where it should report "could not work out".
   Where: compiler.check.infer_call (the `bounds` loop, `if known(bt)`). Source: checker-followups. Confidence: sure.
 - [ ] **`x -> x(x)` reports two errors for one cause.** After the occurs error, `expect` reports the failed unification again as "call to `x`, argument 1: expected `_`, found `(_) -> _`".
   Where: compiler.check.unify (occurs), expect. Source: checker-followups. Confidence: sure.
-- [ ] **Unknown types and wrong type-argument counts lower to `TAny`.** `Some(ps) => if len(ps) == len(args) {…} else { TAny }`, `None => TAny`, and `ast.RowType(_) => TAny`. A misspelled or imported-but-unmodelled type, or `Box[Int, Int]`, makes every value of it unchecked. So does a generic alias written as a type (`m: Many[Int]`, `type Many[T] = List[T] | Option[T]`): `implementation` models its `impl`s for a union inferred from values, but a value declared `Many[Int]` is `TAny`.
+- [ ] **Unknown types and wrong type-argument counts lower to `TAny`.** `Some(ps) => if len(ps) == len(args) {…} else { TAny }`, `None => TAny`, and `ast.RowType(_) => TAny`. A misspelled or imported-but-unmodelled type, or `Box[Int, Int]`, makes every value of it unchecked. A generic alias with the wrong number of arguments too.
   Where: compiler.check.lower. Source: review checker. Confidence: sure.
 - [ ] **The "can't be passed as a value" rule only sees generic functions among `decls`.** `on_type` is built from `decls` only. A generic function in `lib` that calls `T.empty()` and is passed as a value is never reported. That includes a definition of the same package that the check cache (main.loaded_check) put in `lib` because it was already checked.
   Where: compiler.check.type_errors_with (`on_type`). Source: review checker. Confidence: sure.
@@ -623,22 +620,18 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Test cases failing on main
 
-- [ ] **`build-jit-tests` fails.** `tests/data/build/expected/tests-tasks.out:9` still expects the `_ := model.run_worker(…)` warning that a96adb16 changed.
-  Where: tests/cases build-jit-tests. Source: ledger tests table (#557, #570, #608, #609). Confidence: sure.
-- [ ] **`cli-pack_a_package_into_one_file` fails.** It expects "69 definitions"; the packed tasks has 67 since #529/#530.
-  Where: tests/cases. Source: ledger tests table (#533). Confidence: sure.
-- [ ] **`cli-merge_file_keeps_overloads_and_module_names` fails.** The builtin count drifts: the case says 135, `core.builtins.st` has 143 `builtin` lines.
-  Where: tests/cases. Source: ledger tests table (#608). Confidence: likely.
 - [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
-  Where: std.orm. Source: ledger tests table (#513, #530). Confidence: likely.
+  Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
 - [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
   Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
-- [ ] **`cli-a_conflict_resolved_by_hand_stores_as_written` failed.** Seen failing only on std-math's head; not checked on main.
-  Where: tests/cases. Source: ledger tests table (#608). Confidence: possible.
-- [ ] **`cli-for_over_iterators` may fail.** A cached counterexample `pos: -265` instead of `-1` was reported.
-  Where: tests/cases. Source: ledger tests table (#492, #498). Confidence: possible.
-- [ ] **`cli-smt_tracks_list_elements_through_loops` was weakened.** `fill_wrong` is refuted by the fuzzer, not the solver; the case accepts either.
-  Where: tests/cases. Source: ledger tests table. Confidence: likely.
+- [ ] **`cli-tasks_port_checks_tests_and_verifies` fails.** `memory.lock_one` isn't proven (the prover follow-up work).
+  Where: examples/tasks. Source: main-cases PR. Confidence: sure.
+- [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.
+  Where: tests/cases, the SMT terms work (#616). Source: main-cases PR. Confidence: sure.
+- [ ] **`cli-smt_proves_sums_over_lists` fails.** `bounded` (`ensures it <= 10 * len(xs)`, a sum of elements under 10) is not proven: "a possible counterexample it could not express". On ecf3c860 too.
+  Where: compiler/smt, sums over lists. Source: main-cases PR. Confidence: sure.
+- [ ] **`cli-structural_records` fails.** A structural record's refined field is lost: `total_of(x: { total: Cents, .. }) -> Cents` gets the counterexample `x = { total: -1 }`, and `bigger` proves 2 checks instead of 3. On ecf3c860 too.
+  Where: compiler/smt, refinements of structural record fields. Source: main-cases PR. Confidence: sure.
 
 ## From the old IDEAS.md, to reconcile
 
