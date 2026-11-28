@@ -1,0 +1,55 @@
+# `verify --obligations` and `--smt` take the checks `verify` makes of the
+# selection: a trait implementation's methods and a type's own methods too,
+# each obligation as `verify --checks` reports it.
+[[step]]
+write = "strata.toml"
+text = "name = \"obl\"\n"
+
+[[step]]
+module = "a"
+into = "$TMP/"
+text = '''
+pub trait Counter {
+  fn bump(self, n: Int) -> Int
+    ensures it > n
+}
+
+pub type C = { k: Int }
+
+impl Counter for C {
+  fn bump(self, n: Int) -> Int {
+    n + 1
+  }
+}
+
+impl C {
+  fn twice(self, n: Natural) -> Natural {
+    n * 2
+  }
+}
+
+pub fn dec(n: Int where it > 0) -> Natural {
+  n - 1
+}
+'''
+
+[[step]]
+strata = ["--file", ".", "verify", "--no-race", "--checks", "a.*"]
+has = ["proven:  ensures it > n", "proven:  result of `a.C.twice`: Natural", "proven:  result of `dec`: Natural"]
+counts = { "proven: " = 3 }
+
+[[step]]
+strata = ["--file", ".", "verify", "--obligations", "a.*"]
+has = ["fn a.C.bump\n  proven ensures it > n", "fn a.C.twice\n  proven result of `a.C.twice`: Natural", "fn a.dec\n  proven result of `dec`: Natural"]
+counts = { "  proven " = 3 }
+
+# one method of the implementation, as `verify a.C.bump` selects it
+[[step]]
+strata = ["--file", ".", "verify", "--obligations", "a.C.bump"]
+has = ["fn a.C.bump\n  proven ensures it > n"]
+lacks = ["a.C.twice", "a.dec"]
+
+[[step]]
+strata = ["--file", ".", "verify", "--smt", "a.C.twice"]
+has = ["; a.C.twice — result of `a.C.twice`: Natural", "(check-sat)"]
+lacks = ["a.C.bump", "a.dec"]

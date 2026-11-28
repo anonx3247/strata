@@ -533,7 +533,7 @@ error in a: `or` / `??` handle an Option, found `Shape`
 error in a: function body: expected `String`, found `Int`
 error in b: using it as a `Shape`: `Pt` does not implement `Shape`
 error in c: function body: expected `String`, found `Int`
-error in d: using it as a `Shape`: `Int` does not implement `Shape`
+error in d: function body: expected `Int`, found `Shape`
 error in e: function body: expected `String`, found `Int`
 '''
 

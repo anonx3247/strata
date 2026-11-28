@@ -1,5 +1,7 @@
 # codegen.rs: leaves_out_what_verify_proved: `strata codegen --proofs FILE` leaves out the checks
-# the proofs list (a result, a division, a `let`, an index, an entry check)
+# the proofs list (a result, a division, a `let`, an index, an entry check);
+# a check made at an expression is left out only by a proof at its site
+# (`text.check_site`: a hash of the expression's text), not by name alone
 
 [[step]]
 save = "proven.strata"
@@ -32,9 +34,9 @@ fn main() {
 write = "proofs.txt"
 text = '''
 proven	half	result of `half`: Natural
-proven	safe	no division by zero
-proven	main	`let` annotated `Positive`
-proven	pick	index in range
+proven-at	safe	695667577	no division by zero
+proven-at	main	968	`let` annotated `Positive`
+proven-at	pick	594299182	index in range
 entry	half	argument n
 entry	pick	requires 0
 '''
@@ -55,4 +57,18 @@ stdout = '''
 run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen --proofs \"$TMP/proofs.txt\" \"$TMP/proven.strata\" | grep -q \"@strata_div_nz(\" && echo divides"]
 stdout = '''
 divides
+'''
+
+[[step]]
+write = "by-name.txt"
+text = '''
+proven	safe	no division by zero
+proven	main	`let` annotated `Positive`
+proven	pick	index in range
+'''
+
+[[step]]
+run = ["sh", "-c", "cd \"$ROOT\" && \"$STRATA\" codegen --proofs \"$TMP/by-name.txt\" \"$TMP/proven.strata\" | grep -o -e \"does not satisfy\" -e \"out of range\" -e \"@strata_div(\" | sort -u | wc -l | tr -d \" \""]
+stdout = '''
+3
 '''
