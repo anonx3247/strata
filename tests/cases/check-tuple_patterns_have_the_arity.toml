@@ -1,0 +1,58 @@
+# A tuple pattern with more or fewer elements than the tuple it matches is
+# an error, in a `match` arm, a `:=` and a `for`.
+
+[[step]]
+save = "p.strata"
+text = '''
+fn triple() -> (Int, Int, Int) = (1, 2, 3)
+
+fn short_let() -> Int {
+  (a, b) := triple()
+  a + b
+}
+
+fn short_arm(xs: List[(String, Int, Int)]) -> Int {
+  mut n := 0
+  for x in xs {
+    n += match x {
+      (k, e) => e,
+    }
+  }
+  n
+}
+
+fn short_for(xs: List[(String, Int, Int)]) -> Int {
+  mut n := 0
+  for (k, e) in xs {
+    n += e
+  }
+  n
+}
+
+fn long_let() -> Int {
+  (a, b, c, d) := triple()
+  a
+}
+
+fn right(xs: List[(String, Int, Int)]) -> Int {
+  mut n := 0
+  for (_, e, f) in xs {
+    n += e + f
+  }
+  (a, b, c) := triple()
+  n + a + b + c
+}'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in short_let: a pattern of 2 elements against `(Int, Int, Int)`, a tuple of 3",
+  "error in short_arm: a pattern of 2 elements against `(String, Int, Int)`, a tuple of 3",
+  "error in short_for: a pattern of 2 elements against `(String, Int, Int)`, a tuple of 3",
+  "error in long_let: a pattern of 4 elements against `(Int, Int, Int)`, a tuple of 3",
+]
+lacks = [
+  "error in right",
+  "error in triple",
+]

@@ -1,0 +1,131 @@
+# A matched variable is narrowed only in the arms (and `is` branches) that
+# narrow it, and has its declared type elsewhere. Passing it as `mut x`, or
+# calling a `mut self` method on it, ends the narrowing like an assignment.
+# A matched field (`t.shape`) is narrowed the same way.
+
+[[step]]
+save = "p.strata"
+text = '''
+type Shape = | Circle(Int) | Rect { w: Int, h: Int }
+
+fn want(_b: Bool) -> Int = 0
+
+fn reset(mut s: Shape) {
+  s = Circle(0)
+}
+
+impl Shape {
+  fn shrink(mut self) {
+    self = Circle(0)
+  }
+}
+
+fn outside(s: Shape) -> Int {
+  n := match s {
+    Circle(r) => r,
+    Rect { w, .. } => w,
+  }
+  want(s) + n
+}
+
+fn inside(s: Shape) -> Int {
+  match s {
+    Rect { .. } => s.w,
+    Circle(_) => want(s),
+  }
+}
+
+fn mut_arg(s: Shape) -> Int {
+  mut t := s
+  match t {
+    Rect { .. } => {
+      reset(mut t)
+      t.w
+    },
+    Circle(_) => 0,
+  }
+}
+
+fn mut_method(s: Shape) -> Int {
+  mut t := s
+  match t {
+    Rect { .. } => {
+      mut t.shrink()
+      t.w
+    },
+    Circle(_) => 0,
+  }
+}
+
+fn is_mut(s: Shape) -> Int {
+  mut t := s
+  if t is Rect {
+    reset(mut t)
+    t.w
+  } else {
+    0
+  }
+}
+
+fn kept(s: Shape) -> Int {
+  mut t := s
+  match t {
+    Rect { .. } => t.w,
+    Circle(_) => 0,
+  }
+}
+
+fn reread(s: Shape) -> Int {
+  n := match s {
+    Circle(r) => r,
+    Rect { w, .. } => w,
+  }
+  k := match s {
+    Circle(r) => r,
+    Rect { .. } => 0,
+  }
+  if s is Rect {
+    n + k + s.h
+  } else {
+    n + k
+  }
+}
+
+type Ticket = { id: Int, shape: Shape }
+
+fn field_arm(t: Ticket) -> Int {
+  match t.shape {
+    Rect { .. } => t.shape.w,
+    Circle(_) => 0,
+  }
+}
+
+fn field_reset(t: Ticket) -> Int {
+  mut u := t
+  match u.shape {
+    Rect { .. } => {
+      u = Ticket { id: 0, shape: Circle(0) }
+      u.shape.w
+    },
+    Circle(_) => 0,
+  }
+}'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in outside: call to `want`, argument 1: expected `Bool`, found `Shape`",
+  "error in inside: call to `want`, argument 1: expected `Bool`, found `Circle`",
+  "error in mut_arg: `Circle` has no field `w`, so not every `Shape` does",
+  "error in mut_method: `Circle` has no field `w`, so not every `Shape` does",
+  "error in is_mut: `Circle` has no field `w`, so not every `Shape` does",
+  "error in field_reset: `Circle` has no field `w`, so not every `Shape` does",
+]
+lacks = [
+  "error in kept",
+  "error in field_arm",
+  "error in reread",
+  "error in reset",
+  "error in Shape",
+]

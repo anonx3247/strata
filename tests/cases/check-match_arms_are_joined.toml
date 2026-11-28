@@ -1,0 +1,86 @@
+# A `match` with no type asked for has its arms' types joined (arms that
+# jump away left out), an error when they don't join, and an `as` binding
+# has the type of the value it binds.
+
+[[step]]
+save = "p.strata"
+text = '''
+type Shape = | Circle(Int) | Rect { w: Int, h: Int }
+
+fn want(_b: Bool) -> Int = 0
+
+fn same(s: Shape) -> Int {
+  x := match s {
+    Circle(_) => 1,
+    Rect { .. } => 2,
+  }
+  want(x)
+}
+
+fn mixed(s: Shape) -> Int {
+  x := match s {
+    Circle(_) => 1,
+    Rect { .. } => "s",
+  }
+  want(x)
+}
+
+fn jumps(s: Shape) -> Int {
+  x := match s {
+    Circle(_) => return 0,
+    Rect { w, .. } => w,
+  }
+  want(x)
+}
+
+fn unjoined(s: Shape) -> Int {
+  x := match s {
+    Circle(_) => [],
+    Rect { .. } => Some(1),
+  }
+  0
+}
+
+fn bound_in_arm(s: Shape) -> Int {
+  match s as whole {
+    Circle(_) => want(whole),
+    Rect { .. } => 1,
+  }
+}
+
+fn bound_whole(s: Shape) -> Int {
+  match s as whole {
+    _ => want(whole),
+  }
+}
+
+fn fine(s: Shape) -> Int {
+  x := match s {
+    Circle(r) => r,
+    Rect { w, .. } => w,
+  }
+  y := match s {
+    Circle(_) => return 0,
+    Rect { .. } => 1.5,
+  }
+  z := match s as whole {
+    Rect { .. } => whole.w,
+    _ => 0,
+  }
+  x + z + if y > 1.0 { 1 } else { 0 }
+}'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in same: call to `want`, argument 1: expected `Bool`, found `Int`",
+  "error in mixed: call to `want`, argument 1: expected `Bool`, found `Int | String`",
+  "error in jumps: call to `want`, argument 1: expected `Bool`, found `Int`",
+  "error in unjoined: match arms: `List[_]` and `Option[Int]` don't join into one type",
+  "error in bound_in_arm: call to `want`, argument 1: expected `Bool`, found `Circle`",
+  "error in bound_whole: call to `want`, argument 1: expected `Bool`, found `Shape`",
+]
+lacks = [
+  "error in fine",
+]
