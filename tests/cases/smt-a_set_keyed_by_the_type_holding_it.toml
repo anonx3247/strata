@@ -1,0 +1,55 @@
+# smt: a recursive type holding a set keyed by itself (`Group(Set[Value])`)
+# gives that field an uninterpreted sort, which `.open` turns into the set's
+# array and `.box` back, so the solver accepts the datatype and what is
+# known of the set is kept: `holds`, `same`, `size_kept` and a dict keyed
+# by its own record (`count`) are proven, `wrong` is not
+[[step]]
+save = "f.strata"
+text = '''
+type Value = | Num(Int) | Group(Set[Value])
+
+fn holds(v: Value) -> Bool ensures it {
+  match Group(Set { v }) {
+    Group(s) => s.contains(v),
+    Num(_) => false,
+  }
+}
+
+fn same(s: Set[Value], t: Set[Value]) -> Bool ensures it == (s == t) {
+  Group(s) == Group(t)
+}
+
+fn size_kept(s: Set[Value]) -> Int ensures it == len(s) {
+  match Group(s) {
+    Group(u) => len(u),
+    Num(_) => 0,
+  }
+}
+
+type Tree = { label: Int, kids: Dict[Tree, Int] }
+
+fn count(t: Tree, k: Tree) -> Option[Int] ensures it == t.kids.get(k) {
+  u := Tree { ..t, label: 1 }
+  u.kids.get(k)
+}
+
+fn wrong(v: Value, w: Value) -> Bool ensures it {
+  match Group(Set { v }) {
+    Group(s) => s.contains(w),
+    Num(_) => false,
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+fails = true
+has = ["✓ holds ", "✓ same ", "✓ size_kept ", "✓ count ", "✗ wrong "]
+lacks = ["rejected", "✓ wrong "]
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+env = { "STRATA_TERMS" = "1" }
+fails = true
+has = ["✓ holds ", "✓ same ", "✓ size_kept ", "✓ count ", "✗ wrong "]
+lacks = ["rejected", "✓ wrong "]
