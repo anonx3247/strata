@@ -33,6 +33,8 @@ Proposed (user, 2026-11-27; to settle in the spec, section 6). The type notation
   Where `None` would carry a meaning that must not be forgotten ("never expires", "no timeout", "leave unchanged" in a patch), the type should be its own sum with no default (`Expiry = Never | At(Time)`, `Change[T] = Keep | Set(T)`), so every writer has to choose.
 - Aliases name groups (`type ConfigError = NotFound | Denied | BadToml`); a tool can show or write the union a body actually returns.
 
+- **Lab trial** (branch `lab-errors-unwrapped`, 2026-11-28): built for everyone, no flag (`compiler/wrapping`, `check.wraps_of`, `std.error`); the measurements and the cases where merging error unions lost information are in its PR. Open points it found: the parser stores a hand-written `match` of a handler's shape as the handler before types are known, which hiding constructors can turn into a different program; every path from text to a stored tree must put the constructors in (the lab's `merge-file` doesn't); a union with a type parameter member (`E | TimedOut`) doesn't compile in the lab.
+
 ### `derive Error` from a type's text
 `derive Error` makes `message` the value's ordinary text (its `Debug`/`Display` form: `NotFound { path: "app.toml" }`), so an error type needs no hand-written method unless it wants a better message (user, 2026-11-27).
 ### `[]T` for lists
