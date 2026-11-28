@@ -6,8 +6,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **Header `code_hash`, `interface_hash`, `deps` and `name` are never checked, but verify keys its cache on them.** A module header's `code_hash`, `interface_hash`, `deps` and `name` are never checked against the content, and hashes are trusted by default, but verify keys its cached verdicts on them.
   Where: binary.entry_with (compiler.binary.st:2243), binary.read_header_of; main.keys_over/closure_keys (compiler.main.st:7763–7810); binary.read, decode_module, decode_entry (`checked: false`). Source: review front-end. Confidence: likely.
-- [ ] **The dependency lists that verify keys on miss real dependencies.** ImplDef: walks method params, ret and body, but not `pre`/`post`, nor `i.bounds` or method bounds. An impl method's contract calling `helper` doesn't depend on `helper`.
-  Where: store.refs (compiler.store.st:137), store.ty, store.graph_from. Source: review front-end. Confidence: likely.
 - [ ] **Function values have no identity: calls with different function arguments are equated.** A function-typed parameter is `VFn { ret }` (`shape`: `FnType { ret, .. } => VFn { ret }`). It carries nothing else. In `call_key`, an argument `Var(n)` bound to a local is keyed by `debug(v)` (`is_fn` is false for a bound name).
   Where: smt.call_key (rendered .st ~9252), smt.same_call, smt.call (SeeThrough branch, memo reuse of lists), Val.VFn. Source: review prover. Confidence: likely.
 - [ ] **Function-typed parameters: results assumed valid, lambda arguments never checked.** `call_value` on a `VFn { ret }` makes `res := shape(ret)` and then `assume(check_type(ret, res, []))`. The callee therefore assumes a refined result (`(Int) -> Nat`).
@@ -101,10 +99,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Type checker
 
-- [ ] **`unify` has no occurs check.** `TVar(x) => { if rb != ra { mut i.subst.insert(x, widened(rb)) } return true }`. Nothing checks whether `x` occurs in `rb`. `x -> x(x)` or `mut xs.push(xs)` binds `α := List[α]` or `α := Fn(α) -> β` with no error.
-  Where: compiler.check.unify (rendered compiler.check.st:4178). Source: review checker. Confidence: sure.
-- [ ] **A narrowed type accepts any value of its sum.** `fits` has arms for `(TNamed, TVariants)` and `(TVariants, TVariants)`, but `(TVariants, TNamed)` falls to `_ => unify(...)`, and `unify` widens both sides first (`ra := widened(res(i, a))`).
-  Where: compiler.check.fits (4007), join_union (4975), infer_if (4786). Source: review checker. Confidence: likely.
 - [ ] **Every variable matched anywhere in a function is `TAny` everywhere in it.** `narrowed: narrowed_in(f.body, {})` collects every `x` in any `match x` anywhere in the body, with no scopes.
   Where: compiler.check.var_type (4314), narrowed_in (2800), fn_inferred. Source: review checker. Confidence: sure.
 - [ ] **A field whose type is a sum or a union reads as `TAny`.** `if is_sum(i, t) || res(i, t) is TUnion { TAny } else { t }`. `order.status`, `p.1` of a tuple holding an `Option`, and any field of type `Option[T]` or `Result[T, E]` are untyped from then on.
@@ -125,16 +119,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker (ensures). Source: ledger C1 (#462). Confidence: sure.
 - [ ] **`stringify(x.to_json())` type-checks and crashes.** `to_json` returns a `Result`, yet the call passes `check`, then crashes with signal 10/11 in `std.json.stringify`.
   Where: checker (calls). Source: ledger C3 (#497). Confidence: likely.
-- [ ] **`unify` returns true when its fuel runs out.** `if fuel <= 0 { return true }`. Callers pass 100. Any pair of types nested more than 100 deep unifies, whatever they are. This is the same limit as the one above, now answering "yes".
-  Where: compiler.check.unify. Source: review checker. Confidence: sure.
 - [ ] **Generic type arguments are covariant everywhere, including contravariant positions.** `ok = ok && fits(mut i, was[k], gas[k])` for every argument of every named type. The comment justifies this by value semantics ("values are never shared").
   Where: compiler.check.fits, the `(TNamed, TNamed)` arm. Source: review checker. Confidence: likely.
-- [ ] **`implements` answers true for every type it doesn't model.** The last arm is `_ => true`. `TUnit`, `TFn`, `TUnion`, `TVar` and `TAny` all "implement" every trait, so `as_trait` accepts a function or `()` where a `Display`/`Json` trait value is wanted.
-  Where: compiler.check.implements (4072). Source: review checker. Confidence: sure.
-- [ ] **Any trait value fits any other trait.** `(TTrait(_), TTrait(_)) => return`. A `Shape` value passed where a `Json` value is expected is accepted, with no supertrait check.
-  Where: compiler.check.expect (4643). Source: review checker. Confidence: sure.
-- [ ] **Mismatches involving unprinted types are silently accepted.** The error is raised only when `(text_of(want), text_of(got))` are both `Some`. `text_of` is `None` for `TAny`, for a `TNamed` with a function-typed argument, and for a `TFn` inside a union.
-  Where: compiler.check.expect. Source: review checker. Confidence: sure.
 - [ ] **A union with any member it can't print becomes `TAny`.** `match shown(t) { Some(x) => …, None => return TAny }`. `Int | (Int) -> Int`, or a union with a generic record holding a function, is `TAny` everywhere it is written, so nothing typed with it is checked.
   Where: compiler.check.union_of (1755), join_union. Source: review checker. Confidence: sure.
 - [ ] **A field every member of a union (or every variant) has takes the last one's type.** Both loops do `out = Some(x)` for each member and never compare. The comments ("with the same type", and the IDEAS entry "a field all have, with one type, gets that type") claim a check the code doesn't make.

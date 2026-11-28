@@ -47,15 +47,20 @@ run = ["git", "commit", "-q", "-m", "change"]
 write = ".tours/main.md"
 from = "main.md"
 
-# every page, then the renderer's last one: `a.third` and notes.txt
+# every page, each change shown by its changed nodes, then the renderer's
+# last one: `a.third` and notes.txt
 [[step]]
 strata = ["tour"]
 golden = "tests/data/tour/pages.out"
 
-# the third page, its fold of unchanged lines opened
+# by lines: the third page, its fold of unchanged lines opened
 [[step]]
-strata = ["tour", "--keys", "l l enter"]
+strata = ["tour", "--lines", "--keys", "l l enter"]
 golden = "tests/data/tour/keys.out"
+
+[[step]]
+strata = ["tour", "--lines"]
+has = ["~ pub fn area(w: Int, h: Int) -> Int[- {-]", "▸ … 6 lines unchanged"]
 
 # the list of pages, the last one chosen, its folded change opened
 [[step]]

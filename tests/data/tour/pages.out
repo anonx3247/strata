@@ -4,10 +4,8 @@ Why  (1/4)
 Areas must never be negative: `area` now says so.
 
 ~ a.area  (stricter precondition)
-  ~ pub fn area(w: Int, h: Int) -> Int[- {-]
-  +   requires w >= 0 && h >= 0 {    ◀ stricter precondition
-      w * h
-    }
+    pub fn area(w: Int, h: Int) -> Int
+  +   requires w >= 0 && h >= 0    ◀ stricter precondition
 
 Routine  (2/4)
 ──────────────
@@ -25,10 +23,8 @@ Steps  (3/4)
 The last step multiplies.
 
 ~ a.steps  (body changed)
-    pub fn steps(x: Int) -> Int {
-    ▸ … 6 lines unchanged
+    pub fn steps(x: Int) -> Int
   ~   e [-+-]{+*+} f
-    }
 
 Not in the tour  (4/4)
 ──────────────────────
