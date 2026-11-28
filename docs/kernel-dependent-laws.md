@@ -82,21 +82,43 @@ The steps:
 
 | Step | Does |
 |---|---|
-| `simplify()` | Takes the law's parameters. On an equation between records it compares them field by field (`funext`). Then it closes the goal if both sides are the same once definitions are unfolded. |
+| `simplify()` | Takes the law's parameters. On an equation between records it compares them field by field (`funext`). It then closes the goal if both sides are the same once definitions are unfolded. If they aren't, it rewrites with a hypothesis whose left side is in the goal (`h : p.(f.name) == Keep`, or `T.fields` having every field), then splits on a `Bool` the goal is stuck on (`if T.fields.has(f)`), and tries again in each case. |
 | `fields()` | An equation between records becomes one about an arbitrary field `g` (`funext`). |
-| `simplify(applied_at)` | On a field `g` of `apply`'s result: rewrites with `applied_at` at the goal's `p`, `x` and `g`, then with `T.fields` having `g`, then closes by unfolding. |
+| `simplify(L)`, `simplify(L(rest))` | Rewrites with the law `L`, then goes on as `simplify()`, or with the steps after it if there are any. `L`'s parameters are found by matching its left side against the goal, else taken from the goal's variables of the same name. Inside `[f, ..rest] =>`, the law being proven, called on `rest`, is the induction hypothesis. |
+| `match T.fields { [] => steps, [f, ..rest] => steps }` | Induction over the field list. The law then holds for every list of fields, so it doesn't assume `T.fields` has every field. |
+| `match p.(f.name) { Keep => steps, Set(v) => steps }` | Cases on a field's value. Each case knows `h : p.(f.name) == Keep` (or `== Set(v)`). |
+| `if f == g { steps } else { steps }` | Cases on whether two fields are the same. In the first, `g` is `f` everywhere. |
 
-`applied_at` is a library lemma. It is proven when the module's `apply` is translated, by induction over the field list:
+A statement can also use `T.fields.has(g)`, `if c { a } else { b }`, and a block whose last line reads a field (`{ mut y := x  y.apply(p)  y.(g.name) }`).
+
+This is how `applied_at`, the lemma `applied_is_patched` needs, is proven in tests/kernel/dependent/patch_every_record.strata:
 
 ```
-apply(x, p) at g == if T.fields has g { patched(x, p) at g } else { x at g }
+lemma applied_at[T: Record](x: T, p: Patch[T])
+  ensures T.fields.all(g -> {
+    mut y := x
+    y.apply(p)
+    y.(g.name)
+  } == if T.fields.has(g) { x.patched(p).(g.name) } else { x.(g.name) }) {
+  match T.fields {
+    [] => simplify(),
+    [f, ..rest] => {
+      simplify(applied_at(rest))
+      match p.(f.name) {
+        Keep => if f == g { simplify() } else { simplify() },
+        Set(v) => if f == g { simplify() } else { simplify() },
+      }
+    },
+  }
+}
 ```
+
+A module without its own `applied_at` gets one from the library: the same statement, proven the same way.
 
 The output gives, for each law, `proven for every record NAME (time, a term of N nodes)`, or `failed NAME: why`, or `open NAME` with its goal. It then lists each law's instance at each record: `instance User.patched_empty : …`.
 
-The goal file is tests/kernel/goals/patch_every_record.strata. It has the three laws (empty patch, each field, `apply` = `patched`) with `?proof` bodies. tests/kernel/dependent/patch_every_record.strata has them proven.
+The goal file is tests/kernel/goals/patch_every_record.strata. It has four laws with `?proof` bodies: empty patch, each field, `applied_at`, and `apply` = `patched`. tests/kernel/dependent/patch_every_record.strata has them proven. Its records are `User`, `Point`, `Address` and `Account` (8 fields, one of them the record `Address`), and their made `Patch[…]` records.
 
 What doesn't translate yet:
-- a record with a field of another record of the module;
 - any other expression in a method or a statement (arithmetic, lists);
-- steps other than the three above.
+- steps other than those above.

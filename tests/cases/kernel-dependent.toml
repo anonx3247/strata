@@ -46,6 +46,7 @@ has = [
   "translated: type functions Patch; methods patched, apply",
   "proven for every record patched_empty",
   "proven for every record patched_fields",
+  "proven for every record applied_at",
   "proven for every record applied_is_patched",
   "instance User.applied_is_patched",
   "instance Point.patched_fields",
@@ -62,3 +63,9 @@ lacks = ["laws for every record: ", "ACCEPTED"]
 strata = ["kernel", "check", "--dependent", "--z3-arith", "$ROOT/tests/kernel/proofs/tactics.kp"]
 has = ["dependent: proven omega_step", "[assumed: oracle]", "dependent: 13 checked"]
 lacks = ["dependent: failed"]
+
+# the goals a model is given: every law open, with its statement
+[[step]]
+strata = ["kernel", "dependent", "$ROOT/tests/kernel/goals/patch_every_record.strata"]
+has = ["open   patched_empty", "open   patched_fields", "open   applied_at", "open   applied_is_patched"]
+lacks = ["failed ", "laws for every record: "]
