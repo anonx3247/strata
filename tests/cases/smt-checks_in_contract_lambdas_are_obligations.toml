@@ -1,0 +1,45 @@
+# smt: a check inside a function value a contract applies to every element
+# (`all`, `any`) is an obligation, for any element; inside a quantifier
+# nested in another it is unknown, with the reason, never proven
+[[step]]
+save = "l.strata"
+text = '''
+fn all_pos(xs: List[Natural], ys: List[Int]) -> Int requires xs.all(i -> ys[i] > 0) = 0
+
+fn guarded(xs: List[Natural], ys: List[Int]) -> Int
+  requires xs.all(i -> i < len(ys) && ys[i] > 0)
+= 0
+
+fn any_pos(xs: List[Natural], ys: List[Int]) -> Int requires xs.any(i -> ys[i] > 0) = 0
+
+fn kept(xs: List[Int]) -> List[Int]
+  ensures all(0..len(xs), i -> it[i] == xs[i])
+= xs
+
+fn nested(xss: List[List[Int]], ys: List[Int]) -> Int
+  requires xss.all(xs -> xs.all(i -> ys[i] > 0))
+= 0
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn all_pos
+  unknown index in range
+fn guarded
+  proven index in range
+fn any_pos
+  unknown index in range
+fn kept
+  proven index in range
+  proven index in range
+  proven ensures all(range(0, len(xs)), (i: Int) -> at(it, i) == at(xs, i))
+fn nested
+  unknown the checks inside `xss.all((xs: List[Int]) -> xs.all((i: Int) -> at(ys, i) > 0))`
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "verify", "--no-cache", "--no-race", "all_pos"]
+fails = true
+has = ["✗ all_pos", "out of range"]
+lacks = ["The solver had proven every check"]

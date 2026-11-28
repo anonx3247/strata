@@ -1,0 +1,35 @@
+# smt: a program's own type named `Task` is that type, not a task's handle
+# `Task[T]`: its fields are read, and a record holding one is proven
+[[step]]
+save = "f.strata"
+text = '''
+type Id = Int where it >= 0
+
+type Task = { id: Id, payload: Int }
+
+type Entry = { task: Task, tries: Natural }
+
+fn first(e: Entry) -> Id ensures it == e.task.id {
+  e.task.id
+}
+
+fn make(id: Id) -> Entry ensures it.task.id == id {
+  Entry { task: Task { id, payload: 0 }, tries: 0 }
+}
+
+fn handle(n: Int) -> Int ensures it == n + 1 {
+  scope {
+    t := spawn n + 1
+    await t
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+has = ["✓ first ", "✓ make ", "✓ handle "]
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+env = { "STRATA_TERMS" = "1" }
+has = ["✓ first ", "✓ make ", "✓ handle "]

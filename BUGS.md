@@ -42,6 +42,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: termination.calls_in (`smaller := st.own != "" && trait_node(name) == st.own && self_field(recv)`). Source: review prover. Confidence: likely.
 - [ ] **Termination proofs assume the function's own `ensures`, which may be unproven.** Measure and loop-bound obligations are asked over the function's facts. Those include the callee contracts assumed at each call, the function's own `ensures` at its recursive calls among them.
   Where: smt.call_contract (a recursive call assumes `f.post`), smt.measure_check / termination.loop_answered (obligations over `vc.facts`). Source: review prover. Confidence: likely.
+- [ ] **A `for` over an adapter of a value whose type termination can't read stays unknown.** `termination.expr_type` reads types from bindings in scope, calls of the program's functions, builtins whose overload the arguments' types settle, fields, tuples, lists, and `match`/`if` values whose branches agree. It reads no type from a block with statements, a lambda parameter without a written type, a builtin result whose overload or type arguments aren't settled (`get(d, k)` with `d` a `Dict` literal), or a `match` with a branch it can't type. 28 compiler/ functions are unknown this way (`codegen.builtin_call`'s `drop(args, 1)`, `smt.shape`'s `rc.fields ?? []`), 20 compiler/ and 2 std for a `for` over a value the encoder doesn't model (`check.union_conflicts`, `std.orm.Query.all`).
+  Where: termination.expr_type, termination.source_of. Source: termination-modelling PR. Confidence: sure.
+- [ ] **A method call on a receiver of unknown type reaches every type's own method of that name.** Sound but imprecise: `d.members.filter(..).map(..)` in std.json.tags_of reached `std.array.Array.map`; it is proven now only because `Array.map` is. The checker's resolution (`check.mark_method_calls`, #626) tags a call only as a trait's or "other", not with the receiver's type, so it can't narrow these.
+  Where: termination.calls_in, termination.recv_head. Source: termination-modelling PR. Confidence: sure.
 - [ ] **Mutual recursion always unknown; tree recursion not proven to terminate (known).** Recorded in ~/dev/strata-bench/STRATA-ISSUES.md ("Tree recursion isn't proven to terminate. 52 and 68 functions respectively are reported 'may not terminate'"). The code has no measure search for components larger than one.
   Where: termination.analyze_with (`Some(other) => Err("it is recursive through ...")`). Source: review prover; ledger V7. Confidence: sure.
 - [ ] **A cached proof skips the lemma termination gate.** The proof key (`interface_keys`) holds callees' interface hashes for ContractOnly callees, not their termination status. A lemma calling `g` stays keyed the same when `g`'s body changes and `g` stops terminating.
@@ -54,11 +58,18 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.replay (strata_verify_replay_0). Source: review prover. Confidence: sure.
 - [ ] **`build` and `verify` disagree on what is proven.** STRATA-ISSUES.md (ob-verify): "`strata build` lists 35 clauses as 'not proven' that `strata verify` reports as proven".
   Where: verify paths (see "Three different ways to turn solver output into verdicts"). Source: review prover; ledger V22. Confidence: sure.
-- [ ] **Refined fields of recursive types make the solver reject checks; `Set[Value]` inside a recursive type can't be encoded.** STRATA-ISSUES.md (sql arms): "the solver itself reported this as its own bug" and "The SMT encoding rejects a `Set[Value]` inside the recursive expression type".
+- [ ] **Refined fields of recursive types make the solver reject checks.** STRATA-ISSUES.md (sql arms): "the solver itself reported this as its own bug". Not reproduced 2026-11-28 with `type Expr = | Lit(Int where it >= 0) | Add { l: Expr, r: Expr, n: Int where it > 0 }` (proven); the sql arms' own type is still to try.
   Where: smt sorts / datatype declarations. Source: review prover; ledger V8, V9. Confidence: sure.
-  Found again 2026-11-28 (prover-followups): a recursive type holding a `Set` or `Dict` keyed by itself (`type Value = | Num(Int) | Group(Set[Value])`) declares a datatype with a field `(Array |T:Value| Bool)`, which z3 refuses ("datatype is not co-variant"). It is answered unknown with that reason. In compiler/ it is 34 queries (finding, smt, binary: `main.header_command`, `main.call_command`, `finding.view_location`, `binary.encode_module_kept`). Giving such a field an opaque sort alone moves the error to a sort mix where the field is read as a set; the field needs a sort that names it (an uninterpreted sort with its own membership function), used wherever its values are read.
-- [ ] **`memory.lock_one` (examples/tasks) is no longer proven: its `assert model.locked(…) by …` makes the solver give up (61.6 G instructions against 26.7 G).** Proven by v0.5.0 (5f039e07) and by a build of 1799da47 (#617); not by v0.5.1 (f951fd6a), so it came with #559 (the format trio: stable ids, stored core, operators as trait calls). A smaller function with the same assert (`lock_probe`) shows it: 15.1 G and proven at 1799da47, 43.6 G and given up now. In the query, the `Entry { ..e, status: Running { by, until }, attempts: a.attempt }` built inside `locked` is merged with a fresh `Entry` (valid ? built : fresh); its `task` is now a record value (`VRec model.Task`) where it was a datatype term, so `merge` takes the fresh `Task` apart into its fields and the merged task is compared field by field (named strings) instead of as one `ite` of terms with `valid2`. Making the record one term in `merge` (`pure_term`) didn't help (64.9 G). Left: find where the `Task` became a record value (the update's lowering, `sugar.update_of`, or a field read after the operator change).
-  Where: smt.merge, smt.ctor, smt.check_type of a constructed refined record; examples/tasks/memory.lock_one. Source: prover-followups. Confidence: sure (bisected).
+- [ ] **A literal in an arm that can't be taken fails a `where it` result refinement at compile time.** `fn h(v: Int) -> Bool where it { match Some(v) { Some(s) => s == v, None => false } }` is rejected: "refinement violated at compile time in the value `h` returns: false does not satisfy `Bool where it`". The `None => false` arm is never taken.
+  Where: check (compile-time refinement of a function's result). Source: smt-datatypes. Confidence: sure (reproduced).
+- [ ] **smt finds core.real by function name.** `real_record` takes a function for one of core.real's when its last name part starts with `real_` or it holds `Real.`, so a program's own `real_…` function reads `Real` as a record (REBUILD rule 12).
+  Where: smt.real_record, smt.builtin_key. Source: smt-datatypes. Confidence: sure (by reading).
+- [ ] **`core.rt.hash_slot` divides by a table size it doesn't require to be positive.** `hash_slot(c, 0)` divides by zero; its callers (`large_find`, `large_put`, `large_grow`) read the size from memory (`load_i64`), so a `requires m > 0` would be a check in the allocator that no proof can remove.
+  Where: core.rt.hash_slot. Source: smt-datatypes (refuted obligations of #631). Confidence: sure.
+- [ ] **`Int`'s `Div` and `Rem` impls divide by zero.** `Int.div(0, 0)` and `Int.rem(0, 0)` fault; the traits have no precondition to say the divisor isn't zero, and a trait-wide `requires` would be wrong for `Float`.
+  Where: core.ops (impl Div for Int, impl Rem for Int). Source: smt-datatypes (refuted obligations of #631). Confidence: sure.
+- [ ] **A selector of several core names finds only the first.** `strata --file core verify 'core.gen.shift_out,core.float.two_to'` says "`core.float.two_to` names no definition and no module"; each name alone is found.
+  Where: the verify selector (main). Source: smt-datatypes. Confidence: sure (reproduced).
 - [ ] **`verify` loses the value under `x!` for capability or trait calls in std.** When `x` is a call on a capability or a trait inside std, the facts about `x!` are lost.
   Where: verify. Source: ledger V3 (#574). Confidence: likely.
 - [ ] **`verify` of a nine-arm type match over `std.agent.Chunk` goes past 8 GB.** Memory explodes in seconds.
@@ -85,7 +96,7 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: termination.cannot_fail (`_ => true`), smt.cannot_fail (`_ => SeeThrough`). Source: review prover. Confidence: possible.
 - [ ] **The lemma gate only fires for `Unknown`.** `Assumed(names)` (a callee marked `terminates`) and `None` (not analysed) pass. An induction then rests on a `terminates` mark, and the verdict says only "proven".
   Where: main.verify_program (lemma gate). Source: review prover. Confidence: sure.
-- [ ] **Loops stepping an `I64` counter are reported "may not terminate".** Termination doesn't handle sized-int counters.
+- [ ] **Loops stepping an `I64` counter are reported "may not terminate" unless the counter's lower bound is shown.** The bound `inner - j` of an `I64` counter wraps when `j` may be negative, so it is shown to go down only with `j >= 0` in the condition or an invariant (`std.array.gather` needed `invariant j >= 0`). Nothing derives that bound from the counter starting at 0 and only going up.
   Where: termination. Source: ledger V6. Confidence: likely.
 - [ ] **A function returning `Set[TaskId]` isn't seen through.** `list_set` doesn't restate the elements' refinements.
   Where: smt. Source: ledger V11. Confidence: likely.
@@ -95,6 +106,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: verify. Source: ledger V14 (#529). Confidence: likely.
 - [ ] **`verify` reports an insert naming a missing row as "not proven" instead of refuted.** `sqlite.memory()` doesn't carry its empty model through `create`; a `delete` of a referenced row is refused only at run time.
   Where: std.sqlite models. Source: ledger V27. Confidence: likely.
+- [ ] **Refinements nested in a parameter's type make no obligation for the checks inside them.** A function's own contract (its `requires`, `ensures`, `decreases`, its loops' `decreases`, the refinements of its parameters' and result's types, its quantifiers over a list) makes each partial operation in it an obligation. A refinement nested inside a parameter's type does not: the element type of a list (`List[Head]` with `type Head = List[Int] where it[0] > 0`), a record's field or a variant's payload, and a `let` annotation. The checks inside those refinements are neither proven nor reported.
+  Where: smt.own_refined (top-level `Refined` and named types only), smt.check_type_at (refinements evaluated through `pred`, no obligations). Source: contract-obligations PR. Confidence: sure.
+- [ ] **Function values in contracts other than `all`/`any` leave their checks unknown.** In a function's own contract, `all` and `any` make the checks of their function value obligations for any element (`every`). `map`, `filter`, `count`, `sum`, `fold`, comprehensions and a quantifier nested in another make none: they report one unknown obligation, "the checks inside `…`".
+  Where: smt.start_goal (`Vc.own_lost`), smt.every (only outside other quantifiers). Source: contract-obligations PR. Confidence: sure.
 
 ## Type checker
 
@@ -160,18 +175,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker / codegen. Source: ledger C16 (#563, #565 partial). Confidence: likely.
 - [ ] **Names of builtins break models and methods.** A trait model named `keys` is never read through the model; a user `fn insert` breaks `mut self.all.insert(..)` in an impl; `Set[KeyValue] {}` (a set of a union) doesn't type-check.
   Where: checker. Source: ledger C19. Confidence: likely.
-- [ ] **A `comptime` parameter is `TAny`.** `fn_inferred` gives it `TAny` ("worked on while compiling: not modelled"), so a union asked for of it passes unchecked. Three comparisons in std: `std.orm.key_value` (twice) and `impl std.sqlite.Sql for Option[T]`, the last of the 18 that #628 let through as unknown.
+- [ ] **A `comptime` parameter is `TAny`.** `fn_inferred` gives it `TAny` ("worked on while compiling: not modelled"), so a union asked for of it passes unchecked. Three comparisons in std: `std.orm.key_value` (twice) and `impl std.sqlite.Sql for Option[T]`, the last of the 18 that #628 let through as unknown. Typing it needs dependent parameters: `comptime t: Type` typed as its declared type, `x: t` as an opaque type named by `t`, `match comptime t { Int => … }` arms substituting the arm's type for `t` in the environment (`Option[y]` binding `y` as a type parameter), and a call instantiating `t` in the later parameters' types with the type its argument names (`key_value(y, v)`).
   Where: compiler.check.fn_inferred (`p.compile_time`). Source: checker-narrowing. Confidence: sure.
-- [ ] **Messages are dropped for types `shown` can't print.** About 28 sites do `match shown(t) { Some(x) => error(…), None => () }` (a wrong `!`/`?`, `except` on a non-`Result`, a variant pattern against another sum, a field of a primitive), so a value whose type holds a function gets no error there. They should report with `printed`.
-  Where: compiler.check wrong_try, not_result, bind_typed (`wrong`), infer_untagged (field of a primitive), and the other `match shown(` sites. Source: checker-narrowing. Confidence: sure.
-- [ ] **`x is V` narrows variables only, not fields.** `match t.status { Closed => t.status.why }` narrows the field (`place_key`), but `if t.status is Closed { t.status.why }` doesn't (`variable_is` takes `ast.Var` only), so the read reports "`Open` has no field `why`". No program in compiler/, std/, core/ or tests/cases does this today.
-  Where: compiler.check.variable_is, is_narrowed. Source: checker-narrowing. Confidence: sure.
-- [ ] **A union member with type variables is matched by trying each member in turn.** `open_member` binds the first member that fits (`List[_] | Option[_]` given `List[String]`), with no check that only one could. Two members that both fit an unsolved value (`List[Int] | List[String]` given `[]`) pick the first.
-  Where: compiler.check.open_member, members_fit. Source: checker-narrowing. Confidence: sure.
-- [ ] **A call's bound is not checked when the argument's type is `TAny`.** `infer_call` checks a bound for every type worked out and pushes an obligation for a type variable, but skips `TAny` (from the `TAny` producers in this section), where it should report "could not work out".
-  Where: compiler.check.infer_call (the `bounds` loop, `if known(bt)`). Source: checker-followups. Confidence: sure.
-- [ ] **`x -> x(x)` reports two errors for one cause.** After the occurs error, `expect` reports the failed unification again as "call to `x`, argument 1: expected `_`, found `(_) -> _`".
-  Where: compiler.check.unify (occurs), expect. Source: checker-followups. Confidence: sure.
+- [ ] **A coverage message names a list of functions `_`.** `match xs { Some(_) => 1, None => 0 }` on a `List[(Int) -> Int]` reports "non-exhaustive match on `_`: `[]` is not covered" (and both arms unreachable) besides the pattern errors.
+  Where: compiler.check.cover_of / check_coverage (the scrutinee's type text). Source: checker-silent. Confidence: sure.
 - [ ] **Unknown types and wrong type-argument counts lower to `TAny`.** `Some(ps) => if len(ps) == len(args) {…} else { TAny }`, `None => TAny`, and `ast.RowType(_) => TAny`. A misspelled or imported-but-unmodelled type, or `Box[Int, Int]`, makes every value of it unchecked. A generic alias with the wrong number of arguments too.
   Where: compiler.check.lower. Source: review checker. Confidence: sure.
 - [ ] **The "can't be passed as a value" rule only sees generic functions among `decls`.** `on_type` is built from `decls` only. A generic function in `lib` that calls `T.empty()` and is passed as a value is never reported. That includes a definition of the same package that the check cache (main.loaded_check) put in `lib` because it was already checked.
@@ -202,6 +209,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker. Source: ledger C21 (#416). Confidence: likely.
 - [ ] **`build --no-verify` prints no warnings.** Warnings are lost when verification is skipped.
   Where: build. Source: ledger C24 (#459). Confidence: possible.
+- [ ] **A decimal literal beside `abs` of a `Float` is typed as a `Real`.** In `a := abs(k); a > 1.0` (and `max(abs(k), 1.0)`, `max(1.0, abs(k))`) with `k: Float`, the checker writes `1.0` as a `Real` literal (`Real { num, den }`), so smt reads it as an unknown `Real` beside a `Float` ("a value of an unexpected shape") and `max(abs(k), 1.0) >= 1.0` is not proven. `max(k, 1.0)` and `max(abs(k), float(1))` are. std.array's `Array.scale` writes `float(1)` for that reason.
+  Where: the checker's typing of a decimal literal next to an overloaded builtin's result (`abs`: Int, Float, Real); smt.eval_expr (`CtorExpr { name: "Real", .. }`), smt.as_real. Source: contract-obligations PR. Confidence: likely.
 
 ## Front end
 
@@ -229,8 +238,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: text.expr_text, text.wrap, text.prec → text.shorthand. Source: review front-end. Confidence: likely.
 - [ ] **Two sum types in one module with the same variant name collide silently.** `cq := qualified(m, v.name); mut table.insert(cq, item)`. No error is given; the last one wins in the table, in `children`, and in `store.graph_from`'s `ctor_types`.
   Where: resolve.names_of (compiler.resolve.st:1504–1509); derive.defs_of `ix.ctors` likewise. Source: review front-end. Confidence: likely.
-- [ ] **`from m use f` skips the foreign-function, host-builtin and privacy checks.** `check_name` (foreign, private, `host_` and mock rules) runs only when the name is not in `r.visible`. A name imported by `from m use f` is in `visible`, so only `test_only` runs.
-  Where: resolve.name (compiler.resolve.st:505–511), resolve.errors_from (2026–2050). Source: review front-end. Confidence: likely.
 - [ ] **Names made by desugaring are not hygienic.** IDEAS.md:2006: "a local or a function of that name takes them over… a top-level `fn at(…)` is called by `xs[i]` instead of the built-in." Desugar still emits plain `Var("at")` and the other names.
   Where: desugar.unsugared_node and sliced (`call("at"…)`, `range`, `slice`, `len`, `set_at`, `dict`, `set`, `map`, `filter`, `fold`). Source: review front-end; ledger F3. Confidence: sure.
 - [ ] **Foreign wrappers are recognised by the shape of their body, so a user function can be taken as assumed.** `Call { callee: Var(n), .. } => … if n == "std." + w + ".decoded" || n == "std." + w + ".finished"`. The doc says "`verify` takes it as assumed and never runs it".
@@ -243,8 +250,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: eval.method_for (compiler.eval.st:1672), eval.method_typed. Source: review front-end. Confidence: likely.
 - [ ] **Two definitions with the same header name share an entry.** Header names come from `decl_name`: `impl Foo`, `impl Show for Pt`, `test "x"`.
   Where: binary.encode_module_kept (`match get(kept, name)`), desugar.decl_name. Source: review front-end. Confidence: likely.
-- [ ] **In a module with `use binary`, `take(...)` resolves to the private `binary.take`.** A plain call of a builtin picks a private function of the same name from an imported module, and a private `fn slice` in one module captures `slice` calls in others.
-  Where: resolver. Source: ledger F4. Confidence: likely.
 - [ ] **Script `edit` accepts a `comptime` that `check` refuses.** `strata --file F edit` of a script stores a `comptime` that `check` then refuses.
   Where: edit. Source: ledger F8. Confidence: likely.
 - [ ] **Columns are in characters, except after a string, where they move by bytes; multi-line strings don't reset the column.** `lx.col += 2 + byte_len(s)`. The module doc says columns count characters. Inside a string `\n` bumps `lx.line` but never resets `lx.col`, and an escape counts as one character instead of two.
@@ -317,8 +322,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: codegen (run-time checks). Source: ledger G5 (#570). Confidence: likely.
 - [ ] **A union holding a tuple returned by a call prints its first element.** `let u: Int | (Int, Int) = dm(8, 3)` prints `2`.
   Where: codegen (unions). Source: ledger G9 (#542). Confidence: likely.
-- [ ] **Escape analysis looks callees up by name: a local closure takes a top-level function's summary.** Escape analysis and the `exit`/`entry` summaries look callees up by short name, so a local closure takes the summary of a top-level function with the same name.
-  Where: codegen.escapes (st:4778, `ast.Call { callee: ast.Var(name) }` → `keeps_arg(kept, name, i)`), stack_let (10832); root-module keys are unqualified (`qualified("", n) == n`, st:1116); unique.candidates / call_flow (st:780-812) / borrows. Source: review codegen. Confidence: likely.
 - [ ] **A `for i in a..b` counter adds 1 to the raw word, also when `a` is a big integer.** The counting path takes `lo` and `hi` as `Int` words, with no test that they are small. A big `Int` is a handle outside [-2^62, 2^62) (runtime.c `big_at`), so `add 1` turns it into another handle.
   Where: codegen.for_loop (st:15315, 15405 `{next} = add i64 {i}, 1`). Source: review codegen. Confidence: likely.
 - [ ] **A Float's hash is its bits, but `==` is `fcmp oeq`.** `0.0 == -0.0` holds, but their hashes differ. So a `Set[Float]` can hold both, and a `Dict` lookup of `-0.0` can miss the key `0.0`.
@@ -520,6 +523,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Tools
 
+- [ ] **A new module with many loops spends 10-20 s of its edit on termination's loop-bound searches.** `verify_inputs` now builds verify's inputs from what the selection reaches (`reached_decls`), so an edit of one function with a loop in compiler/ spends about 1 s there, not 3-8 s. For new code nothing is cached, and `analyze_with` searches a bound for each loop the changed functions reach: a copy of lab-kernel's `kernel_tactics` (84 definitions, 22 loop bounds, 36 measures) spends 12-21 s in `verify: termination`, out of 34-45 s. Analysing only what the targets call, not the targets themselves, didn't help there: the loop functions call each other.
+  Where: main.verify_program (`analyze_with`), termination's loop bounds. Source: verify-inputs PR. Confidence: sure (`STRATA_TIMINGS=1`: `verify: termination: loop bounds`).
 - [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
   Where: main.abort_command, main.restore_files. Source: review tools. Confidence: sure.
 - [ ] **`strata update` is a test-internal command: it takes a DIR, not names, and always exits 0.** `low_level` makes `update` always the internal step (`… | "update" | … => true`). `update_deps` reads `dir := get(args, 0) ?? "."` and `names := drop(args, 1)`. Errors only `print("error: " + e)`, and `code` stays 0.
@@ -528,7 +533,7 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.upgrade_command. Source: review tools. Confidence: likely.
 - [ ] **(data loss) The log is written after the files, and a failed append still leaves the change on disk.** `apply_edit` runs `write_modules`, then `disk.append(root + "/" + log_file(), …)` and returns `Err` on failure, which gives exit 1 with the files changed and nothing logged.
   Where: main.apply_edit, main.apply_change, main.done_command. Source: review tools. Confidence: sure.
-- [ ] **`--file PKG/mod.strata edit` writes a package module unchecked.** `alone := !of_core && in_package is None && (…)`, so a module file of a package gets `errors = []` and is written as given. Recorded in IDEAS.md "A failed edit writes nothing…", "Not yet: … a single module file of a package (`--file p/util.strata edit`) is still written unchecked".
+- [ ] **`--file PKG/mod.strata edit` writes a package module unchecked.** `alone := !of_core && in_package is None && (…)`, so a module file of a package gets `errors = []` and is written as given. std's module files are edited as the std package (`main.std_module_file`, case `cli-std_module_file_edit_is_checked`); other packages' are not. Recorded in IDEAS.md "A failed edit writes nothing…", "Not yet: … a single module file of a package (`--file p/util.strata edit`) is still written unchecked".
   Where: main.edit_file. Source: review tools. Confidence: sure.
 - [ ] **(data loss) `fix --file` writes in place, not atomically, and removes "unused" definitions without any check.** `match mut disk.write_bytes(f, bytes)` writes the script in place (not `codebase.write_file`), after `unused.removable` and `lint.fixes`. Nothing is checked. The package branch goes through `apply_change` (write, then check).
   Where: main.fix_command (the `--file` branch). Source: review tools. Confidence: sure.
@@ -625,12 +630,13 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Test cases failing on main
 
+- [ ] **`verify --termination` of a whole compiler/ goes past 300 s.** Per module (`verify 'M.*' --termination`) `main`, `markdown` and `tour` go past 300 s each, on 8a5c58aa too.
+  Where: termination (per-run analysis of the whole package). Source: termination-modelling PR. Confidence: sure.
+
 - [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
   Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
 - [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
   Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
-- [ ] **`cli-tasks_port_checks_tests_and_verifies` fails.** `memory.lock_one` isn't proven (the prover follow-up work).
-  Where: examples/tasks. Source: main-cases PR. Confidence: sure.
 - [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.
   Where: tests/cases, the SMT terms work (#616). Source: main-cases PR. Confidence: sure.
 - [ ] **`cli-smt_proves_sums_over_lists` fails.** `bounded` (`ensures it <= 10 * len(xs)`, a sum of elements under 10) is not proven: "a possible counterexample it could not express". On ecf3c860 too.
@@ -708,7 +714,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [Derives on functions] `verify` of examples/wasm reports `std.json.decode_as.for.Summary.10` refuted (decoder crashes on an integer too large for a Float); a release can't target wasm.
 - [Derived traits, comptime] Reading the i-th element when `i` is known only at compile time; "more than one `List` field" not reported; `setting(..)` reads no strata.toml.
 - [The strata command in Strata] The checker misses some errors once an import fails; verifying `codegen.read_slot` crashes (raw reads at arbitrary addresses).
-- [Long-term goal: self-hosting] (old notes, may be stale) A list of `Option[Int]` and `Option[Float]` makes LLVM refuse the IR; a private function captures calls to a built-in of the same name in other modules; `verify` stack-overflowed on nested closures over lists; `strata --file F edit` accepts a `comptime` `check` refuses; regex captures and `find` not supported by the VM.
+- [Long-term goal: self-hosting] (old notes, may be stale) A list of `Option[Int]` and `Option[Float]` makes LLVM refuse the IR; `verify` stack-overflowed on nested closures over lists; `strata --file F edit` accepts a `comptime` `check` refuses; regex captures and `find` not supported by the VM.
 - [Concurrency] O(threads) look per blocking wait; `compiler/check` doesn't look inside `select`/`race`; `close` on every path not checked; `Task` not in written types.
 - [Error handling, strings and mutation] In-place updates not for paths deeper than one field, sums with several variants, or a `mut` field.
 - [Mutation at the call site] (issue) A `mut` argument is decided to be passed by reference without overlap, but each goes through its own slot, copied in and out.
@@ -725,7 +731,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [std.collections] A lambda in a record field with no type wanted at all gets `()` parameters and LLVM rejects the IR.
 - [Floats in the prover] The section's "Left, in order" list is not carried here: check it in git.
 - [Known gaps] `float_from_bits` gives infinities; `Files.read`/`Console.read_line` don't check UTF-8; `d[k]` not accepted; a `_` type left in codegen makes `==` and hashing skip that part.
-- [Known gaps] Lab-fleet checker bugs: `"\r"` is a backslash and `r`; a trait and a type with one name pass check but codegen fails; mixed-union narrowing on verify's path; unknown types in a definition stored before its import aren't reported; non-exhaustive errors on the wrong function after a rejected edit; errors labelled by short name; `use binary` makes `take(...)` resolve to private `binary.take`; a `List` and a `String` overload let `xs["a"]` pass (fixed on std-math only).
+- [Known gaps] Lab-fleet checker bugs: `"\r"` is a backslash and `r`; a trait and a type with one name pass check but codegen fails; mixed-union narrowing on verify's path; unknown types in a definition stored before its import aren't reported; non-exhaustive errors on the wrong function after a rejected edit; errors labelled by short name; a `List` and a `String` overload let `xs["a"]` pass (fixed on std-math only).
 - [Known gaps] Lab-fleet codegen bugs: `Ok(())` pattern doesn't compile; `Shop.line(s, x)` doesn't compile; a `U64` match with literal `0` crashed; `parallel.map` with allocating functions crashed (cause found, fixed); producer/consumer programs grow without bound (per-thread free lists); every std-linked program counts as supervising; integer literals >= 2^62 re-parsed each time; the JIT never frees modules.
 - [Known gaps] Messages: an unknown error for an unused/typo `from std.io use Console`; `type Answer = Some(Int) | None` says "unknown type None".
 
