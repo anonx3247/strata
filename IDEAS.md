@@ -34,6 +34,28 @@ Proposed (user, 2026-11-27; to settle in the spec, section 6). The type notation
   Where `None` would carry a meaning that must not be forgotten ("never expires", "no timeout", "leave unchanged" in a patch), the type should be its own sum with no default (`Expiry = Never | At(Time)`, `Change[T] = Keep | Set(T)`), so every writer has to choose.
 - Aliases name groups (`type ConfigError = NotFound | Denied | BadToml`); a tool can show or write the union a body actually returns.
 
+### Sugar never depends on types (user, 2026-11-28, after lab trial 3, #648)
+The pipeline is `parse` (text to a surface tree: the core nodes plus markers for what is left to infer: a type, a constructor), `desugar` (surface to surface, by syntax only, never by types), `elaborate` (type check, fill the markers, record call targets; gives the stored, fully typed core) and `print` (core to text, with a reader's settings). Rules:
+1. Parsing only turns sugar into core, never the reverse: a hand-written `match` is stored as a `match` even when it has a handler's shape; only `except` makes an `except`.
+2. Choosing sugar is the printer's, on the typed core, where every constructor is explicit: it shows a sugar or hides a constructor only where reading the text back gives the same node.
+3. A left-out constructor is inference, like a left-out type: a marker the elaborator fills, not sugar.
+
+The laws, with `t` a stored core tree, `s` any text and `view` a reader's settings:
+```
+law stored_round_trip(t: Core, view: Settings)
+  holds elaborate(desugar(parse(print(t, view)))) == t
+
+law printing_is_stable(t: Core, view: Settings)
+  holds print(elaborate(desugar(parse(print(t, view)))), view) == print(t, view)   // follows from stored_round_trip
+
+law sugar_choice(n: Node, context: Context, view: Settings)
+  requires shown: chosen_sugar(n, context, view) == Some(text)
+  holds elaborate_in(context, desugar(parse_node(text))) == n
+```
+`stored_round_trip` holds for every tree and every setting; `sugar_choice` is the per-node form the printer is checked against, and the whole law follows from it by induction over the tree. The other direction, text back to the same text (`print(elaborate(desugar(parse(s))), view) == s`), does not hold and isn't wanted: layout, a written `Some` the types decide, a hand-written handler-shaped `match`, or a written type that inference gives are all printed in the one canonical form. What holds instead is `printing_is_stable`: text the printer made comes back unchanged. Also from `stored_round_trip`: two different trees never print the same under one setting.
+
+From #648 for the spec: constructors are decided at every path that stores a tree (`edit`, `merge-file`, upgrades); sites include list and dict elements and lambda bodies; traces cover sums as well as records; a pattern binding one member of an error union (`e: NotFound =>`) is needed; a hidden `Ok(())` prints as a plain `return`. Errors that must stay apart (a request never sent, a response failed) are different types; a union merges only values of one type.
+
 ### `derive Error` from a type's text
 `derive Error` makes `message` the value's ordinary text (its `Debug`/`Display` form: `NotFound { path: "app.toml" }`), so an error type needs no hand-written method unless it wants a better message (user, 2026-11-27).
 ### `[]T` for lists
