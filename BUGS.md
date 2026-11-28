@@ -113,6 +113,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Type checker
 
+- [ ] **In std.array, a decimal literal beside `max` or `min` called as a function is a `Real`.** `max(k, 1.0)` and `min(k, 1.0)` with `k: Float`, in a function of std.array, give the literal the type `Real`, so smt reads it as an unknown value ("a value of an unexpected shape"). The same function in std.time, or in a `--file` program with types that have methods `max` and `min`, types it as a `Float`; `k.max(1.0)` is a `Float` in std.array too. std.array's three array types have methods `max` and `min`, and `Array.scale` keeps `float(1)` for this reason.
+  Where: not found; to look at: check.infer_call (the built-in branch), check.dec_unmarked (a literal with no recorded type becomes a `Real`). Source: nested-refinements PR. Confidence: sure of the behaviour, not of the place.
 - [ ] **Trait bounds are checked only for a few traits.** `if t.derivable is None && !t.capability && len(t.params) == 0 { checked.insert }`, and blanket-implemented traits are then removed. `infer_call` checks bounds only `if contains(i.methods.checked, b.1)`.
   Where: compiler.check.methods_of (`checked`, ~1989), infer_call (5732), own_trait_of. Source: review checker. Confidence: sure.
 - [ ] **The type tables are rebuilt by nine entry points, and they disagree.** `type_errors_with` builds `types_of(code + all)` and `with_code(Methods { ..methods_of(all), local, own_traits, noallocs }, methods_of(code))`.

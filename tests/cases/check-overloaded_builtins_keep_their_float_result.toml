@@ -1,6 +1,8 @@
 # check: a built-in with a `Real` overload (`abs`, `max`) called on a `Float`
 # is a `Float`, so a decimal literal beside it is one too; before, the
-# `Real` overload's parameter read as any type and the call's type was lost
+# `Real` overload's parameter read as any type and the call's type was lost.
+# A method of the program named like the built-in (`A.max`) doesn't hide it
+# on a `Float` (`k.max(1.0)`)
 [[step]]
 save = "t.strata"
 text = '''
@@ -23,3 +25,19 @@ fn below(k: Float) -> Bool ensures it == (abs(k) < 2.5) = abs(k) < 2.5
 [[step]]
 strata = ["--file", "fl.strata", "verify", "--no-cache", "--no-race"]
 has = ["✓ at_least_one", "✓ below"]
+
+[[step]]
+save = "m.strata"
+text = '''
+type A = { x: Int }
+
+impl A {
+  fn max(self) -> Int = self.x
+}
+
+fn at_least_one(k: Float) -> Float ensures it >= 1.0 = k.abs().max(1.0)
+'''
+
+[[step]]
+strata = ["--file", "m.strata", "verify", "--no-cache", "--no-race"]
+has = ["✓ at_least_one"]
