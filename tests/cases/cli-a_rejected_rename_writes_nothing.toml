@@ -1,0 +1,39 @@
+# `rename` (and `move`, `fix`) check the change before writing anything: a
+# rename the package wouldn't check with leaves every module file as it was,
+# never written and put back (the file keeps its inode).
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["new", "shop"]
+text = "pub fn get(n: Int) -> Int {\n  n\n}\n"
+
+[[step]]
+strata = ["edit"]
+text = "use shop\n\npub fn total() -> Int {\n  shop.get(1)\n}\n"
+
+# a broken caller, written as given
+[[step]]
+strata = ["--file", "main.strata", "edit", "--as-given"]
+text = "pub fn total() -> Int {\n  shop.get(1) + true\n}\n"
+fails = true
+has = ["written as given"]
+
+[[step]]
+run = ["sh", "-c", "stat -f %i shop.strata main.strata > inodes.before"]
+
+[[step]]
+strata = ["rename", "shop.get", "fetch"]
+fails = true
+has = ["rejected: the codebase would not check; nothing was changed"]
+
+[[step]]
+run = ["sh", "-c", "stat -f %i shop.strata main.strata | cmp - inodes.before"]
+
+[[step]]
+strata = ["view", "shop"]
+has = ["pub fn get(n: Int)"]
