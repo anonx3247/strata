@@ -22,10 +22,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: termination.structural, termination.struct_expr. Source: review prover. Confidence: likely.
 - [ ] **`for` over an iterator: unknown sources and exhausted fuel count as finite.** Any iterator expression other than `map`/`filter`/`drop` over something known is judged finite. That includes a call returning an `Iterator`, `chain`, a field of an unknown record, or 8 levels of lets.
   Where: termination.finite_source (`if fuel <= 0 { return true }`, `MethodCall … else { true }`, `_ => true`), termination.loop_start ("a value the encoder doesn't model (`""`) is taken to be a list"). Source: review prover. Confidence: likely.
-- [ ] **Proven checks are removed by check name, not by site.** `proven(g, "index in range", "exact")` is true when *some* fact of the function is `proven …index in range` and none is `open`.
-  Where: codegen.proven (st:5409), index_check (12091), the Int and Real division paths (14098, 14314), has_field_check (18478), check_type/check_key (5233, 5440), assertion (15310). Source: review codegen. Confidence: likely.
-- [ ] **Entry checks are dropped when callers proved a check with a matching name.** An argument or `requires` check on entry is dropped when every caller in `call_refs` has a `proven` fact that `same_check`es the key (`e == k || starts_with(e, k + ":") || starts_with(e, k + " (")`) and no `open` one.
-  Where: main.proofs_text `at_calls` (main st:7905), consumed by codegen.proven_entry (st:21009). Source: review codegen. Confidence: likely.
 - [ ] **A long-running `verify_file` once reported a refuted edit as proven.** Repeated calls in one process returned "proven" for an edit with a counterexample. Cause not found; `run --live` uses a process per edit to avoid it.
   Where: verify_file. Source: ledger V2. Confidence: possible.
 - [ ] **Fuzz harness crashes on a function taking `mut Book` and returning a value.** SIGSEGV in the harness.
