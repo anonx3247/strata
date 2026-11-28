@@ -58,11 +58,18 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.replay (strata_verify_replay_0). Source: review prover. Confidence: sure.
 - [ ] **`build` and `verify` disagree on what is proven.** STRATA-ISSUES.md (ob-verify): "`strata build` lists 35 clauses as 'not proven' that `strata verify` reports as proven".
   Where: verify paths (see "Three different ways to turn solver output into verdicts"). Source: review prover; ledger V22. Confidence: sure.
-- [ ] **Refined fields of recursive types make the solver reject checks; `Set[Value]` inside a recursive type can't be encoded.** STRATA-ISSUES.md (sql arms): "the solver itself reported this as its own bug" and "The SMT encoding rejects a `Set[Value]` inside the recursive expression type".
+- [ ] **Refined fields of recursive types make the solver reject checks.** STRATA-ISSUES.md (sql arms): "the solver itself reported this as its own bug". Not reproduced 2026-11-28 with `type Expr = | Lit(Int where it >= 0) | Add { l: Expr, r: Expr, n: Int where it > 0 }` (proven); the sql arms' own type is still to try.
   Where: smt sorts / datatype declarations. Source: review prover; ledger V8, V9. Confidence: sure.
-  Found again 2026-11-28 (prover-followups): a recursive type holding a `Set` or `Dict` keyed by itself (`type Value = | Num(Int) | Group(Set[Value])`) declares a datatype with a field `(Array |T:Value| Bool)`, which z3 refuses ("datatype is not co-variant"). It is answered unknown with that reason. In compiler/ it is 34 queries (finding, smt, binary: `main.header_command`, `main.call_command`, `finding.view_location`, `binary.encode_module_kept`). Giving such a field an opaque sort alone moves the error to a sort mix where the field is read as a set; the field needs a sort that names it (an uninterpreted sort with its own membership function), used wherever its values are read.
-- [ ] **A program's own type named `Task` is read as core's `Task[T]`.** In a single-file program, `type Task = { id: Id, kind: Kind, payload: Int }` held in another record gives "field `id` of a value of an unexpected shape" at every construction; renamed `Job`, the same code is proven. smt matches `"Task"` by bare name (`shape`, `unfold`, `from_term`: `"Task" => … get(args, 0) …`).
-  Where: smt.shape, smt.unfold, smt.from_term. Source: lock-one. Confidence: sure (renaming fixes it).
+- [ ] **A literal in an arm that can't be taken fails a `where it` result refinement at compile time.** `fn h(v: Int) -> Bool where it { match Some(v) { Some(s) => s == v, None => false } }` is rejected: "refinement violated at compile time in the value `h` returns: false does not satisfy `Bool where it`". The `None => false` arm is never taken.
+  Where: check (compile-time refinement of a function's result). Source: smt-datatypes. Confidence: sure (reproduced).
+- [ ] **smt finds core.real by function name.** `real_record` takes a function for one of core.real's when its last name part starts with `real_` or it holds `Real.`, so a program's own `real_…` function reads `Real` as a record (REBUILD rule 12).
+  Where: smt.real_record, smt.builtin_key. Source: smt-datatypes. Confidence: sure (by reading).
+- [ ] **`core.rt.hash_slot` divides by a table size it doesn't require to be positive.** `hash_slot(c, 0)` divides by zero; its callers (`large_find`, `large_put`, `large_grow`) read the size from memory (`load_i64`), so a `requires m > 0` would be a check in the allocator that no proof can remove.
+  Where: core.rt.hash_slot. Source: smt-datatypes (refuted obligations of #631). Confidence: sure.
+- [ ] **`Int`'s `Div` and `Rem` impls divide by zero.** `Int.div(0, 0)` and `Int.rem(0, 0)` fault; the traits have no precondition to say the divisor isn't zero, and a trait-wide `requires` would be wrong for `Float`.
+  Where: core.ops (impl Div for Int, impl Rem for Int). Source: smt-datatypes (refuted obligations of #631). Confidence: sure.
+- [ ] **A selector of several core names finds only the first.** `strata --file core verify 'core.gen.shift_out,core.float.two_to'` says "`core.float.two_to` names no definition and no module"; each name alone is found.
+  Where: the verify selector (main). Source: smt-datatypes. Confidence: sure (reproduced).
 - [ ] **`verify` loses the value under `x!` for capability or trait calls in std.** When `x` is a call on a capability or a trait inside std, the facts about `x!` are lost.
   Where: verify. Source: ledger V3 (#574). Confidence: likely.
 - [ ] **`verify` of a nine-arm type match over `std.agent.Chunk` goes past 8 GB.** Memory explodes in seconds.
@@ -511,6 +518,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Tools
 
+- [ ] **An edit of a function with a loop spends 8-15 s on its invariant search, even with nothing to search.** `search_invariants` runs `verify_program` with the changed functions as the selection, and `verify_inputs` re-reads and elaborates the whole package for it (`verified_decls`: desugar, `lambdas_typed`, `own_methods_resolved`, `elaborated`; about 8 s for compiler/). Termination is then analysed for what the targets reach (30 s for an 84-definition new module of lab-kernel's). The searches themselves are bounded (`edit_search_budget`).
+  Where: main.search_invariants, main.verify_inputs, main.verified_decls. Source: edit-speed PR. Confidence: sure (`STRATA_TIMINGS=1`: `verify: inputs`).
 - [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
   Where: main.abort_command, main.restore_files. Source: review tools. Confidence: sure.
 - [ ] **`strata update` is a test-internal command: it takes a DIR, not names, and always exits 0.** `low_level` makes `update` always the internal step (`… | "update" | … => true`). `update_deps` reads `dir := get(args, 0) ?? "."` and `names := drop(args, 1)`. Errors only `print("error: " + e)`, and `code` stays 0.
