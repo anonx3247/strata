@@ -13,7 +13,7 @@ circle
 square
 circle
 [Circle { r: 1.0 }, Square { side: 3.0 }, Circle { r: 0.5 }]
-false
+true
 a square, side 1.0
 
 --- exit 0

@@ -106,13 +106,19 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: verify. Source: ledger V14 (#529). Confidence: likely.
 - [ ] **`verify` reports an insert naming a missing row as "not proven" instead of refuted.** `sqlite.memory()` doesn't carry its empty model through `create`; a `delete` of a referenced row is refused only at run time.
   Where: std.sqlite models. Source: ledger V27. Confidence: likely.
-- [ ] **Refinements nested in a parameter's type make no obligation for the checks inside them.** A function's own contract (its `requires`, `ensures`, `decreases`, its loops' `decreases`, the refinements of its parameters' and result's types, its quantifiers over a list) makes each partial operation in it an obligation. A refinement nested inside a parameter's type does not: the element type of a list (`List[Head]` with `type Head = List[Int] where it[0] > 0`), a record's field or a variant's payload, and a `let` annotation. The checks inside those refinements are neither proven nor reported.
-  Where: smt.own_refined (top-level `Refined` and named types only), smt.check_type_at (refinements evaluated through `pred`, no obligations). Source: contract-obligations PR. Confidence: sure.
-- [ ] **Function values in contracts other than `all`/`any` leave their checks unknown.** In a function's own contract, `all` and `any` make the checks of their function value obligations for any element (`every`). `map`, `filter`, `count`, `sum`, `fold`, comprehensions and a quantifier nested in another make none: they report one unknown obligation, "the checks inside `…`".
-  Where: smt.start_goal (`Vc.own_lost`), smt.every (only outside other quantifiers). Source: contract-obligations PR. Confidence: sure.
+- [ ] **A refinement evaluated where a value is made makes no obligation for the checks inside it, unless its type is in a signature.** The checks inside a refinement nested in a parameter's, result's or `let` annotation's type are obligations (at any depth: elements, fields, payloads, union members, function types). A type met only where a value is built in a body (`Box { h: xs }` with `Box` in no signature) has its refinement checked there, and the checks inside it are neither proven nor reported.
+  Where: smt.own_parts (called from smt.function and smt.annotated), smt.check_type_at (refinements evaluated through `pred`). Source: nested-refinements PR. Confidence: sure.
+- [ ] **A contract's function value passed to `find` leaves its checks unknown.** In a function's own contract, the checks of a function value passed to `map`, `filter`, `count`, `fold` or a function of the program are obligations for any element or argument. `find` applies its function itself, at a nested level, so it reports one unknown obligation, "the checks inside `…`". `fold`'s accumulator is an unknown value, so checks on it are unknown.
+  Where: smt.builtin (`find`), smt.call_exprs (the `find` exception), smt.fn_arg_run (`fold`). Source: nested-refinements PR. Confidence: sure.
 
 ## Type checker
 
+- [ ] **A concrete value isn't taken as a trait value in `+` and `==`.** With `xs: List[Out]`, `xs + [Tally { n: 7 }]` gives "`+` operands: expected `List[Out]`, found `List[Tally]`"; with `one: Shape`, `one == Square { side: 1.0 }` gives "`==` operands: expected `Shape`, found `Square`". A `let` with the trait type takes both. Codegen builds the original forms, but `one == Square { side: 1.0 }` gave `false` (the golden recorded it), where `one == same` with `let same: Shape = Square { side: 1.0 }` gives `true`. `codegen-constructs` (trait_places) and `codegen-programs-4` (methods_and_traits) go through a `let` until this is fixed.
+  Where: compiler.check, binary operators' operand types (no wanted type from the other operand). Source: build-fails-on-errors PR. Confidence: sure.
+- [ ] **Integer patterns at or past 2^62 are called unreachable.** `check.int_max()` is `4611686018427387903` and `int_min()` its negation: the ranges `check_coverage` works with end there, so `match n { 4611686018427387904 => …, _ => … }` gives "unreachable match arm `4611686018427387904`: the arms above already cover it", though `Int` has no bound. `build-bigint` builds with `--ignore-check-errors` until this is fixed.
+  Where: compiler.check.int_max/int_min, ints_not, cover_of (`ast.IntPat(n) => CInts([(n, n)])`), check_coverage; codegen has its own pair. Source: build-fails-on-errors PR. Confidence: sure.
+- [ ] **In std.array, a decimal literal beside `max` or `min` called as a function is a `Real`.** `max(k, 1.0)` and `min(k, 1.0)` with `k: Float`, in a function of std.array, give the literal the type `Real`, so smt reads it as an unknown value ("a value of an unexpected shape"). The same function in std.time, or in a `--file` program with types that have methods `max` and `min`, types it as a `Float`; `k.max(1.0)` is a `Float` in std.array too. std.array's three array types have methods `max` and `min`, and `Array.scale` keeps `float(1)` for this reason.
+  Where: not found; to look at: check.infer_call (the built-in branch), check.dec_unmarked (a literal with no recorded type becomes a `Real`). Source: nested-refinements PR. Confidence: sure of the behaviour, not of the place.
 - [ ] **Trait bounds are checked only for a few traits.** `if t.derivable is None && !t.capability && len(t.params) == 0 { checked.insert }`, and blanket-implemented traits are then removed. `infer_call` checks bounds only `if contains(i.methods.checked, b.1)`.
   Where: compiler.check.methods_of (`checked`, ~1989), infer_call (5732), own_trait_of. Source: review checker. Confidence: sure.
 - [ ] **The type tables are rebuilt by nine entry points, and they disagree.** `type_errors_with` builds `types_of(code + all)` and `with_code(Methods { ..methods_of(all), local, own_traits, noallocs }, methods_of(code))`.
@@ -209,8 +215,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker. Source: ledger C21 (#416). Confidence: likely.
 - [ ] **`build --no-verify` prints no warnings.** Warnings are lost when verification is skipped.
   Where: build. Source: ledger C24 (#459). Confidence: possible.
-- [ ] **A decimal literal beside `abs` of a `Float` is typed as a `Real`.** In `a := abs(k); a > 1.0` (and `max(abs(k), 1.0)`, `max(1.0, abs(k))`) with `k: Float`, the checker writes `1.0` as a `Real` literal (`Real { num, den }`), so smt reads it as an unknown `Real` beside a `Float` ("a value of an unexpected shape") and `max(abs(k), 1.0) >= 1.0` is not proven. `max(k, 1.0)` and `max(abs(k), float(1))` are. std.array's `Array.scale` writes `float(1)` for that reason.
-  Where: the checker's typing of a decimal literal next to an overloaded builtin's result (`abs`: Int, Float, Real); smt.eval_expr (`CtorExpr { name: "Real", .. }`), smt.as_real. Source: contract-obligations PR. Confidence: likely.
+- [ ] **A union of type parameters given a union before they are fixed is refused.** `fn same[T, E](v: T | E, t: T, e: E)` called as `same(x, 0, "")` with `x: Int | String` is "a value of `Int` fits more than one member of `_ | _`": the arguments are checked in order, and when `v` is, `T` and `E` are still open. With `v` last it checks.
+  Where: check.members_fit / open_member (arguments unified in order in the call's inference). Source: generic-unions PR. Confidence: sure.
 
 ## Front end
 
@@ -635,6 +641,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
   Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
+- [ ] **`build-std_array` fails.** Its `verify` proves `chain` with 13 checks and `mean_of` with 6, where the case wants 6 and 3. On 61492e1d too.
+  Where: tests/cases (verify check counts). Source: build-fails-on-errors PR. Confidence: sure.
 - [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
   Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
 - [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.

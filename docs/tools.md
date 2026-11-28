@@ -141,7 +141,7 @@ copies: 2 copies, 14 kB, at 1 place (the most bytes first):
 
 ## Compiling to native code
 
-`strata build` compiles a program to an executable through LLVM, linked with a small runtime. Programs are compiled unoptimized (`-O0`), the fastest to build. `--release` compiles at `-O2`. `build` first verifies what changed since it was last verified, and leaves proven checks out of the program (`--all-checks` keeps them; see [verification](verification.md#what-is-proven-isnt-checked-again)).
+`strata build` compiles a program to an executable through LLVM, linked with a small runtime. Programs are compiled unoptimized (`-O0`), the fastest to build. `--release` compiles at `-O2`. `build` first verifies what changed since it was last verified, and leaves proven checks out of the program (`--all-checks` keeps them; see [verification](verification.md#what-is-proven-isnt-checked-again)). A program that doesn't check, as `strata check` checks it, isn't built: `build` (with `--no-verify` too), `run` and `test` print its errors and exit 1. `build --ignore-check-errors` prints them and builds it all the same.
 
 ```text
 $ strata build tests/data/build/numbers.strata -o numbers

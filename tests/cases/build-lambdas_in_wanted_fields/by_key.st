@@ -14,7 +14,7 @@ fn main() {
     Some(f) => print(f(5, 3)),
     None => print(0),
   }
-  s := by((x: String) -> len(x))
+  s := by((x: String) -> byte_len(x))
   match s.order {
     Some(f) => print(f("abc", "a")),
     None => print(0),

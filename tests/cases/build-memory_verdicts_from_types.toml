@@ -1,0 +1,30 @@
+# What a value is known to be wins back scoped verdicts (compiler/roots,
+# `--memory-sites`), from codegen's `kept_by` and unique's types:
+# a call whose result is only compared keeps nothing through it (`pick`);
+# a field read into a name that stays local, a `for` over a field and an
+# `f"…"` of a string field keep nothing (`lens`); a field's declared type
+# (`w.text`), a list's element (`for v in all`), a variant's field
+# (`Some(u)`) and a tuple's element (`(t, n)`) resolve `split` and
+# `contains` to the built-ins, not `Bag`'s methods that keep their bag; a
+# trait with one `impl` (`Holder`) runs that one. Controls that stay
+# `function`: a value pushed into a `mut` argument while the result is
+# only compared (`stash`), and a trait with two `impl`s (`Pair`).
+
+[[step]]
+save = "known.strata"
+from = "known.st"
+
+[[step]]
+strata = ["--file", "known.strata", "build", "--no-verify", "--memory-sites", "-o", "sites"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./sites >/dev/null 2>&1; awk -F'\\t' '$4 == \"main\" && $5 != \"\" && ($3 == \"alloc\" || $3 == \"runtime\") && $6 ~ /^(Bag |Wrap |Some|\\(|\\[Wrap)/ { print $6 \"\\t\" $7 }' sites.tsv | LC_ALL=C sort -u"]
+out = "(Wrap { text: f\"h{i},z\", bag: Bag { parts: [], name: \"\" } }, i)\tloop body\nBag { parts: [f\"a{i}\"], name: f\"n{i}\" }\tloop body\nBag { parts: [f\"b{i}\"], name: f\"m{i}\" }\tloop body\nSome(Wrap { text: f\"g{i},y\", bag: Bag { parts: [], name: \"\" } })\tloop body\nWrap { text: f\"c{i},x\", bag: Bag { parts: [], name: \"\" } }\tloop body\nWrap { text: f\"q{i}\", bag: Bag { parts: [], name: \"\" } }\tloop body\nWrap { text: f\"r{i}\", bag: Bag { parts: [], name: \"\" } }\tfunction\nWrap { text: f\"s{i}\", bag: Bag { parts: [], name: \"\" } }\tfunction\n[Wrap { text: f\"d{i}\", bag: Bag { parts: [f\"x{i}\"], name: \"\" } }]\tloop body\n"
+
+[[step]]
+strata = ["--file", "known.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["./plain"]
+memory = true
+stdout = "[[], [], [\"c0\", \"x\"], [\"c1\", \"x\"], [\"g0\", \"y\"], [\"g1\", \"y\"], [\"h0\", \"z\"], [\"h1\", \"z\"]]\n[[2, 2, 3], [2, 2, 3]]\n2\n"

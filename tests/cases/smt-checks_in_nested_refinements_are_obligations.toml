@@ -1,0 +1,82 @@
+# smt: a check inside a refinement nested in a parameter's or result's type
+# (a list's elements, a record's field, a variant's payload, an option, a
+# tuple, a function type) or in a `let` annotation is an obligation, as one
+# at the top is
+[[step]]
+save = "t.strata"
+text = '''
+type Head = List[Int] where it[0] > 0
+
+type Safe = List[Int] where len(it) > 0 && it[0] > 0
+
+type Box = { h: Head }
+
+type Pay = | P(Head) | Q
+
+fn elems(hs: List[Head]) -> Int = len(hs)
+
+fn elems_safe(hs: List[Safe]) -> Int = len(hs)
+
+fn field(b: Box) -> Int = 0
+
+fn payload(p: Pay) -> Int = 0
+
+fn optional(o: Option[Head]) -> Int = 0
+
+fn pair(t: (Int, Head)) -> Int = t.0
+
+fn inline_elems(xs: List[Int where 100 / it > 0]) -> Int = len(xs)
+
+fn takes_fn(f: (Int where 100 / it > 0) -> Int) -> Int = 0
+
+fn result_elems(n: Int) -> List[Int where 100 / it > 0] = []
+
+fn annotated(xs: List[Int]) -> Int {
+  let h: Head = xs
+  len(h)
+}
+
+fn annotated_safe(xs: List[Int]) -> Int requires len(xs) > 0 && xs[0] > 0 {
+  let h: Safe = xs
+  len(h)
+}
+
+fn annotated_elems(xss: List[List[Int]]) -> Int {
+  let hs: List[Head] = []
+  len(hs) + len(xss)
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn elems
+  refuted index in range
+fn elems_safe
+  proven index in range
+fn field
+  refuted index in range
+fn payload
+  refuted index in range
+fn optional
+  refuted index in range
+fn pair
+  refuted index in range
+fn inline_elems
+  refuted no division by zero
+fn takes_fn
+  unknown no division by zero
+fn result_elems
+  refuted no division by zero
+  proven result of `result_elems`: List[$where_0]
+fn annotated
+  refuted index in range
+  refuted `let` annotated `Head`
+fn annotated_safe
+  proven index in range
+  proven index in range
+  proven `let` annotated `Safe`
+fn annotated_elems
+  refuted index in range
+  proven `let` annotated `List[Head]`
+'''
