@@ -1,0 +1,87 @@
+# `upgrade` resolves references against Strata's home, not the current
+# folder, and rewrites every file or none
+
+[[step]]
+run = ["git", "init", "-q", "-b", "main"]
+
+[[step]]
+write = "app/strata.toml"
+text = "name = \"app\"\n"
+
+[[step]]
+save = "app/main.strata"
+text = '''
+use std.json
+
+fn run() -> String {
+  json.quote("a")
+}
+'''
+
+# (no std/ or core/ here: they are in Strata's home)
+[[step]]
+strata = ["upgrade"]
+
+[[step]]
+strata = ["check"]
+dir = "app"
+has = ["ok: "]
+
+# two packages whose `main` is stored before `orders` exists: each header
+# says `run` uses nothing, so each is rewritten
+[[step]]
+write = "a/strata.toml"
+text = "name = \"a\"\n"
+
+[[step]]
+save = "a/main.strata"
+text = "from orders use total\n\nfn run() -> Int {\n  total([1, 2])\n}\n"
+
+[[step]]
+save = "a/orders.strata"
+text = "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n"
+
+[[step]]
+write = "b/strata.toml"
+text = "name = \"b\"\n"
+
+[[step]]
+save = "b/main.strata"
+text = "from orders use total\n\nfn run() -> Int {\n  total([1, 2])\n}\n"
+
+[[step]]
+save = "b/orders.strata"
+text = "pub fn total(xs: List[Int]) -> Int { sum(xs) }\n"
+
+[[step]]
+run = ["cp", "a/main.strata", "a-main.strata.bak"]
+
+# b's folder can't be written: a isn't rewritten either
+[[step]]
+run = ["chmod", "a-w", "b"]
+
+[[step]]
+strata = ["upgrade"]
+fails = true
+has = ["nothing is rewritten"]
+lacks = ["a/main.strata: rewritten"]
+
+[[step]]
+run = ["chmod", "u+w", "b"]
+
+[[step]]
+run = ["cmp", "a/main.strata", "a-main.strata.bak"]
+
+[[step]]
+run = ["sh", "-c", "ls a b | grep -c -- -upgrade"]
+out = "0\n"
+code = 1
+
+[[step]]
+strata = ["upgrade"]
+has = ["a/main.strata: rewritten", "b/main.strata: rewritten"]
+
+# core keeps the dependency lists its edits wrote
+[[step]]
+run = ["sh", "-c", "mkdir c && cp -R \"$ROOT/core\" c/core && cd c && git init -q -b main && \"$STRATA\" upgrade"]
+out = "every file is already in the current form\n"
