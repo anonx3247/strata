@@ -401,11 +401,11 @@ type ForeignLanguage = | C | Rust | Python | TypeScript
 
 Examples:
 - `fn area(s: Shape) -> f64 { … }` is a `Function` with one parameter, `result` the expression `f64`, no contracts, and a body. `names` maps its id to `area`.
-- `type Positive = Int where it > 0` is a `TypeDefinition` whose `value` is a `Refinement` (section 3.5).
+- `type Positive = Int where it > 0` is a `TypeDefinition` whose `value` is a `Refinement` (section 3.4).
 - `impl Mul[Int, Money] for Money { … }` is an `Impl` whose `_trait` is the expression `Mul[Int, Money]` and `target` the expression `Money`.
 
 - A `Function` at the top level, or in an `Impl`, has a body. A method of a `Trait` may have none; then each impl gives it.
-- Named results (`-> (low: s64, high: s64)`) are a `TupleType` result whose elements are named in `local_names`. Contracts refer to the result as `it` (section 3.7) and to its parts as `it.0`, `it.1`; the printer writes them by their names.
+- Named results (`-> (low: s64, high: s64)`) are a `TupleType` result whose elements are named in `local_names`. Contracts refer to the result as `it` (section 3.6) and to its parts as `it.0`, `it.1`; the printer writes them by their names.
 - An `Impl` has no name. Section 5 states how a reader finds it, by its trait and target.
 - A method is a `Definition.Function`, so it has an id of its own. `public` on a method of a trait or impl is the trait's or impl's.
 - Laws, lemmas and proofs are definitions too. Section 8 adds them. Task expressions come with section 9.
