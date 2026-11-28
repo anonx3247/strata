@@ -41,10 +41,10 @@ digit      = '0'..'9' ;
 wildcard   = "_" ;
 ```
 
-Example: `total`, `Point`, `_unused`, `s12`, `u3`.
+Example: `total`, `Point`, `_x`, `s12`, `u3`.
 
 - Identifiers are ASCII only. Case has no lexical meaning; section 5 states the naming conventions.
-- `_` alone is the wildcard token, not an identifier.
+- `_` alone is the wildcard token, not an identifier. A leading `_` is part of a name: `_x` is an identifier, and section 2 gives it a meaning on parameters (a parameter named `_x` is passed without its name).
 - A letter, digit or `_` directly after an identifier is part of it. So `x1` is one identifier.
 
 The keywords are reserved: none of them can be an identifier anywhere, including as a field name after `.`.
