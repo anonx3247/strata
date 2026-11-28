@@ -1,0 +1,67 @@
+# `pack` won't write its bundle over a module file of the package, into
+# the package's folder, over the file packed, or over a file that isn't a
+# Strata file
+
+[[step]]
+run = ["mkdir", "shop"]
+
+[[step]]
+strata = ["init"]
+dir = "shop"
+
+[[step]]
+save = "shop/main.strata"
+text = "fn one() -> Int {\n  1\n}\n"
+
+[[step]]
+run = ["cp", "shop/main.strata", "main.strata.bak"]
+
+[[step]]
+strata = ["pack", "main.strata"]
+dir = "shop"
+fails = true
+has = ["is in the package at", "where it would be read as one of its modules"]
+
+[[step]]
+run = ["cmp", "shop/main.strata", "main.strata.bak"]
+
+[[step]]
+strata = ["pack", "bundle.strata"]
+dir = "shop"
+fails = true
+has = ["is in the package at"]
+
+[[step]]
+run = ["test", "-e", "shop/bundle.strata"]
+code = 1
+
+[[step]]
+save = "script.strata"
+text = "fn two() -> Int {\n  2\n}\n"
+
+[[step]]
+strata = ["--file", "script.strata", "pack", "script.strata"]
+fails = true
+has = ["is the file packed"]
+
+[[step]]
+write = "notes.txt"
+text = "not Strata\n"
+
+[[step]]
+strata = ["--file", "shop", "pack", "notes.txt"]
+fails = true
+has = ["exists and is not a Strata file"]
+
+[[step]]
+run = ["cat", "notes.txt"]
+out = "not Strata\n"
+
+# outside the package, and over an earlier bundle
+[[step]]
+strata = ["--file", "shop", "pack", "shop.strata"]
+has = ["wrote shop.strata"]
+
+[[step]]
+strata = ["--file", "shop", "pack", "shop.strata"]
+has = ["wrote shop.strata"]
