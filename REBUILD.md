@@ -398,3 +398,82 @@ Found, not fixed:
   - examples/tasks: main 371.2-373.5 G; default 374.7-379.8 G (+1%); `STRATA_TERMS=1` 323.9-348.3 G (−7 to −13%).
   - `memory.lock_one`: main 59.5-59.7 G and default 59.8-60.3 G, where the solver gives up on one `assert … by` (main's verdict, the same in both); `STRATA_TERMS=1` 24.7-25.4 G and proven.
   - The `smt-` cases pass in both modes, and each case program's `verify` output is the same in both (24 programs).
+
+### Which theories the obligations use, and which rung closes each (measured 2026-11-28, branch `obligation-theories`)
+
+- **How**: every module of core, std and compiler/ (106 runs) with `strata verify 'MODULE.*' --no-cache --no-race --cross-check 0 --json --checks`, on origin/main 392b7ace (before #627 termination, #628 checker and #629 cache keys, which can move verdicts), z3 5.4.1, a machine at load 12-17, 300 s per module. `STRATA_SOLVER_DUMP` kept every script asked; this branch makes it name a batch's function (`; fn NAME`, only while dumping) and keep the solver's whole output. `tools/obligation_theories.py` splits each batch into its queries, reads which theories each query's assertions reach (the definitions they name and their bodies, the sorts of the unknowns), and asks each query again alone (`z3 -T:20 rlimit=2000000`, a single query's budget in smt) for its time and units. Data: `tools/data/obligation-theories.tsv` (a row per obligation or other script), `tools/data/obligation-theories-modules.tsv` (each module's run).
+- **Rungs.** "No solver" is what the lab closes today with no query: a goal that is `true` once built (`Vc.given`). "Derived invariants" are loop invariants the code gives, proven by the invariant probes (scripts of their own, below). The lab has no other static rung.
+
+| package | obligations | no solver | derived invariants | solver | proven | unknown | refuted | rejected by z3 |
+|---|---|---|---|---|---|---|---|---|
+| core | 261 | 50 (19%) | 12 | 199 | 181 | 0 | 18 | 0 |
+| std | 1589 | 50 (3%) | 256 | 1283 | 1281 | 0 | 2 | 0 |
+| compiler | 4558 | 0 (0%) | 3287 | 1271 | 1144 | 4 | 31 | 92 |
+| all | 6408 | 100 (2%) | 3555 | 2753 | 2606 | 4 | 51 | 92 |
+
+- **Theories of the solver obligations**, by the richest one a query uses (a class includes those above it; `linear` is a conjunction of linear integer or real facts; `uf` includes uninterpreted sorts and strings used only as values; `string-lengths`: `str.len` and no other string operation). Times are each query asked alone, less z3's start (0.024 s).
+
+| class | core | std | compiler | all | share | of their time | p90 s | max s | median units | p90 units |
+|---|---|---|---|---|---|---|---|---|---|---|
+| linear | 68 | 71 | 13 | 152 | 6% | 1% | 0.015 | 0.05 | 81 | 258 |
+| linear+splits | 66 | 224 | 115 | 405 | 15% | 3% | 0.013 | 0.10 | 407 | 2501 |
+| uf | 5 | 304 | 32 | 341 | 12% | 4% | 0.016 | 0.09 | 1301 | 5310 |
+| datatypes | 5 | 55 | 40 | 100 | 4% | 1% | 0.017 | 0.09 | 3575 | 60159 |
+| arrays | 4 | 28 | 201 | 233 | 8% | 10% | 0.020 | 3.24 | 1137 | 34466 |
+| string-lengths | 0 | 14 | 9 | 23 | 1% | 0% | 0.005 | 0.01 | 482 | 2048 |
+| strings | 18 | 231 | 525 | 774 | 28% | 28% | 0.022 | 3.02 | 1463 | 15763 |
+| bitvectors | 0 | 0 | 0 | 0 | 0% | 0% | 0.000 | 0.00 | 0 | 0 |
+| nonlinear | 33 | 27 | 8 | 68 | 2% | 1% | 0.029 | 0.05 | 803 | 3350 |
+| quantifiers | 0 | 329 | 328 | 657 | 24% | 51% | 0.051 | 2.47 | 6366 | 106059 |
+
+- **Combinations**: case splits are in nearly every query (an `=>` per fact on a path). The most common: linear + splits 390, + uninterpreted functions 229, strings with lengths, operations and regular expressions (an ASCII fact is a `str.in_re`) 190, linear alone 137, reals + functions + quantifiers (std.array's floats) 132. Of the 774 `strings` obligations, 252 use regular expressions and no other string operation. No query uses bitvectors (sized integers are `Int` with ranges) or sequences. 168 obligations have a nonlinear term somewhere; 68 have no quantifier as well.
+- **Quantifiers**: 657 obligations, 654 with `forall` (3 with only a `lambda`), none with patterns; 571 proven, 10 refuted, 76 rejected (below). Each of the 654 has a `forall` over an `Int` position (30 also one over `String` keys): the encoding of lists and dicts (facts about every element, equality by position). Only 14 of the 657 state a quantifier themselves (`all`, `any`). By module: std.array 316, compiler's root module 261 (its commands' argument lists).
+- **Other scripts** (no `; fn`: loop invariant probes, termination bounds, refinement probes, counterexample inputs): 7,629 scripts, 852 s asked alone against 49 s for the 2,753 obligations, 1.43 G units against 61 M. By class: quantifiers 2,824 scripts (42% of their time), strings 1,067 (31%), string lengths 548 (15%), arrays 1,181 (11%), the rest 1%. In the lab's own run (`STRATA_SOLVER_LOG`) they are 33% of core's solver time, 35% of std's, 92% of compiler's (987 s).
+- **Own procedures** (the share of solver obligations, of the proven ones, and of their time, that each set of theories covers):
+
+| covered | obligations | proven | time |
+|---|---|---|---|
+| linear arithmetic, a conjunction | 152 (6%) | 139 (5%) | 1% |
+| + case splits | 557 (20%) | 538 (21%) | 4% |
+| + uninterpreted functions | 898 (33%) | 875 (34%) | 8% |
+| + datatypes | 998 (36%) | 971 (37%) | 9% |
+| + arrays | 1231 (45%) | 1187 (46%) | 19% |
+| + string lengths | 1254 (46%) | 1210 (46%) | 19% |
+| + string operations, regular expressions | 2028 (74%) | 1968 (76%) | 48% |
+| + bitvectors, nonlinear | 2096 (76%) | 2035 (78%) | 49% |
+
+- **Modules**: none hit 300 s with `--no-race --cross-check 0`. std.array with the race and the cross-check did (300 s, killed); with them off 71 s. The longest: compiler/main 176 s, codegen 125 s (peak 6.8 GB), check 72 s. Peak memory over 1.5 GB: codegen 6.8, main 2.3, check 2.0, eval 1.5 GB.
+- **Found**:
+  - `verify --smt` and `--obligations` analyse the whole package before the selection (`smt_file`: `analyze` over `shown_names(ctx, own)` of every definition), so on compiler/ one module printed nothing in 300 s; and they list only functions, not implementation methods (std.array: 323 obligations against 841 in `verify`).
+  - z3 rejects 92 of compiler's queries: 58 mix sorts (`Int` and `|T:U32|`, mostly compiler/main), 34 declare a datatype z3 calls "not co-variant" (finding, smt, binary). The rest of each batch is answered.
+  - The `smt-long_terms_read_through_a_let` case ran out of its 60 s while the sweep ran (load), passed alone (below).
+- The obligations that need quantifiers or nonlinear arithmetic:
+- Quantifiers, 657 obligations, by module (function: obligations):
+  - std `array` (316): `std.array.dot_run_f64` 62, `std.array.sum_run_f64` 48, `std.array.Array.matmul` 16, `std.array.Array.mean_axis` 14, `std.array.Array.sum_axis` 10, `std.array.Array.scale` 9, `std.array.Array.shift` 9, `std.array.Array.from_rows` 7, `std.array.ArrayI32.from_rows` 7, `std.array.ArrayI64.from_rows` 7, `std.array.Array.at_least` 6, `std.array.Array.dot` 6, `std.array.Array.within` 6, `std.array.Array.add` 5, `std.array.Array.div` 5, `std.array.Array.mul` 5, `std.array.Array.sub` 5, `std.array.ArrayI32.matmul` 5, `std.array.ArrayI64.matmul` 5, `std.array.Array.mean` 4, `std.array.Array.sum` 4, `std.array.Array.arange` 3, `std.array.Array.slice` 3, `std.array.ArrayI32.arange` 3, `std.array.ArrayI32.slice` 3, `std.array.ArrayI64.arange` 3, `std.array.ArrayI64.slice` 3, `std.array.Array.from_list` 2, `std.array.ArrayI32.from_list` 2, `std.array.ArrayI32.sum_axis` 2, `std.array.ArrayI64.from_list` 2, `std.array.ArrayI64.sum_axis` 2, `std.array.broadcast_shape` 2, `arange` 1, `full` 1, `ones` 1, `std.array.Array.argmax_axis` 1, `std.array.Array.compact` 1, `std.array.Array.map` 1, `std.array.Array.max_axis` 1, `std.array.Array.neg` 1, `std.array.Array.ones` 1, `std.array.Array.reshape` 1, `std.array.Array.transpose` 1, `std.array.Array.zeros` 1, `std.array.ArrayI32.argmax_axis` 1, `std.array.ArrayI32.compact` 1, `std.array.ArrayI32.map` 1, `std.array.ArrayI32.max_axis` 1, `std.array.ArrayI32.neg` 1, `std.array.ArrayI32.ones` 1, `std.array.ArrayI32.reshape` 1, `std.array.ArrayI32.scale` 1, `std.array.ArrayI32.shift` 1, `std.array.ArrayI32.to_float` 1, `std.array.ArrayI32.to_i64` 1, `std.array.ArrayI32.transpose` 1, `std.array.ArrayI32.zeros` 1, `std.array.ArrayI64.argmax_axis` 1, `std.array.ArrayI64.compact` 1, `std.array.ArrayI64.map` 1, `std.array.ArrayI64.max_axis` 1, `std.array.ArrayI64.neg` 1, `std.array.ArrayI64.ones` 1, `std.array.ArrayI64.reshape` 1, `std.array.ArrayI64.scale` 1, `std.array.ArrayI64.shift` 1, `std.array.ArrayI64.to_float` 1, `std.array.ArrayI64.transpose` 1, `std.array.ArrayI64.zeros` 1, `std.array.lane_sums` 1, `std.array.lanes` 1, `std.array.transposed` 1, `zeros` 1
+  - compiler `main` (261): `sync_command` 18, `merge_file_command` 15, `revert_command` 14, `doc_command` 12, `edit_command` 12, `run_command` 12, `edit_file` 11, `call_command` 10, `fix_command` 10, `history_command` 10, `new_command` 10, `strata_command` 10, `view_command` 9, `move_command` 8, `rename_command` 8, `resolve_command` 8, `test_command` 8, `done_command` 7, `pack_command` 7, `verify_program` 7, `build_command` 6, `header_command` 6, `repl_command` 6, `cache_clean` 5, `edit_in_editor` 5, `live_edit_command` 5, `interface_command` 4, `lint_command` 4, `front_command` 3, `command_line` 2, `find_invariants` 2, `log_command` 2, `status_command` 2, `verify_command` 2, `repl_eval` 1
+  - compiler `finding` (16): `finding.refs_command` 6, `finding.view_location` 6, `finding.find_command` 4
+  - compiler `check` (12): `check.spread_filled` 3, `check.as_listed` 2, `check.fits` 2, `check.sized_max` 2, `check.narrowed_result` 1, `check.sized_min` 1, `check.with_field` 1
+  - compiler `smt` (9): `smt.walk` 4, `smt.found_terms` 2, `smt.fact_reads` 1, `smt.seed_parts` 1, `smt.str_len_terms` 1
+  - std `cli` (8): `std.cli.parse` 8
+  - compiler `unused` (5): `unused.reached` 5
+  - compiler `merge` (4): `merge.similarity` 4
+  - compiler `roots` (4): `roots.args_in` 2, `roots.holds_nothing` 2
+  - compiler `unique` (4): `unique.fresh_value` 4
+  - compiler `eval` (3): `eval.builtin` 3
+  - compiler `exhaustive` (3): `exhaustive.covered` 3
+  - std `lemmas` (3): `std.lemmas.frame_grows` 1, `std.lemmas.frame_with` 1, `std.lemmas.frame_without` 1
+  - compiler `binary` (2): `binary.encode_module_kept` 2
+  - compiler `sugar` (2): `sugar.handler_match` 2
+  - std `regex` (2): `std.regex.parse_escape` 1, `std.regex.sample_class` 1
+  - compiler `contracts` (1): `contracts.refn` 1
+  - compiler `markdown` (1): `markdown.plain_end` 1
+  - compiler `termination` (1): `termination.cannot_fail` 1
+- Nonlinear arithmetic (no quantifier), 68 obligations, by module (function: obligations):
+  - core `real` (32): `core.real.real_add` 18, `core.real.real_mul` 8, `core.real.real_reduced` 5, `core.real.real_gcd` 1
+  - std `array` (25): `std.array.row_major` 7, `std.array.ArrayI32.matmul` 6, `std.array.ArrayI64.matmul` 6, `std.array.mul_lists` 3, `std.array.div_lists` 2, `std.array.count` 1
+  - compiler `codegen` (3): `codegen.real_lit_of` 1, `codegen.word_const` 1, `codegen.word_literal` 1
+  - compiler `eval` (3): `eval.power` 1, `eval.real_binary` 1, `eval.word` 1
+  - compiler `smt` (2): `smt.wrap_term` 2
+  - std `regex` (2): `std.regex.product_relations` 2
+  - core `gen` (1): `core.gen.gen_unit` 1
+- **Rung 2: our own procedures, or Z3?** Linear arithmetic with case splits, uninterpreted functions and datatypes covers 36% of the solver obligations and 9% of their solver time; with arrays (dicts, sets) 45% and 19%; with strings 74% and 48%. The other 24% of obligations and half of the time are quantified, and the scripts verify sends beside the obligations (invariant and termination probes) cost 17 times what the obligations do and are mostly quantifiers and strings. So rung 2 stays Z3. Own procedures would only pay as a first try ahead of it, for the third of obligations that are cheap already (medians of 81 to 3,575 units by class). What would move the line is the encoding, not the solver: lists without `forall` over indices (a length and elements by position, or a decision procedure for sequences), and strings by length and equality where no string operation is used; then measure again.
