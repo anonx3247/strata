@@ -1,0 +1,23 @@
+# Static uniqueness analyses the `impl`s' methods too: the push inside
+# `Bag.squares` finds its list held once and is proven (`owned.p`), as it
+# would be in a function. With `--memory-sites` a proven site still runs
+# its test and is counted, so the counts say it never found the list shared.
+
+[[step]]
+save = "methods.strata"
+from = "methods.st"
+
+[[step]]
+strata = ["--file", "methods.strata", "build", "--no-verify", "--memory-sites", "-o", "prog"]
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_SITES=sites.tsv ./prog 2>/dev/null; cut -f1,2,3,4,6 sites.tsv | grep -E '\t(unique|owned)'"]
+out = "[0, 1, 4, 9]\n4\t4\towned.p\tBag.squares\tpush(out, i * i)\n"
+
+[[step]]
+strata = ["--file", "methods.strata", "build", "--no-verify", "-o", "plain"]
+
+[[step]]
+run = ["./plain"]
+memory = true
+stdout = "[0, 1, 4, 9]\n"
