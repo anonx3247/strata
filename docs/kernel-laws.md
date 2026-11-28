@@ -74,6 +74,14 @@ Strata expressions over `Int`, `Bool`, `String` (no operations), `List[T]`, func
 - `v is C` is `match v { C => true, _ => false }`.
 - A function's body may be a block of `mut x := e` and `for` loops that change one variable (by `mut x.push(e)`, `x = e`, or an `if` of these): the loop is a `fold` over its list, `x := fold(xs, x, (x, y) -> …)`.
 - A refinement the logic can't state (`TaskId = String where matches(it, …)`) is not assumed of a parameter.
+- Laws every proof can use by name, proven once when the checker starts (the first five are also used by `simplify` without being named):
+  - `slice_none(xs)`: `take(xs, 0) == []`
+  - `slice_all(xs)`: `take(xs, len(xs)) == xs`
+  - `map_append(xs, ys, f)`: `map(xs + ys, f) == map(xs, f) + map(ys, f)`
+  - `contains_append(xs, ys, k)`: `contains(xs + ys, k) == (contains(xs, k) || contains(ys, k))`
+  - `set_push(xs, x)`: `set(xs + [x]) == set_with(set(xs), x)`
+  - `slice_step(xs, i)`: `requires 0 <= i && i < len(xs)`, `take(xs, i + 1) == take(xs, i) + [at(xs, i)]`
+  - `all_frame(xs, p, q)`: `requires all(xs, p)`, `requires forall(x -> p(x) ==> q(x))`, `all(xs, q)`
 
 ## Proof steps
 
@@ -83,10 +91,10 @@ A proof is a block of steps, one per line. Each step works on what is left to pr
 |---|---|
 | `match x { arms }` | Splits on `x`, one arm per constructor (`[] => …`, `[y, ..rest] => …`, `Leaf(n) => …`, `User { name, age } => …`, `_ => …`). It is induction: in an arm, the law can call itself on a part of `x` its pattern named (`append_assoc(rest, b, c)`), and the call is checked to be on a smaller value. Splitting a part again (`match rest`) keeps the call valid on the new parts (`[z] + more`). On a value that isn't a variable, each arm also knows `value == pattern`. |
 | `if c { … } else { … }` | Splits on a condition. In each branch, `c` (or `!c`) is a known fact, and the goal's `if c` are taken. |
-| `simplify(l1, l2)` | Rewrites the goal to a normal form. It uses the laws named (bare: `append_nil`, or applied: `append_nil(rest)`), every definition's equations, the datatypes' facts, logic, and linear arithmetic. Arithmetic means literals computed, sums collected, and comparisons whose sides differ by a literal decided. It also uses every known fact, each first simplified with the others. An `if` left open is split, and the goal closes when both branches close. The step fails if nothing changed. |
+| `simplify(l1, l2)` | Rewrites the goal to a normal form. It uses the laws named (bare: `append_nil`, or applied: `append_nil(rest)`), every definition's equations, the datatypes' facts, logic, and linear arithmetic. Arithmetic means literals computed, sums collected, and comparisons whose sides differ by a literal decided. It also uses every known fact, each first simplified with the others. An `if` left open is split, and the goal closes when both branches close; a branch whose condition (a comparison of integers) contradicts the facts by arithmetic is closed. `&&` and `||` are sorted and regrouped (`p && (q && r)` is `r && q && p`), an equation between equations meets the other way round (`(k == x) == (x == k)`), and a fact `a != b` also decides `b == a`. A fact whose left side is inside its right side (`i == i - 1 + 1`) is used right to left. A rule that keeps applying stops the step, named in the error. The step fails if nothing changed. |
 | `simplify_once(l)` | One rewrite with `l`: the first instance of its left side, every copy of it. |
-| `unfold(f, g)` | Unfolds the definitions of `f` and `g` only. |
-| `law(args)` | Uses a law, or an assumption that is one (`transitive(a, b, c)`): its conclusion finishes the goal. Its `requires` are met by the facts known: the law's own `requires`, steps proven before, the branch's conditions, and what simplifying them gives. Arguments left out are found by matching the goal. Any law can be used inside a step: `assert a < c by { transitive(a, b, c) }`. |
+| `unfold(f, g)`, `unfold(f, h1)` | Unfolds the definitions of `f` and `g` only, in the goal and in every fact they occur in. With facts named (`h1`), only in those. |
+| `law(args)` | Uses a law, or an assumption that is one (`transitive(a, b, c)`): its conclusion finishes the goal. Its `requires` are met by the facts known: the law's own `requires`, steps proven before, the branch's conditions, and what simplifying them gives. Arguments left out are found by matching the goal. A conclusion matches the goal once both are simplified with arithmetic (`take(rest, i - 1 + 1)` is `take(rest, i)`), and a `requires` left over is met by `arithmetic()` too. A fact `a == b` meets a `requires b == a`. Any law can be used inside a step: `assert a < c by { transitive(a, b, c) }`. |
 | `assume()`, `assume(x)` | A goal `p ==> q` (or `!p`) left by a step: `p` becomes a fact. On a goal `forall(x -> p)`, `assume(x)` takes `x` as a new variable (named as given). |
 | `assumption()` | Finishes the goal with a fact that is it. |
 | `assert p by { steps }` | Proves `p`, then knows it for the rest of the proof. `assert p` alone proves it by the ladder. |
@@ -96,7 +104,7 @@ A proof is a block of steps, one per line. Each step works on what is left to pr
 | `arithmetic()` | Linear integer arithmetic, by kernel steps. It first simplifies the facts and the goal (`Task { priority: Low, due: a } < Task { priority: Low, due: b }` becomes `a < b`), then refutes the goal's negation from them. `len(xs) >= 0` holds, since `len` returns a `Natural`. |
 | `nonlinear()` | Asks Z3 (strings, products of unknowns). The law is marked `[assumed: z3]`. |
 | `compute()` | `simplify()`. |
-| `auto()` | The ladder: `simplify()`, then `arithmetic()`, then `nonlinear()`. First it applies the laws among the facts (`transitive`, an assumption like `forall(x -> p(x) ==> q(x))`) to the facts once. |
+| `auto()`, `auto(l1, l2)` | The ladder: `simplify(l1, l2)`, then `arithmetic()`, then `nonlinear()`. First it applies the laws among the facts (`transitive`, an assumption like `forall(x -> p(x) ==> q(x))`) to the facts once, and takes each "for every" fact at the goal's terms of its type (`h : forall(k -> p(k))` at the goal's `j` is the fact `p(j)`, simplified with the others). |
 
 There are no steps for splitting `&&`, choosing a side of `||`, or closing `a == a`: `simplify()` and `auto()` do these.
 
