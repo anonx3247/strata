@@ -309,8 +309,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **(memory) `extern c` `mut String` parameter: the buffer is freed before it is read back.** For `p.mutable` with `ct.kind == "str"`, the `strata_cstr` copy goes in the out slot and is also pushed to `frees`. After the call, `for c in frees { … strata_cstr_free(c) }` runs before `for (l, ct, slot, old) in outs { raw := load slot; from_c(raw …) }`.
   Where: codegen.foreign_call (st:21127-21195). Source: review codegen. Confidence: sure.
-- [ ] **`mut` arguments of method calls are not recorded, so `entry` stays "held once".** For `x.f(mut y)`, each argument goes through `ex`, which spoils `y`. Nothing is pushed to `c.calls`, so `entry_lowered` never lowers `T.f`'s parameter. `T.f` is in `unknown_callers` only when it takes `mut self` or is a trait method's name.
-  Where: unique.ex, the `ast.MethodCall` branch (st:600-615); call_flow only handles `ast.Call { callee: ast.Var }`; mut_method only handles `MutExpr(MethodCall)` (parameter 0). Source: review codegen. Confidence: likely.
 - [ ] **A union with two members of the same head reads under the wrong tag.** Widening into `List[Int] | List[String]` reads the list under the wrong tag (wrong results).
   Where: codegen (unions). Source: ledger G3 (#577). Confidence: likely.
 - [ ] **Refinements inside a generic record's type arguments are not checked at run time.** A `Box[Cents]` holding a negative value doesn't fault.
