@@ -664,8 +664,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: tree.changes. Source: PR #630. Confidence: sure.
 - [ ] **`strata tour` says "nothing else needs re-checking" for every body change.** A body a contract may see through or unfold changes its callers' proofs; `edit` says so.
   Where: diff (tour's change labels). Source: PR #663. Confidence: sure.
-- [ ] **`verify 'module:main'` matches nothing for the root module.**
-  Where: views (selectors). Source: PR #665. Confidence: likely.
+- [ ] **`verify 'module:main'` matches nothing for the root module.** `cd compiler && strata verify 'module:main' --termination` prints "error: `module:main` names no definition and no module" and exits 0.
+  Where: views (selectors). Source: PR #665. Confidence: sure.
+- [ ] **A selection error in `verify` exits 0.** A selector that names nothing prints its error, then `verify` exits 0.
+  Where: main.verify_program (selection). Source: PR #665. Confidence: sure.
 - [ ] **The claim lint is tested by examples only.** `compiler/claims` has `test` blocks and no contract. In a sample of 25 flags, 3 were false positives; rule lists and term definitions are the usual kind.
   Where: claims. Source: PR #622. Confidence: sure.
 - [ ] **`strata edit`'s own commits carry no attribution trailer.** The auto-commit's message can't take `Co-Authored-By` or other trailers.

@@ -175,7 +175,7 @@ Phase 0, done: `view` in reading order (#547), fast `diff` with `--json` (#544),
 - The claim lint on by default (the user's call).
 - The last `TAny` in the checker: `comptime` parameters, which need dependent parameters, and unknown types (BUGS.md, Type checker).
 - The soundness entries in BUGS.md (Verification) and its data-loss entries (Tools).
-- The measured verification choices: the proposed order of the work after #631 (probe cost, then the list and string encodings, then own procedures), and which list encoding is the default (#665).
+- The verification ladder's choices that #631 and #665 measured (the user's call).
 - Quantifiers stated per instance, with `forall` behind `STRATA_QUANTIFIERS=forall` (the user's choice, being built).
 
 ## Appendix: decisions recorded in the lab, to review
