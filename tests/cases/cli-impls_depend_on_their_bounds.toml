@@ -1,0 +1,43 @@
+# an implementation's bounds, and its methods', are dependencies in the
+# module file's header, which verify's cache keys follow: here the only
+# mention of `a.Pos` in `main`'s impl is its bound
+[[step]]
+write = "strata.toml"
+text = "name = \"bounds\"\n"
+
+[[step]]
+module = "a"
+into = "$TMP/"
+text = '''
+pub trait Pos {
+  fn get(self) -> Int
+    ensures it >= 0
+}
+'''
+
+[[step]]
+module = "main"
+into = "$TMP/"
+text = '''
+use a
+
+type W[T] = { x: T }
+impl[T: a.Pos] W[T] {
+  fn g(self) -> Int {
+    self.x.get()
+  }
+}
+type V[T] = { x: T }
+impl[T] V[T] {
+  fn g[U: a.Pos](self, u: U) -> Int {
+    u.get()
+  }
+}
+fn main() {
+}
+'''
+
+[[step]]
+strata = ["header", "main.strata"]
+has = ["impl   impl W[T]\n       id ", "impl   impl V[T]\n       id "]
+counts = { "uses W, a.Pos\n" = 1, "uses V, a.Pos\n" = 1 }

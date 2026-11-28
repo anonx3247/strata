@@ -1,0 +1,60 @@
+# smt: a function value is the same value after a branch joins (`??`, a
+# `match`, an `if`), so its call's result keeps its type's refinements,
+# in a loop too
+[[step]]
+save = "f.strata"
+text = '''
+type Code = Int where it >= 100 && it < 600
+
+type Resp = { code: Code, body: String }
+
+fn use_resp(r: Resp) -> Int = r.code
+
+fn after_default(o: Option[Int], handler: (Int) -> Resp) -> Int {
+  x := o ?? 0
+  use_resp(handler(x))
+}
+
+fn after_match(o: Option[Int], handler: (Int) -> Resp) -> Int {
+  x := match o {
+    Some(v) => v,
+    None => 0,
+  }
+  use_resp(handler(x))
+}
+
+fn after_if(o: Bool, handler: (Int) -> Resp) -> Int {
+  x := if o {
+    1
+  } else {
+    0
+  }
+  use_resp(handler(x))
+}
+
+fn in_loop(n: Int, d: Dict[String, String], handler: (Int) -> Resp) -> Int {
+  mut total := 0
+  mut i := 0
+  while i < n {
+    c := get(d, "connection") ?? ""
+    got := scope {
+      h := supervised spawn handler(i)
+      await h
+    }
+    match got {
+      Ok(r) => {
+        total = use_resp(r) + byte_len(c)
+      },
+      Err(_) => {
+        break
+      },
+    }
+    i += 1
+  }
+  total
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+has = ["✓ after_default ", "✓ after_match ", "✓ after_if ", "✓ in_loop "]

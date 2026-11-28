@@ -195,74 +195,57 @@ What can change live, and what can't (tested by `cli-run_live_state`, 28 edits o
 
 ## Structural diffs
 
-`strata diff` shows changes by definition rather than by line. This example follows four changes to `examples/orders.strata` made through strata: a variant renamed with `strata rename`, a stronger `ensures`, a new variant, and a body rewritten as a loop.
+`strata diff` shows changes by definition rather than by line, and inside a definition by the nodes that changed. This example follows four changes to `examples/orders.strata` made through strata: a variant renamed with `strata rename`, a stronger `ensures`, a new variant, and a body rewritten as a loop.
 
 ```text
 $ strata diff
 patches 2–5 of 5
-  step 1 rename Shipped → Sent  (4 definitions)
-  step 2 discount: never more than 10% off  (1 definition)
-  step 3 a new ShipError  (1 definition)
-  step 4 total as a loop  (1 definition)
+  step 2 rename Shipped → Sent  (2 definitions)
+  step 3 discount: never more than 10% off  (1 definition)
+  step 4 a new ShipError  (1 definition)
+  step 5 total as a loop  (1 definition)
 
-5 changed  ·  3 interface changes
+4 changed  ·  3 interface changes
 
 TYPES
 
-~ Order  (variant `Shipped` renamed to `Sent`)
-    only a name changed · 3 references updated
-    type Order =
-      | Pending { id: OrderId, lines: NonEmpty[Line] }
-  ~   | [-Shipped-]{+Sent+} { id: OrderId, lines: NonEmpty[Line], tracking: NonEmptyString }
-      | Cancelled { id: OrderId, reason: NonEmptyString }
-
 ~ ShipError  (variant `OutOfStock` added)
-    interface changed · used by 2, 4 depend on it in all
-    type ShipError =
-    … NotFound and NotPending unchanged
+    interface changed · used by 2
+    type ShipError
   +   | OutOfStock { sku: NonEmptyString }
+
+~ Order  (variant `Shipped` renamed to `Sent`)
+    only a name changed · 1 reference updated
+    type Order
+  ~   | [-Shipped-]{+Sent+} { id: OrderId, lines: NonEmpty[Line], tracking: NonEmptyString }
 
 INTERFACES
 
 ~ discount  (guarantee changed)
-    interface changed · used by 1
+    interface changed · used by 2, 4 depend on it in all
     fn discount(amount: Cents) -> Cents
-  ~   ensures it <= amount {+&& it * 10 >= amount * 9 +}{    ◀ contract changed
-      if amount >= 10000 {
-    … 4 lines unchanged
-    }
+  ~   ensures it <= amount{+ && it * 10 >= amount * 9+}    ◀ contract changed
 
 IMPLEMENTATIONS
 
 ~ total  (body changed)
-    most of it changed, so it is shown as a line diff
     implementation only · nothing else needs re-checking
-    fn total(lines: NonEmpty[Line]) -> Cents {
+    fn total(lines: NonEmpty[Line]) -> Cents
   -   sum(lines.map(line_total))
   +   mut sum := 0
   +   for l in lines {
   +     sum += line_total(l)
   +   }
   +   sum
-    }
-
-TESTS
-
-~ test "shipping a pending order saves it as shipped"  (body changed)
-    test "shipping a pending order saves it as shipped" {
-    … 6 lines unchanged
-  -   assert db.order == Some(
-  ~ [-    Shipped-]{+  assert+} {+db.order == Some(Sent +}{ id: "ord_abc123", lines: [line], tracking: "TRK1" }[-,-]{+)+}
-  -   )
-    }
 ```
 
-Each changed definition describes the change in words and shows only what is needed:
+Each changed definition describes the change in words and shows only what changed, under its signature:
 
-- A rename takes one line. `Order` shows the renamed variant. The three definitions that only followed the rename (`order_id`, `ship`, a test) are counted, not shown, unless their body also changed in another way, like the test below.
-- A new variant is shown alone, with unchanged members folded (`… NotFound and NotPending unchanged`), and with how much depends on the type.
-- A contract change is marked on its line (`◀ contract changed`). Here `discount` promises more, and its body is folded.
-- A body change is shown with unchanged parts folded, or as a line diff when most of it changed (`total`). "implementation only" means nothing else needs re-checking.
+- A rename takes one line. `Order` shows the renamed variant. The definitions that only followed the rename are counted (`1 reference updated`), not shown, unless their body also changed in another way.
+- A new variant is shown alone, with how much depends on the type.
+- A contract change is marked on its line (`◀ contract changed`). Here `discount` promises more; its body, unchanged, isn't shown.
+- A body change shows each changed node whole, under the first lines of the nodes around it (`for x in xs {`, `if c { … } else {`). "implementation only" means nothing else needs re-checking.
+- `--lines` shows the changed lines instead, with the unchanged ones folded (`… NotFound and NotPending unchanged`), and a body mostly rewritten as a line diff.
 
 Changes are ordered types, then interfaces, then implementations, then tests.
 
@@ -326,14 +309,14 @@ smt.*: renamed `not_modelled` to `unmodelled`
 ````
 
 - `# Heading` starts a page. `strata skill tour` suggests the order: why, background, intuition, then the code, one page per objective.
-- ```` ```strata-diff NAME… ```` shows each definition's structural diff, as `strata diff` finds it between the base and the working tree. Names are qualified (`check.Inf`); a root module's definitions go by their name alone. A glob (`tour.test*`) shows every change it matches, which is how tests (`test "…"`) and imports (`use x`) are named. A change shows folded to its shape: its name and what changed in words; an added or removed definition its first doc line, signature and contracts (as `view --level 1` prints them), its body behind a fold (`body: 42 lines`); a changed one its changed lines with their context, unchanged lines, its doc's change, any changed run of more than 12 lines (after its first 6) and, past 20 changed lines, the rest of the definition behind folds. `full` on the fence line (```` ```strata-diff NAME full ````) shows the bodies, docs and long runs open.
+- ```` ```strata-diff NAME… ```` shows each definition's structural diff, as `strata diff` finds it between the base and the working tree. Names are qualified (`check.Inf`); a root module's definitions go by their name alone. A glob (`tour.test*`) shows every change it matches, which is how tests (`test "…"`) and imports (`use x`) are named. A change shows folded to its shape: its name and what changed in words; an added or removed definition its first doc line, signature and contracts (as `view --level 1` prints them), its body behind a fold (`body: 42 lines`); a changed one its changed nodes in their context (with `strata tour --lines`, its changed lines with unchanged lines folded), its doc's change, any changed run of more than 12 lines (after its first 6) and, past 20 changed lines, the rest of the definition behind folds. `full` on the fence line (```` ```strata-diff NAME full ````) shows the bodies, docs and long runs open.
 - ```` ```strata NAME ```` shows a definition's code as it is now: its interface, its body folded (`full` opens it).
 - ```` ```strata-refs NAME ```` shows what `NAME` uses and what uses it among the package's definitions, the changed ones marked `+` `~` `-`.
 - ```` ```strata-also ```` lists the changes that support a page without being its point, one line each like a routine line: names or globs, a colon, what they do for the page. Each line shows as a count, folded (`9 supporting changes: drawing the folds`); opened, each change is a folded line of its own that opens its diff. A page diffs with `strata-diff` the few definitions its prose is about and names the rest here.
 - ```` ```strata-routine ```` lists mechanical changes, one line each: names or globs (`*` matches any run of characters), a colon, the reason. Each line shows as a count, folded: `16 definitions: unused parameter removed`.
 - The renderer adds a last page, "Not in the tour": every changed definition that no page names, and the files changed outside Strata code.
 
-`strata tour [FILE]` reads `FILE`, or `.tours/BRANCH.md` at the repository's root. At a terminal it shows one page at a time on the alternate screen: → `l` `n` next page, ← `h` `p` previous, ↑ ↓ `j` `k` scroll (Space and `b` a screen), Tab or `]` selects the next fold and Shift-Tab or `[` the one before, scrolling to it; Enter opens or closes the selected fold (marked `›` in reverse; with none selected, the first fold on the screen, and scrolling it out of view selects the first one in view), `g` the list of pages, `q` quits. Each page keeps the folds opened on it when the reader comes back. Piped, or with `--no-pager`, it prints every page one after another, every fold closed (marked `▸`), as a reader first sees it. `--keys "l l enter"` presses those keys on an 80 by 24 screen and prints it, without color; the test cases use it.
+`strata tour [FILE]` reads `FILE`, or `.tours/BRANCH.md` at the repository's root. At a terminal it shows one page at a time on the alternate screen: → `l` `n` next page, ← `h` `p` previous, ↑ ↓ `j` `k` scroll (Space and `b` a screen), Tab or `]` selects the next fold and Shift-Tab or `[` the one before, scrolling to it; Enter opens or closes the selected fold (marked `›` in reverse; with none selected, the first fold on the screen, and scrolling it out of view selects the first one in view), `g` the list of pages, `q` quits. Each page keeps the folds opened on it when the reader comes back. Piped, or with `--no-pager`, it prints every page one after another, every fold closed (marked `▸`), as a reader first sees it. `--keys "l l enter"` presses those keys on an 80 by 24 screen and prints it, without color; the test cases use it. `--lines` shows each change by its lines instead of its changed nodes.
 
 `strata tour --check` exits 1 when a name in the tour (`strata-diff`, `strata-also`, `strata-routine`) isn't a definition the change touched (in a `strata` or `strata-refs` block: isn't a definition at all), or when a changed definition is on no page. `strata skill tour` tells agents how to write one.
 

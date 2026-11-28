@@ -1,0 +1,117 @@
+# `strata diff` shows a changed definition by its changed nodes: one
+# expression changed inside a large function shows only its statement,
+# under the signature and the first lines of the nodes around it; an arm
+# moved and a statement wrapped in a new `if` show as such. `--lines`
+# shows the changed lines with the unchanged ones folded instead.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["edit", "-m", "base"]
+text = '''
+fn score(xs: List[Int], bonus: Int) -> Int {
+  mut total := 0
+  mut count := 0
+  for x in xs {
+    if x > 0 {
+      total += x
+      count += 1
+    } else {
+      total -= 1
+    }
+  }
+  kind := match count {
+    0 => "none",
+    1 => "one",
+    _ => "many",
+  }
+  print(kind)
+  scaled := total * 2
+  capped := if scaled > 100 {
+    100
+  } else {
+    scaled
+  }
+  capped + bonus
+}
+'''
+
+[[step]]
+strata = ["edit", "-m", "one node"]
+text = '''
+fn score(xs: List[Int], bonus: Int) -> Int {
+  mut total := 0
+  mut count := 0
+  for x in xs {
+    if x > 0 {
+      total += x
+      count += 1
+    } else {
+      total -= 2
+    }
+  }
+  kind := match count {
+    0 => "none",
+    1 => "one",
+    _ => "many",
+  }
+  print(kind)
+  scaled := total * 2
+  capped := if scaled > 100 {
+    100
+  } else {
+    scaled
+  }
+  capped + bonus
+}
+'''
+
+[[step]]
+strata = ["edit", "-m", "moved and wrapped"]
+text = '''
+fn score(xs: List[Int], bonus: Int) -> Int {
+  mut total := 0
+  mut count := 0
+  if len(xs) > 0 {
+    for x in xs {
+      if x > 0 {
+        total += x
+        count += 1
+      } else {
+        total -= 2
+      }
+    }
+  }
+  kind := match count {
+    1 => "one",
+    0 => "none",
+    _ => "many",
+  }
+  print(kind)
+  scaled := total * 2
+  capped := if scaled > 100 {
+    100
+  } else {
+    scaled
+  }
+  capped + bonus
+}
+'''
+
+[[step]]
+strata = ["diff", "--step", "2"]
+golden = "tests/data/diff/one_node.out"
+
+[[step]]
+strata = ["diff", "--step", "3"]
+golden = "tests/data/diff/moved_wrapped.out"
+
+[[step]]
+strata = ["diff", "--step", "2", "--lines"]
+golden = "tests/data/diff/one_node_lines.out"
+
+[[step]]
+strata = ["diff", "--step", "2", "--json"]
+has = ['"t": "      total -= 2"', '"kind": "edited"', '"after": "2"']
+lacks = ['"t": "  print(kind)"']

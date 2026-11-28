@@ -26,7 +26,13 @@ text = "type ShipError =\n  | NotFound\n  | NotPending\n  | Locked\n"
 
 [[step]]
 strata = ["diff", "--json"]
-has = ["line_cents", "stronger guarantee", "ensures it >= 0", "never below zero", "variant `Locked` added", "NotFound and NotPending unchanged"]
+has = ["line_cents", "stronger guarantee", "ensures it >= 0", "never below zero", "variant `Locked` added", '"t": "  | Locked"']
+lacks = ['"t": "  | NotFound"']
+
+# by lines: the unchanged variants folded
+[[step]]
+strata = ["diff", "--lines"]
+has = ["NotFound and NotPending unchanged", "◀ stronger guarantee"]
 
 # one step on its own, and the text form
 [[step]]
