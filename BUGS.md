@@ -113,6 +113,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Type checker
 
+- [ ] **Integer patterns at or past 2^62 are called unreachable.** `check.int_max()` is `4611686018427387903` and `int_min()` its negation: the ranges `check_coverage` works with end there, so `match n { 4611686018427387904 => …, _ => … }` gives "unreachable match arm `4611686018427387904`: the arms above already cover it", though `Int` has no bound. `build-bigint` builds with `--ignore-check-errors` until this is fixed.
+  Where: compiler.check.int_max/int_min, ints_not, cover_of (`ast.IntPat(n) => CInts([(n, n)])`), check_coverage; codegen has its own pair. Source: build-fails-on-errors PR. Confidence: sure.
 - [ ] **Trait bounds are checked only for a few traits.** `if t.derivable is None && !t.capability && len(t.params) == 0 { checked.insert }`, and blanket-implemented traits are then removed. `infer_call` checks bounds only `if contains(i.methods.checked, b.1)`.
   Where: compiler.check.methods_of (`checked`, ~1989), infer_call (5732), own_trait_of. Source: review checker. Confidence: sure.
 - [ ] **The type tables are rebuilt by nine entry points, and they disagree.** `type_errors_with` builds `types_of(code + all)` and `with_code(Methods { ..methods_of(all), local, own_traits, noallocs }, methods_of(code))`.
@@ -630,6 +632,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
   Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
+- [ ] **`build-a_mut_argument_read_by_another_stays_held_once` and `build-std_array` fail.** The first's memory report says `unique` where its golden has `unique.p`; the second's `verify` proves `chain` with 13 checks and `mean_of` with 6, where the case wants 6 and 3. On 61492e1d too.
+  Where: tests/cases (memory verdicts, verify check counts). Source: build-fails-on-errors PR. Confidence: sure.
 - [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
   Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
 - [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.
