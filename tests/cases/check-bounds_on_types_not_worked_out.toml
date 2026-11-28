@@ -1,0 +1,30 @@
+# A call's bound on a type parameter nothing determines (one the signature
+# doesn't use) is not passed: whether it holds isn't known, an error.
+
+[[step]]
+save = "p.strata"
+text = '''
+trait Named {
+  fn name(self) -> String
+}
+
+impl Named for Int {
+  fn name(self) -> String = "int"
+}
+
+fn unused[T: Named]() -> Int = 0
+
+fn call_unused() -> Int = unused()
+
+fn fine() -> Int = 0
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in call_unused: calling `unused`: the type `T` stands for isn't worked out, so whether it implements `Named` isn't known",
+]
+lacks = [
+  "error in fine",
+]

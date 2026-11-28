@@ -1,0 +1,78 @@
+# A wrong use of a value whose type holds a function is reported like any
+# other: the message writes the type with `printed`.
+
+[[step]]
+save = "f.strata"
+text = '''
+
+fn tried(p: (Int, (Int) -> Int)) -> Option[Int] {
+  _ := p?
+  None
+}
+
+fn excepted(p: (Int, (Int) -> Int)) -> Int {
+  _ := p !! 0
+  0
+}
+
+fn element(p: (Int, (Int) -> Int)) -> Int {
+  _ := p.5
+  0
+}
+
+fn pattern(xs: List[(Int) -> Int]) -> Int {
+  match xs {
+    Some(_) => 1,
+    None => 0,
+  }
+}
+
+fn negated(f: (Int) -> Int) -> Int {
+  _ := -f
+  0
+}
+
+fn multiplied(f: (Int) -> Int) -> Int {
+  _ := f * f
+  0
+}
+
+fn fallback(p: (Int, (Int) -> Int)) -> Int {
+  _ := p ?? 1
+  0
+}
+
+fn spec(f: (Int) -> Int) -> String = f"{f:.2}"
+
+fn assigned(f: (Int) -> Int) -> Int {
+  mut t := (1, f)
+  t[0] = 2
+  0
+}
+
+fn called(p: (Int, (Int) -> Int)) -> Int = p(1)
+
+fn builtin(f: (Int) -> Int) -> Int = len(f)
+
+fn fine(f: (Int) -> Int) -> Int = f(1)
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "check"]
+fails = true
+has = [
+  "error in tried: `?` needs an Option, found `(Int, (Int) -> Int)` (use `!` on a Result)",
+  "error in excepted: `except` / `!!` handle a Result, found `(Int, (Int) -> Int)`",
+  "error in element: tuple `(Int, (Int) -> Int)` has no element 5",
+  "error in pattern: pattern `Some`: expected `List[(Int) -> Int]`, found `Some`",
+  "error in negated: operand of `-` must be Int, Real or Float, found `(Int) -> Int`",
+  "error in multiplied: `*` needs Int, Real or Float operands, found `(Int) -> Int`",
+  "error in fallback: `or` / `??` handle an Option, found `(Int, (Int) -> Int)`",
+  "error in spec: format spec `.2`: `.N` applies to a Real or a Float (decimal places) or a String (most characters), not `(Int) -> Int`",
+  "error in assigned: `t[0] = …`: only a list's elements can be assigned, and `t` is a `(Int, (Int) -> Int)`",
+  "error in called: call to `p`: `(Int, (Int) -> Int)` is not a function",
+  "error in builtin: no version of `len` accepts ((Int) -> Int)",
+]
+lacks = [
+  "error in fine",
+]

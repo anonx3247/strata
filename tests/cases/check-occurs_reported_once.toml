@@ -1,0 +1,21 @@
+# A value applied to itself (`x -> x(x)`) gets one error, the occurs check's,
+# and no second mismatch for the same comparison.
+
+[[step]]
+save = "p.strata"
+text = '''
+fn selfish() -> Int {
+  f := x -> x(x)
+  0
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in selfish: a type that contains itself: `_` would be `(_) -> _`",
+]
+lacks = [
+  "expected `_`, found `(_) -> _`",
+]
