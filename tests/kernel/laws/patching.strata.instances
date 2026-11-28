@@ -1,0 +1,12 @@
+patched_empty	User	9ef1406c6bbe1e6b	failed	0
+patched_empty	Point	fbef850cfb6871f7	failed	0
+patched_empty	Patch[User]	21d6873b17ce9f37	failed	0
+patched_empty	Patch[Point]	3dfc83f7c637151b	failed	0
+patched_fields	User	ef901459e0a039f6	proven	2590000
+patched_fields	Point	721fdb6c35e3fc4d	proven	2539000
+patched_fields	Patch[User]	d127abe9ebcad768	proven	2606000
+patched_fields	Patch[Point]	68fda9d8ad24bbf1	proven	2591000
+applied_is_patched	User	1a4f3ea8de607e4a	proven	3541000
+applied_is_patched	Point	5e07b7fbf98c8d88	proven	3544000
+applied_is_patched	Patch[User]	2a910e847662e9dc	proven	3671000
+applied_is_patched	Patch[Point]	62333adec237b502	proven	3639000
