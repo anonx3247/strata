@@ -70,7 +70,10 @@ def inline(text):
 
 
 def table(rows):
-    cells = [[c.strip() for c in r.strip().strip("|").split("|")] for r in rows]
+    cells = [
+        [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", r.strip()[1:-1])]
+        for r in rows
+    ]
     head, body = cells[0], cells[2:]
     out = ['<div class="scroll"><table class="stack"><thead><tr>']
     out += ["<th>" + inline(c) + "</th>" for c in head]

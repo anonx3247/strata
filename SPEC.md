@@ -271,7 +271,7 @@ Each difference is a decision recorded in REBUILD.md.
 | markup `<p>…</p>`, three lexer modes | deferred: not in this spec until std.web needs it | not needed (deferred) |
 | `$` names in stored trees | no `$` at all | to try |
 | `;`, `++` punctuation | none | not needed (removal) |
-| no pipes | `a |> f` for `f(a)` | to try: trial 5, #661 |
+| no pipes | `a \|> f` for `f(a)` | to try: trial 5, #661 |
 | record updates written `T { ..r, f: v }` | `T { ...r, f: v }`, as spreads write `f(...p)` | to try |
 | some keywords contextual | every keyword reserved, proof steps included | to try: measure the names it breaks |
 | newline continues only before an operator or `.` | also after an operator, `,` or `{`, and before a continuing keyword | to try |
