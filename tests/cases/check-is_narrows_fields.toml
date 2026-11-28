@@ -1,0 +1,88 @@
+# `if p is V` narrows a field `p` (`t.status`, `d.front.status`) as `match`
+# does: to `V` in the branch taken, to the other variants in the other
+# branch of a lone `is`, unless the branch assigns it.
+
+[[step]]
+save = "p.strata"
+text = '''
+type Status = | Open | Closed { why: String }
+
+type Ticket = { id: Int, status: Status }
+
+type Desk = { front: Ticket }
+
+type Opts = { depth: Option[Int] }
+
+fn handled(o: Opts) -> Int {
+  if o.depth is Some {
+    o.depth ?? 0
+  } else {
+    1
+  }
+}
+
+fn reason(t: Ticket) -> String {
+  if t.status is Closed {
+    t.status.why
+  } else {
+    "open"
+  }
+}
+
+fn both(t: Ticket) -> String {
+  if t.status is Closed && t.id > 0 {
+    t.status.why
+  } else {
+    ""
+  }
+}
+
+fn other_branch(t: Ticket) -> String {
+  if t.status is Open {
+    ""
+  } else {
+    t.status.why
+  }
+}
+
+fn deep(d: Desk) -> String {
+  if d.front.status is Closed {
+    d.front.status.why
+  } else {
+    ""
+  }
+}
+
+fn wrong_branch(t: Ticket) -> String {
+  if t.status is Closed {
+    ""
+  } else {
+    t.status.why
+  }
+}
+
+fn reassigned(t: Ticket) -> String {
+  mut u := t
+  if u.status is Closed {
+    u.status = Open
+    u.status.why
+  } else {
+    ""
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in wrong_branch: variant `Open` has no field `why`",
+  "error in reassigned: `Open` has no field `why`, so not every `Status` does (match on it first)",
+]
+lacks = [
+  "error in reason",
+  "error in both",
+  "error in other_branch",
+  "error in deep",
+  "error in handled",
+]

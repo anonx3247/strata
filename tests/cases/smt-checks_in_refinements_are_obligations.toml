@@ -1,0 +1,33 @@
+# smt: a check inside a refinement (of a parameter's type, named or inline,
+# and of the result) is an obligation where the function assumes or
+# establishes it
+[[step]]
+save = "t.strata"
+text = '''
+type Head = List[Int] where it[0] > 0
+
+type Safe = List[Int] where len(it) > 0 && it[0] > 0
+
+fn takes_head(h: Head) -> Int = len(h)
+
+fn takes_safe(s: Safe) -> Int = len(s)
+
+fn inline(x: Int where 100 / it > 0) -> Int = x
+
+fn result_head(xs: List[Int]) -> Int where 100 / it == 100 / it = len(xs)
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn takes_head
+  refuted index in range
+fn takes_safe
+  proven index in range
+fn inline
+  refuted no division by zero
+fn result_head
+  refuted no division by zero
+  proven no division by zero
+  proven result of `result_head`: Int where 100 / it == 100 / it
+'''
