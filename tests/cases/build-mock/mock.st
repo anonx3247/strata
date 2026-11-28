@@ -18,7 +18,7 @@ trait Store {
 }
 
 fn main() {
-  mut s := mock Store
+  mut s := mock Store with random
   for _ in 0..20 {
     n := s.count()
     assert n >= 0

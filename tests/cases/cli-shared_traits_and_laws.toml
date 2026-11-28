@@ -118,7 +118,7 @@ fn never_both(q: Queue, id: Int) -> Bool
   true
 }
 test "the mock runs the model" {
-  mut q := mock Queue
+  mut q := mock Queue with model
   assert (mut q.enqueue(3)) == 1
   assert (mut q.enqueue(3)) == 0
   assert mut q.claim(3)

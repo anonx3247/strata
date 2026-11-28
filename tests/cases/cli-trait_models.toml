@@ -5,7 +5,7 @@
 # back; verify proves each impl against the trait's contracts through its
 # abstraction (a faithful one proven, one keeping the last order refuted)
 # and code over the trait through the model alone; contracts naming a model
-# are assumed (checked with `--check-assumed`); `mock Db` runs the model; the
+# are assumed (checked with `--check-assumed`); `mock Db with model` runs the model; the
 # errors (an impl without a model, an unknown one, a model in a body)
 [[step]]
 strata = ["--file", "m.strata", "edit"]
@@ -84,7 +84,7 @@ fn main() {
 }
 
 test "the mock runs the model" {
-  mut db := mock Db
+  mut db := mock Db with model
   mut db.save(7, Order { item: "pen", shipped: false })
   assert db.lookup(7) == Some(Order { item: "pen", shipped: false })
   assert ship(mut db, 7) is Ok
