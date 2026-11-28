@@ -195,7 +195,7 @@ h2{font-size:32px;line-height:1.1;letter-spacing:-.02em;margin:48px 0 12px;paddi
 h3{font-size:20px;margin:36px 0 8px}
 p,li{max-width:70ch}
 a{color:var(--blue)}
-code{font:14px/1.5 "JetBrains Mono",ui-monospace,monospace;font-variant-ligatures:none;overflow-wrap:anywhere}
+code{font:14px/1.5 "JetBrains Mono",ui-monospace,monospace;overflow-wrap:anywhere}
 :not(pre)>code{background:var(--code);padding:1px 4px;border-radius:3px}
 pre{background:var(--code);padding:14px 16px;border-radius:6px;overflow-x:auto}
 pre code{overflow-wrap:normal;white-space:pre}
