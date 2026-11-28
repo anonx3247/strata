@@ -60,7 +60,8 @@ def tokens(text):
             i = j + 1
         elif c == "|":
             j = text.index("|", i + 1)
-            yield text[i:j + 1]
+            inner = text[i + 1:j]
+            yield inner if re.fullmatch(r"[A-Za-z~!@$%^&*_+=<>.?/-][A-Za-z0-9~!@$%^&*_+=<>.?/-]*", inner) else text[i:j + 1]
             i = j + 1
         else:
             j = i
