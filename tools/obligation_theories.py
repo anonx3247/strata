@@ -11,6 +11,9 @@ dump), and DIR/done.tsv (package, module, exit code, seconds, peak memory).
         query also asked alone (`z3 -T:20 rlimit=2000000 -st`, the budget of a
         single query in compiler/smt)
     obligation_theories.py summary OUT.tsv MODULES.tsv [RUN]   the tables, as markdown
+    obligation_theories.py compare LABEL OUT.tsv MODULES.tsv ...   runs side by side
+        (the first the baseline): verdicts, classes, the quantified share, each
+        obligation proven in one and not the other, modules
 
 A query asked alone is timed from outside z3, less the time z3 takes to start
 and answer `(check-sat)`.
@@ -397,15 +400,17 @@ def single_what(script):
 
 def run_alone(path):
     t0 = time.monotonic()
+    err = ""
     try:
-        p = subprocess.run(["z3", "-T:20", "rlimit=2000000", "-st", path], capture_output=True, text=True, timeout=40)
-        out = p.stdout
+        p = subprocess.run(["/usr/bin/time", "-l", "z3", "-T:20", "rlimit=2000000", "-st", path], capture_output=True, text=True, timeout=40)
+        out, err = p.stdout, p.stderr
     except subprocess.TimeoutExpired:
         out = "timeout"
     wall = time.monotonic() - t0
     first = next((l.strip() for l in out.split("\n") if l.strip() and not l.startswith("(:") and not l.startswith("(error")), "")
     units = re.search(r":rlimit-count\s+(\d+)", out)
-    return first or "error", units.group(1) if units else "", f"{wall:.4f}"
+    instr = re.search(r"(\d+)\s+instructions retired", err)
+    return first or "error", units.group(1) if units else "", f"{wall:.4f}", instr.group(1) if instr else ""
 
 
 def outcome(a):
@@ -415,7 +420,7 @@ def outcome(a):
 
 
 COLS = ["package", "module", "fn", "kind", "closed_by", "class", "theories", "asserts", "outcome",
-        "lab_answer", "lab_units", "alone_answer", "alone_units", "alone_secs", "query", "what"]
+        "lab_answer", "lab_units", "alone_answer", "alone_units", "alone_secs", "query", "what", "alone_instr"]
 
 
 def collect(run, out_path, jobs=4):
@@ -494,10 +499,13 @@ def collect(run, out_path, jobs=4):
     with open(empty, "w") as f:
         f.write("(check-sat)\n")
     with ThreadPoolExecutor(int(jobs)) as ex:
-        base = sorted(float(x[2]) for x in ex.map(lambda _: run_alone(empty), range(40)))[20]
-        print(f"z3 started and answered `(check-sat)` in {base:.4f} s (the median of 40), taken off each time", file=sys.stderr)
-        for (r, p), (a, u, s) in zip(work, ex.map(lambda w: run_alone(w[1]), work)):
+        empties = list(ex.map(lambda _: run_alone(empty), range(40)))
+        base = sorted(float(x[2]) for x in empties)[20]
+        base_i = sorted(int(x[3] or 0) for x in empties)[20]
+        print(f"z3 started and answered `(check-sat)` in {base:.4f} s and {base_i} instructions (the medians of 40), taken off each query", file=sys.stderr)
+        for (r, p), (a, u, s, i) in zip(work, ex.map(lambda w: run_alone(w[1]), work)):
             r["alone_answer"], r["alone_units"], r["alone_secs"] = a, u, f"{max(0.0, float(s) - base):.4f}"
+            r["alone_instr"] = str(max(0, int(i) - base_i)) if i else ""
     with open(out_path, "w") as out:
         out.write("\t".join(COLS) + "\n")
         for r in rows:
@@ -613,9 +621,109 @@ def summary(path, modules_path, run=None):
         print(f"| {p} | {m} | {code}{flag} | {float(secs or 0):.0f} | {mb} | {len(o)} | {len(o) - len(s)} | {len(s)} | {len(rs) - len(o)} |")
 
 
+def load(path):
+    return [dict(zip(COLS, l.split("\t"))) for l in open(path).read().split("\n")[1:] if l]
+
+
+def obligation_keys(rows):
+    seen = {}
+    out = {}
+    for r in rows:
+        if r["kind"] == "other":
+            continue
+        k = (r["package"], r["module"], r["fn"], r["what"])
+        n = seen.get(k, 0)
+        seen[k] = n + 1
+        out[k + (n,)] = r
+    return out
+
+
+def verdict(r):
+    if r["closed_by"] != "solver":
+        return "proven"
+    return r["outcome"] if r["outcome"] in ("proven", "unknown", "refuted") else "rejected"
+
+
+def num(x):
+    try:
+        return float(x)
+    except ValueError:
+        return 0.0
+
+
+def compare(pairs):
+    """pairs: [(label, rows.tsv, modules.tsv)], the first the baseline."""
+    runs = [(label, load(t), m) for label, t, m in pairs]
+    labels = [l for l, _, _ in runs]
+    pkgs = ["core", "std", "compiler"]
+    print("Verdicts of the obligations (solver ones by the solver's answer; the rest proven without a query):\n")
+    print("| package | mode | obligations | solver | proven | unknown | refuted | rejected by z3 |")
+    print("|---|---|---|---|---|---|---|---|")
+    for p in pkgs + ["all"]:
+        for label, rows, _ in runs:
+            obl = [r for r in rows if r["kind"] != "other" and (p == "all" or r["package"] == p)]
+            sv = [r for r in obl if r["closed_by"] == "solver"]
+            c = lambda o: sum(1 for r in sv if verdict(r) == o)
+            print(f"| {p} | {label} | {len(obl)} | {len(sv)} | {c('proven')} | {c('unknown')} | {c('refuted')} | {c('rejected')} |")
+    print("\nSolver obligations and other scripts by class, each query asked alone (count, seconds, z3 instructions retired, z3 units):\n")
+    print("| class | " + " | ".join(f"{l} n | {l} s | {l} G instr | {l} M units" for l in labels) + " |")
+    print("|---|" + "---|" * (4 * len(labels)))
+    for part, pick in [("obligations", lambda r: r["kind"] != "other" and r["closed_by"] == "solver"),
+                       ("other scripts", lambda r: r["kind"] == "other")]:
+        for k in ROUGH + ["all"]:
+            cells = []
+            for label, rows, _ in runs:
+                rs = [r for r in rows if pick(r) and (k == "all" or r["class"] == k)]
+                cells.append(f"{len(rs)} | {sum(num(r['alone_secs']) for r in rs):.1f} | {sum(num(r.get('alone_instr') or '0') for r in rs) / 1e9:.1f} | {sum(num(r['alone_units']) for r in rs) / 1e6:.1f}")
+            if any(not c.startswith("0 |") for c in cells):
+                print(f"| {part}: {k} | " + " | ".join(cells) + " |")
+    print("\nQuantified share (class `quantifiers`: a `forall`, `exists`, `lambda` or recursive definition reached):\n")
+    print("| mode | obligations quantified | of their time | with patterns | other scripts quantified | of their time |")
+    print("|---|---|---|---|---|---|")
+    for label, rows, _ in runs:
+        sv = [r for r in rows if r["kind"] != "other" and r["closed_by"] == "solver"]
+        ot = [r for r in rows if r["kind"] == "other"]
+        q = [r for r in sv if r["class"] == "quantifiers"]
+        qo = [r for r in ot if r["class"] == "quantifiers"]
+        t = lambda rs: sum(num(r["alone_secs"]) for r in rs)
+        pat = sum(1 for r in q if "patterns" in r["theories"].split("+"))
+        print(f"| {label} | {len(q)} of {len(sv)} ({pct(len(q), len(sv))}) | {pct(t(q), t(sv))} | {pat} | {len(qo)} of {len(ot)} ({pct(len(qo), len(ot))}) | {pct(t(qo), t(ot))} |")
+    base = obligation_keys(runs[0][1])
+    for label, rows, _ in runs[1:]:
+        other = obligation_keys(rows)
+        lost = [(k, base[k], other.get(k)) for k in base if verdict(base[k]) == "proven" and (k not in other or verdict(other[k]) != "proven")]
+        won = [(k, base[k], other[k]) for k in other if k in base and verdict(base[k]) != "proven" and verdict(other[k]) == "proven"]
+        new = [k for k in other if k not in base]
+        print(f"\n{label} against {labels[0]}: {len(lost)} proven no longer proven, {len(won)} not proven now proven, {len(new)} obligations only in {label}, {len(base) - len(other) + len(new)} only in {labels[0]}.\n")
+        for name, xs in [("proven, no longer", lost), ("now proven", won)]:
+            for k, a, b in xs:
+                print(f"- {name}: {k[0]} {k[2]}: {k[3]} ({verdict(a)} -> {verdict(b) if b else 'absent'})")
+    print("\nModules (each run: seconds, strata's own CPU seconds with its reaped children, strata's own instructions retired; z3 runs in processes of its own):\n")
+    print("| package | module | " + " | ".join(f"{l} exit | {l} s | {l} cpu s | {l} G instr" for l in labels) + " |")
+    print("|---|---|" + "---|" * (4 * len(labels)))
+    tables = []
+    for label, _, m in runs:
+        t = {}
+        for l in open(m).read().split("\n"):
+            f = (l.split("\t") + [""] * 7)[:7]
+            if f[0] and f[0] != "package":
+                t[(f[0], f[1])] = f
+        tables.append(t)
+    for key in sorted(tables[0], key=lambda k: (pkgs.index(k[0]) if k[0] in pkgs else 9, k[1])):
+        cells = []
+        for t in tables:
+            f = t.get(key, [""] * 7)
+            flag = " (time limit)" if num(f[3]) >= 299 else ""
+            cells.append(f"{f[2]}{flag} | {num(f[3]):.0f} | {num(f[5]):.0f} | {num(f[6]) / 1e9:.0f}")
+        print(f"| {key[0]} | {key[1]} | " + " | ".join(cells) + " |")
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "collect":
         collect(sys.argv[2], sys.argv[3], *(sys.argv[4:5] or [4]))
     elif cmd == "summary":
         summary(sys.argv[2], sys.argv[3], *(sys.argv[4:5]))
+    elif cmd == "compare":
+        a = sys.argv[2:]
+        compare([tuple(a[i:i + 3]) for i in range(0, len(a), 3)])
