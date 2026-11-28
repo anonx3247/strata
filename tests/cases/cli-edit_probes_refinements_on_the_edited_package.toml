@@ -1,0 +1,45 @@
+# An edit's refinement probes run the package as edited, not as its files
+# held it before: an edit of `small` that breaks `five() -> Digit { 5 }`
+# is refused, and the files keep the `small` that `five` satisfies.
+
+[[step]]
+write = "strata.toml"
+text = '''
+name = "probes"
+'''
+
+[[step]]
+strata = ["edit", "main"]
+text = '''
+pub fn small(n: Int) -> Bool {
+  0 <= n && n < 10
+}
+
+pub type Digit = Int where small(it)
+
+pub fn five() -> Digit {
+  5
+}
+'''
+
+[[step]]
+strata = ["edit", "main"]
+text = '''
+pub fn small(n: Int) -> Bool {
+  0 <= n && n < 3
+}
+'''
+fails = true
+has = ["5 does not satisfy"]
+
+[[step]]
+strata = ["check"]
+has = ["ok"]
+
+[[step]]
+strata = ["edit", "main"]
+text = '''
+pub fn small(n: Int) -> Bool {
+  0 <= n && n < 20
+}
+'''
