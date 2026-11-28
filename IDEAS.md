@@ -155,6 +155,25 @@ Proposed (user asked, 2026-11-28; spec section 8; tried by lab-trials.md trial 1
 
 ## Memory and speed
 
+### Datatypes for the kernel from type values (user, 2026-11-28)
+The kernel's datatypes are made from the same `std.typing.Type` values as everything else ("Types are values"), by one ordinary function, replacing the type half of the lab's `kernel_translate`:
+```strata
+fn datatype_of(T: Type) -> DatatypeDefinition {
+  DatatypeDefinition {
+    name: T.name,
+    type_parameters: T.parameters,
+    variants: match T.kind {
+      Record => [(T.name, [for f in T.fields: logic_type(f.type)])],
+      Union => [for v in T.variants: (v.name, [for f in v.fields: logic_type(f.type)])],
+    },
+  }
+}
+```
+- A function over types whose result is a `Type` is written `type` (`Patch[T]`); one whose result is any other value is a `fn` (`datatype_of`). Both run at compile time; a `Type` parameter needs no `comptime`.
+- Made types (`Patch[User]`) become datatypes with no extra code.
+- `datatype_of` is untrusted; the kernel's `define_datatype` still checks what it is given (nesting it supports, an inhabited type) before stating any fact.
+- This gives laws per type. One law for every type (the Patch laws for every record `T`) needs the logic to talk about type values: records as maps from field names, `x.(f.name)` as a lookup. That is the Patch-laws trial's question.
+
 ### Self-compile in under a second
 `check` after a one-function edit is under a second; `build` after one is about 4 s. Left: keep resolver errors, lint and unused-definition results per definition; decode lazily or hold the trees in a long-running process; keep each definition's expanded and typed tree by its key; make `unique` and `kept_by` incremental over the call graph; reuse each function's IR; link packages with C through lld; compile std's library in parts. (user, 2026-11-24)
 
