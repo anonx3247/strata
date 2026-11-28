@@ -1,0 +1,90 @@
+# `strata new MODULE` stores the definitions piped in as `edit` does, their
+# `///` docs and the module's top comment with them: a new module at its
+# path, or added to one. A name the module has is refused, nothing written.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["new", "shop.shapes"]
+text = '''
+// Shapes and their areas.
+
+/// A rectangle's area.
+pub fn area(w: Int, h: Int) -> Int = w * h
+'''
+has = ["fn     shop.shapes.area         added"]
+
+[[step]]
+strata = ["view", "shop.shapes"]
+out = '''
+// Shapes and their areas.
+
+/// A rectangle's area.
+pub fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+'''
+
+[[step]]
+strata = ["new", "shop.shapes"]
+text = '''
+/// A square's area.
+pub fn square(s: Int) -> Int = s * s
+'''
+has = ["fn     shop.shapes.square       added"]
+
+[[step]]
+strata = ["view", "shop.shapes"]
+out = '''
+// Shapes and their areas.
+
+/// A rectangle's area.
+pub fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+
+/// A square's area.
+pub fn square(s: Int) -> Int {
+  s * s
+}
+'''
+
+[[step]]
+strata = ["new", "shop.shapes"]
+text = '''
+pub fn area(w: Int, h: Int) -> Int = w + h
+
+pub fn side() -> Int = 1
+'''
+code = 2
+has = ["error: `shop.shapes` already has `shop.shapes.area`: `new` only adds definitions (change one with `strata edit shop.shapes`)"]
+
+[[step]]
+strata = ["view", "shop.shapes"]
+lacks = ["side", "w + h"]
+
+[[step]]
+strata = ["new", "shop.orders", "Orders."]
+text = '''
+pub fn total() -> Int = 0
+'''
+code = 2
+has = ["unexpected argument `Orders.`"]
+
+[[step]]
+strata = ["new", "shop.orders"]
+code = 2
+has = ["nothing to put in `shop.orders`"]
+
+[[step]]
+strata = ["new", "Shop"]
+text = '''
+pub fn total() -> Int = 0
+'''
+code = 2
+has = ["`Shop` is not a module name"]
+
+[[step]]
+strata = ["view", "shop.orders"]
+fails = true

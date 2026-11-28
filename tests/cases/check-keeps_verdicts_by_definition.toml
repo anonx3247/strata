@@ -68,6 +68,21 @@ strata = ["check"]
 env = { STRATA_CACHE = "$TMP/cache" }
 has = ["warning: in `dropped`: `_ := r()` throws away a `Result`", "ok: 10 definitions check"]
 
+# compile-time values kept that don't decode (std's, read when std is
+# compiled again): computed again, and kept again
+[[step]]
+run = ["sh", "-c", "rm -r cache/std-library cache/std-library-of; for f in cache/comptime/*; do printf junk > \"$f\"; done; ls cache/comptime | grep -vc '.strata$'"]
+lacks = ["0"]
+
+[[step]]
+strata = ["check"]
+env = { STRATA_CACHE = "$TMP/cache" }
+has = ["ok: 10 definitions check"]
+
+[[step]]
+run = ["sh", "-c", "grep -l junk cache/comptime/* | wc -l | tr -d ' '"]
+out = "0\n"
+
 # a signature change: its caller is checked again
 [[step]]
 strata = ["--file", "orders.strata", "edit"]

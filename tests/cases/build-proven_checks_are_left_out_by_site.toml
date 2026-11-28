@@ -1,0 +1,27 @@
+# A check is left out only where `verify` proved it, site by site: the
+# index in `pick`'s body is proven, the one in its `requires` is not (the
+# solver proves nothing inside a contract), so that one stays and faults.
+[[step]]
+save = "t.strata"
+text = '''
+fn pick(xs: List[Int], j: Int) -> Int
+  requires len(xs) > 0
+  requires xs[if j == 123456789 { 7000000 } else { 0 }] != 999
+{
+  xs[0]
+}
+fn main() {
+  print(pick([4, 5], 1))
+  print(pick([4, 5], 123456789))
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "build", "-o", "p"]
+env = { STRATA_CACHE = "$TMP/cache" }
+any_code = true
+
+[[step]]
+run = ["./p"]
+code = 101
+has = ["4", "index 7000000 out of range (length 2)"]
