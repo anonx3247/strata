@@ -6,8 +6,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **Header `code_hash`, `interface_hash`, `deps` and `name` are never checked, but verify keys its cache on them.** A module header's `code_hash`, `interface_hash`, `deps` and `name` are never checked against the content, and hashes are trusted by default, but verify keys its cached verdicts on them.
   Where: binary.entry_with (compiler.binary.st:2243), binary.read_header_of; main.keys_over/closure_keys (compiler.main.st:7763–7810); binary.read, decode_module, decode_entry (`checked: false`). Source: review front-end. Confidence: likely.
-- [ ] **The dependency lists that verify keys on miss real dependencies.** ImplDef: walks method params, ret and body, but not `pre`/`post`, nor `i.bounds` or method bounds. An impl method's contract calling `helper` doesn't depend on `helper`.
-  Where: store.refs (compiler.store.st:137), store.ty, store.graph_from. Source: review front-end. Confidence: likely.
 - [ ] **Function values have no identity: calls with different function arguments are equated.** A function-typed parameter is `VFn { ret }` (`shape`: `FnType { ret, .. } => VFn { ret }`). It carries nothing else. In `call_key`, an argument `Var(n)` bound to a local is keyed by `debug(v)` (`is_fn` is false for a bound name).
   Where: smt.call_key (rendered .st ~9252), smt.same_call, smt.call (SeeThrough branch, memo reuse of lists), Val.VFn. Source: review prover. Confidence: likely.
 - [ ] **Function-typed parameters: results assumed valid, lambda arguments never checked.** `call_value` on a `VFn { ret }` makes `res := shape(ret)` and then `assume(check_type(ret, res, []))`. The callee therefore assumes a refined result (`(Int) -> Nat`).
@@ -16,12 +14,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: smt.rec_use, smt.define_fn (rec branch), smt.rec_call, smt.call (`contains(vc.methods.unfold, name)`). Source: review prover. Confidence: likely.
 - [ ] **Scalar merges are not shared: term text doubles at each conditional update.** `share` is applied to list lengths, arrays, tags and datatype terms (`merge` around 6289-6334, `share_deep`), but not to scalars. After `if c1 { x = x + 1 }`, x is `(ite c1 (+ x0 1) x0)`, with x0 twice.
   Where: smt.merge (`(VInt(x), VInt(y)) => VInt(ite(c, x, y))`, same for Bool and String), smt.branches_narrowed, smt.assign. Source: review prover. Confidence: likely.
-- [ ] **Own-method calls are never call-graph edges (std and core are never resolved).** Any `MethodCall` whose name is some type's own method is dropped from the call graph. The comment relies on `check.own_methods_resolved` having rewritten own-method calls to `Call(Var("T.m"))`.
-  Where: termination.calls_in (`own := ctx.methods.own_types.any(t -> t.1 == name); if !smaller && !own { call_name(...) }`), main.verified_decls. Source: review prover. Confidence: likely.
-- [ ] **Recursion through a function value is invisible to `structural`.** `struct_expr` records a recursive call only for `Call { callee: Var(n) }` or a `MethodCall` with `n` in `st.names`. Passing the function itself as a value (`apply(f, t)`) is a `Var` argument, which falls into `_ => ()`.
-  Where: termination.structural, termination.struct_expr. Source: review prover. Confidence: likely.
-- [ ] **`for` over an iterator: unknown sources and exhausted fuel count as finite.** Any iterator expression other than `map`/`filter`/`drop` over something known is judged finite. That includes a call returning an `Iterator`, `chain`, a field of an unknown record, or 8 levels of lets.
-  Where: termination.finite_source (`if fuel <= 0 { return true }`, `MethodCall … else { true }`, `_ => true`), termination.loop_start ("a value the encoder doesn't model (`""`) is taken to be a list"). Source: review prover. Confidence: likely.
 - [ ] **A long-running `verify_file` once reported a refuted edit as proven.** Repeated calls in one process returned "proven" for an edit with a counterexample. Cause not found; `run --live` uses a process per edit to avoid it.
   Where: verify_file. Source: ledger V2. Confidence: possible.
 - [ ] **Fuzz harness crashes on a function taking `mut Book` and returning a value.** SIGSEGV in the harness.
@@ -103,10 +95,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Type checker
 
-- [ ] **`unify` has no occurs check.** `TVar(x) => { if rb != ra { mut i.subst.insert(x, widened(rb)) } return true }`. Nothing checks whether `x` occurs in `rb`. `x -> x(x)` or `mut xs.push(xs)` binds `α := List[α]` or `α := Fn(α) -> β` with no error.
-  Where: compiler.check.unify (rendered compiler.check.st:4178). Source: review checker. Confidence: sure.
-- [ ] **A narrowed type accepts any value of its sum.** `fits` has arms for `(TNamed, TVariants)` and `(TVariants, TVariants)`, but `(TVariants, TNamed)` falls to `_ => unify(...)`, and `unify` widens both sides first (`ra := widened(res(i, a))`).
-  Where: compiler.check.fits (4007), join_union (4975), infer_if (4786). Source: review checker. Confidence: likely.
 - [ ] **Every variable matched anywhere in a function is `TAny` everywhere in it.** `narrowed: narrowed_in(f.body, {})` collects every `x` in any `match x` anywhere in the body, with no scopes.
   Where: compiler.check.var_type (4314), narrowed_in (2800), fn_inferred. Source: review checker. Confidence: sure.
 - [ ] **A field whose type is a sum or a union reads as `TAny`.** `if is_sum(i, t) || res(i, t) is TUnion { TAny } else { t }`. `order.status`, `p.1` of a tuple holding an `Option`, and any field of type `Option[T]` or `Result[T, E]` are untyped from then on.
@@ -127,16 +115,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker (ensures). Source: ledger C1 (#462). Confidence: sure.
 - [ ] **`stringify(x.to_json())` type-checks and crashes.** `to_json` returns a `Result`, yet the call passes `check`, then crashes with signal 10/11 in `std.json.stringify`.
   Where: checker (calls). Source: ledger C3 (#497). Confidence: likely.
-- [ ] **`unify` returns true when its fuel runs out.** `if fuel <= 0 { return true }`. Callers pass 100. Any pair of types nested more than 100 deep unifies, whatever they are. This is the same limit as the one above, now answering "yes".
-  Where: compiler.check.unify. Source: review checker. Confidence: sure.
 - [ ] **Generic type arguments are covariant everywhere, including contravariant positions.** `ok = ok && fits(mut i, was[k], gas[k])` for every argument of every named type. The comment justifies this by value semantics ("values are never shared").
   Where: compiler.check.fits, the `(TNamed, TNamed)` arm. Source: review checker. Confidence: likely.
-- [ ] **`implements` answers true for every type it doesn't model.** The last arm is `_ => true`. `TUnit`, `TFn`, `TUnion`, `TVar` and `TAny` all "implement" every trait, so `as_trait` accepts a function or `()` where a `Display`/`Json` trait value is wanted.
-  Where: compiler.check.implements (4072). Source: review checker. Confidence: sure.
-- [ ] **Any trait value fits any other trait.** `(TTrait(_), TTrait(_)) => return`. A `Shape` value passed where a `Json` value is expected is accepted, with no supertrait check.
-  Where: compiler.check.expect (4643). Source: review checker. Confidence: sure.
-- [ ] **Mismatches involving unprinted types are silently accepted.** The error is raised only when `(text_of(want), text_of(got))` are both `Some`. `text_of` is `None` for `TAny`, for a `TNamed` with a function-typed argument, and for a `TFn` inside a union.
-  Where: compiler.check.expect. Source: review checker. Confidence: sure.
 - [ ] **A union with any member it can't print becomes `TAny`.** `match shown(t) { Some(x) => …, None => return TAny }`. `Int | (Int) -> Int`, or a union with a generic record holding a function, is `TAny` everywhere it is written, so nothing typed with it is checked.
   Where: compiler.check.union_of (1755), join_union. Source: review checker. Confidence: sure.
 - [ ] **A field every member of a union (or every variant) has takes the last one's type.** Both loops do `out = Some(x)` for each member and never compare. The comments ("with the same type", and the IDEAS entry "a field all have, with one type, gets that type") claim a check the code doesn't make.
@@ -374,14 +354,12 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Runtime and core
 
-- [ ] **(memory) `threaded` flip inside an open arena sends allocations out of it (possible use-after-free).** `arena_now()` reads `heap` 296 when `threaded()`, else `rt_state` 272. An arena opened while tasks run is stored in `heap` 296 (`d,48 = 1`). Say an `await` inside that arena joins the last task: `join` then calls `set_threaded(0)`, and `arena_now()` reads 272 from then on.
-  Where: core.rt.arena_now, arena_put, strata_arena_begin, strata_memory_threaded, strata_memory_spawning. Source: review core-runtime. Confidence: possible.
+- [ ] **A test's start forgets the senders its thread holds, so a later `close` of one faults.** `strata_run_begin` calls `forget_senders()`, which drops this thread's `held` entries without closing them (`senders` stays up). A `close` of such a sender after the test began fails `unhold_sender` and faults with "`close` of a sender this task doesn't hold, or has closed already", and the channel's receivers never see it end.
+  Where: runtime.c forget_senders, strata_run_begin, strata_channel_close. Source: PR #621 (runtime-uaf). Confidence: likely.
 - [ ] **Per-thread free lists only go back when the thread ends (producer/consumer grows without bound).** A freeing thread pushes onto its own `heap` list. `refill` only takes from the shared list, and `strata_memory_thread_end` gives lists back at thread end. A consumer that frees what a producer allocated hoards the blocks, and the producer keeps carving new chunks.
   Where: core.rt.strata_free (threaded branch), refill, strata_memory_thread_end. Source: review core-runtime; ledger R3. Confidence: sure.
 - [ ] **(memory) `join` is not synchronized: double `pthread_join` and a wrong `live_tasks`.** `static void join(Task *t) { if (t->joined) return; pthread_join(t->thread, NULL); t->joined = 1; if (__atomic_sub_fetch(&live_tasks, 1, …) == 0) set_threaded(0); …}`.
   Where: runtime.c join (1535), strata_await (1621), strata_scope_end, strata_task_share. Source: review core-runtime. Confidence: likely.
-- [ ] **(memory) Use-after-free when a task drops an unclosed channel it made.** `strata_channel_new` calls `hold_sender(c)` on the creating thread. `strata_channel_drop` frees `c` when `--c->ends == 0` and doesn't remove `c` from `held`. At the task's end, `for (int64_t i = 0; i < nheld; i++) held[i]->senders--;` writes to the freed channel.
-  Where: runtime.c strata_channel_new (hold_sender), strata_channel_drop, task_main. Source: review core-runtime. Confidence: likely.
 - [ ] **(memory) `str_trim` makes a negative-length string on non-UTF-8 input (memory corruption).** The forward loop steps by the lead byte's length (`a += char_size(s, a)`) and decodes past the end. The backward loop steps back over continuation bytes and can end before `a`.
   Where: core.str.str_trim (core.str.st:158), str_part, str_alloc. Source: review core-runtime. Confidence: sure.
 - [ ] **Host strings are never checked to be UTF-8.** Each builds the `String` with `str_from(buf, len)` and no check. IDEAS.md "Known gaps": "`Files.read` (`host_read_file`) and `Console.read_line` don't check that the bytes are UTF-8 … it should be an `FsError`".
@@ -465,8 +443,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: std.unicode.is_alphabetic, is_white_space, is_alphanumeric, perl_word, perl_space, perl_digit. Source: review std. Confidence: sure.
 - [ ] **No timeouts and no connection limit.** `serve` spawns `answer(conn, handler)` for every accepted connection with no bound. The reads (`next_line`, `exact`) wait forever. A client that opens connections and sends nothing (slowloris) holds a task, which is an OS thread (IDEAS, Concurrency step 1), per connection.
   Where: std.http.serve, serve_connection, read_request. Source: review std. Confidence: sure.
-- [ ] **One failed `accept` stops the server.** `Err(e) => { stop = e; break }` on any `accept` error. Running out of file descriptors (EMFILE) or a connection aborted before accept (ECONNABORTED) is transient, yet it ends `serve` and returns.
-  Where: std.http.serve. Source: review std. Confidence: sure.
 - [ ] **`javascript:` URLs, `srcdoc` and `<script>` are allowed.** `AttrName` refuses only names matching `[oO][nN].*`. `href(url)` is `attr("href", url)` with no check. Recorded in IDEAS.md (Web UIs step 1: "Not yet: `javascript:` URLs in `href` are not rejected"), with no fix since.
   Where: std.web.href, src, attr, AttrName, TagName, element. Source: review std; ledger S5. Confidence: sure.
 - [ ] **`Real` columns are TEXT, so `CHECK`s and queries compare text.** A field `price: Real where 0 <= it && it <= 1000` gets the column `"price" TEXT … CHECK (0 <= "price" AND "price" <= 1000)`. In SQLite, comparing a TEXT-affinity column with an unaffiliated literal applies TEXT affinity to the literal, so this compares `'5' <= '1000'`, which is false.
@@ -475,8 +451,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: std.json.read_value (recursive). Source: review std. Confidence: likely.
 - [ ] **`encode` is quadratic for non-ASCII text.** `out = out + [192 + n / 64] + [128 + n % 64]`. This is reassignment rather than `push`, so each non-ASCII character copies the list built so far. It is used by `std.net.encode_bytes` (`write_bytes`, `read_bytes` defaults), `Files.read_bytes` and std.http, so sending a 1 MB non-ASCII body is O(n²).
   Where: std.utf8.encode. Source: review std. Confidence: likely.
-- [ ] **Request smuggling: `transfer-encoding` and `content-length` together.** `if contains(to_lower(get(headers, "transfer-encoding") ?? ""), "chunked") { return read_chunks(…) }`. A message with both headers is accepted and the connection is kept alive.
-  Where: std.http.read_body, start. Source: review std. Confidence: sure.
 - [ ] **Repeated headers are joined with commas.** `joined := … old + ", " + v`. `Set-Cookie` values can't be joined this way, because `Expires=Mon, 01 …` already holds a comma. On the way out, a `Dict` can't hold two `Set-Cookie` headers at all, so a server can't set two cookies.
   Where: std.http.read_headers; Request/Response `headers: Dict[String, String]`. Source: review std. Confidence: sure.
 - [ ] **A client `HEAD` request misreads the response.** `read_response` decides whether there is a body from the status alone (`status < 200 || status == 204 || status == 304`). For `HEAD`, it then waits for `content-length` bytes that never come.
@@ -542,12 +516,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Tools
 
-- [ ] **(data loss) A module file that doesn't decode is treated as empty, and an edit then overwrites it.** `decoded_files` maps a decode error to `[]` after a bare `print(e)` (`Some(Err(e)) => { print(e) [] }`). `decls_of` does the same. So `o.decls` has no definitions for that module.
-  Where: main.decoded_files, main.decls_of, main.package_decls → codebase.write_modules / codebase.module_bytes. Source: review tools. Confidence: likely.
-- [ ] **(data loss) `view` → `edit` loses the proof material of tests, trait default methods, capability methods and laws.** `proofs_hidden` is `rewrite_decl(d, e -> hidden_in(e))`, applied to every definition in `view` and the editor (main.st:14446, 22781).
-  Where: views.proofs_kept (views.st:758), views.proofs_hidden; main.apply_edit, main.edit_file, main.edit_in_editor. Source: review tools. Confidence: likely.
-- [ ] **(data loss) Renaming a trait method renames every same-named method and call site in the package.** For `kind == "method"`:
-  Where: refactor.renamed_decl (refactor.st ~517 and ~553). Source: review tools. Confidence: sure.
 - [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
   Where: main.abort_command, main.restore_files. Source: review tools. Confidence: sure.
 - [ ] **`strata update` is a test-internal command: it takes a DIR, not names, and always exits 0.** `low_level` makes `update` always the internal step (`… | "update" | … => true`). `update_deps` reads `dir := get(args, 0) ?? "."` and `names := drop(args, 1)`. Errors only `print("error: " + e)`, and `code` stays 0.

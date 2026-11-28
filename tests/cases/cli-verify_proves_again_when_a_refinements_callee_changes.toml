@@ -1,0 +1,44 @@
+# a refinement's predicate is part of what a proof relies on: `cap`'s
+# contract, read in the refinement of `x` (a parameter's type) and of
+# `Small` (a type's), weakened, both users are proven again and fail
+[[step]]
+save = "p.strata"
+text = '''
+fn cap() -> Int
+  ensures it <= 10
+{
+  10
+}
+type Small = Int where it < cap()
+fn by_param(x: Int where it < cap()) -> Int
+  ensures it < 11
+{
+  x
+}
+fn by_type(x: Small) -> Int
+  ensures it < 11
+{
+  x
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ by_param ", "✓ by_type "]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+fn cap() -> Int
+  ensures it <= 20
+{
+  20
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+fails = true
+has = ["✗ by_param ", "✗ by_type "]
+lacks = ["(cached)"]
