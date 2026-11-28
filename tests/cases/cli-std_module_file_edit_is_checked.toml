@@ -1,0 +1,29 @@
+# `--file std/io.strata edit` edits std's module as `--file std edit std.io`
+# does: checked as the package, and nothing written when it doesn't check
+
+[[step]]
+run = ["rsync", "-a", "--exclude", ".strata", "$ROOT/std/", "std/"]
+
+[[step]]
+run = ["cp", "std/io.strata", "io.before"]
+
+[[step]]
+strata = ["--file", "std/io.strata", "edit"]
+text = "pub fn shout(s: String) -> Int {\n  s + \"!\"\n}\n"
+fails = true
+has = ["expected `Int`, found `String`", "nothing was changed"]
+
+[[step]]
+run = ["cmp", "std/io.strata", "io.before"]
+
+[[step]]
+strata = ["--file", "std/io.strata", "edit"]
+text = "pub fn shout(s: String) -> String {\n  s + \"!\"\n}\n"
+has = ["std.io.shout"]
+
+[[step]]
+run = ["sh", "-c", "test ! -e std/strata.log && test ! -e std/io"]
+
+[[step]]
+strata = ["--file", "std", "view", "std.io.shout", "--level", "2"]
+has = ["pub fn shout(s: String) -> String"]
