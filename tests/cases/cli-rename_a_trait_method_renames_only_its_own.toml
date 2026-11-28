@@ -1,0 +1,95 @@
+# Renaming a trait's method renames that trait's method, its `impl`s'
+# methods and the calls the checker resolves to it, and nothing else of
+# that name: another trait's method, a type's own method and their calls
+# stay as they are.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "main.strata"
+text = '''
+pub trait Sized {
+  fn size(self) -> Int
+
+  fn doubled(self) -> Int {
+    self.size() * 2
+  }
+
+  law positive(x: Self) {
+    x.size() >= 0 || x.size() < 0
+  }
+}
+
+pub trait Weighed {
+  fn size(self) -> Int
+}
+
+pub type Line = { qty: Int }
+
+pub type Box = { kg: Int }
+
+pub type Cup = { ml: Int }
+
+impl Sized for Line {
+  fn size(self) -> Int {
+    self.qty
+  }
+}
+
+impl Weighed for Box {
+  fn size(self) -> Int {
+    self.kg
+  }
+}
+
+impl Cup {
+  fn size(self) -> Int {
+    self.ml
+  }
+}
+
+fn total[T: Sized](xs: List[T]) -> Int {
+  mut n := 0
+  for x in xs {
+    n += x.size()
+  }
+  n
+}
+
+fn all(l: Line, b: Box, c: Cup) -> Int {
+  l.size() + b.size() + c.size() + total([l])
+}
+
+test "sizes" {
+  assert all(Line { qty: 1 }, Box { kg: 2 }, Cup { ml: 3 }) == 7
+}
+'''
+
+# two traits have `size`: the rename must say which
+[[step]]
+strata = ["rename", "size", "measure"]
+fails = true
+has = ["`size` is a method of 2 traits: name the one to rename (Sized.size, Weighed.size)"]
+
+[[step]]
+strata = ["rename", "Sized.size", "measure"]
+has = ["renamed Sized.size → Sized.measure"]
+
+[[step]]
+strata = ["view", "main"]
+has = [
+  "  fn measure(self) -> Int\n",
+  "    self.measure() * 2",
+  "  law positive(x: Self): x.measure() >= 0 || x.measure() < 0",
+  "pub trait Weighed {\n  fn size(self) -> Int\n}",
+  "impl Sized for Line {\n  fn measure(self) -> Int {",
+  "impl Weighed for Box {\n  fn size(self) -> Int {",
+  "impl Cup {\n  fn size(self) -> Int {",
+  "    n += x.measure()",
+  "  l.measure() + b.size() + c.size() + total([l])",
+]
+
+[[step]]
+strata = ["test"]
+has = ["1 passed"]
