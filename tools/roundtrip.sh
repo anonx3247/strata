@@ -10,10 +10,13 @@
 # repository). --fix: a file that differs is stored again as its view reads
 # back, so that it holds the tree its text stands for (a doc rewrapped to the
 # width, a block of one expression as that expression).
+# --notation N: each file is viewed in notation N (`view --notation`).
 # Cost: one view and one edit per module; the edit checks the package.
 set -u
 strata=strata
+notation=""
 if [ "${1:-}" = "--strata" ]; then strata=$2; shift 2; fi
+if [ "${1:-}" = "--notation" ]; then notation=$2; shift 2; fi
 fix=false
 if [ "${1:-}" = "--fix" ]; then fix=true; shift; fi
 case "$strata" in /*) ;; */*) strata="$PWD/$strata" ;; esac
@@ -39,7 +42,7 @@ check_file() {
   count=$((count + 1))
   pkg=$(package_of "$f")
   if [ -z "$pkg" ]; then
-    "$strata" --file "$f" view main --proofs > "$tmp/a.st" 2> "$tmp/err" || { echo "FAIL $f: view: $(head -1 "$tmp/err")"; fails=$((fails + 1)); return; }
+    "$strata" --file "$f" view main --proofs --notation "$notation" > "$tmp/a.st" 2> "$tmp/err" || { echo "FAIL $f: view: $(head -1 "$tmp/err")"; fails=$((fails + 1)); return; }
     cp "$f" "$tmp/b.strata"
     "$strata" --file "$tmp/b.strata" edit --no-search < "$tmp/a.st" > "$tmp/err" 2>&1
     back="$tmp/b.strata"
@@ -53,7 +56,7 @@ check_file() {
       cp -cR "$pkg" "$copy" 2>/dev/null || cp -R "$pkg" "$copy"
       echo "$pkg" > "$tmp/pkg.from"
     fi
-    "$strata" --file "$pkg" view "$module" --proofs > "$tmp/a.st" 2> "$tmp/err" || { echo "FAIL $f: view: $(head -1 "$tmp/err")"; fails=$((fails + 1)); return; }
+    "$strata" --file "$pkg" view "$module" --proofs --notation "$notation" > "$tmp/a.st" 2> "$tmp/err" || { echo "FAIL $f: view: $(head -1 "$tmp/err")"; fails=$((fails + 1)); return; }
     "$strata" --file "$copy" edit "$module" --no-search < "$tmp/a.st" > "$tmp/err" 2>&1
     back="$copy/$rel"
     store() { "$strata" --file "$pkg" edit "$module" --no-search < "$tmp/a.st" > "$tmp/err" 2>&1; rm -rf "$copy"; }
