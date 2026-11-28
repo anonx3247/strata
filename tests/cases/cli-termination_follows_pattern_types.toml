@@ -1,0 +1,169 @@
+# termination follows the type of a value a pattern binds (a `match` arm, a
+# `let` pattern, a `for` over a list), of a builtin's result (`get(d, k) ??
+# []`), and of each binding of a name in its own scope, so a `for` over an
+# adapter of it is judged by that type; and a function that passes itself
+# to `any`, `map`, … of a list that is a piece of its parameter recurses on
+# smaller pieces
+[[step]]
+save = "t.strata"
+text = '''
+type Tree =
+  | Leaf(Int)
+  | Node(List[Tree])
+
+type Box[T] = { items: List[T], label: String }
+
+type Naturals = { at: Int }
+
+impl Iterator[Int] for Naturals {
+  fn next(mut self) -> Option[Int] {
+    self.at += 1
+    Some(self.at - 1)
+  }
+}
+
+type Source =
+  | Endless(Naturals)
+  | Fixed(List[Int])
+
+fn from_arm(t: Tree) -> Int {
+  match t {
+    Leaf(n) => n,
+    Node(ks) => {
+      mut s := 0
+      for (i, _) in enumerate(ks) {
+        s += i
+      }
+      s
+    },
+  }
+}
+
+fn from_generic_field(b: Box[Int]) -> Int {
+  mut s := 0
+  match b {
+    Box { items, .. } => {
+      for x in items.reversed() {
+        s += x
+      }
+    },
+  }
+  s
+}
+
+fn from_let_pattern(p: (List[Int], Int)) -> Int {
+  (xs, k) := p
+  mut s := k
+  for x in drop(xs, 1) {
+    s += x
+  }
+  s
+}
+
+fn from_endless(src: Source) -> Int {
+  match src {
+    Endless(it) => {
+      for (i, s) in it.enumerate() {
+        if s > 10 {
+          return i
+        }
+      }
+      0
+    },
+    Fixed(xs) => len(xs),
+  }
+}
+
+fn has_leaf(t: Tree) -> Bool {
+  match t {
+    Leaf(_) => true,
+    Node(ks) => ks.any(has_leaf),
+  }
+}
+
+fn sizes(t: Tree) -> List[Int] {
+  match t {
+    Leaf(n) => [n],
+    Node(ks) => ks.map(size),
+  }
+}
+
+fn size(t: Tree) -> Int {
+  match t {
+    Leaf(_) => 1,
+    Node(ks) => 1 + ks.map(size).fold(0, (a, b) -> a + b),
+  }
+}
+
+fn around(t: Tree) -> List[Tree] {
+  [Node([t])]
+}
+
+fn wrapped(t: Tree) -> Bool {
+  around(t).any(wrapped)
+}
+
+fn from_lookup(d: Dict[String, List[Int]], k: String) -> Int {
+  xs := get(d, k) ?? []
+  mut s := 0
+  for (i, _) in enumerate(xs) {
+    s += i
+  }
+  s
+}
+
+fn same_name_lists(t: Tree, b: Box[Int]) -> Int {
+  mut s := 0
+  match t {
+    Node(ys) => {
+      for (i, _) in enumerate(ys) {
+        s += i
+      }
+    },
+    Leaf(_) => match b {
+      Box { items: ys, .. } => {
+        for y in ys.reversed() {
+          s += y
+        }
+      },
+    },
+  }
+  s
+}
+
+fn same_name_endless(src: Source) -> Int {
+  match src {
+    Endless(xs) => {
+      for (i, x) in xs.enumerate() {
+        if x > 3 {
+          return i
+        }
+      }
+      0
+    },
+    Fixed(xs) => {
+      mut n := 0
+      for (i, _) in enumerate(xs) {
+        n += i
+      }
+      n
+    },
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--termination"]
+has = [
+  "fn from_arm\n  proven: no recursion",
+  "fn from_generic_field\n  proven: no recursion",
+  "fn from_let_pattern\n  proven: no recursion",
+  "fn from_endless\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
+  "fn has_leaf\n  proven: each recursive call gets a smaller piece of `t`",
+  "fn size\n  proven: each recursive call gets a smaller piece of `t`",
+  "fn sizes\n  proven: no recursion",
+  "fn wrapped\n  unknown: it passes itself to a builtin that calls it on the elements of a list, and no parameter was found that the list is a piece of",
+  "fn from_lookup\n  proven: no recursion",
+  "fn same_name_lists\n  proven: no recursion",
+  "fn same_name_endless\n  unknown: it has a `for` over an `Iterator` that isn't a `FiniteIterator`",
+]
