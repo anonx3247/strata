@@ -80,7 +80,7 @@ pub fn other() -> Int {
 
 [[step]]
 strata = ["history", "shapes.other"]
-has = ["working tree  uncommitted changes", "-   2", "+   3"]
+has = ["working tree  uncommitted changes", "~   [-2-]{+3+}"]
 
 [[step]]
 run = ["git", "commit", "-qam", "other is 3"]
