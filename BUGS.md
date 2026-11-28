@@ -511,6 +511,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Tools
 
+- [ ] **An edit of a function with a loop spends 8-15 s on its invariant search, even with nothing to search.** `search_invariants` runs `verify_program` with the changed functions as the selection, and `verify_inputs` re-reads and elaborates the whole package for it (`verified_decls`: desugar, `lambdas_typed`, `own_methods_resolved`, `elaborated`; about 8 s for compiler/). Termination is then analysed for what the targets reach (30 s for an 84-definition new module of lab-kernel's). The searches themselves are bounded (`edit_search_budget`).
+  Where: main.search_invariants, main.verify_inputs, main.verified_decls. Source: edit-speed PR. Confidence: sure (`STRATA_TIMINGS=1`: `verify: inputs`).
 - [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
   Where: main.abort_command, main.restore_files. Source: review tools. Confidence: sure.
 - [ ] **`strata update` is a test-internal command: it takes a DIR, not names, and always exits 0.** `low_level` makes `update` always the internal step (`… | "update" | … => true`). `update_deps` reads `dir := get(args, 0) ?? "."` and `names := drop(args, 1)`. Errors only `print("error: " + e)`, and `code` stays 0.
