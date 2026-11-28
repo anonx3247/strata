@@ -211,6 +211,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker. Source: ledger C21 (#416). Confidence: likely.
 - [ ] **`build --no-verify` prints no warnings.** Warnings are lost when verification is skipped.
   Where: build. Source: ledger C24 (#459). Confidence: possible.
+- [ ] **A union of type parameters given a union before they are fixed is refused.** `fn same[T, E](v: T | E, t: T, e: E)` called as `same(x, 0, "")` with `x: Int | String` is "a value of `Int` fits more than one member of `_ | _`": the arguments are checked in order, and when `v` is, `T` and `E` are still open. With `v` last it checks.
+  Where: check.members_fit / open_member (arguments unified in order in the call's inference). Source: generic-unions PR. Confidence: sure.
 
 ## Front end
 
@@ -622,6 +624,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: edit (pending changes). Source: ledger T15. Confidence: likely.
 - [ ] **A run killed by SIGKILL leaves its `smt/PID` folder.**
   Where: verify scratch. Source: ledger T23. Confidence: likely.
+- [ ] **`strata build` builds and exits 0 after a check error.** A program `strata check` refuses (stored with `edit --as-given`) is built: `build` prints the error, then "built prog", exit 0.
+  Where: build (driver). Source: generic-unions PR. Confidence: sure.
 
 ## Test cases failing on main
 
