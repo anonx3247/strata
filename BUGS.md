@@ -61,8 +61,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 - [ ] **Refined fields of recursive types make the solver reject checks; `Set[Value]` inside a recursive type can't be encoded.** STRATA-ISSUES.md (sql arms): "the solver itself reported this as its own bug" and "The SMT encoding rejects a `Set[Value]` inside the recursive expression type".
   Where: smt sorts / datatype declarations. Source: review prover; ledger V8, V9. Confidence: sure.
   Found again 2026-11-28 (prover-followups): a recursive type holding a `Set` or `Dict` keyed by itself (`type Value = | Num(Int) | Group(Set[Value])`) declares a datatype with a field `(Array |T:Value| Bool)`, which z3 refuses ("datatype is not co-variant"). It is answered unknown with that reason. In compiler/ it is 34 queries (finding, smt, binary: `main.header_command`, `main.call_command`, `finding.view_location`, `binary.encode_module_kept`). Giving such a field an opaque sort alone moves the error to a sort mix where the field is read as a set; the field needs a sort that names it (an uninterpreted sort with its own membership function), used wherever its values are read.
-- [ ] **`memory.lock_one` (examples/tasks) is no longer proven: its `assert model.locked(…) by …` makes the solver give up (61.6 G instructions against 26.7 G).** Proven by v0.5.0 (5f039e07) and by a build of 1799da47 (#617); not by v0.5.1 (f951fd6a), so it came with #559 (the format trio: stable ids, stored core, operators as trait calls). A smaller function with the same assert (`lock_probe`) shows it: 15.1 G and proven at 1799da47, 43.6 G and given up now. In the query, the `Entry { ..e, status: Running { by, until }, attempts: a.attempt }` built inside `locked` is merged with a fresh `Entry` (valid ? built : fresh); its `task` is now a record value (`VRec model.Task`) where it was a datatype term, so `merge` takes the fresh `Task` apart into its fields and the merged task is compared field by field (named strings) instead of as one `ite` of terms with `valid2`. Making the record one term in `merge` (`pure_term`) didn't help (64.9 G). Left: find where the `Task` became a record value (the update's lowering, `sugar.update_of`, or a field read after the operator change).
-  Where: smt.merge, smt.ctor, smt.check_type of a constructed refined record; examples/tasks/memory.lock_one. Source: prover-followups. Confidence: sure (bisected).
+- [ ] **A program's own type named `Task` is read as core's `Task[T]`.** In a single-file program, `type Task = { id: Id, kind: Kind, payload: Int }` held in another record gives "field `id` of a value of an unexpected shape" at every construction; renamed `Job`, the same code is proven. smt matches `"Task"` by bare name (`shape`, `unfold`, `from_term`: `"Task" => … get(args, 0) …`).
+  Where: smt.shape, smt.unfold, smt.from_term. Source: lock-one. Confidence: sure (renaming fixes it).
 - [ ] **`verify` loses the value under `x!` for capability or trait calls in std.** When `x` is a call on a capability or a trait inside std, the facts about `x!` are lost.
   Where: verify. Source: ledger V3 (#574). Confidence: likely.
 - [ ] **`verify` of a nine-arm type match over `std.agent.Chunk` goes past 8 GB.** Memory explodes in seconds.
@@ -233,8 +233,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: text.expr_text, text.wrap, text.prec → text.shorthand. Source: review front-end. Confidence: likely.
 - [ ] **Two sum types in one module with the same variant name collide silently.** `cq := qualified(m, v.name); mut table.insert(cq, item)`. No error is given; the last one wins in the table, in `children`, and in `store.graph_from`'s `ctor_types`.
   Where: resolve.names_of (compiler.resolve.st:1504–1509); derive.defs_of `ix.ctors` likewise. Source: review front-end. Confidence: likely.
-- [ ] **`from m use f` skips the foreign-function, host-builtin and privacy checks.** `check_name` (foreign, private, `host_` and mock rules) runs only when the name is not in `r.visible`. A name imported by `from m use f` is in `visible`, so only `test_only` runs.
-  Where: resolve.name (compiler.resolve.st:505–511), resolve.errors_from (2026–2050). Source: review front-end. Confidence: likely.
 - [ ] **Names made by desugaring are not hygienic.** IDEAS.md:2006: "a local or a function of that name takes them over… a top-level `fn at(…)` is called by `xs[i]` instead of the built-in." Desugar still emits plain `Var("at")` and the other names.
   Where: desugar.unsugared_node and sliced (`call("at"…)`, `range`, `slice`, `len`, `set_at`, `dict`, `set`, `map`, `filter`, `fold`). Source: review front-end; ledger F3. Confidence: sure.
 - [ ] **Foreign wrappers are recognised by the shape of their body, so a user function can be taken as assumed.** `Call { callee: Var(n), .. } => … if n == "std." + w + ".decoded" || n == "std." + w + ".finished"`. The doc says "`verify` takes it as assumed and never runs it".
@@ -247,8 +245,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: eval.method_for (compiler.eval.st:1672), eval.method_typed. Source: review front-end. Confidence: likely.
 - [ ] **Two definitions with the same header name share an entry.** Header names come from `decl_name`: `impl Foo`, `impl Show for Pt`, `test "x"`.
   Where: binary.encode_module_kept (`match get(kept, name)`), desugar.decl_name. Source: review front-end. Confidence: likely.
-- [ ] **In a module with `use binary`, `take(...)` resolves to the private `binary.take`.** A plain call of a builtin picks a private function of the same name from an imported module, and a private `fn slice` in one module captures `slice` calls in others.
-  Where: resolver. Source: ledger F4. Confidence: likely.
 - [ ] **Script `edit` accepts a `comptime` that `check` refuses.** `strata --file F edit` of a script stores a `comptime` that `check` then refuses.
   Where: edit. Source: ledger F8. Confidence: likely.
 - [ ] **Columns are in characters, except after a string, where they move by bytes; multi-line strings don't reset the column.** `lx.col += 2 + byte_len(s)`. The module doc says columns count characters. Inside a string `\n` bumps `lx.line` but never resets `lx.col`, and an escape counts as one character instead of two.
@@ -629,8 +625,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
 - [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
   Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
-- [ ] **`cli-tasks_port_checks_tests_and_verifies` fails.** `memory.lock_one` isn't proven (the prover follow-up work).
-  Where: examples/tasks. Source: main-cases PR. Confidence: sure.
 - [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.
   Where: tests/cases, the SMT terms work (#616). Source: main-cases PR. Confidence: sure.
 - [ ] **`cli-smt_proves_sums_over_lists` fails.** `bounded` (`ensures it <= 10 * len(xs)`, a sum of elements under 10) is not proven: "a possible counterexample it could not express". On ecf3c860 too.
@@ -708,7 +702,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [Derives on functions] `verify` of examples/wasm reports `std.json.decode_as.for.Summary.10` refuted (decoder crashes on an integer too large for a Float); a release can't target wasm.
 - [Derived traits, comptime] Reading the i-th element when `i` is known only at compile time; "more than one `List` field" not reported; `setting(..)` reads no strata.toml.
 - [The strata command in Strata] The checker misses some errors once an import fails; verifying `codegen.read_slot` crashes (raw reads at arbitrary addresses).
-- [Long-term goal: self-hosting] (old notes, may be stale) A list of `Option[Int]` and `Option[Float]` makes LLVM refuse the IR; a private function captures calls to a built-in of the same name in other modules; `verify` stack-overflowed on nested closures over lists; `strata --file F edit` accepts a `comptime` `check` refuses; regex captures and `find` not supported by the VM.
+- [Long-term goal: self-hosting] (old notes, may be stale) A list of `Option[Int]` and `Option[Float]` makes LLVM refuse the IR; `verify` stack-overflowed on nested closures over lists; `strata --file F edit` accepts a `comptime` `check` refuses; regex captures and `find` not supported by the VM.
 - [Concurrency] O(threads) look per blocking wait; `compiler/check` doesn't look inside `select`/`race`; `close` on every path not checked; `Task` not in written types.
 - [Error handling, strings and mutation] In-place updates not for paths deeper than one field, sums with several variants, or a `mut` field.
 - [Mutation at the call site] (issue) A `mut` argument is decided to be passed by reference without overlap, but each goes through its own slot, copied in and out.
@@ -725,7 +719,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [std.collections] A lambda in a record field with no type wanted at all gets `()` parameters and LLVM rejects the IR.
 - [Floats in the prover] The section's "Left, in order" list is not carried here: check it in git.
 - [Known gaps] `float_from_bits` gives infinities; `Files.read`/`Console.read_line` don't check UTF-8; `d[k]` not accepted; a `_` type left in codegen makes `==` and hashing skip that part.
-- [Known gaps] Lab-fleet checker bugs: `"\r"` is a backslash and `r`; a trait and a type with one name pass check but codegen fails; mixed-union narrowing on verify's path; unknown types in a definition stored before its import aren't reported; non-exhaustive errors on the wrong function after a rejected edit; errors labelled by short name; `use binary` makes `take(...)` resolve to private `binary.take`; a `List` and a `String` overload let `xs["a"]` pass (fixed on std-math only).
+- [Known gaps] Lab-fleet checker bugs: `"\r"` is a backslash and `r`; a trait and a type with one name pass check but codegen fails; mixed-union narrowing on verify's path; unknown types in a definition stored before its import aren't reported; non-exhaustive errors on the wrong function after a rejected edit; errors labelled by short name; a `List` and a `String` overload let `xs["a"]` pass (fixed on std-math only).
 - [Known gaps] Lab-fleet codegen bugs: `Ok(())` pattern doesn't compile; `Shop.line(s, x)` doesn't compile; a `U64` match with literal `0` crashed; `parallel.map` with allocating functions crashed (cause found, fixed); producer/consumer programs grow without bound (per-thread free lists); every std-linked program counts as supervising; integer literals >= 2^62 re-parsed each time; the JIT never frees modules.
 - [Known gaps] Messages: an unknown error for an unused/typo `from std.io use Console`; `type Answer = Some(Int) | None` says "unknown type None".
 
