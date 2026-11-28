@@ -304,8 +304,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: codegen (run-time checks). Source: ledger G5 (#570). Confidence: likely.
 - [ ] **A union holding a tuple returned by a call prints its first element.** `let u: Int | (Int, Int) = dm(8, 3)` prints `2`.
   Where: codegen (unions). Source: ledger G9 (#542). Confidence: likely.
-- [ ] **`roots` looks callees up by short name and doesn't see the `impl`s' methods.** compiler/roots (the `--memory-sites` verdicts) keeps its own `candidates` and `by_short` lookups, as unique did before it resolved callees, and codegen gives it the functions without the `impl`s' methods (with them its by-name lookup made every `len(..)` of a temporary keep it). A local closure takes a top-level function's verdict, and a call that runs an `impl` method is not seen.
-  Where: roots.candidates, roots.callees, codegen.generate (`verdicts(own, ...)`). Source: unique-callees PR. Confidence: likely.
 - [ ] **A `for i in a..b` counter adds 1 to the raw word, also when `a` is a big integer.** The counting path takes `lo` and `hi` as `Int` words, with no test that they are small. A big `Int` is a handle outside [-2^62, 2^62) (runtime.c `big_at`), so `add 1` turns it into another handle.
   Where: codegen.for_loop (st:15315, 15405 `{next} = add i64 {i}, 1`). Source: review codegen. Confidence: likely.
 - [ ] **A Float's hash is its bits, but `==` is `fcmp oeq`.** `0.0 == -0.0` holds, but their hashes differ. So a `Set[Float]` can hold both, and a `Dict` lookup of `-0.0` can miss the key `0.0`.
