@@ -31,5 +31,5 @@ fn first_ok(xs: List[Box]) -> Bool
 '''
 
 [[step]]
-run = ["sh", "-c", "cd \"$TMP\" && STRATA_CACHE=\"$TMP/cache\" perl -e \"alarm 60; exec @ARGV\" \"$STRATA\" --file ids.strata verify --no-cache 2>&1"]
+run = ["sh", "-c", "cd \"$TMP\" && perl -e \"alarm 60; exec @ARGV\" \"$STRATA\" --file ids.strata verify --no-cache 2>&1"]
 has = ["first_ok                 proven (5 checks)"]
