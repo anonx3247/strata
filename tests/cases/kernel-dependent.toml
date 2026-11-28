@@ -52,3 +52,9 @@ has = [
   "instance Address.patched_empty",
 ]
 lacks = ["laws for every record: ", "ACCEPTED"]
+
+# a law resting on Z3 (`--z3-arith`) rests on the dependent kernel's `oracle`
+[[step]]
+strata = ["kernel", "check", "--dependent", "--z3-arith", "$ROOT/tests/kernel/proofs/tactics.kp"]
+has = ["dependent: proven omega_step", "[assumed: oracle]", "dependent: 13 checked"]
+lacks = ["dependent: failed"]
