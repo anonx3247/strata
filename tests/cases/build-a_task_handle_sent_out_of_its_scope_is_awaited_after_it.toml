@@ -1,0 +1,18 @@
+# A task's handle sent on a channel made outside its scope is awaited after
+# the scope ended: the task is kept for that `await` (it read freed memory).
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+strata = ["build", "main.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+env = { MallocScribble = "1" }
+memory = true
+stdout = "2997\n"
+
+[[step]]
+strata = ["run", "main.strata"]
+stdout = "2997\n"
