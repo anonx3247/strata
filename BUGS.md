@@ -211,6 +211,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: build. Source: ledger C24 (#459). Confidence: possible.
 - [ ] **A decimal literal beside `abs` of a `Float` is typed as a `Real`.** In `a := abs(k); a > 1.0` (and `max(abs(k), 1.0)`, `max(1.0, abs(k))`) with `k: Float`, the checker writes `1.0` as a `Real` literal (`Real { num, den }`), so smt reads it as an unknown `Real` beside a `Float` ("a value of an unexpected shape") and `max(abs(k), 1.0) >= 1.0` is not proven. `max(k, 1.0)` and `max(abs(k), float(1))` are. std.array's `Array.scale` writes `float(1)` for that reason.
   Where: the checker's typing of a decimal literal next to an overloaded builtin's result (`abs`: Int, Float, Real); smt.eval_expr (`CtorExpr { name: "Real", .. }`), smt.as_real. Source: contract-obligations PR. Confidence: likely.
+- [ ] **A union of type parameters given a union before they are fixed is refused.** `fn same[T, E](v: T | E, t: T, e: E)` called as `same(x, 0, "")` with `x: Int | String` is "a value of `Int` fits more than one member of `_ | _`": the arguments are checked in order, and when `v` is, `T` and `E` are still open. With `v` last it checks.
+  Where: check.members_fit / open_member (arguments unified in order in the call's inference). Source: generic-unions PR. Confidence: sure.
 
 ## Front end
 
@@ -622,6 +624,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: edit (pending changes). Source: ledger T15. Confidence: likely.
 - [ ] **A run killed by SIGKILL leaves its `smt/PID` folder.**
   Where: verify scratch. Source: ledger T23. Confidence: likely.
+- [ ] **`strata build` builds and exits 0 after a check error.** A program `strata check` refuses (stored with `edit --as-given`) is built: `build` prints the error, then "built prog", exit 0.
+  Where: build (driver). Source: generic-unions PR. Confidence: sure.
 
 ## Test cases failing on main
 
