@@ -1,0 +1,85 @@
+-- One proof per tactic, to show each makes kernel steps.
+
+strata {
+type Color = | Red | Green | Blue
+
+fn next(c: Color) -> Color {
+  match c {
+    Red => Green,
+    Green => Blue,
+    Blue => Red,
+  }
+}
+}
+
+@[simp] theorem append_nil[A](xs: List[A]): xs + [] == xs := by
+  induction xs with
+  | nil => simp
+  | cons x xs ih => simp [ih]
+
+-- cases on a datatype
+theorem next_three(c: Color): next(next(next(c))) == c := by
+  cases c with
+  | Red => simp
+  | Green => simp
+  | Blue => simp
+
+-- intro, cases on `&&`, constructor, exact
+theorem and_swap(p: Bool, q: Bool): p && q ==> q && p := by
+  intro h
+  cases h with
+  | intro hp hq =>
+    constructor
+    exact hq
+    exact hp
+
+-- cases on `||`, left, right
+theorem or_swap(p: Bool, q: Bool): p || q ==> q || p := by
+  intro h
+  cases h with
+  | inl hp => right; exact hp
+  | inr hq => left; exact hq
+
+-- by_cases
+theorem middle(p: Bool): p || !p := by
+  by_cases h : p
+  left; exact h
+  right; exact h
+
+-- rw with a hypothesis
+theorem rw_hyp[A](xs: List[A], ys: List[A]): xs == ys ==> xs.reversed() == ys.reversed() := by
+  intro h
+  rw [h]
+
+-- rw with a lemma, right to left
+theorem rw_back[A](xs: List[A]): xs.reversed() == (xs + []).reversed() := by
+  rw [append_nil]
+
+-- calc
+theorem calc_steps[A](xs: List[A]): (xs + []) + [] == xs := by
+  calc (xs + []) + [] == xs + [] := by rw [append_nil]
+    _ == xs := by exact append_nil(xs)
+
+-- omega
+theorem omega_step(a: Int, b: Int): a < b ==> a + 1 <= b := by
+  intro h
+  omega
+
+-- apply, leaving a premise as a goal
+theorem le_trans(a: Int, b: Int, c: Int): a <= b && b <= c ==> a <= c := by
+  intro h
+  omega
+
+theorem apply_step(x: Int): x <= x + 2 := by
+  apply le_trans(x, x + 1)
+  omega
+
+-- rfl
+theorem rfl_step(x: Int): x + 1 == x + 1 := by
+  rfl
+
+-- induction, simp, then omega on what is left
+theorem len_snoc[A](xs: List[A], y: A): len(xs + [y]) == len(xs) + 1 := by
+  induction xs with
+  | nil => simp
+  | cons x xs ih => simp [ih]

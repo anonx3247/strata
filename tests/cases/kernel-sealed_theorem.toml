@@ -1,0 +1,44 @@
+# The kernel's `Theorem` is `pub distinct type Theorem = Sealed` over a
+# private sum: another module can't build or change one (the LCF rule)
+[[step]]
+write = "strata.toml"
+text = "name = \"lcf\"\n"
+
+[[step]]
+module = "k"
+into = "."
+text = '''
+type Sealed = | Sealed(Int)
+pub distinct type Thm = Sealed
+pub fn axiom() -> Thm = Thm(Sealed(0))
+pub fn value(t: Thm) -> Int = match t.value { Sealed(c) => c }
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+use k
+fn main() {
+  print(k.value(k.Thm(k.Sealed(1))))
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["`k.Sealed` is private to module `k`"]
+
+[[step]]
+save = "main.strata"
+text = '''
+use k
+fn main() {
+  t := k.axiom()
+  print(match t.value { Sealed(c) => c })
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["`Sealed` is private to module `k`"]

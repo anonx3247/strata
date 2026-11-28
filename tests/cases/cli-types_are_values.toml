@@ -1,0 +1,299 @@
+# types as values (lab trial, REBUILD.md "Types are values"): a type function
+# (`type Patch[T: Record] = e`), made types used by name (`Patch[User] { .. }`),
+# `x.(e)` read and written, `T.make(for f in T.fields: e)`, blanket impls over a
+# kind (`impl[T: Record] Tr for T`), and their errors
+
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+from std.typing use Type, Field, Record
+
+type Change[T] =
+  | Keep
+  | Set(T)
+
+/// Every field of `T` as a change, kept by default.
+type Patch[T: Record] = Record { fields: [for f in T.fields: Field { name: f.name, type: Change[f.type], default: Keep }] }
+
+/// Values changed by a patch `P`.
+trait Patchable[P] {
+  fn patched(self, p: P) -> Self
+  fn apply(mut self, p: P)
+}
+
+impl[T: Record] Patchable[Patch[T]] for T {
+  fn patched(self, p: Patch[T]) -> T {
+    T.make(for f in T.fields: match p.(f.name) {
+      Keep => self.(f.name),
+      Set(v) => v,
+    })
+  }
+  fn apply(mut self, p: Patch[T]) {
+    comptime for f in T.fields {
+      match p.(f.name) {
+        Keep => (),
+        Set(v) => {
+          self.(f.name) = v
+        },
+      }
+    }
+  }
+}
+
+type User = { name: String, title: Option[String], age: Int }
+
+type Point = { x: Int, y: Int }
+
+fn main() {
+  bob := User { name: "Bob", title: Some("Dr"), age: 40 }
+  print(bob.patched(Patch[User] { title: Set(None) }))
+  print(bob.patched(Patch[User] {}))
+  mut b := bob
+  mut b.apply(Patch[User] { age: Set(41), name: Set("Rob") })
+  print(b)
+  print(Point { x: 1, y: 2 }.patched(Patch[Point] { y: Set(5) }))
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "run"]
+stdout = '''
+User { name: "Bob", title: None, age: 40 }
+User { name: "Bob", title: Some("Dr"), age: 40 }
+User { name: "Rob", title: Some("Dr"), age: 41 }
+Point { x: 1, y: 5 }
+'''
+
+# the sugar is shown back as written
+[[step]]
+strata = ["--file", "p.strata", "view", "main"]
+has = ["type Patch[T: Record] = Record {", "type: Change[f.type], default: Keep", "match p.(f.name) {", "self.(f.name) = v", "Patch[User] { title: Set(None) }"]
+
+# an impl for one of the types a blanket impl covers overlaps it
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+impl Patchable[Patch[Point]] for Point {
+  fn patched(self, p: Patch[Point]) -> Point {
+    self
+  }
+  fn apply(mut self, p: Patch[Point]) {
+    ()
+  }
+}
+'''
+fails = true
+has = ["`impl[T: Record] Patchable[Patch[T]] for T` overlaps `impl Patchable[Patch[Point]] for Point` (in the root module): both give `Patchable` to `Point`; overlapping impls are forbidden"]
+
+# so does another blanket impl of the trait for the same kind
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+impl[U: Record] Patchable[Patch[U]] for U {
+  fn patched(self, p: Patch[U]) -> U {
+    self
+  }
+  fn apply(mut self, p: Patch[U]) {
+    ()
+  }
+}
+'''
+fails = true
+has = ["overlaps `impl[T: Record] Patchable[Patch[T]] for T` (in the root module): both give `Patchable` to every Record"]
+
+# a type function's argument must be of its kind
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+fn ints(p: Patch[Int]) -> Int {
+  1
+}
+'''
+fails = true
+has = ["`Patch[Int]`: `Int` isn't a Record"]
+
+# a loop whose body reads a different field per element must be `comptime for`
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+impl[T: Record] Patchable[Patch[T]] for T {
+  fn patched(self, p: Patch[T]) -> T {
+    self
+  }
+  fn apply(mut self, p: Patch[T]) {
+    for f in T.fields {
+      match p.(f.name) {
+        Keep => (),
+        Set(v) => {
+          self.(f.name) = v
+        },
+      }
+    }
+  }
+}
+'''
+fails = true
+has = ["error in impl Patchable[Patch[T]] for T: deriving `apply`: `for f in T.fields` runs once at run time, but its body differs per element (it reads a field named by `f`): write `comptime for`"]
+lacks = ["for `User`", "for `Point`"]
+
+# a type made later gets the blanket impl where it is used
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+fn nested(p: Patch[Patch[Point]]) -> Patch[Point] {
+  Patch[Point] {}.patched(p)
+}
+
+fn main() {
+  print(nested(Patch[Patch[Point]] { y: Set(Set(4)) }).y)
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "run"]
+stdout = "Set(4)\n"
+
+# a blanket impl lives in its trait's package
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+impl[T: Record] Debug for T {
+  fn debug(self) -> String {
+    "x"
+  }
+}
+'''
+fails = true
+has = ["`impl[T: Record] Debug for T` is outside `Debug`'s package (`core`): a blanket impl is part of its trait and lives in the trait's package"]
+
+# `comptime for` over a list not known while compiling
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+fn total(xs: List[Int]) -> Int {
+  mut n := 0
+  comptime for x in xs {
+    n += x
+  }
+  n
+}
+'''
+fails = true
+has = ["the list of a `comptime for` must be known at compile time: unknown variable `xs`"]
+
+[[step]]
+strata = ["--file", "c.strata", "edit"]
+text = '''
+fn total() -> Int {
+  mut n := 0
+  comptime for x in [1, 2, 3] {
+    n += x
+  }
+  n
+}
+
+fn main() {
+  print(total())
+}
+'''
+
+[[step]]
+strata = ["--file", "c.strata", "run"]
+stdout = "6\n"
+
+# `Debug` ported to a generic impl (`Show`): one per kind
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+from std.typing use Record, Union, Atom, implements, compile_error
+
+/// A value written as code, like `Debug`.
+trait Show {
+  fn show(self) -> String
+}
+
+impl Show for Int {
+  fn show(self) -> String {
+    to_string(self)
+  }
+}
+
+impl Show for String {
+  fn show(self) -> String {
+    debug(self)
+  }
+}
+
+impl Show for Bool {
+  fn show(self) -> String {
+    to_string(self)
+  }
+}
+
+impl[T: Record] Show for T {
+  fn show(self) -> String {
+    mut parts := []
+    comptime for f in T.fields {
+      if comptime !implements(f.type, "Show") {
+        compile_error(f"field `{f.name}`: `{f.type.written}` doesn't implement `Show`")
+      }
+      mut parts.push(f.name + ": " + self.(f.name).show())
+    }
+    (comptime T.name ?? "") + " { " + join(parts, ", ") + " }"
+  }
+}
+
+impl[U: Union] Show for U {
+  fn show(self) -> String {
+    match self {
+      m => if comptime m.kind is Atom {
+        comptime m.name ?? ""
+      } else {
+        (comptime m.name ?? "") + "(" + self.0.show() + ")"
+      } for m in U.members,
+    }
+  }
+}
+
+type Point = { x: Int, y: Int }
+
+type Shape =
+  | Dot
+  | Circle(Int)
+
+type Pin = { at: Point, label: String, on: Bool, shape: Shape }
+
+fn main() {
+  print(Pin { at: Point { x: 1, y: 2 }, label: "home", on: true, shape: Circle(3) }.show())
+  print(Dot.show())
+}
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "run"]
+stdout = '''
+Pin { at: Point { x: 1, y: 2 }, label: "home", on: true, shape: Circle(3) }
+Dot
+'''
+
+# a record whose field's type lacks the trait: no impl, and no error until
+# it is used
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+type Tagged = { id: Int, tags: List[String] }
+
+fn count(t: Tagged) -> Int {
+  len(t.tags) + t.id
+}
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+fn shown(t: Tagged) -> String {
+  t.show()
+}
+'''
+fails = true
+has = ["error in shown: calling `show`: `Tagged` does not implement `Show`: deriving `show`: field `tags`: `List[String]` doesn't implement `Show`"]

@@ -1,0 +1,75 @@
+-- sort over any Ord: `sorted` gives a sorted list with the same counts (a
+-- permutation), from Ord's laws alone (Lean's syntax).
+
+strata {
+fn is_sorted_by[A: Ord](xs: List[A]) -> Bool {
+  match xs {
+    [] => true,
+    [x, ..rest] => match rest {
+      [] => true,
+      [y, ..more] => x <= y && is_sorted_by(rest),
+    },
+  }
+}
+
+fn count_of[A](x: A, xs: List[A]) -> Int {
+  match xs {
+    [] => 0,
+    [y, ..rest] => if x == y {
+      1 + count_of(x, rest)
+    } else {
+      count_of(x, rest)
+    },
+  }
+}
+}
+
+theorem ord_asym[A: Ord](a: A, b: A): a < b ==> !(b < a) := by
+  intro h1 h2
+  apply irreflexive(a)
+  exact transitive(a, b, a)(h1)(h2)
+
+theorem sorted_two[A: Ord](y: A, z: A, zs: List[A]): is_sorted_by([y, z] + zs) == (y <= z && is_sorted_by([z] + zs)) := by
+  simp
+
+theorem insert_sorted_sorted[A: Ord](x: A, xs: List[A]): is_sorted_by(xs) ==> is_sorted_by(insert_sorted(x, xs)) := by
+  induction xs with
+  | nil => intro h; simp
+  | cons y ys ih =>
+    intro h
+    by_cases hx : x <= y
+    simp [hx, h]
+    cases ys with
+    | nil =>
+      simp [hx]
+      try exact ord_asym(y, x)(hx)
+    | cons z zs =>
+      rw [sorted_two] at h
+      cases h with
+      | intro h1 h2 =>
+        have r := ih(x)(h2)
+        by_cases hz : x <= z
+        simp [hx, hz, sorted_two, h2]
+        try exact ord_asym(y, x)(hx)
+        simp [hz] at r
+        simp [hx, hz, sorted_two, h1, r]
+
+theorem sorted_is_sorted_by[A: Ord](xs: List[A]): is_sorted_by(xs.sorted()) := by
+  induction xs with
+  | nil => simp
+  | cons x rest ih =>
+    simp
+    exact insert_sorted_sorted(x, rest.sorted())(ih)
+
+theorem count_insert[A: Ord](z: A, x: A, xs: List[A]): count_of(z, insert_sorted(x, xs)) == (if z == x { 1 } else { 0 }) + count_of(z, xs) := by
+  induction xs with
+  | nil => simp
+  | cons y ys ih =>
+    by_cases hx : x <= y
+    simp [hx]
+    simp [hx, ih]
+
+theorem sorted_count_of[A: Ord](z: A, xs: List[A]): count_of(z, xs.sorted()) == count_of(z, xs) := by
+  induction xs with
+  | nil => simp
+  | cons x rest ih => simp [count_insert, ih]

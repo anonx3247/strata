@@ -1,0 +1,9 @@
+-- The laws that follow from Ord's (core/models.strata, `OrdLaws`), proven
+-- once here from `irreflexive` and `transitive`. Each is a fact in every
+-- proof bounded by `Ord` (simplify uses it), never a hypothesis or an
+-- obligation of an `impl`.
+
+theorem ord.asymmetric[A: Ord](a: A, b: A): a < b ==> !(b < a) := by
+  intro h1 h2
+  apply irreflexive(a)
+  exact transitive(a, b, a)(h1)(h2)

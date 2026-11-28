@@ -329,6 +329,11 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 - [ ] **A private std name imported while std is read as headers is "unknown variable".** With std read as precompiled headers (`edit` without `--as-given`), `from std.json use hex_digit` gives "unknown variable `hex_digit`": the header lacks the name, and `use_errors_from` drops "module `std.…` has no …". `strata check` names it as private.
   Where: resolve.use_errors_from, std headers. Source: PR #651. Confidence: sure.
 
+- [ ] **A private function hides a built-in of the same name in other modules.** With `fn join(a: Int, b: Int)` private in module `a`, `join(["x"], ",")` in a module that uses `a` is "`join` is private to module `a`". In `compiler/`, a private `kernel.join` (in no module's imports) made `smt.type_key`'s `join` resolve to it ("call to `kernel.join`, argument 1: expected `kernel.Basis`"); the same for private `call`, `statement` and `binary` against `codegen.call`, `parse.statement` and `check.binary`. Adding the private function to `a` after the user is accepted, as the edit re-checks only `a`.
+  Where: resolve.check_name (the loop over `r.imports` with an unqualified name), the checker's lookup of builtins by name. Source: lab-kernel trial. Confidence: reproduced.
+- [ ] **A record private to a module can be changed outside it.** Another module can't name `a.Sequent`, but `{ ..t.value, c: 5 }` (an update of a value of it) and `mut s := t.value; s.c = 7` both check and run, so a `pub distinct type` over a private record isn't opaque. A private sum is (no updates, and its variants can't be named): `kernel.Theorem` uses one.
+  Where: check.infer_update, the `Assign` of a field in check. Source: lab-kernel trial. Confidence: reproduced.
+
 ## Code generation
 
 - [ ] **(memory) `extern c` `mut String` parameter: the buffer is freed before it is read back.** For `p.mutable` with `ct.kind == "str"`, the `strata_cstr` copy goes in the out slot and is also pushed to `frees`. After the call, `for c in frees { … strata_cstr_free(c) }` runs before `for (l, ct, slot, old) in outs { raw := load slot; from_c(raw …) }`.

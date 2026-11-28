@@ -1,0 +1,67 @@
+# strata kernel check: core/int.kp's lemmas and the proof scripts in
+# tests/kernel prove, by kernel steps alone; a failed step names its tactic
+# and goal; the goal sets (Lean's syntax and laws as Strata) have no failures
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/lists.kp"]
+has = ["core/int.kp: 37 lemmas proven", "proven reversed_reversed", "4 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/tactics.kp"]
+has = ["proven calc_steps", "proven omega_step", "13 proven, 0 failed, 0 open"]
+lacks = ["assumed"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/features.kp"]
+has = ["proven eta", "proven facts_simplified", "proven bullets", "proven split_named", "proven try_after", "proven conj_premise", "6 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/laws/patterns.strata"]
+has = ["proven left_size_is", "proven size_pos", "2 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/generic_sort.kp"]
+has = ["proven sorted_is_sorted_by", "proven sorted_count_of", "6 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/laws/proven.strata", "$ROOT/tests/kernel/laws/insertion.strata"]
+has = ["proven leaves_all_pos", "proven sorted_count_of", "proven len_nonneg", "[assumed: refinement: len]", "20 proven, 0 failed, 0 open", "proven insert_keeps_sorted", "1 proven, 0 failed, 2 open"]
+
+# a type a type function makes (`Patch[User]`) is a datatype, and Patch's
+# laws hold for every record (a record as a map from its field names)
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/types/patch_user.strata", "$ROOT/tests/kernel/types/patch_laws.strata"]
+has = ["proven patched_empty", "3 proven, 0 failed, 0 open", "proven applied_is_patched", "6 proven, 0 failed, 0 open"]
+lacks = ["failed "]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/goals/patch_user.strata", "$ROOT/tests/kernel/goals/patch_laws.strata"]
+has = ["0 proven, 0 failed, 3 open", "0 proven, 0 failed, 6 open"]
+lacks = ["failed "]
+
+[[step]]
+strata = ["kernel", "check", "--z3-arith", "$ROOT/tests/kernel/proofs/tactics.kp"]
+has = ["proven omega_step", "[assumed: z3, 1 solver calls]", "13 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/goals/lists.kp", "$ROOT/tests/kernel/goals/eq_ord.kp", "$ROOT/tests/kernel/goals/generic.kp", "$ROOT/tests/kernel/goals/exprs.kp"]
+has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 0 failed, 4 open", "0 proven, 0 failed, 3 open"]
+lacks = ["note:", "failed "]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/laws/lists.strata", "$ROOT/tests/kernel/laws/eq_ord.strata", "$ROOT/tests/kernel/laws/generic.strata", "$ROOT/tests/kernel/laws/exprs.strata"]
+has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 0 failed, 4 open", "0 proven, 0 failed, 3 open"]
+lacks = ["note:", "failed "]
+
+[[step]]
+write = "bad.kp"
+text = '''
+theorem len_snoc[A](xs: List[A], y: A): len(xs + [y]) == len(xs) + 1 := by
+  induction xs with
+  | nil => simp
+  | cons x xs ih => simp
+'''
+
+[[step]]
+strata = ["kernel", "check", "bad.kp"]
+code = 1
+has = ["failed len_snoc", "`induction` failed: unsolved goals:", "case cons", "(`len_snoc` may be called here on `xs`: it is `ih`)", "⊢ len(xs + [y]) + 1 == len(xs) + 2"]
