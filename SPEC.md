@@ -56,7 +56,7 @@ The keywords are reserved: none of them can be an identifier anywhere, including
 | control | `if` `else` `match` `while` `for` `in` `loop` `return` `break` `continue` `assert` `except` `or` |
 | values | `true` `false` `is` `self` `Self` `it` `old` |
 | tasks | `spawn` `scope` `await` `select` `race` |
-| contracts | `requires` `ensures` `holds` `invariant` `decreases` `where` `by` |
+| contracts | `requires` `ensures` `holds` `invariant` `decreases` `where` `assumed` `by` |
 | proof steps | `calc` `simplify` `once` `unfold` `witness` `arithmetic` `nonlinear` `bits` `compute` `auto` |
 
 The groups are only for reading; every keyword is reserved alike. Arenas, roots and frozen values are library functions (`std.memory`), not keywords; section 10 decides whether any of them becomes a block with a keyword.
