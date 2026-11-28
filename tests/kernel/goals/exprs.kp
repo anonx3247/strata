@@ -1,0 +1,50 @@
+-- Nested and mutual datatypes: a list of the type inside it (`List[Expr]`)
+-- is a datatype of its own (`List_Expr`) defined with it, and functions on
+-- the two recurse into each other. `Expr` is a slice of the compiler's own
+-- tree (compiler/ast.strata).
+
+strata {
+type BinOp = | Add | Sub | Mul
+
+type UnOp = | Neg | Not
+
+type Expr =
+  | IntLit(Int)
+  | BoolLit(Bool)
+  | Var(String)
+  | ListExpr(List[Expr])
+  | Call { callee: Expr, args: List[Expr] }
+  | Binary { op: BinOp, left: Expr, right: Expr }
+  | Unary { op: UnOp, operand: Expr }
+  | IfExpr { cond: Expr, then: Expr, otherwise: Expr }
+
+/// The nodes of `e`.
+fn nodes(e: Expr) -> Int {
+  match e {
+    IntLit(_) => 1,
+    BoolLit(_) => 1,
+    Var(_) => 1,
+    ListExpr(xs) => 1 + nodes_all(xs),
+    Call { callee, args } => 1 + nodes(callee) + nodes_all(args),
+    Binary { left, right, .. } => 1 + nodes(left) + nodes(right),
+    Unary { operand, .. } => 1 + nodes(operand),
+    IfExpr { cond, then, otherwise } => 1 + nodes(cond) + nodes(then) + nodes(otherwise),
+  }
+}
+
+fn nodes_all(es: List[Expr]) -> Int {
+  match es {
+    [] => 0,
+    [x, ..rest] => nodes(x) + nodes_all(rest),
+  }
+}
+}
+
+mutual
+theorem nodes_pos(e: Expr): nodes(e) >= 1 := by
+theorem nodes_all_nonneg(es: List[Expr]): nodes_all(es) >= 0 := by
+end
+
+theorem nodes_not(e: Expr): nodes(Unary { op: Not, operand: e }) == nodes(e) + 1 := by
+
+theorem nodes_call_one(f: Expr, x: Expr): nodes(Call { callee: f, args: [x] }) == 1 + nodes(f) + nodes(x) := by

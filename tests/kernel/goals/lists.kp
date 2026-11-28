@@ -1,6 +1,7 @@
 -- std's list functions: `len`, `+`, `reversed`, `map` and `sorted` are
--- built-ins written in C, so the logic has models of them (the prelude,
--- `strata kernel goals` shows it); the laws below are about those models.
+-- built-ins written in C, so the logic has models of them, written in Strata
+-- in core/models.strata and tied to the builtins by `assumed` contracts; the
+-- laws below are about those models.
 
 strata {
 /// Each element at most the next.
@@ -71,3 +72,10 @@ theorem sorted_is_sorted(xs: List[Int]): is_sorted(xs.sorted()) := by
 theorem count_sorted(x: Int, xs: List[Int]): count(x, xs.sorted()) == count(x, xs) := by
 
 theorem twice.ensures := by
+
+-- refinements: `len` returns a `Natural`, an assumed fact
+theorem len_nonneg[A](xs: List[A]): len(xs) >= 0 := by
+
+theorem len_sorted_nonneg(xs: List[Int]): len(xs.sorted()) >= 0 := by
+
+theorem natural_add(a: Natural, b: Natural): a + b >= a := by

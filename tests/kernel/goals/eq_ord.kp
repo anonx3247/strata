@@ -44,3 +44,16 @@ theorem task_lt_irrefl(t: Task): !(t < t) := by
 theorem task_lt_trans(s: Task, t: Task, u: Task): s < t && t < u ==> s < u := by
 
 theorem task_total(s: Task, t: Task): s < t || s == t || t < s := by
+
+-- each `impl Ord`'s obligations: Ord's laws (core/models.strata, `OrdLaws`)
+theorem Priority.irreflexive := by
+
+theorem Priority.transitive := by
+
+theorem Priority.total := by
+
+theorem Task.irreflexive := by
+
+theorem Task.transitive := by
+
+theorem Task.total := by
