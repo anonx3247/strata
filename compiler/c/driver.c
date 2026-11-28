@@ -382,3 +382,10 @@ int32_t driver_keep_shared(int32_t on) {
   strata_memory_keep_shared(on != 0);
   return 0;
 }
+
+// The reader's setting for named arguments at calls (`STRATA_NAMED=1`):
+// 1 when on, else 0.
+int32_t driver_named_args(void) {
+  const char *v = getenv("STRATA_NAMED");
+  return v != NULL && v[0] == '1' ? 1 : 0;
+}
