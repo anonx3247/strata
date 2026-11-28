@@ -1,0 +1,109 @@
+# A record type that isn't `pub` is closed outside its module: another module
+# can hold its values and pass them back, but not read, build, update or
+# assign its fields, so the invariant its module's functions keep holds
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "acct.strata"
+text = '''
+type Account = { balance: Int }
+
+pub type Note = { text: String }
+
+pub fn open() -> Account = Account { balance: 0 }
+
+pub fn deposit(a: Account, n: Natural) -> Account = { ..a, balance: a.balance + n }
+
+pub fn balance(a: Account) -> Int = a.balance
+'''
+
+# building one: refused
+[[step]]
+save = "main.strata"
+text = '''
+use acct
+
+fn main() {
+  print(acct.balance(acct.Account { balance: -5 }))
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["error in main: `acct.Account` is private to module `acct`"]
+
+# updating one
+[[step]]
+save = "main.strata"
+text = '''
+use acct
+
+fn main() {
+  a := acct.open()
+  b := { ..a, balance: -5 }
+  print(acct.balance(b))
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["error in main: `acct.Account` is private to module `acct`, so its fields can't be read or changed outside it"]
+
+# assigning a field
+[[step]]
+save = "main.strata"
+text = '''
+use acct
+
+fn main() {
+  mut a := acct.open()
+  a.balance = -5
+  print(acct.balance(a))
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["error in main: `acct.Account` is private to module `acct`, so its fields can't be read or changed outside it"]
+
+# reading a field
+[[step]]
+save = "main.strata"
+text = '''
+use acct
+
+fn main() {
+  a := acct.open()
+  print(a.balance)
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["error in main: `acct.Account` is private to module `acct`, so its fields can't be read or changed outside it"]
+
+# through the module's functions, and a `pub` record's fields: allowed
+[[step]]
+save = "main.strata"
+text = '''
+use acct
+
+fn main() {
+  a := acct.deposit(acct.open(), 3)
+  print(acct.balance(a))
+  n := acct.Note { text: "a" }
+  mut m := { ..n, text: "b" }
+  m.text = m.text + "c"
+  print(m.text)
+}
+'''
+
+[[step]]
+strata = ["run"]
+out = "3\nbc\n"

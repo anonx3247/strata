@@ -1,0 +1,38 @@
+# A value that fits more than one member of a union, where its own type
+# isn't worked out (`[]` for `List[Int] | List[String]`), is an error: which
+# member it is isn't known. One member that fits is taken.
+
+[[step]]
+save = "p.strata"
+text = '''
+fn lists(_x: List[Int] | List[String]) -> Int = 0
+
+fn options(_x: Option[Int] | Option[String]) -> Int = 0
+
+fn open_one[T](_m: List[T] | Option[T]) -> Int = 0
+
+fn empty_list() -> Int = lists([])
+
+fn no_value() -> Int = options(None)
+
+fn fine() -> Int {
+  a := lists([1])
+  b := lists(["s"])
+  c := options(Some(1))
+  d := open_one(["s"])
+  e := open_one(Some(2))
+  a + b + c + d + e
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in empty_list: a value of `List[_]` fits more than one member of `List[Int] | List[String]`",
+  "error in no_value: a value of `Option[_]` fits more than one member of `Option[Int] | Option[String]`",
+]
+lacks = [
+  "error in fine",
+  "expected `List[Int] | List[String]`",
+]
