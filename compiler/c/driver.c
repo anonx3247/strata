@@ -389,3 +389,9 @@ int32_t driver_named_args(void) {
   const char *v = getenv("STRATA_NAMED");
   return v != NULL && v[0] >= '0' && v[0] <= '9' ? v[0] - '0' : 0;
 }
+
+// The reader's setting for pipes (`STRATA_PIPES=1`): 1 when on, else 0.
+int32_t driver_pipes(void) {
+  const char *v = getenv("STRATA_PIPES");
+  return v != NULL && v[0] == '1' ? 1 : 0;
+}
