@@ -1,0 +1,35 @@
+# A script's edit runs its refinement probes on the script as edited: an
+# edit of `small` that breaks `five() -> Digit { 5 }` is refused, and the
+# file keeps the `small` that `five` satisfies.
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+fn small(n: Int) -> Bool {
+  0 <= n && n < 10
+}
+
+type Digit = Int where small(it)
+
+fn five() -> Digit {
+  5
+}
+
+fn main() {
+  print(five())
+}
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+fn small(n: Int) -> Bool {
+  0 <= n && n < 3
+}
+'''
+fails = true
+has = ["5 does not satisfy"]
+
+[[step]]
+strata = ["--file", "s.strata", "check"]
+has = ["ok"]
