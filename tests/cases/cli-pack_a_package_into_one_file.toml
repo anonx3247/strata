@@ -1,16 +1,20 @@
 # cli.rs: pack_a_package_into_one_file: a package is a folder of module files;
 # `pack` makes one bundle of it, which every command reads like the package
+# as many definitions as the package checks
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "pack", "tasks.strata"]
-has = ["69 definitions"]
+run = ["sh", "-c", "$STRATA --file $ROOT/examples/tasks check 2>&1 | sed -n 's/^ok: \\([0-9]*\\) definitions check.*/\\1/p' > count"]
+
+[[step]]
+run = ["sh", "-c", "$STRATA --file $ROOT/examples/tasks pack tasks.strata | grep -c \"^wrote tasks.strata: $(cat count) definitions\""]
+out = "1\n"
 
 [[step]]
 run = ["head", "-c", "6", "tasks.strata"]
 stdout = "STRATA"
 
 [[step]]
-strata = ["--file", "tasks.strata", "check"]
-has = ["69 definitions check"]
+run = ["sh", "-c", "$STRATA --file tasks.strata check 2>&1 | grep -c \"^ok: $(cat count) definitions check\""]
+out = "1\n"
 
 [[step]]
 strata = ["--file", "tasks.strata", "test"]
@@ -21,19 +25,20 @@ has = ["0 failed"]
 strata = ["header", "$ROOT/examples/tasks/model.strata"]
 has = ["module model:", "uses "]
 
-# rendered back as text, module by module, it is the package's text
+# rendered back as text, module by module, it is the package's text with
+# its proofs (`--split` leaves none out)
 [[step]]
 strata = ["--file", "tasks.strata", "view", "--split", "out"]
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "view", "model"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "model", "--proofs"]
 out_file = "out/model.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "view", "memory"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "memory", "--proofs"]
 out_file = "out/memory.st"
 
 [[step]]
-strata = ["--file", "$ROOT/examples/tasks", "view", "print"]
+strata = ["--file", "$ROOT/examples/tasks", "view", "print", "--proofs"]
 out_file = "out/print.st"
 
