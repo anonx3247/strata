@@ -124,14 +124,16 @@ fn extend(n: Int) -> Int {
   len(xs) + byte_len(s) + len(o.inner.xs) + byte_len(o.inner.s) + o.n
 }
 
-/// A dict of lists, of records, and of dicts (the inner dict taken out of
-/// the outer one before it changes).
+/// A dict of lists (a list read out of it pushed to), of records, and of
+/// dicts (the inner dict taken out of the outer one before it changes).
 fn containers(n: Int) -> Int {
   mut lists := Dict[Int, List[Int]] {}
   mut accs := Dict[Int, Acc] {}
   mut dicts := Dict[Int, Dict[Int, Int]] {}
   for i in 0..n {
-    mut lists.insert(i % 10, (get(lists, i % 10) ?? []) + [i])
+    mut xs := get(lists, i % 10) ?? []
+    mut xs.push(i)
+    mut lists.insert(i % 10, xs)
     a := get(accs, i % 100) ?? Acc { n: 0, total: 0 }
     mut accs.insert(i % 100, Acc { n: a.n + 1, total: a.total + i })
     mut inner := get(dicts, i % 10) ?? Dict[Int, Int] {}

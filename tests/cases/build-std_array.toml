@@ -26,4 +26,4 @@ from = "proofs.st"
 [[step]]
 strata = ["verify", "proofs.strata"]
 code = 1
-has = ["✓ square                   proven (3 checks)", "✓ chain                    proven (6 checks)", "✓ mean_of                  proven (3 checks)", "✗ mismatch                 Requires violation (found by the solver)", "precondition of `std.array.Array.matmul` violated"]
+has = ["✓ square                   proven (3 checks)", "✓ chain                    proven (13 checks)", "✓ mean_of                  proven (6 checks)", "✗ mismatch                 Requires violation (found by the solver)", "precondition of `std.array.Array.matmul` violated"]
