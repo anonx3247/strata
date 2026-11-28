@@ -99,7 +99,7 @@ has = [
   "warning: `dead_fn` is never used (remove it with `strata fix`, or make it `pub`)",
   "warning: `Dead` is never used",
   "warning: `shapes.twice` is never used",
-  "warning: field `unused_field` of `Point` is never read (remove it, or name it `_unused_field`)",
+  "warning: field `unused_field` of `Point` is never read (remove it)",
   "warning: variant `Blue` of `Color` is never built, only matched (remove it)",
   "ok: ",
 ]

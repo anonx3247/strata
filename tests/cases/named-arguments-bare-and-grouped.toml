@@ -1,0 +1,61 @@
+# Named arguments (lab trial, `STRATA_NAMED=1`): parameters named `_x`
+# anywhere before the named ones are passed without a name, in order; a
+# `_x` after a named one is an error at the declaration; `a, b: T` is
+# sugar for `a: T, b: T`, and the named printer groups such runs.
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+env = { STRATA_NAMED = "1" }
+text = '''
+fn clamp(_x, lo, hi: Int) -> Int {
+  max(min(_x, hi), lo)
+}
+
+fn between(_a, _b: Int, mut log: List[String], strict: Bool = false) -> Bool {
+  mut log.push(x: f"{_a} {_b}")
+  _a < _b || !strict && _a == _b
+}
+
+fn main() {
+  mut log := []
+  hi := 10
+  print(clamp(15, lo: 0, hi))
+  print(between(1, 1, mut log))
+  print(between(1, 1, mut log, strict: true))
+  print(log)
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "run"]
+out = "10\ntrue\nfalse\n[\"1 1\", \"1 1\"]\n"
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+env = { STRATA_NAMED = "1" }
+has = ["fn clamp(_x, lo, hi: Int) -> Int", "fn between(_a, _b: Int, mut log: List[String], strict: Bool = false) -> Bool", "clamp(15, lo: 0, hi)", "max(min(_x, hi), lo)"]
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+has = ["fn clamp(_x: Int, lo: Int, hi: Int) -> Int", "clamp(15, 0, hi)"]
+
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+env = { STRATA_NAMED = "1" }
+fails = true
+has = ["a default belongs to one parameter: give `b` its own type"]
+text = '''
+fn shared(a, b: Int = 0) -> Int {
+  a + b
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+env = { STRATA_NAMED = "1" }
+fails = true
+has = ["`late`: `_b` is written without a name at calls, so it comes before the parameters written with theirs"]
+text = '''
+fn late(a: Int, _b: Int) -> Int {
+  a + _b
+}
+'''
