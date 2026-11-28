@@ -581,11 +581,6 @@ void strata_keep_printed(const char *b, int64_t n);
 #define keep_printed(b, n) strata_keep_printed((b), (int64_t)(n))
 #endif
 
-// Runs test `f`: 0 when it got to its end, 1 after a fault (then
-// `strata_test_fault` says which). Each test starts with no call stack, the
-// generators' numbers from the start, and nothing printed.
-static void forget_senders(void);
-
 // A run inside `strata_test` (a test, a fuzz case): a panic there fails it
 // instead of ending the process. Its tasks share it: once one of them
 // panics, every thread of the run is cancelled (it stops at its next wait),
@@ -623,6 +618,7 @@ typedef struct Waiter {
   int64_t *counts, *runs;
   struct Task *task;     // NULL: the run's first thread
   const char *origin;    // where its task was spawned, if known
+  struct Channel *chan;  // the channel its `recv` waits on, if any
   struct Waiter *next, **back;
 } Waiter;
 
@@ -668,7 +664,6 @@ typedef struct {
 
 void *strata_run_begin(void) {
   catch_overflow();
-  forget_senders();
   RunHold *h = calloc(1, sizeof *h);
   h->outer = contained;
   contained = &h->run;
@@ -976,9 +971,8 @@ typedef struct Channel {
   int64_t cap;               // room for values waiting (0: a send waits for its receiver)
   int64_t *items;            // a ring of slots
   int64_t head, len, size;
-  int64_t senders;           // copies of the sender not closed yet: one per task holding it
-  int64_t ends;              // its ends (`End`) not dropped yet, on every thread
-  int64_t holds;             // entries for it in threads' `held` and tasks' `shares`
+  int64_t senders;           // its sender ends (`End`) not dropped yet, on every thread
+  int64_t receivers;         // its receiver ends not dropped yet, on every thread
   int64_t sent, taken;       // values sent and received so far
   int64_t waiting;           // receivers waiting (an unbuffered send in a `select` can go)
   void (*drop)(int64_t);     // drops a value left in it (NULL: nothing to drop)
@@ -987,58 +981,18 @@ typedef struct Channel {
 // A channel's end, as the compiled code holds it (a `Sender` or a
 // `Receiver`): a counted object of its thread pointing at the channel. An
 // end crossing to another thread is a new end (`strata_channel_cross`),
-// so no two threads count one; the channel counts its ends under
-// `chan_lock`.
+// so no two threads count one; the channel counts its live ends of each
+// kind under `chan_lock`, changed only by an end's last release.
 typedef struct {
   Channel *c;
+  int64_t sends;             // 1: a sender, 0: a receiver
 } End;
 
 static Channel *chan_of(void *e) { return ((End *)e)->c; }
 
-// The senders this thread holds a copy of and hasn't closed: the channels
-// it made, or a task's shares (`strata_spawn`).
-static _Thread_local Channel **held;
-static _Thread_local int64_t nheld, capheld;
-
-static void hold_sender(Channel *c) {
-  if (nheld == capheld) held = realloc(held, (size_t)(capheld = capheld ? capheld * 2 : 8) * sizeof *held);
-  held[nheld++] = c;
-}
-
-static _Bool holds_sender(Channel *c) {
-  for (int64_t i = 0; i < nheld; i++)
-    if (held[i] == c) return 1;
-  return 0;
-}
-
-// One entry for `c` in a `held` or `shares` fewer, under `chan_lock`:
-// whether `c` is to be freed (`free_channel`, after unlocking).
-static _Bool unhold_channel(Channel *c) { return --c->holds == 0 && c->ends == 0; }
-
 static void free_channel(Channel *c) {
   free(c->items);
   free(c);
-}
-
-// A test starts holding none.
-static void forget_senders(void) {
-  pthread_mutex_lock(&chan_lock);
-  int64_t n = 0;
-  for (int64_t i = 0; i < nheld; i++)
-    if (unhold_channel(held[i])) held[n++] = held[i];
-  pthread_mutex_unlock(&chan_lock);
-  for (int64_t i = 0; i < n; i++) free_channel(held[i]);
-  nheld = 0;
-}
-
-// Removes `c` from the senders this thread holds; whether it held it.
-static _Bool unhold_sender(Channel *c) {
-  for (int64_t i = 0; i < nheld; i++)
-    if (held[i] == c) {
-      held[i] = held[--nheld];
-      return 1;
-    }
-  return 0;
 }
 
 // ---- knowing when every thread of a run waits ----
@@ -1126,8 +1080,6 @@ typedef struct Task {
   size_t printed_len;
   uint64_t seed;
   int64_t steps, *given;
-  Channel **shares;           // the senders it holds a copy of
-  int64_t nshares;
   _Bool done;                 // finished (set under `chan_lock`, for `select`)
   int32_t cancel;             // told to stop (counted in `strata_cancel_any`)
   _Bool unwound;              // stopped by a cancellation: no result
@@ -1351,7 +1303,6 @@ static void *task_main(void *arg) {
   RS->counting = t->counting;
   RS->steps = t->steps;
   RS->given = t->given;
-  for (int64_t i = 0; i < t->nshares; i++) hold_sender(t->shares[i]);
   self_task = t;
   contained = t->contained;
   task_origin = t->origin;
@@ -1384,25 +1335,13 @@ static void *task_main(void *arg) {
   t->printed_len = RS->printed_len;
   RS->printed = NULL;
   RS->printed_len = RS->printed_cap = 0;
-  // a copy of a sender it didn't close is closed now (its receivers would
-  // wait forever), and that is a panic, unless the task was cancelled
   pthread_mutex_lock(&chan_lock);
-  _Bool unclosed = nheld > 0 && !t->unwound && !died;
-  int64_t gone = 0;
-  for (int64_t i = 0; i < nheld; i++) {
-    held[i]->senders--;
-    if (unhold_channel(held[i])) held[gone++] = held[i];
-  }
   t->done = 1;
   remove_waiter(t->run_of, &t->w);
   me = NULL;
   my_run = NULL;
   wake_all();
   pthread_mutex_unlock(&chan_lock);
-  for (int64_t i = 0; i < gone; i++) free_channel(held[i]);
-  free(held);
-  held = NULL;
-  nheld = capheld = 0;
   if (died) {
     Contained *b = &t->boundary;
     Str *msg = b->msg ? b->msg : str_c("a task below it panicked");
@@ -1410,14 +1349,6 @@ static void *task_main(void *arg) {
     free(b->stack);
     t->unwound = 0;
     __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
-  } else if (unclosed && !t->faulted) {
-    Str *m = str_c("a task ended without closing its copy of a sender (`tx.close()`)");
-    if (!contained) fault_at(4, m, NULL);
-    t->faulted = 1;
-    t->kind = 4;
-    t->msg = m;
-    t->stack = strdup("");
-    panic_contained(contained);
   }
   self_task = NULL;
   contained = NULL;
@@ -1443,9 +1374,9 @@ void *strata_scope_begin(void) {
 // `spawn` only inside a `scope` (a lambda's included, as a comprehension's
 // body, which runs there).
 // The closure `clo` is the task's alone: the compiled code moved or copied
-// what it captures (its `cross:T` helpers) before this call. `shares` are
-// the sender ends it captured.
-void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
+// what it captures (its `cross:T` helpers) before this call: the sender
+// ends it captured are its own (`strata_channel_cross`).
+void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *)) {
   TaskScope *s = open_scopes;
   if (!s) strata_fault(4, str_c("`spawn` ran outside its `scope` (a closure that spawns was called after the scope ended)"));
   Task *t = calloc(1, sizeof *t);
@@ -1478,19 +1409,6 @@ void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(voi
       t->origin = here;
     }
   }
-  // a copy of each sender it captured that this thread still holds: the
-  // task's, to close (one this thread closed stays closed for it too)
-  if (nshares) {
-    t->shares = malloc((size_t)nshares * sizeof *shares);
-    pthread_mutex_lock(&chan_lock);
-    for (int64_t i = 0; i < nshares; i++)
-      if (holds_sender(shares[i]->c)) {
-        shares[i]->c->senders++;
-        shares[i]->c->holds++;
-        t->shares[t->nshares++] = shares[i]->c;
-      }
-    pthread_mutex_unlock(&chan_lock);
-  }
   if (__atomic_fetch_add(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(1);
 #ifdef STRATA_CORE_RT
   // this thread's open arenas are kept: the task may hold their objects
@@ -1519,14 +1437,6 @@ void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(voi
     remove_waiter(t->run_of, &t->w);
     wake_all();
     pthread_mutex_unlock(&chan_lock);
-    for (int64_t i = 0; i < t->nshares; i++) {
-      pthread_mutex_lock(&chan_lock);
-      t->shares[i]->senders--;
-      _Bool gone = unhold_channel(t->shares[i]);
-      wake_all();
-      pthread_mutex_unlock(&chan_lock);
-      if (gone) free_channel(t->shares[i]);
-    }
   }
   if (s->last) s->last->next = t;
   else s->first = t;
@@ -1538,7 +1448,8 @@ void *strata_task_start(void *clo, void (*run)(void *, void *), void (*drop)(voi
 // bootstrap's first stage, built by such a seed): its marks froze it
 // (`strata_share`), so the task starts as any.
 void *strata_spawn_shared(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
-  return strata_task_start(clo, run, drop, fail, shares, nshares);
+  (void)shares, (void)nshares;
+  return strata_task_start(clo, run, drop, fail);
 }
 
 static void join(Task *t);
@@ -1550,7 +1461,8 @@ static void join(Task *t);
 // task waiting for its parent would wait forever; the compiler's own tasks
 // never do.
 void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *), void (*fail)(void *, Str *, Str *, Str *), End **shares, int64_t nshares) {
-  Task *t = strata_task_start(clo, run, drop, fail, shares, nshares);
+  (void)shares, (void)nshares;
+  Task *t = strata_task_start(clo, run, drop, fail);
   pthread_mutex_lock(&chan_lock);
   while (!t->done) WAIT("a task of older code");
   pthread_mutex_unlock(&chan_lock);
@@ -1579,7 +1491,6 @@ static void release_scope(TaskScope *s) {
     free(t->origin);
     if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
     free(t->stack);
-    free(t->shares);
     free(t);
   }
   free(s);
@@ -1661,11 +1572,12 @@ void *strata_await(Task *t) {
   return &t->out;
 }
 
-// ---- channels (`channel()`, `send`, `recv`, `close`, `select`) ----
+// ---- channels (`channel()`, `send`, `recv`, `select`) ----
 //
 // A channel holds what was sent (moved in as slots) until it is received
-// (moved out). It has ended once every copy of its sender is closed: then
-// `recv` gives the values left, then nothing.
+// (moved out). It has ended once its last sender end is dropped: then
+// `recv` gives the values left, then nothing. Once its last receiver end is
+// dropped, what it holds is dropped and a `send` fails (`Closed`).
 
 static void push_item(Channel *c, int64_t v) {
   if (c->len == c->size) {
@@ -1688,87 +1600,95 @@ static int64_t pop_item(Channel *c) {
   return v;
 }
 
-// A new channel: its one end, held twice (its sender and its receiver),
-// and a copy of its sender for this thread.
-End *strata_channel_new(int64_t cap, void (*drop)(int64_t)) {
+// A new channel: its sender end, and its receiver end (into `rx`), each
+// held once.
+End *strata_channel_new(int64_t cap, void (*drop)(int64_t), End **rx) {
   if (cap < 0 && soft_fault(4, str_c("a channel's buffer can't be negative"))) return NULL;
   Channel *c = calloc(1, sizeof(Channel));
   if (!c) strata_fault(6, str_c("out of memory"));
   c->cap = cap;
   c->drop = drop;
   c->senders = 1;
-  c->ends = 1;
-  c->holds = 1;
-  hold_sender(c);
+  c->receivers = 1;
   End *e = strata_alloc(sizeof(End));
   e->c = c;
-  strata_dup(e);
+  e->sends = 1;
+  End *r = strata_alloc(sizeof(End));
+  r->c = c;
+  r->sends = 0;
+  *rx = r;
   return e;
 }
 
-// One holder of end `e` fewer. The last frees it; the channel's last end
-// drops what is still in it. The channel is freed once no thread holds a
-// copy of its sender either (`holds`).
+// One holder of end `e` fewer (none: nothing). The last frees it and counts
+// it out of its channel: its last sender ends the channel (receivers wake to
+// find it ended); its last receiver drops what is in it (senders wake to
+// find no one will take it). The channel is freed with its last end.
 void strata_channel_drop(End *e) {
-  if (!strata_release(e)) return;
+  if (!e || !strata_release(e)) return;
   Channel *c = e->c;
+  _Bool sends = e->sends != 0;
   strata_free(e);
+  int64_t *items = NULL, head = 0, len = 0, size = 0;
   pthread_mutex_lock(&chan_lock);
-  _Bool last = --c->ends == 0;
-  if (last) c->holds++;
+  if (sends) {
+    c->senders--;
+  } else if (--c->receivers == 0) {
+    items = c->items, head = c->head, len = c->len, size = c->size;
+    c->items = NULL;
+    c->head = c->len = c->size = 0;
+  }
+  _Bool gone = c->senders == 0 && c->receivers == 0;
+  wake_all();
   pthread_mutex_unlock(&chan_lock);
-  if (!last) return;
   if (c->drop)
-    for (int64_t i = 0; i < c->len; i++) c->drop(c->items[(c->head + i) % c->size]);
-  c->len = 0;
-  pthread_mutex_lock(&chan_lock);
-  _Bool gone = unhold_channel(c);
-  pthread_mutex_unlock(&chan_lock);
+    for (int64_t i = 0; i < len; i++) c->drop(items[(head + i) % size]);
+  free(items);
   if (gone) free_channel(c);
 }
 
 // End `e` crossing to another thread (core.rt's `strata_cross_block` for
 // the other blocks): `e` itself when it isn't counted or, with `own`, is
-// held once (it moves); `e` frozen while freezing what crosses (the
-// channel then never ends); else a new end of the same channel, held once,
-// and `e` loses the caller's holder when `own`.
+// held once (it moves); else a new end of the same channel and kind, held
+// once, counted in the channel, and `e` loses the caller's holder when
+// `own`. An end is never frozen (`strata_freezing`): its channel would
+// never end.
 void *strata_cross_flat(void *p, _Bool own);
 void *strata_heap_alloc(int64_t n);
-_Bool strata_freezing(void);
 End *strata_channel_cross(End *e, _Bool own) {
   int64_t v = *count_of(e);
-  if (v <= 0 || (own && v == 1) || strata_freezing()) return strata_cross_flat(e, own);
+  if (v <= 0 || (own && v == 1)) return strata_cross_flat(e, own);
   End *n = strata_heap_alloc(sizeof(End));
   n->c = e->c;
+  n->sends = e->sends;
   pthread_mutex_lock(&chan_lock);
-  n->c->ends++;
+  if (n->sends) n->c->senders++;
+  else n->c->receivers++;
   pthread_mutex_unlock(&chan_lock);
   if (own) *count_of(e) = v - 1;
   return n;
 }
 
-void strata_channel_send(End *e, int64_t v) {
+// Sends `v` (taken): 1 once it is in the channel (taken by a receiver, for
+// one with no buffer), 0 when no receiver is left to take it (it is
+// dropped) or the task was cancelled while it waited.
+_Bool strata_channel_send(End *e, int64_t v) {
   Channel *c = e->c;
   pthread_mutex_lock(&chan_lock);
-  if (c->senders == 0) {
+  while (c->cap > 0 && c->len >= c->cap && c->receivers > 0 && !strata_cancelled()) WAIT("`send` (the channel is full)");
+  if (c->receivers == 0 || (c->cap > 0 && c->len >= c->cap)) {
     pthread_mutex_unlock(&chan_lock);
     if (c->drop) c->drop(v);
-    soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
-    return;
-  }
-  while (c->cap > 0 && c->len >= c->cap && !strata_cancelled()) WAIT("`send` (the channel is full)");
-  if (c->cap > 0 && c->len >= c->cap) {
-    // cancelled while it waited: nothing sent
-    pthread_mutex_unlock(&chan_lock);
-    if (c->drop) c->drop(v);
-    return;
+    return 0;
   }
   push_item(c, v);
   int64_t mine = c->sent;
   wake_all();
-  // unbuffered: until a receiver took it
-  while (c->cap == 0 && c->taken < mine && !strata_cancelled()) WAIT("`send` (no one has taken it)");
+  // unbuffered: until a receiver took it (the last receiver's drop drops it)
+  while (c->cap == 0 && c->taken < mine && c->receivers > 0 && !strata_cancelled()) WAIT("`send` (no one has taken it)");
+  _Bool sent = c->cap > 0 || c->taken >= mine;
   pthread_mutex_unlock(&chan_lock);
+  return sent;
 }
 
 // The next value (into `out`), or 0 once the channel has ended and is empty.
@@ -1778,27 +1698,16 @@ _Bool strata_channel_recv(End *e, int64_t *out) {
   c->waiting++;
   wake_all();
   _Bool stop = 0;
+  this_run();
+  me->chan = c;
   while (c->len == 0 && c->senders > 0 && !(stop = strata_cancelled())) WAIT("`recv`");
+  me->chan = NULL;
   c->waiting--;
   _Bool got = c->len > 0 && !stop;
   if (got) *out = pop_item(c);
   wake_all();
   pthread_mutex_unlock(&chan_lock);
   return got;
-}
-
-void strata_channel_close(End *e) {
-  Channel *c = e->c;
-  if (!unhold_sender(c)) {
-    soft_fault(4, str_c("`close` of a sender this task doesn't hold, or has closed already"));
-    return;
-  }
-  pthread_mutex_lock(&chan_lock);
-  c->senders--;
-  _Bool gone = unhold_channel(c);
-  wake_all();
-  pthread_mutex_unlock(&chan_lock);
-  if (gone) free_channel(c);
 }
 
 // ---- the clock (std.time) ----
@@ -1907,16 +1816,6 @@ typedef struct {
 int64_t strata_select(SelectOp *ops, int64_t n) {
   pthread_mutex_lock(&chan_lock);
   if (strata_cancelled()) goto give_up;
-  for (int64_t i = 0; i < n; i++)
-    if (ops[i].kind == 1 && chan_of(ops[i].target)->senders == 0) {
-      pthread_mutex_unlock(&chan_lock);
-      soft_fault(4, str_c("`send` on a channel that has ended (every copy of its sender was closed)"));
-      // (contained: nothing happened, as for a cancelled `select`)
-      for (int64_t k = 0; k < n; k++) {
-        if (ops[k].kind == 1 && chan_of(ops[k].target)->drop) chan_of(ops[k].target)->drop(ops[k].slot);
-      }
-      return -1;
-    }
   RS->rng = RS->rng * 6364136223846793005ULL + 1442695040888963407ULL;
   int64_t start = (int64_t)((RS->rng >> 33) % (uint64_t)n);
   // the first of the system clock's deadlines; whether another clock's
@@ -1947,7 +1846,8 @@ int64_t strata_select(SelectOp *ops, int64_t n) {
         }
       } else if (op->kind == 1) {
         Channel *c = chan_of(op->target);
-        if ((c->cap > 0 && c->len < c->cap) || (c->cap == 0 && c->waiting > c->len)) {
+        // (none to take it: never ready)
+        if (c->receivers > 0 && ((c->cap > 0 && c->len < c->cap) || (c->cap == 0 && c->waiting > c->len))) {
           push_item(c, op->slot);
           chosen = i;
         }
@@ -2030,9 +1930,13 @@ static _Bool stuck(void) {
   for (Waiter *w = r->first; w; w = w->next) {
     char *st = w->frames ? stack_from(w->frames, w->counts, *w->runs) : strdup("");
     const char *o = w->origin ? w->origin : "";
-    size_t need = strlen(st) + strlen(o) + strlen(w->what) + 64;
+    // a `recv`: its channel's senders are held by these threads
+    char on[96] = "";
+    if (w->chan)
+      snprintf(on, sizeof on, " (its channel has %lld sender%s left, held by a task waiting here)", (long long)w->chan->senders, w->chan->senders == 1 ? "" : "s");
+    size_t need = strlen(st) + strlen(o) + strlen(w->what) + strlen(on) + 64;
     if (len + need >= cap) m = realloc(m, cap = (len + need) * 2);
-    len += (size_t)sprintf(m + len, "%s %s waits in %s, at %s%s%s%s", w == r->first ? "" : ";", w->task ? "a task" : (r->test ? "the test" : "main"), w->what,
+    len += (size_t)sprintf(m + len, "%s %s waits in %s%s, at %s%s%s%s", w == r->first ? "" : ";", w->task ? "a task" : (r->test ? "the test" : "main"), w->what, on,
                            o, *o ? " -> spawn" : "", *o && *st ? " -> " : "", *st ? st : (*o ? "" : "its start"));
     free(st);
   }
