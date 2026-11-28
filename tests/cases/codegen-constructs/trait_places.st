@@ -53,7 +53,8 @@ fn main() {
   mut o.put("abc")
   print(o.count())
   let xs: List[Out] = [Log { lines: ["p"] }, Tally { n: 2 }]
-  ys := xs + [Tally { n: 7 }]
+  let more: List[Out] = [Tally { n: 7 }]
+  ys := xs + more
   print(ys.map(x -> x.count()))
   print(make(true).count() + make(false).count())
   print(pick(0).count() + pick(3).count())

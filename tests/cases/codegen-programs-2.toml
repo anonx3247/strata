@@ -90,8 +90,10 @@ golden = "tests/data/build/expected/codegen-programs-refined_union.out"
 save = "refined_union_broken.strata"
 from = "refined_union_broken.st"
 
+# (`show_id(30)` breaks `Small` where check sees it: built all the same,
+# for its runtime check)
 [[step]]
-strata = ["build", "refined_union_broken.strata", "-o", "refined_union_broken"]
+strata = ["build", "refined_union_broken.strata", "-o", "refined_union_broken", "--ignore-check-errors"]
 
 [[step]]
 run = ["./refined_union_broken"]
