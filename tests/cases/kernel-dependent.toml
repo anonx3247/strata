@@ -1,0 +1,71 @@
+# strata kernel dependent: Patch's laws proven once for every record in the
+# dependently typed kernel (kernel_dependent), what it must refuse refused,
+# and the laws applied to `User` and its `Patch[User]` with no proof of their own
+[[step]]
+strata = ["kernel", "dependent", "$ROOT/tests/kernel/types/patch_user.strata"]
+has = [
+  "proven made_at",
+  "proven patched_nothing",
+  "proven patched_set",
+  "proven patched_keep",
+  "proven applied_at",
+  "proven applied_is_patched",
+  "6 laws proven for every record",
+  "refused: Type : Type",
+  "refused: Empty proven by star",
+  "refused: Bad = mk (Bad → Empty)",
+  "refused: Box : Type = mk Type",
+  "refused: λ b. #0",
+  "refused: true = false by refl",
+  "refused: any field patched is v, by refl",
+  "instance User.patched_nothing : Π (x : Π (g : User.Field), User.ty g)",
+  "instance User.patched_set.age : Π (x : User), Π (p : Patch[User]), Π (v : Int), (Eq.{0} (Change Int) (p User.age) (Set Int v)) → Eq.{0} Int",
+  "instance Patch[User] : made by the type function",
+  "opaque types: String",
+]
+lacks = ["ACCEPTED", "failed"]
+
+# every law the HOL kernel proves, replayed as a proof term and checked by
+# the dependent kernel (`--dependent`)
+[[step]]
+strata = ["kernel", "check", "--dependent", "$ROOT/tests/kernel/laws/proven.strata", "$ROOT/tests/kernel/laws/lists.strata", "$ROOT/tests/kernel/laws/patterns.strata", "$ROOT/tests/kernel/laws/insertion.strata"]
+has = ["dependent: 20 checked", "dependent: 4 checked", "dependent: 2 checked", "dependent: 1 checked", "dependent: proven leaves_all_pos", "dependent: proven insert_keeps_sorted"]
+lacks = ["dependent: failed"]
+
+[[step]]
+strata = ["kernel", "check", "--dependent", "$ROOT/core/int.kp", "$ROOT/tests/kernel/proofs/features.kp", "$ROOT/tests/kernel/proofs/generic_sort.kp", "$ROOT/tests/kernel/proofs/lists.kp", "$ROOT/tests/kernel/proofs/tactics.kp", "$ROOT/tests/kernel/types/patch_laws.strata", "$ROOT/tests/kernel/types/patch_user.strata"]
+has = ["dependent: 36 checked", "dependent: 6 checked", "dependent: 4 checked", "dependent: 13 checked", "dependent: 3 checked"]
+lacks = ["dependent: failed"]
+
+# a module's laws for every record (`lemma l[T: Record]`), translated from
+# its tree (the type function `Patch`, the blanket impl's `patched` and
+# `apply`, the statements, the steps), proven once, and applied at each record
+[[step]]
+strata = ["kernel", "dependent", "$ROOT/tests/kernel/dependent/patch_every_record.strata"]
+has = [
+  "translated: type functions Patch; methods patched, apply",
+  "proven for every record patched_empty",
+  "proven for every record patched_fields",
+  "proven for every record applied_at",
+  "proven for every record applied_is_patched",
+  "instance User.applied_is_patched",
+  "instance Point.patched_fields",
+  "instance Address.patched_empty",
+  "instance Account.applied_is_patched",
+  "instance made.Patch[User].patched_fields",
+  "instance made.Patch[Point].applied_is_patched",
+  "instance made.Patch[Account].applied_is_patched",
+]
+lacks = ["laws for every record: ", "ACCEPTED"]
+
+# a law resting on Z3 (`--z3-arith`) rests on the dependent kernel's `oracle`
+[[step]]
+strata = ["kernel", "check", "--dependent", "--z3-arith", "$ROOT/tests/kernel/proofs/tactics.kp"]
+has = ["dependent: proven omega_step", "[assumed: oracle]", "dependent: 13 checked"]
+lacks = ["dependent: failed"]
+
+# the goals a model is given: every law open, with its statement
+[[step]]
+strata = ["kernel", "dependent", "$ROOT/tests/kernel/goals/patch_every_record.strata"]
+has = ["open   patched_empty", "open   patched_fields", "open   applied_at", "open   applied_is_patched"]
+lacks = ["failed ", "laws for every record: "]

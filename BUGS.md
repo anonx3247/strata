@@ -365,6 +365,16 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 - [ ] **Cold and warm builds of the same compiler differ by a few bytes.** `compile_part` reads parts with LLVM's IR parser, not c/ir.c's; one `eval` function's alignment differs.
   Where: codegen.compile_part. Source: ledger G26 (#434, #427). Confidence: likely.
 
+- [ ] **A definition added by `strata edit` can't use a name imported with `from M use …` in codegen.** `check` accepts it. Both the v0.5.1 seed and the current build then refuse it with "not compiled yet: the constructor `K`". A definition stored with `strata new` (or present when the module was made) compiles, and so does a qualified name (`a.K`). Repro, in an empty package:
+  ```
+  printf 'pub type T =\n  | K(Int)\n  | L\n' | strata new a
+  printf 'from a use T, K\n\nuse a\n\nfn main() {\n  print(show(a.L))\n}\n\nfn show(t: T) -> Int {\n  match t {\n    K(n) => n,\n    _ => 0,\n  }\n}\n' | strata new main
+  strata build --no-verify -o b0   # builds
+  printf 'fn main() {\n  print(show(a.L) + made())\n}\n\nfn made() -> Int {\n  show(K(2))\n}\n' | strata edit main
+  strata build --no-verify -o b    # error: in `made`: not compiled yet: the constructor `K`, in `K(2)`
+  ```
+  Found in #680 (kernel_dependent_*), five times. Workaround: qualify the name.
+
 ## Runtime and core
 
 - [ ] **A test's start forgets the senders its thread holds, so a later `close` of one faults.** `strata_run_begin` calls `forget_senders()`, which drops this thread's `held` entries without closing them (`senders` stays up). A `close` of such a sender after the test began fails `unhold_sender` and faults with "`close` of a sender this task doesn't hold, or has closed already", and the channel's receivers never see it end.
