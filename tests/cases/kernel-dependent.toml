@@ -24,3 +24,15 @@ has = [
   "opaque types: String",
 ]
 lacks = ["ACCEPTED", "failed"]
+
+# every law the HOL kernel proves, replayed as a proof term and checked by
+# the dependent kernel (`--dependent`)
+[[step]]
+strata = ["kernel", "check", "--dependent", "$ROOT/tests/kernel/laws/proven.strata", "$ROOT/tests/kernel/laws/lists.strata", "$ROOT/tests/kernel/laws/patterns.strata", "$ROOT/tests/kernel/laws/insertion.strata"]
+has = ["dependent: 20 checked", "dependent: 4 checked", "dependent: 2 checked", "dependent: 1 checked", "dependent: proven leaves_all_pos", "dependent: proven insert_keeps_sorted"]
+lacks = ["dependent: failed"]
+
+[[step]]
+strata = ["kernel", "check", "--dependent", "$ROOT/core/int.kp", "$ROOT/tests/kernel/proofs/features.kp", "$ROOT/tests/kernel/proofs/generic_sort.kp", "$ROOT/tests/kernel/proofs/lists.kp", "$ROOT/tests/kernel/proofs/tactics.kp", "$ROOT/tests/kernel/types/patch_laws.strata", "$ROOT/tests/kernel/types/patch_user.strata"]
+has = ["dependent: 36 checked", "dependent: 6 checked", "dependent: 4 checked", "dependent: 13 checked", "dependent: 3 checked"]
+lacks = ["dependent: failed"]
