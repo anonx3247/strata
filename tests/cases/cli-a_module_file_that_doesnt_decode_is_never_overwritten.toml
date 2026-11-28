@@ -1,0 +1,77 @@
+# A module file that can't be decoded stops every command that reads the
+# package to change it, with an error naming the file, and is never
+# written over.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "shapes.strata"
+text = '''
+pub fn area(w: Int, h: Int) -> Int {
+  w * h
+}
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+from shapes use area
+
+fn main() {
+  print(area(2, 3))
+}
+'''
+
+# the file cut short: its header says more bytes than it has
+[[step]]
+run = ["sh", "-c", "n=$(wc -c < shapes.strata); head -c $((n - 8)) shapes.strata > cut && mv cut shapes.strata && cksum shapes.strata > before.txt"]
+
+[[step]]
+strata = ["edit", "shapes", "--no-search"]
+text = '''
+pub fn perimeter(w: Int, h: Int) -> Int {
+  2 * (w + h)
+}
+'''
+fails = true
+has = ["shapes.strata"]
+
+[[step]]
+strata = ["edit", "--no-search"]
+text = '''
+fn twice(x: Int) -> Int {
+  2 * x
+}
+'''
+fails = true
+has = ["shapes.strata"]
+
+[[step]]
+strata = ["rename", "area", "surface"]
+fails = true
+has = ["shapes.strata"]
+
+[[step]]
+strata = ["--file", "shapes.strata", "edit", "--no-search"]
+text = '''
+pub fn perimeter(w: Int, h: Int) -> Int {
+  2 * (w + h)
+}
+'''
+fails = true
+has = ["shapes.strata"]
+
+[[step]]
+strata = ["view", "shapes"]
+fails = true
+has = ["shapes.strata"]
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["shapes.strata"]
+
+[[step]]
+run = ["sh", "-c", "cksum shapes.strata | diff before.txt - && echo unchanged"]
+out = "unchanged\n"
