@@ -8,7 +8,7 @@ SECTIONS = [
     ("Lexical structure", "draft"),
     ("Syntax", "waits on lab trials 3, 4, 5"),
     ("The tree", "draft"),
-    ("Binary format and hashing", "to write"),
+    ("Binary format and hashing", "draft"),
     ("Names and modules", "to write"),
     ("Types", "to write"),
     ("Semantics", "waits on lab trials 3, 4, 5"),
