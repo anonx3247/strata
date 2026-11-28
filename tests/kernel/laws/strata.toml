@@ -1,0 +1,5 @@
+# Laws and their proofs written as Strata (docs/kernel-laws.md), checked by
+# `strata kernel check MODULE.strata`. A lab-only package: its proof steps
+# (`simplify`, `arithmetic`, …) are not functions `strata check` knows, so
+# its modules are stored with `strata edit --as-given`.
+name = "kernel_laws"

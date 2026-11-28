@@ -1,9 +1,8 @@
--- Nested and mutual datatypes: a list of the type inside it (`List[Expr]`)
--- is a datatype of its own (`List_Expr`) defined with it, and functions on
--- the two recurse into each other. `Expr` is a slice of the compiler's own
--- tree (compiler/ast.strata).
+// Nested and mutual datatypes: a list of the type inside it (`List[Expr]`)
+// is a datatype of its own (`List_Expr`) defined with it, and functions on
+// the two recurse into each other. `Expr` is a slice of the compiler's own
+// tree (compiler/ast.strata).
 
-strata {
 type BinOp = | Add | Sub | Mul
 
 type UnOp = | Neg | Not
@@ -38,13 +37,19 @@ fn nodes_all(es: List[Expr]) -> Int {
     [x, ..rest] => nodes(x) + nodes_all(rest),
   }
 }
+
+lemma nodes_pos(e: Expr) ensures nodes(e) >= 1 {
+  ?proof
 }
 
-mutual
-law nodes_pos(e: Expr) holds nodes(e) >= 1 by
-law nodes_all_nonneg(es: List[Expr]) holds nodes_all(es) >= 0 by
-end
+lemma nodes_all_nonneg(es: List[Expr]) ensures nodes_all(es) >= 0 {
+  ?proof
+}
 
-law nodes_not(e: Expr) holds nodes(Unary { op: Not, operand: e }) == nodes(e) + 1 by
+lemma nodes_not(e: Expr) ensures nodes(Unary { op: Not, operand: e }) == nodes(e) + 1 {
+  ?proof
+}
 
-law nodes_call_one(f: Expr, x: Expr) holds nodes(Call { callee: f, args: [x] }) == 1 + nodes(f) + nodes(x) by
+lemma nodes_call_one(f: Expr, x: Expr) ensures nodes(Call { callee: f, args: [x] }) == 1 + nodes(f) + nodes(x) {
+  ?proof
+}
