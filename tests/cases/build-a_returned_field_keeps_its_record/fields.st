@@ -31,6 +31,14 @@ fn unpacked(b: Bag) -> List[String] {
   }
 }
 
+fn joined(b: Bag) -> List[String] {
+  b.parts + ["z"]
+}
+
+fn more(xs: List[String]) -> List[String] {
+  xs + ["y"]
+}
+
 fn size(b: Bag) -> Int {
   len(b.parts) + byte_len(b.name)
 }
@@ -56,6 +64,14 @@ fn main() {
   for i in 0..2 {
     bag := Bag { parts: [f"u{i}"], name: "w" }
     out += [unpacked(bag)]
+  }
+  for i in 0..2 {
+    bag := Bag { parts: [f"j{i}"], name: "q" }
+    out += [joined(bag)]
+  }
+  for i in 0..2 {
+    xs := [f"x{i}"]
+    out += [more(xs)]
   }
   mut total := 0
   for i in 0..2 {
