@@ -1,0 +1,48 @@
+# a call of a type's own method relies on that method's contract, as
+# `c.vol()` or as `Cup.vol(c)`: its `ensures` weakened, both callers are
+# proven again and no longer proven
+[[step]]
+save = "p.strata"
+text = '''
+type Cup = { n: Int }
+impl Cup {
+  fn vol(self) -> Int
+    ensures it >= 0
+  {
+    if self.n < 0 { 0 } else { self.n }
+  }
+}
+fn by_method(c: Cup) -> Int
+  ensures it >= 0
+{
+  c.vol()
+}
+fn by_path(c: Cup) -> Int
+  ensures it >= 0
+{
+  Cup.vol(c)
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ by_method ", "✓ by_path "]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+impl Cup {
+  fn vol(self) -> Int
+    ensures it >= -1
+  {
+    if self.n < 0 { -1 } else { self.n }
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+fails = true
+has = ["✗ by_method ", "by_path ", "ensures it >= 0: the solver found a possible counterexample"]
+lacks = ["(cached)", "✓ by_path "]

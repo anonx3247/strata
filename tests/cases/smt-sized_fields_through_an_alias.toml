@@ -1,0 +1,58 @@
+# smt: a record field of a sized type named by an alias (`Id = U32` in
+# another module) has the integer sort its range is stated in
+[[step]]
+write = "strata.toml"
+text = '''
+name = "pk"
+'''
+
+[[step]]
+module = "ast"
+into = "."
+text = '''
+pub type Id = U32
+
+pub type Decl = { module: String, id: Id = 0 }
+'''
+
+[[step]]
+module = "main"
+into = "."
+text = '''
+use ast
+
+type Opened = { root: String, decls: List[ast.Decl] }
+
+fn open(n: String) -> Result[Opened, String] {
+  if n == "" {
+    Err("none")
+  } else {
+    Ok(Opened { root: n, decls: [] })
+  }
+}
+
+fn refusal(n: String, there: Bool) -> Option[String] {
+  if there {
+    Some(n)
+  } else {
+    None
+  }
+}
+
+pub fn pick(n: String) -> Int where it >= 0 {
+  o := open(n) except { return 0 }
+  match refusal(o.root, o.decls.any(d -> d.module == n)) {
+    Some(_) => return 1,
+    None => (),
+  }
+  2
+}
+
+fn main() {
+}
+'''
+
+[[step]]
+strata = ["verify", "pick", "--no-cache", "--no-race"]
+has = ["✓ pick "]
+lacks = ["mixes sorts"]

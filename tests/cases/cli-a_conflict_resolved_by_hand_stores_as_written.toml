@@ -1,7 +1,9 @@
 # a conflict merge-file leaves as text shows each side as written against the
 # package's other modules (`helper()`, imported, not `util.helper()`, which a
 # parameter named `util` would turn into a method call): fixed by hand and
-# stored again with `resolve`, the module checks
+# stored again with `resolve`, the module checks. Both sides change a's
+# signature: a conflict outside every expression is left as text (one inside
+# an expression is a hole, and the file stays a module file).
 
 [[step]]
 write = "p/strata.toml"
@@ -24,7 +26,7 @@ run = ["cp", "p/main.strata", "o.strata"]
 [[step]]
 strata = ["--file", ".", "edit", "main"]
 dir = "p"
-text = "fn a(util: Util) -> Int {\n  helper() + util.n + 2\n}\n"
+text = "fn a(util: Util, y: Bool) -> Int {\n  helper() + util.n\n}\n"
 
 [[step]]
 run = ["cp", "p/main.strata", "b.strata"]
@@ -35,7 +37,7 @@ run = ["cp", "o.strata", "p/main.strata"]
 [[step]]
 strata = ["--file", ".", "edit", "main"]
 dir = "p"
-text = "fn a(util: Util) -> Int {\n  helper() + util.n + 1\n}\n"
+text = "fn a(util: Util, x: Int) -> Int {\n  helper() + util.n + x\n}\n"
 
 [[step]]
 strata = ["merge-file", "../o.strata", "main.strata", "../b.strata", "main.strata"]
