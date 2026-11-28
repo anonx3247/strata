@@ -283,7 +283,7 @@ Each difference is a decision recorded in REBUILD.md.
 
 A module is stored as a tree. This section lists every node and its fields. Section 4 gives the bytes, section 2 the text each node is written as, and section 6 the typing rules a stored tree obeys.
 
-The tree is written here as Strata types. `Natural` is a natural number of any size, `Int` an integer of any size. `Option[T]`, `List[T]`, `Dict[K, V]` and `String` are core's. A field whose name would be a keyword takes a leading `_` (`_type`, `_trait`); a leading `_` means nothing on a field.
+The tree is written here as Strata types. `Option[T]`, `List[T]`, `Dict[K, V]` and `String` are core's. A field whose name would be a keyword takes a leading `_` (`_type`, `_trait`); a leading `_` means nothing on a field.
 
 ### 3.1 Ids, keys and node indices
 
@@ -417,8 +417,8 @@ Every expression has a type, which is itself an expression, in its field `_type`
 ```strata
 type Expression =
   // literals
-  | Integer { value: Natural }
-  | Decimal { digits: Natural, exponent: Int }
+  | Integer { value: LiteralNumber }
+  | Decimal { digits: LiteralNumber, exponent: s32 }
   | Text { value: String }
   // names
   | Local { binder: NodeIndex }
@@ -468,6 +468,8 @@ with {
   _type: Option[Expression],
 }
 
+type LiteralNumber = | Small(u64) | Large(Bytes)
+
 type Target =
   | Static { definition: Key, written_as: Option[Key] }
   | Bound { type_parameter: NodeIndex, method: Key }
@@ -480,6 +482,7 @@ type FieldValue = { field: Key, value: Expression }
 ```
 
 Literals:
+- A `LiteralNumber` is a natural number. `Small` holds it when it is below 2^64, so most literals take one word and no allocation. `Large` holds a larger one as its bytes, least significant first, with no trailing zero byte. The compiler is written with the features of L0 to L2, which have no `Natural` (rule 2).
 - `Integer` holds the literal's value, with no sign. `-1` is the call `Neg.neg(1)`.
 - `Decimal` is the exact value `digits × 10^exponent`, with no trailing zero in `digits` (`1.50` is `{ digits: 15, exponent: -1 }`). No float is ever stored (rule 14).
 - `Text` holds valid UTF-8. An f-string is stored as calls (section 2).
@@ -526,6 +529,9 @@ Unfinished code:
 - A merge conflict inside a definition is a `Hole` whose choices are both sides' code, ours first, then the base's when it differs from both (`?conflict_1`). Filling the hole picks a choice or writes new code.
 
 ```strata
+law one_form(n: LiteralNumber)
+  holds n is Large ==> value_of(n) >= 2 ** 64
+
 law types_end(e: Expression)
   holds (e._type == None) == (e == Global { key: core.Type })
 ```
