@@ -1,6 +1,6 @@
 # strata kernel check: core/int.kp's lemmas and the proof scripts in
 # tests/kernel prove, by kernel steps alone; a failed step names its tactic
-# and goal; the goal sets (both syntaxes) have no failures
+# and goal; the goal sets (Lean's syntax and laws as Strata) have no failures
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/lists.kp"]
 has = ["core/int.kp: 36 lemmas proven", "proven reversed_reversed", "4 proven, 0 failed, 0 open"]
@@ -11,8 +11,12 @@ has = ["proven calc_steps", "proven omega_step", "13 proven, 0 failed, 0 open"]
 lacks = ["assumed"]
 
 [[step]]
-strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/generic_sort.kp", "$ROOT/tests/kernel/proofs/laws.kp"]
-has = ["proven sorted_is_sorted_by", "proven sorted_count_of", "6 proven, 0 failed, 0 open", "proven leaves_all_pos", "proven len_nonneg", "[assumed: refinement: len]", "9 proven, 0 failed, 0 open"]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/generic_sort.kp"]
+has = ["proven sorted_is_sorted_by", "proven sorted_count_of", "6 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/laws/proven.strata", "$ROOT/tests/kernel/laws/insertion.strata"]
+has = ["proven leaves_all_pos", "proven sorted_count_of", "proven len_nonneg", "[assumed: refinement: len]", "20 proven, 0 failed, 0 open", "proven insert_keeps_sorted", "1 proven, 0 failed, 2 open"]
 
 [[step]]
 strata = ["kernel", "check", "--z3-arith", "$ROOT/tests/kernel/proofs/tactics.kp"]
@@ -24,7 +28,7 @@ has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 
 lacks = ["note:", "failed "]
 
 [[step]]
-strata = ["kernel", "check", "$ROOT/tests/kernel/goals-laws/lists.kp", "$ROOT/tests/kernel/goals-laws/eq_ord.kp", "$ROOT/tests/kernel/goals-laws/patch.kp", "$ROOT/tests/kernel/goals-laws/generic.kp", "$ROOT/tests/kernel/goals-laws/exprs.kp"]
+strata = ["kernel", "check", "$ROOT/tests/kernel/laws/lists.strata", "$ROOT/tests/kernel/laws/eq_ord.strata", "$ROOT/tests/kernel/laws/patch.strata", "$ROOT/tests/kernel/laws/generic.strata", "$ROOT/tests/kernel/laws/exprs.strata"]
 has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 0 failed, 4 open", "0 proven, 0 failed, 3 open"]
 lacks = ["note:", "failed "]
 

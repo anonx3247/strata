@@ -32,7 +32,7 @@ lemma open_one(xs: List[Int]) ensures len(xs.sorted()) == len(xs) {
 - The module's records, sums, functions, traits with laws and `impl`s are the code the laws are about. Each function becomes a definition with equations.
 - `lemma NAME[TYPES](PARAMS) requires COND ensures STATEMENT { PROOF }`. The parameters are the law's variables, and each `requires` is an assumption. Nothing is introduced by hand: what a `for all` or `==>` would say is a parameter or a `requires`. A law whose statement is `!p` assumes `p` and proves `false`.
 - No body: the law is proven by the ladder, `auto()`. A body `?proof`: the law is open.
-- A function's `ensures` is the goal `f.ensures`, and an `impl`'s trait laws are goals `T.law`. A `lemma` with no `ensures` proves the goal its name spells: `twice_ensures` proves `twice.ensures`, and `priority_irreflexive` proves `Priority.irreflexive`.
+- A function's `ensures` is the goal `f.ensures`, and an `impl`'s trait laws are goals `T.law`. A `lemma` with no `ensures` proves the goal its name spells: `twice_ensures` proves `twice.ensures`, and `impl_priority_irreflexive` proves `Priority.irreflexive` (an `impl` obligation takes the prefix `impl_`).
 - A parameter of a refined type (`n: Natural`) brings the assumption `n >= 0`.
 - `[A: Ord]` brings `A`'s `<` and Ord's laws as assumptions: `irreflexive : forall(a -> !(a < a))`, `transitive`, `total`. A law proven so holds for every `Ord`; if it can't be proven from those, it fails, and it never becomes an obligation.
 - A law can use any other law of the module, by calling it. Laws that call each other in their proofs are proven together, by one induction, so each must be a `match` on its first parameter.

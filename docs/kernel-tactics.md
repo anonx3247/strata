@@ -1,6 +1,6 @@
 # Writing proofs for `strata kernel check` (Lean's syntax)
 
-A proof script (`.kp` file) states theorems about Strata code and proves them with tactics, in Lean's shapes. `strata kernel goals FILE` prints each statement and its goal. `strata kernel check FILE` checks every proof and prints, for each theorem, `proven` (with the kernel's time), `failed` (the step and its goal), or `open` (no tactics yet). A theorem that rests on something outside the kernel's rules says so: `[assumed: refinement: len]`, `[assumed: z3]`. The same scripts can be written in the law syntax instead (docs/kernel-laws.md); both can sit in one file.
+A proof script (`.kp` file) states theorems about Strata code and proves them with tactics, in Lean's shapes. `strata kernel goals FILE` prints each statement and its goal. `strata kernel check FILE` checks every proof and prints, for each theorem, `proven` (with the kernel's time), `failed` (the step and its goal), or `open` (no tactics yet). A theorem that rests on something outside the kernel's rules says so: `[assumed: refinement: len]`, `[assumed: z3]`. The same goals written as Strata laws, in modules, are in tests/kernel/laws (docs/kernel-laws.md); this syntax is the baseline to compare against.
 
 ## A script
 
