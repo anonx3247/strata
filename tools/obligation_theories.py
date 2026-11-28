@@ -141,7 +141,7 @@ def classify_script(text):
 
     def visit(t, bound):
         if isinstance(t, tuple):
-            feats.add("strings")
+            feats.add("string-literals")
             return
         if isinstance(t, str):
             if is_num(t) and "." in t:
@@ -206,7 +206,7 @@ def classify_script(text):
                 if op.startswith("bv") or op in ("extract", "zero_extend", "sign_extend", "rotate_left", "rotate_right", "repeat", "int2bv", "bv2nat", "bv2int"):
                     feats.add("bitvectors")
                 elif op in ("re.loop", "re.^", "char"):
-                    feats.add("strings")
+                    feats.add("regex")
             for x in t[1:]:
                 visit(x, bound)
             return
@@ -214,7 +214,7 @@ def classify_script(text):
             if len(t) > 1 and isinstance(t[1], str) and t[1].startswith("bv"):
                 feats.add("bitvectors")
             if t[1] == "re.allchar" or t[1] == "char":
-                feats.add("strings")
+                feats.add("regex")
             return
         if h in ARITH:
             feats.add("arith")
@@ -234,7 +234,7 @@ def classify_script(text):
         elif h in ARRAY:
             feats.add("arrays")
         elif isinstance(h, str) and (h.startswith("str.") or h.startswith("re.")):
-            feats.add("strings")
+            feats.add("string-lengths" if h == "str.len" else "regex" if h.startswith("re.") or h in ("str.in_re", "str.to_re") else "string-ops")
         elif isinstance(h, str) and h.startswith("seq."):
             feats.add("sequences")
         elif isinstance(h, str) and (h.startswith("bv") or h in ("concat", "extract")):
@@ -286,7 +286,7 @@ def classify_script(text):
             continue
         seen_sorts.add(s)
         if s == "String" or s == "RegLan":
-            feats.add("strings")
+            feats.add("string-sort")
         elif s == "Real":
             feats.add("real")
         elif s in sorts:
@@ -300,7 +300,8 @@ def classify_script(text):
     return feats, len(asserts)
 
 
-ORDER = ["arith", "real", "splits", "uf", "uninterpreted-sorts", "datatypes", "arrays", "strings",
+ORDER = ["arith", "real", "splits", "uf", "uninterpreted-sorts", "datatypes", "arrays", "string-sort", "string-literals",
+         "string-lengths", "string-ops", "regex",
          "sequences", "bitvectors", "nonlinear", "quantifiers", "patterns", "lambda", "recursive-defs"]
 
 
@@ -309,15 +310,17 @@ def theory_class(feats):
         top = "quantifiers"
     elif "nonlinear" in feats:
         top = "nonlinear"
-    elif feats & {"strings", "sequences"}:
+    elif feats & {"string-ops", "regex", "sequences"}:
         top = "strings"
+    elif "string-lengths" in feats:
+        top = "string-lengths"
     elif "bitvectors" in feats:
         top = "bitvectors"
     elif "arrays" in feats:
         top = "arrays"
     elif "datatypes" in feats:
         top = "datatypes"
-    elif feats & {"uf", "uninterpreted-sorts"}:
+    elif feats & {"uf", "uninterpreted-sorts", "string-sort", "string-literals"}:
         top = "uf"
     elif "splits" in feats:
         top = "linear+splits"
@@ -406,11 +409,13 @@ def run_alone(path):
 
 
 def outcome(a):
+    if a.startswith("(error"):
+        return "error"
     return {"unsat": "proven", "sat": "refuted", "unknown": "unknown", "timeout": "timeout"}.get(a, a or "none")
 
 
 COLS = ["package", "module", "fn", "kind", "closed_by", "class", "theories", "asserts", "outcome",
-        "lab_answer", "lab_units", "alone_answer", "alone_units", "alone_secs", "what"]
+        "lab_answer", "lab_units", "alone_answer", "alone_units", "alone_secs", "query", "what"]
 
 
 def collect(run, out_path, jobs=4):
@@ -482,6 +487,7 @@ def collect(run, out_path, jobs=4):
                     r["class"] = theory_class(feats)
                     r["asserts"] = str(n)
                     r["outcome"] = outcome(r["lab_answer"]) if r["kind"] != "other" else r["lab_answer"]
+                    r["query"] = os.path.basename(p)
                     work.append((r, p))
             rows += mod_rows
     empty = os.path.join(tmp, "empty.smt2")
@@ -498,7 +504,7 @@ def collect(run, out_path, jobs=4):
             out.write("\t".join(str(r.get(c, "")).replace("\t", " ") for c in COLS) + "\n")
 
 
-ROUGH = ["linear", "linear+splits", "uf", "datatypes", "arrays", "strings", "bitvectors", "nonlinear", "quantifiers"]
+ROUGH = ["linear", "linear+splits", "uf", "datatypes", "arrays", "string-lengths", "strings", "bitvectors", "nonlinear", "quantifiers"]
 
 
 def pct(a, b):
@@ -517,7 +523,7 @@ def summary(path, modules_path, run=None):
     pkgs = sorted({r["package"] for r in rows}, key=lambda p: ["core", "std", "compiler"].index(p) if p in ("core", "std", "compiler") else 9)
     obl = [r for r in rows if r["kind"] != "other"]
     print("Obligations by rung (`check` rows: the obligations of each function's batch, and those closed with no query):\n")
-    print("| package | obligations | no solver (lab) | derived invariants | solver | solver: proven | unknown | refuted | no answer |")
+    print("| package | obligations | no solver (lab) | derived invariants | solver | solver: proven | unknown | refuted | solver error |")
     print("|---|---|---|---|---|---|---|---|---|")
     for p in pkgs + ["all"]:
         rs = [r for r in obl if p == "all" or r["package"] == p]
@@ -562,8 +568,9 @@ def summary(path, modules_path, run=None):
                      ("+ uninterpreted functions", ["linear", "linear+splits", "uf"]),
                      ("+ datatypes", ["linear", "linear+splits", "uf", "datatypes"]),
                      ("+ arrays", ["linear", "linear+splits", "uf", "datatypes", "arrays"]),
-                     ("+ strings", ["linear", "linear+splits", "uf", "datatypes", "arrays", "strings"]),
-                     ("+ bitvectors, nonlinear", ["linear", "linear+splits", "uf", "datatypes", "arrays", "strings", "bitvectors", "nonlinear"])]:
+                     ("+ string lengths", ["linear", "linear+splits", "uf", "datatypes", "arrays", "string-lengths"]),
+                     ("+ string operations, regular expressions", ["linear", "linear+splits", "uf", "datatypes", "arrays", "string-lengths", "strings"]),
+                     ("+ bitvectors, nonlinear", ["linear", "linear+splits", "uf", "datatypes", "arrays", "string-lengths", "strings", "bitvectors", "nonlinear"])]:
         rs = [r for r in sv_all if r["class"] in ks]
         pr = [r for r in proven if r["class"] in ks]
         t = sum(float(r["alone_secs"] or 0) for r in rs)
