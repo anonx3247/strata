@@ -1,0 +1,114 @@
+# a conflict merge-file leaves inside a function's body is a hole: the merge
+# fails (git sees a conflict), and `check` counts the hole and names it, with
+# its definition and file, as it does every hole inside a definition
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn f(x: Int) -> Int {\n  a := x + 1\n  b := a * 2\n  a + b\n}\n\nfn main() {\n  print(f(1))\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "o.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn f(x: Int) -> Int {\n  a := x + 3\n  b := a * 3\n  a + b\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "b.strata"]
+
+[[step]]
+run = ["cp", "o.strata", "p/main.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn f(x: Int) -> Int {\n  a := x + 2\n  b := a * 2\n  a + b\n}\n"
+
+[[step]]
+strata = ["merge-file", "../o.strata", "main.strata", "../b.strata", "main.strata"]
+dir = "p"
+fails = true
+has = ["conflict in f: ?conflict_1 at body/0/value/args/1"]
+
+[[step]]
+strata = ["check"]
+dir = "p"
+has = ["(1 open holes)", "?conflict_1 in f, main.strata"]
+
+# checked once, the definition is still counted
+[[step]]
+strata = ["check"]
+dir = "p"
+has = ["(1 open holes)", "?conflict_1 in f, main.strata"]
+
+# a hole in a method of another module, and one in a whole body
+[[step]]
+strata = ["--file", ".", "edit", "util"]
+dir = "p"
+text = '''
+pub type Box = { n: Int }
+
+impl Box {
+  fn twice(self) -> Int {
+    self.n * ?factor
+  }
+}
+
+pub fn later(x: Int) -> Int = ?later
+'''
+
+[[step]]
+strata = ["check"]
+dir = "p"
+has = ["(3 open holes)", "?conflict_1 in f, main.strata", "?factor in impl util.Box, util.strata", "?later in later, util.strata"]
+
+[[step]]
+strata = ["check", "--json"]
+dir = "p"
+has = ["\"conflict_1\"", "\"factor\"", "\"later\""]
+
+# a script: its holes, named with the file
+[[step]]
+save = "s.strata"
+text = "fn g(x: Int) -> Int {\n  x + ?todo\n}\n\nfn main() {\n  print(g(1))\n}\n"
+
+[[step]]
+strata = ["check", "s.strata"]
+has = ["(1 open holes)", "?todo in g, s.strata"]
+
+# holes where inference doesn't reach are counted and named too
+[[step]]
+strata = ["--file", "k.strata", "edit", "--as-given"]
+text = '''
+fn main() {
+  print(1)
+}
+
+test "t" {
+  assert ?in_test == 1
+}
+
+pub trait Sh {
+  fn area(self) -> Int
+  fn twice(self) -> Int {
+    self.area() * ?in_trait
+  }
+}
+
+pub type R = { n: Int = ?in_default }
+
+pub fn h(x: Int, y: Int) -> Int requires x > y + ?in_contract = x
+'''
+
+[[step]]
+strata = ["check", "k.strata"]
+has = ["(4 open holes)", "?in_test in ", "?in_trait in Sh, k.strata", "?in_default in R, k.strata", "?in_contract in h, k.strata"]
+
+[[step]]
+strata = ["--file", "k.strata", "holes"]
+has = ["?in_test", "?in_trait", "?in_default", "?in_contract"]
