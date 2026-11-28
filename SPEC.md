@@ -216,7 +216,7 @@ Two tokens are equal when their kinds, values and `space_before` are equal. Posi
 
 The lexer and the token printer `render` are tied by a law, proven as rule 14 asks:
 
-```
+```strata
 law lex_render(ts: Tokens) requires lexable(ts) holds lex(render(ts)) == Ok(ts)
 ```
 

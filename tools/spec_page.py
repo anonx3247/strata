@@ -19,6 +19,40 @@ SECTIONS = [
     ("Core library", "after section 11"),
 ]
 
+KEYWORDS = set("""fn type trait impl test law lemma extern pub use from as mock derive with
+mut cap comptime if else match while for in loop return break continue assert except or
+true false is self Self it old spawn scope await select race
+requires ensures holds invariant decreases where assumed by
+assume calc simplify once unfold witness arithmetic nonlinear bits compute auto""".split())
+
+STRATA_TOKEN = re.compile(
+    r'(?P<comment>//[^\n]*)'
+    r'|(?P<string>[rf]?"(?:\\.|[^"\\\n])*"?)'
+    r'|(?P<number>\b(?:0x[0-9a-fA-F_]+|0b[01_]+|\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?)\b)'
+    r'|(?P<word>\b[A-Za-z_][A-Za-z0-9_]*\b)'
+    r'|(?P<other>[\s\S])'
+)
+
+
+def highlight_strata(code):
+    out = []
+    for m in STRATA_TOKEN.finditer(code):
+        kind, text = m.lastgroup, m.group()
+        if kind == "word":
+            if text in KEYWORDS:
+                kind = "kw"
+            elif text[0].isupper() or re.fullmatch(r"[su]\d+|f16|f32|f64|bf16", text):
+                kind = "ty"
+            elif code[m.end() : m.end() + 1] == "(":
+                kind = "fn"
+            else:
+                kind = None
+        elif kind == "other":
+            kind = None
+        piece = html.escape(text, quote=False)
+        out.append(f'<span class="{kind}">{piece}</span>' if kind else piece)
+    return "".join(out)
+
 
 def inline(text):
     parts = re.split(r"(`+)(.+?)\1", text)
@@ -85,7 +119,8 @@ def body(md):
             j = i + 1
             while not lines[j].startswith("```"):
                 j += 1
-            code = html.escape("\n".join(lines[i + 1 : j]), quote=False)
+            raw = "\n".join(lines[i + 1 : j])
+            code = highlight_strata(raw) if lang == "strata" else html.escape(raw, quote=False)
             out.append(f'<pre class="{lang or "text"}"><code>{code}</code></pre>')
             i = j + 1
         elif line.startswith("#"):
@@ -160,11 +195,17 @@ h2{font-size:32px;line-height:1.1;letter-spacing:-.02em;margin:48px 0 12px;paddi
 h3{font-size:20px;margin:36px 0 8px}
 p,li{max-width:70ch}
 a{color:var(--blue)}
-code{font:14px/1.5 "JetBrains Mono",ui-monospace,monospace;overflow-wrap:anywhere}
+code{font:14px/1.5 "JetBrains Mono",ui-monospace,monospace;font-variant-ligatures:none;overflow-wrap:anywhere}
 :not(pre)>code{background:var(--code);padding:1px 4px;border-radius:3px}
 pre{background:var(--code);padding:14px 16px;border-radius:6px;overflow-x:auto}
 pre code{overflow-wrap:normal;white-space:pre}
 .scroll{overflow-x:auto}
+pre .kw{color:light-dark(#a3159b,#e08ae0);font-weight:600}
+pre .ty{color:light-dark(#0a5cff,#7fb0ff)}
+pre .fn{color:light-dark(#0b6e4f,#5fd3a6)}
+pre .string{color:light-dark(#a14a00,#f0a868)}
+pre .number{color:light-dark(#8a5a00,#e5c07b)}
+pre .comment{color:light-dark(#6b7280,#7d8596);font-style:italic}
 table{border-collapse:collapse;margin:12px 0 20px;font-size:15px}
 th,td{text-align:left;vertical-align:top;padding:7px 12px 7px 0;border-bottom:1px solid var(--rule)}
 th{font-weight:700;border-bottom:2px solid var(--ink)}
