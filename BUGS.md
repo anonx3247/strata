@@ -327,6 +327,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Code generation
 
+- [ ] **A module whose name starts with `core` loses its types.** A new module `compiler/cores` checked, but `build` failed with "not compiled yet: the constructor `cores.Run`" for every record of the module; renamed `evidence`, it compiled. Something treats a `core…` qualified name as core's.
+  Where: codegen's type table (`g.types.ctors`), likely a `starts_with(…, "core")`. Source: lab trial 1b. Confidence: sure (reproduced by the rename).
 - [ ] **(memory) `extern c` `mut String` parameter: the buffer is freed before it is read back.** For `p.mutable` with `ct.kind == "str"`, the `strata_cstr` copy goes in the out slot and is also pushed to `frees`. After the call, `for c in frees { … strata_cstr_free(c) }` runs before `for (l, ct, slot, old) in outs { raw := load slot; from_c(raw …) }`.
   Where: codegen.foreign_call (st:21127-21195). Source: review codegen. Confidence: sure.
 - [ ] **`mut` arguments of method calls are not recorded, so `entry` stays "held once".** For `x.f(mut y)`, each argument goes through `ex`, which spoils `y`. Nothing is pushed to `c.calls`, so `entry_lowered` never lowers `T.f`'s parameter. `T.f` is in `unknown_callers` only when it takes `mut self` or is a trait method's name.
@@ -674,6 +676,8 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 
 
 ## Verify and the prover
+- [Open questions] (lab trial 1b) `verify 'std.array.ArrayI32.*' --no-cache` passes the 300 s limit with no verdict printed (with or without `STRATA_CORES`), on a loaded machine; `std.array.Array.*` and `ArrayI64.*` finish.
+- [Open questions] (lab trial 1b) `edit` says a body change of `std.collections.count`, which contracts see through, is "implementation only — dependents unaffected"; `verify` does prove the callers again (cli-verify_keeps_proofs_whose_callees_bodies_change), so only the message is wrong.
 - [Open questions] (issue) `extern_reach` is over-approximate by method name: `std.orm.read_column.for.Todo` is "not run" because `Row.value` is taken for `Statement.value`; typed method calls in std's code would remove it.
 - [Open questions] (issue) examples/tasks needed proof-shaped code: an opaque predicate over a value merged at a branch join compares arrays (timeouts); an `assert` with no `by` sees a helper only by its contract; a call made only by its contract is a new value at each use; refinement validity is stated per term, not once per type; encode time dominates.
 - [Open questions] Generic callee type arguments come only from a `let` annotation: `mut q := empty_queue(policy)` stays at the generic sort for the prover (also under "A script the solver rejects").
