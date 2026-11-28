@@ -1,0 +1,58 @@
+# Pipes (lab trial, `STRATA_PIPES=1`): `a |> f` is `f(a)`, the value going
+# to the step's first `_` parameter; stored as the nested calls; shown as a
+# pipe for a call whose first `_` argument is a call; piping into a function
+# without a `_` parameter is an error.
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+env = { STRATA_NAMED = "1" }
+text = '''
+fn parse(_text: String, strict: Bool = false) -> List[String] {
+  if strict {
+    []
+  } else {
+    split(_text, sep: " ")
+  }
+}
+
+fn shout(_words: List[String]) -> String {
+  join(_words.map(f: w -> to_upper(w)), sep: "-")
+}
+
+fn main() {
+  t := "a b c"
+  print(shout(parse(t)))
+  print(t |> parse |> shout)
+  print(parse(t, strict: true) |> shout)
+  print(max(5, [1, 2] |> len))
+  print(t |> parse |> len == 3)
+}
+'''
+
+[[step]]
+strata = ["--file", "a.strata", "run"]
+out = "A-B-C\nA-B-C\n\n5\ntrue\n"
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+env = { STRATA_NAMED = "1", STRATA_PIPES = "1" }
+has = ["parse(t) |> shout |> print", "parse(t, strict: true) |> shout |> print", "max(5, len([1, 2]))", "print(parse(t) |> len == 3)"]
+
+[[step]]
+strata = ["--file", "a.strata", "view", "main"]
+env = { STRATA_NAMED = "1" }
+has = ["print(shout(parse(t)))", "print(len(parse(t)) == 3)"]
+lacks = ["|>"]
+
+[[step]]
+strata = ["--file", "a.strata", "edit"]
+fails = true
+has = ["`plain` can't be piped into: a pipe gives its value to the first parameter written without a name (`_x`), and it has none"]
+text = '''
+fn plain(text: String) -> String {
+  text
+}
+
+fn main() {
+  print("x" |> plain)
+}
+'''
