@@ -344,3 +344,13 @@ The `host_*` I/O layer as `extern c` declarations over the runtime, instead of c
 
 ### A pool of foreign workers
 `extern python` and `extern ts` use one worker per program with calls serialized. A pool would let tasks call at once. (Claude, 2026-11-25)
+
+## Machine integers (lab trial 6e, branch `lab-machine-ints`)
+
+### Open after the trial
+- Records of only `sN`/`uN` fields fitting a word held unboxed (an `i64` value, no block): the trial packs them in a block of one word; unboxed they would take 8 bytes in a list instead of 8 + 16.
+- `List[u8]` and `Array[uN]` packed: lists still take a word per element.
+- `s65` … `s128`, `u65` … `u128` in compiled code (two words in a slot, `i128` in registers): checked and verified, not compiled yet.
+- Sums' variants and positional records with packed fields: per-variant layouts.
+- Value parameters read in a body (`R` as a value): needs instances per argument or a hidden parameter.
+- Conversions spelled by the target type (`u3(n)`, `wrap(n)` with the type from context) instead of `to_u3` / `wrap_u3`, which collide with the lab's `to_u8` while `I8` … `U64` remain.
