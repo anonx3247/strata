@@ -258,7 +258,6 @@ error in f: argument of `Some`: expected `Int`, found `String`
 error in g: argument of `Err`: expected `String`, found `Int`
 error in h: `or` fallback: expected `Int`, found `String`
 error in k: argument of `Some`: expected `String`, found `Int`
-error in m: function body: expected `Option[Int]`, found `Int`
 '''
 
 [[step]]

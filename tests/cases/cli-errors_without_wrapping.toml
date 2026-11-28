@@ -1,0 +1,348 @@
+# `Option` and `Result` without wrapping (IDEAS.md): `Some`, `Ok` and `Err`
+# the types decide are stored as `sugar.implicit` and not shown; patterns of
+# the inner value; `T ! E1 | E2`, `T?`; the arms forms of `except`, partial
+# arms leaving the other errors; `derive Error` with `message` and `trace`;
+# `Option` fields and trailing parameters left out. Each program round-trips
+# (view, store the view, view again).
+
+[[step]]
+save = "unions.strata"
+text = '''
+type NotFound = { path: String }
+type Denied = { path: String }
+type BadToml = { line: Int }
+
+fn read(p: String) -> String ! NotFound | Denied {
+  if p == "" { return NotFound { path: p } }
+  if p == "x" { return Denied { path: p } }
+  "a = 1"
+}
+
+fn parse(s: String) -> Int ! BadToml {
+  if s == "" { BadToml { line: 1 } } else { 1 }
+}
+
+fn load(p: String) -> Int ! NotFound | Denied | BadToml {
+  s := read(p)!
+  parse(s)!
+}
+
+fn half(n: Int) -> Int? {
+  if n % 2 == 0 { n / 2 } else { None }
+}
+
+fn describe(p: String) -> String {
+  match load(p) {
+    n: Int => f"loaded {n}",
+    NotFound { path } => f"no {path}",
+    Denied => "denied",
+    BadToml { line } => f"bad at {line}",
+  }
+}
+
+fn fallback(p: String) -> Int {
+  load(p) except {
+    NotFound => 0,
+    Denied => 1,
+    BadToml => 2,
+  }
+}
+
+fn some_kept(p: String) -> Int ! Denied | BadToml {
+  load(p) except { NotFound => 7 }!
+}
+
+fn main() {
+  print(describe("x"))
+  print(describe("a"))
+  print(describe(""))
+  print(f"{half(4)} {half(3)}")
+  print(f"{fallback("")} {fallback("x")}")
+  print(f"{some_kept("")}")
+}
+'''
+
+[[step]]
+strata = ["--file", "unions.strata", "run"]
+stdout = '''
+denied
+loaded 1
+no 
+Some(2) None
+0 1
+Ok(7)
+'''
+
+[[step]]
+strata = ["--file", "unions.strata", "view", "main"]
+capture = "unions.st"
+
+[[step]]
+save = "unions-r.strata"
+from_tmp = "unions.st"
+
+[[step]]
+strata = ["--file", "unions-r.strata", "view", "main"]
+out_file = "unions.st"
+
+[[step]]
+save = "traced.strata"
+text = '''
+from std.error use Error
+
+type NotFound = { path: String }
+derive Error for NotFound
+type Denied = { path: String }
+derive Error for Denied
+
+fn read(p: String) -> String ! NotFound | Denied {
+  if p == "" { return NotFound { path: p } }
+  if p == "x" { return Denied { path: p } }
+  "a = 1"
+}
+
+fn load(p: String) -> Int ! NotFound | Denied {
+  s := read(p)!
+  byte_len(s)
+}
+
+fn outer(p: String) -> Int ! NotFound | Denied {
+  load(p)! + 1
+}
+
+type Settings = { name: String, port: Int?, verbose: Bool? }
+
+fn connect(host: String, port: Int?, retries: Int?) -> String {
+  f"{host}:{port ?? 80} x{retries ?? 1}"
+}
+
+fn main() {
+  match outer("x") {
+    n: Int => print(f"{n}"),
+    Denied { path, .. } => print(f"denied {path}"),
+    NotFound => print("nf"),
+  }
+  n := outer("x") except e {
+    Denied => {
+      print(f"{e.message()} trace {e.trace}")
+      0
+    },
+    NotFound => 1,
+  }
+  print(f"{n}")
+  s := Settings { name: "a" }
+  print(f"{s.port} {s.verbose}")
+  print(connect("h"))
+  print(connect("h", 8080))
+  print(connect("h", 8080, 3))
+}
+'''
+
+[[step]]
+strata = ["--file", "traced.strata", "run"]
+stdout = '''
+denied x
+Denied { path: "x" } trace ["read", "load", "outer"]
+0
+None None
+h:80 x1
+h:8080 x1
+h:8080 x3
+'''
+
+[[step]]
+strata = ["--file", "traced.strata", "view", "main"]
+capture = "traced.st"
+
+[[step]]
+save = "traced-r.strata"
+from_tmp = "traced.st"
+
+[[step]]
+strata = ["--file", "traced-r.strata", "view", "main"]
+out_file = "traced.st"
+
+[[step]]
+save = "nested.strata"
+text = '''
+from std.error use Error
+
+type Denied = { path: String }
+derive Error for Denied
+
+fn lookup(d: Dict[String, Int?], k: String) -> Int?? {
+  match get(d, k) {
+    Some(v) => Some(v),
+    None => None,
+  }
+}
+
+fn twice(s: String) -> String?? {
+  s
+}
+
+fn inner_none() -> Int?? {
+  Some(None)
+}
+
+fn check(p: String) -> Int ! Denied {
+  if p == "x" { Denied { path: p } } else { 1 }
+}
+
+fn main() {
+  d := Dict[String, Int?] { "a": Some(1), "b": None }
+  print(f"{lookup(d, "a")} {lookup(d, "b")} {lookup(d, "c")}")
+  print(f"{twice("s")} {inner_none()}")
+  match check("x") {
+    n: Int => print(f"{n}"),
+    Denied { path } => print(path),
+  }
+  match lookup(d, "a") {
+    n: Int => print(f"int {n}"),
+    None => print("none"),
+    _ => print("inner none"),
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "nested.strata", "run"]
+stdout = '''
+Some(Some(1)) Some(None) None
+Some(Some("s")) Some(None)
+x
+int 1
+'''
+
+[[step]]
+strata = ["--file", "nested.strata", "view", "main"]
+capture = "nested.st"
+
+[[step]]
+save = "nested-r.strata"
+from_tmp = "nested.st"
+
+[[step]]
+strata = ["--file", "nested-r.strata", "view", "main"]
+out_file = "nested.st"
+
+[[step]]
+save = "merged.strata"
+text = '''
+from std.error use Error
+
+type TimedOut = { after: Int }
+derive Error for TimedOut
+
+fn attempt_a(k: Int) -> Int ! TimedOut {
+  if k > 0 { TimedOut { after: k } } else { 1 }
+}
+
+fn attempt_b(k: Int) -> Int ! TimedOut {
+  if k > 1 { TimedOut { after: k } } else { 2 }
+}
+
+fn both(k: Int) -> Int ! TimedOut {
+  attempt_a(k)! + attempt_b(k)!
+}
+
+fn retried(k: Int) -> Int ! TimedOut | TimedOut {
+  both(k)!
+}
+
+fn main() {
+  for k in [1, 2] {
+    n := both(k) except e {
+      TimedOut => {
+        print(f"{e.trace}")
+        0
+      },
+    }
+    print(f"{n}")
+  }
+  m := retried(2) except e {
+    TimedOut => {
+      print(f"{e.trace}")
+      0
+    },
+  }
+  print(f"{m}")
+}
+'''
+
+[[step]]
+strata = ["--file", "merged.strata", "run"]
+stdout = '''
+["attempt_a", "both"]
+0
+["attempt_a", "both"]
+0
+["attempt_a", "both", "retried"]
+0
+'''
+
+[[step]]
+strata = ["--file", "merged.strata", "view", "main"]
+capture = "merged.st"
+
+[[step]]
+save = "merged-r.strata"
+from_tmp = "merged.st"
+
+[[step]]
+strata = ["--file", "merged-r.strata", "view", "main"]
+out_file = "merged.st"
+
+# where the types don't decide, the constructor is asked for
+[[step]]
+write = "ask.src"
+text = '''
+fn both(n: Int) -> Result[Int, Int] { n }
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file ask.strata edit < ask.src"]
+fails = true
+has = ["both sides of the `Result` take it, so write `Ok(…)` or `Err(…)`"]
+
+[[step]]
+write = "ask2.src"
+text = '''
+fn lookup(d: Dict[String, Int?], k: String) -> Int?? {
+  match get(d, k) {
+    Some(v) => v,
+    None => None,
+  }
+}
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file ask2.strata edit < ask2.src"]
+fails = true
+has = ["write `Some(…)` where it goes: the types don't decide it here"]
+
+# `!` splits a type once
+[[step]]
+write = "twice.src"
+text = '''
+fn f() -> Int ! String ! Bool { 1 }
+'''
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file twice.strata edit < twice.src"]
+fails = true
+has = ["`!` splits a type once"]
+
+# precedence: `!` loosest, `?` tightest
+[[step]]
+save = "prec.strata"
+text = '''
+type A = { a: Int }
+type B = { b: Int }
+fn f(x: A | B?) -> A | B ! Int | String { 0 }
+fn g(x: (A | B)?) -> (A ! B) | Int { 0 }
+'''
+
+[[step]]
+strata = ["--file", "prec.strata", "view", "main"]
+has = ["fn f(x: A | Option[B]) -> Result[A | B, Int | String]", "fn g(x: Option[A | B]) -> Result[A, B] | Int"]
