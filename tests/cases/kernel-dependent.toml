@@ -21,6 +21,6 @@ has = [
   "instance User.patched_nothing : Π (x : Π (g : User.Field), User.ty g)",
   "instance User.patched_set.age : Π (x : User), Π (p : Patch[User]), Π (v : Int), (Eq.{0} (Change Int) (p User.age) (Set Int v)) → Eq.{0} Int",
   "instance Patch[User] : made by the type function",
-  "opaque types: String, Int",
+  "opaque types: String",
 ]
 lacks = ["ACCEPTED", "failed"]
