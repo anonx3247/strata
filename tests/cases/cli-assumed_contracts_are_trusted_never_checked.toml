@@ -139,3 +139,49 @@ has = [
   "built open",
 ]
 lacks = ["in `again`"]
+
+# the same of a generic type's own method, and of a function taking a
+# capability (not fuzzed); a contract not assumed there stays not proven
+[[step]]
+save = "kinds.strata"
+text = '''
+from std.io use Console
+
+type Box[T] = { s: String }
+
+impl[T] Box[T] {
+  /// Its text, claimed with a fact the solver doesn't prove.
+  fn shown(self) -> String
+    assumed ensures reverse(reverse(it)) == self.s
+  {
+    self.s
+  }
+}
+
+/// `s`, printed first, claimed with a fact the solver doesn't prove.
+fn told(mut console: Console, s: String) -> String
+  assumed ensures reverse(reverse(it)) == s
+{
+  mut console.print(s)
+  s
+}
+
+/// `told`, with the same fact not assumed.
+fn said(mut console: Console, s: String) -> String
+  ensures reverse(reverse(it)) == s
+{
+  mut console.print(s)
+  s
+}
+'''
+
+[[step]]
+strata = ["--file", "kinds.strata", "verify", "--require", "proven"]
+code = 1
+has = [
+  "≈ Box.shown                assumed: not proven: ensures reverse(reverse(it)) == self.s",
+  "≈ told                     assumed: it takes the capability `Console`, which only `strata run` gives, so it isn't fuzzed; not proven: ensures reverse(reverse(it)) == s",
+  "- said                     skipped: it takes the capability `Console`",
+  "policy: `proven` accepts `Box.shown`, `told` as assumed (trusted, not checked)",
+  "policy: `said` is not proven",
+]

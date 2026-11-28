@@ -130,6 +130,9 @@ After Koka's `fip`: a marked function is checked to run without allocating, each
 ### Less counting
 Ideas not built: values of types whose values are all constants (enums) as immortal; a dict lookup that returns a borrowed slot instead of an `Option`; arenas for decoding and compile-time values; string interpolation as one runtime call; tracking fields in the static uniqueness analysis; moving a variable at its last use (needs liveness). (Claude, 2026-11-24)
 
+### Concatenation that extends a shared buffer
+`(get(d, k) ?? []) + [x]` copies the list each time (docs/language.md: every expression but `xs = xs + …` builds a new value), so a dict of lists grown that way is quadratic: 12.6 s at 200,000 in build-copies' old `containers`, 0.5 s written as `mut xs := get(d, k) ?? []`, `mut xs.push(x)`, `mut d.insert(k, xs)`. core.list's `list_concat` could write past the end of `a`'s buffer when no other list has used those slots, as `list_extend` does, but that only pays if the copy it makes otherwise reserves room, which costs up to twice the memory of every concatenation. (Claude, 2026-11-28)
+
 ### Lanes for growing lists
 After Goose: a list grown in a loop gets its own bump area, so it stays at the top while the loop's other objects go elsewhere. Large lists outside arenas are also not handled. (coordinator, 2026-11-26)
 

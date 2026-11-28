@@ -47,5 +47,5 @@ fn lock(
 '''
 
 [[step]]
-run = ["sh", "-c", "cd \"$TMP\" && STRATA_CACHE=\"$TMP/cache\" perl -e \"alarm 60; exec @ARGV\" \"$STRATA\" --file bags.strata verify --no-cache 2>&1"]
+run = ["sh", "-c", "cd \"$TMP\" && perl -e \"alarm 60; exec @ARGV\" \"$STRATA\" --file bags.strata verify --no-cache 2>&1"]
 has = ["same_bags                proven", "lock                     proven"]

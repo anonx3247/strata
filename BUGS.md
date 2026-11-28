@@ -357,8 +357,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: codegen (`??`). Source: ledger G8 (#495). Confidence: likely.
 - [ ] **A lambda with no expected type gets `()` as its parameter type.** `r := R { f: Some(x -> x) }` called in a generic function makes IR that LLVM rejects.
   Where: codegen (lambdas). Source: ledger G10 (#450). Confidence: likely.
-- [ ] **`containers` in `build-copies` is quadratic though the case says linear.** The case times out under load.
-  Where: codegen (copies). Source: ledger P1. Confidence: likely.
 - [ ] **Long list literals need about 5 GB at 20,000 elements.** `cli-long_list_literals_compile_in_linear_time` passes on output but not memory.
   Where: codegen (list literals). Source: ledger P2. Confidence: likely.
 - [ ] **The temporary file name does not include the PID.** Two processes writing the same entry write the same temporary file. One can rename it into place while the other has truncated and is rewriting it, so a reader sees a torn entry.
@@ -654,18 +652,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 - [ ] **`verify --termination` of a whole compiler/ goes past 300 s.** Per module (`verify 'M.*' --termination`) `main`, `markdown` and `tour` go past 300 s each, on 8a5c58aa too.
   Where: termination (per-run analysis of the whole package). Source: termination-modelling PR. Confidence: sure.
 
-- [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
-  Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
-- [ ] **`build-std_array` fails.** Its `verify` proves `chain` with 13 checks and `mean_of` with 6, where the case wants 6 and 3. On 61492e1d too.
-  Where: tests/cases (verify check counts). Source: build-fails-on-errors PR. Confidence: sure.
-- [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
-  Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
-- [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.
-  Where: tests/cases, the SMT terms work (#616). Source: main-cases PR. Confidence: sure.
-- [ ] **`cli-smt_proves_sums_over_lists` fails.** `bounded` (`ensures it <= 10 * len(xs)`, a sum of elements under 10) is not proven: "a possible counterexample it could not express". On ecf3c860 too.
-  Where: compiler/smt, sums over lists. Source: main-cases PR. Confidence: sure.
-- [ ] **`cli-structural_records` fails.** A structural record's refined field is lost: `total_of(x: { total: Cents, .. }) -> Cents` gets the counterexample `x = { total: -1 }`, and `bigger` proves 2 checks instead of 3. On ecf3c860 too.
-  Where: compiler/smt, refinements of structural record fields. Source: main-cases PR. Confidence: sure.
+- [ ] **`cli-smt_infers_for_loop_invariants`, `cli-smt_frames_key_sets_and_unique` and `cli-smt_proves_nested_quantifiers` fail since #677.** They pass on its first parent (a138ab6b) and with `STRATA_QUANTIFIERS=forall`; by default each lost proof says "needs a lemma: a fact about every element … is used where no position is named". Lost: `all_pos` (`ensures it == all(xs, x -> x > 0)` after a `for` loop), `put` and `put_many` (`ensures d.excluding([k]) == old d.excluding([k])`), `two_calls`, `reply`, `reply_last` and `prefix` (results of the refined list type `Conversation`, `all(0..len(it), i -> answers(it, i))`, after `c + [...]`). Which instance each is missing is not traced.
+  Where: compiler/smt `all_of` (its per-instance branch), `list_set`. Source: main-cases-green PR (found running cases near the fixes). Confidence: sure.
 
 ## From the old IDEAS.md, to reconcile
 
@@ -786,6 +774,6 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [Networking] Two tasks using copies of one connection aren't synchronized; a root-module local named like a rewritten function is rewritten too.
 - [Known gaps] `--json` missing on `view`, `render`, `interface`, `status`, `done`, `test`, `run`.
 - [Known gaps] Lab-fleet tool bugs: `strata --file core check` never type-checks core; round-tripping `core/builtins` through a non-core file loses overloads; `diff`/`tour --check` report ~35 `noalloc` core functions as changed; the merge driver re-encoded `smt.infer_invariants` with different bytes; `edit` refuses `from m use f` with `--rm 'use m'`; `edit` can't delete a detached `//` banner; selectors split on `,` so `impl Json for Dict[String, V]` can't be named; `parse.debug_quoted` replaces `"\r"` with itself; `declarations.Names.open` is always false; unused prelude dict/set functions.
-- [Known gaps] Speed and memory: `view --graph` past 4.5 GB; long list literals need 5 GB at 20,000 elements; `containers` in `build-copies` quadratic; `std.json.parse` makes one-character strings (65% of peak on 8 MB); `check` of compiler keeps 112 MB read by `read_bytes`.
+- [Known gaps] Speed and memory: `view --graph` past 4.5 GB; long list literals need 5 GB at 20,000 elements; `std.json.parse` makes one-character strings (65% of peak on 8 MB); `check` of compiler keeps 112 MB read by `read_bytes`.
 - [Known gaps] Failing cases on main: `cli-modules_contracts_and_files` (view order).
 - The format trials' "Found, not fixed" items (stored core, stable ids, operators, the trio's merge) are listed in REBUILD.md's appendix, "The format trials as recorded in the lab": to reconcile here.
