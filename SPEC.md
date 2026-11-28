@@ -296,7 +296,7 @@ type ModulePath = { package: Name, path: List[Name] }
 type Name = String where is_identifier(it)
 ```
 
-- These have an `Id`: definitions (methods included), named types declared inside a sum (section 3.5), fields, and parameters of functions, methods and function types.
+- These have an `Id`: definitions (methods included), named types and atoms declared inside a sum (section 3.4), fields, and parameters of functions, methods and function types.
 - An id is unique among the ids of its module, and it stays the same through edits, renames and moves within the module. `edit` draws a new id at random, never 0, and draws again while it is taken.
 - A `Key` names something in any module: the module and the id.
 - A definition's nodes are every value of the types `Definition`, `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Arm` and `Contract` reachable from it. They are numbered from 0 in postorder: a node's children first, in the order of their fields in this section and of their lists, then the node. The definition is the last node.
@@ -454,6 +454,7 @@ type Expression =
   | RecordType { fields: List[Field] }
   | TupleType { elements: List[Expression] }
   | Named { id: Id, _type: Expression }
+  | Atom { id: Id }
   | SumType { members: List[Expression] }
   | FunctionType { parameters: List[Parameter], result: Expression }
   | Refinement { base: Expression, predicate: Expression }
@@ -497,7 +498,8 @@ Calls:
 - `Call.arguments` holds the arguments given, in the order of the parameters. A parameter left out takes its default (section 7). A method's receiver is the first argument. `mode` records `mut` and `cap` as written at the call.
 
 Values made of parts:
-- `Construct` makes a value of a named type from its contents: `Circle { r: 1.0 }` is `Construct { named: <Circle>, value: RecordLiteral { … } }`, `Some(x)` is `Construct { named: <Some>, value: Tuple { elements: [x] } }`, and `None`, `true` and `false` are `Construct` over the empty `Tuple`.
+- `Construct` makes a value of a named type from its contents: `Circle { r: 1.0 }` is `Construct { named: <Circle>, value: RecordLiteral { … } }`, and `Some(x)` is `Construct { named: <Some>, value: Tuple { elements: [x] } }`.
+- An atom is its type's one value, so a use of it is a `Global`: `None`, `true` and `false` are `Global { key: <None> }`, `Global { key: <True> }` and `Global { key: <False> }`.
 - `RecordLiteral` holds the fields given, in the order the type declares them. Each field left out takes its value from `base` when there is one (`T { ...r, f: v }`), and otherwise its default. So a field added to a type later fills every stored literal with no rewrite. With no `Construct` around it, a `RecordLiteral` is a structural record (`{ x: 1, y: 2 }`).
 - `FieldAccess` names the field by key: the field of the record's type, or of the bound that declares it when the record's type is a type parameter.
 
@@ -506,8 +508,9 @@ Control and logic:
 - `And`, `Or`, `Implies` and `Not` are nodes, not trait calls. `And`, `Or` and `Implies` evaluate their right side only when the left doesn't decide the result (`i < len(xs) && xs[i] > 0` never reads `xs[i]` out of range), and the prover uses the left side as a fact while proving the right.
 
 Types:
-- There are no variants. A sum is a sum of types: `SumType { members }`. Each member is a type declared elsewhere (`Global`) or a `Named` type declared in the sum.
-- `Named { id, _type }` is a type with a name of its own, over a record (`Circle { r: f64 }`), a tuple (`Set(T)`), or the empty tuple, which makes an atom (`None`, `Never`, `True`). The printer writes an atom without `()`.
+- There are no variants. A sum is a sum of types: `SumType { members }`. Each member is a type declared elsewhere (`Global`), or a `Named` type or an `Atom` declared in the sum.
+- `Named { id, _type }` is a type with a name of its own, over a record (`Circle { r: f64 }`) or a tuple of one or more elements (`Set(T)`).
+- `Atom { id }` is a type with a name and exactly one value, written by its name: `None`, `Never`, `True`, `False`.
 - A record has named fields (`Field`, with ids). A tuple has unnamed elements, which are only types; `.0`, `.1` read them.
 - A sum with shared fields (`| A { x: s64 } | B with { id: Id }`) is stored with each shared field in every member's record, under one id. Every member must then be a `Named` record. The printer writes `with` when every member holds the same fields under the same ids.
 - `TypeApplication` is a generic type with its arguments: `List[Int]`, `Result[Config, NotFound]`, `Patch[User]`, `Matrix[3, 4]`. It isn't a `Call`, because a call's arguments are by parameter id and a type parameter has none.
@@ -572,7 +575,7 @@ Examples:
 - `mut total: s64 = 0` is a `Bind` whose `Binding` is mutable and whose type is `s64`.
 - `x = e` is `Assign`. `x += e` is `Assign { place: x, value: Add.add(x, e) }`.
 - `loop { … }` is `While` with the condition `true`. `comptime for` is `For` with `unrolled: true`.
-- `Some(x)` as a pattern is `NamedPattern { named: <Some>, inner: TuplePattern { elements: [Binding] } }`. `e: NotFound => …` is a `TypeTest`.
+- `Some(x)` as a pattern is `NamedPattern { named: <Some>, inner: TuplePattern { elements: [Binding] } }`. `None` as a pattern is `LiteralPattern { value: Global { key: <None> } }`. `e: NotFound => …` is a `TypeTest`.
 
 - A `Binding` binds a variable. Its type is the variable's.
 - `Assert`'s proof steps (`assert … by …`) come with section 8.
