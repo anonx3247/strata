@@ -13,7 +13,7 @@ type Change[T] =
   | Set(T)
 
 /// Every field of `T` as a change, kept by default.
-type Patch[T: Record] = Record { fields: [for f in T.fields: Field { name: f.name, type: Change[f.type], default: Some("Keep") }] }
+type Patch[T: Record] = Record { fields: [for f in T.fields: Field { name: f.name, type: Change[f.type], default: Keep }] }
 
 /// Values changed by a patch `P`.
 trait Patchable[P] {
@@ -67,7 +67,7 @@ Point { x: 1, y: 5 }
 # the sugar is shown back as written
 [[step]]
 strata = ["--file", "p.strata", "view", "main"]
-has = ["type Patch[T: Record] = Record {", "type: Change[f.type],", "match p.(f.name) {", "self.(f.name) = v", "Patch[User] { title: Set(None) }"]
+has = ["type Patch[T: Record] = Record {", "type: Change[f.type], default: Keep", "match p.(f.name) {", "self.(f.name) = v", "Patch[User] { title: Set(None) }"]
 
 # an impl for one of the types a blanket impl covers overlaps it
 [[step]]
@@ -133,7 +133,38 @@ impl[T: Record] Patchable[Patch[T]] for T {
 }
 '''
 fails = true
-has = ["runs once at run time, but its body differs per element (it reads a field named by `f`): write `comptime for`"]
+has = ["error in impl Patchable[Patch[T]] for T: deriving `apply`: `for f in T.fields` runs once at run time, but its body differs per element (it reads a field named by `f`): write `comptime for`"]
+lacks = ["for `User`", "for `Point`"]
+
+# a type made later gets the blanket impl where it is used
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+fn nested(p: Patch[Patch[Point]]) -> Patch[Point] {
+  Patch[Point] {}.patched(p)
+}
+
+fn main() {
+  print(nested(Patch[Patch[Point]] { y: Set(Set(4)) }).y)
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "run"]
+stdout = "Set(4)\n"
+
+# a blanket impl lives in its trait's package
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+impl[T: Record] Debug for T {
+  fn debug(self) -> String {
+    "x"
+  }
+}
+'''
+fails = true
+has = ["`impl[T: Record] Debug for T` is outside `Debug`'s package (`core`): a blanket impl is part of its trait and lives in the trait's package"]
 
 # `comptime for` over a list not known while compiling
 [[step]]
@@ -245,11 +276,24 @@ Pin { at: Point { x: 1, y: 2 }, label: "home", on: true, shape: Circle(3) }
 Dot
 '''
 
-# a record whose field's type lacks the trait
+# a record whose field's type lacks the trait: no impl, and no error until
+# it is used
 [[step]]
 strata = ["--file", "s.strata", "edit"]
 text = '''
 type Tagged = { id: Int, tags: List[String] }
+
+fn count(t: Tagged) -> Int {
+  len(t.tags) + t.id
+}
+'''
+
+[[step]]
+strata = ["--file", "s.strata", "edit"]
+text = '''
+fn shown(t: Tagged) -> String {
+  t.show()
+}
 '''
 fails = true
-has = ["for `Tagged`: deriving `show`: field `tags`: `List[String]` doesn't implement `Show`"]
+has = ["error in shown: calling `show`: `Tagged` does not implement `Show`: deriving `show`: field `tags`: `List[String]` doesn't implement `Show`"]
