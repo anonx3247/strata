@@ -315,6 +315,9 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Code generation
 
+- [ ] **A proven check at an expression written twice in a function stays.** A site is its expression's text (`text.check_site`), so `codegen.proven` leaves a check out only where its text occurs once in the function: `xs[i] + xs[i]` keeps both index checks though both are proven. Node ids for sites would let it leave them out.
+  Where: text.check_site, codegen.proven, smt (`Vc.here`). Source: verify-soundness-2 PR. Confidence: sure.
+
 - [ ] **A union with two members of the same head reads under the wrong tag.** Widening into `List[Int] | List[String]` reads the list under the wrong tag (wrong results).
   Where: codegen (unions). Source: ledger G3 (#577). Confidence: likely.
 - [ ] **Refinements inside a generic record's type arguments are not checked at run time.** A `Box[Cents]` holding a negative value doesn't fault.
