@@ -1,0 +1,38 @@
+# smt: a check inside an `ensures` is an obligation, under the `requires`
+# and the result
+[[step]]
+save = "e.strata"
+text = '''
+fn same_head(xs: List[Int]) -> Int ensures xs[0] == xs[0] = 0
+
+fn at_result(xs: List[Int]) -> Natural ensures xs[it] == xs[it] = 0
+
+fn after_requires(xs: List[Int]) -> Int
+  requires len(xs) > 0
+  ensures xs[0] == xs[0]
+= 0
+
+fn past_end(xs: List[Int]) -> Int ensures xs[it] == xs[it] = len(xs)
+'''
+
+[[step]]
+strata = ["--file", "e.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn same_head
+  refuted index in range
+  proven index in range
+  proven ensures at(xs, 0) == at(xs, 0)
+fn at_result
+  proven result of `at_result`: Natural
+  refuted index in range
+  proven index in range
+  proven ensures at(xs, it) == at(xs, it)
+fn after_requires
+  proven index in range
+  proven index in range
+  proven ensures at(xs, 0) == at(xs, 0)
+fn past_end
+  refuted index in range
+  proven index in range
+  proven ensures at(xs, it) == at(xs, it)
+'''
