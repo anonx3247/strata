@@ -736,15 +736,16 @@ TypeEntry = nodes:list(Node)
 - **Nodes** are written in postorder (section 3.1), so the n-th node written is node index n, counting the interface's nodes and then each body's. Each node is:
 
 ```text
-Node = tag:uint  fields
+Node = tag:uint  flags:uint  fields
 ```
 
 - `tag` is the node's tag in section 4.6. `Inferred` has no tag, since a stored tree has none.
+- `flags` holds the node's yes-or-no fields, one bit each, the first in the lowest bit, in the order of its fields: each `Bool`, each `Option` of a node (set when the child is there) and each body (set when there is one). A node with none of these writes no `flags`. Bits past the last are 0, and the decoder refuses a set one.
 - `fields` are the node's fields in the order section 3 lists them, each written as follows:
   - a node (an `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Arm`, `Contract`, or a method's `Definition.Function`): nothing, since it was written before as a child;
-  - an `Option` of a node: a `bool`, `1` when the child is there;
+  - an `Option` of a node: nothing here, its bit is in `flags`;
   - a `List` of nodes: a `uint`, the number of children;
-  - a body (`Function.body`, `Test.body`): a `bool`, `1` when there is one; its nodes are in the bodies section;
+  - a body (`Function.body`, `Test.body`): nothing here, its bit is in `flags`; its nodes are in the bodies section;
   - the `_type` of an expression or pattern: a `uint`, `0` for none (only `Type` itself), else 1 plus an index into the definition's type list;
   - a `Key`, or an `Id` the node declares: a `uint`, its index in the id table;
   - a `NodeIndex`: a `uint`;
@@ -752,7 +753,7 @@ Node = tag:uint  fields
   - a `String` (`Text.value`): a `uint`, the index of its constant;
   - an `s32`: an `int`;
   - a `u32` (`TupleElement.index`): a `uint`;
-  - a `Bool`: a `bool`;
+  - a `Bool`: nothing here, its bit is in `flags`;
   - a sum with no fields (`PassingMode`, `ParameterMode`, `Variance`, `ForeignLanguage`): a `uint`, its member's position from 0;
   - a record that isn't a node (`Argument`, `FieldValue`, `FieldPattern`): its fields in order, by these same rules;
   - a `Target`: its member's position from 0, then that member's fields by these same rules.
