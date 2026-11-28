@@ -164,7 +164,7 @@ fn total(orders: List[Order]) -> s64 {
 ### 1.9 Punctuation
 
 ```ebnf
-punctuation = "==>" | "..=" | "..." | ".." | "<<" | ">>" | "??" | "!!"
+punctuation = "==>" | "..=" | ".." | "<<" | ">>" | "??" | "!!"
             | ":=" | "->" | "=>" | "==" | "!=" | "<=" | ">=" | "&&" | "||"
             | "+=" | "-=" | "*=" | "/=" | "%="
             | "(" | ")" | "[" | "]" | "{" | "}" | "," | ":" | "." | "="
@@ -172,6 +172,7 @@ punctuation = "==>" | "..=" | "..." | ".." | "<<" | ">>" | "??" | "!!"
 ```
 
 - The longest match wins: `a!=b` is `a`, `!=`, `b`, and `x..=y` is `x`, `..=`, `y`.
+- `..` has three uses, which section 2 tells apart: a range (`a..b`), a spread of a record into a call (`f(a, ..p)`), and a record update (`T { ..r, f: v }`). There is no `...`.
 - `$`, `;`, `@`, `#`, `~`, `` ` ``, `'` and `\` outside a string are errors. No program can write a generated name. The tree tells generated nodes apart by their node ids and core forms (section 3).
 
 ### 1.10 Newlines
@@ -265,6 +266,7 @@ Each difference is a decision recorded in REBUILD.md.
 | markup `<p>…</p>`, three lexer modes | deferred: not in this spec until std.web needs it | not needed (deferred) |
 | `$` names in stored trees | no `$` at all | to try |
 | `;`, `++` punctuation | none | not needed (removal) |
+| spreads written `f(...p)` | `f(..p)`, as record updates write `..r` | to try |
 | some keywords contextual | every keyword reserved, proof steps included | to try: measure the names it breaks |
 | newline continues only before an operator or `.` | also after an operator, `,` or `{`, and before a continuing keyword | to try |
 | CR, BOM: undefined | CR LF read as LF, BOM skipped at the start | to try |
