@@ -383,9 +383,9 @@ int32_t driver_keep_shared(int32_t on) {
   return 0;
 }
 
-// The reader's setting for named arguments at calls (`STRATA_NAMED=1`):
-// 1 when on, else 0.
+// The reader's setting for named arguments at calls (`STRATA_NAMED=N`):
+// its digit, 0 when unset.
 int32_t driver_named_args(void) {
   const char *v = getenv("STRATA_NAMED");
-  return v != NULL && v[0] == '1' ? 1 : 0;
+  return v != NULL && v[0] >= '0' && v[0] <= '9' ? v[0] - '0' : 0;
 }
