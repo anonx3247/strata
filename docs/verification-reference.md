@@ -234,6 +234,7 @@ Fuzz drivers are compiled only for definitions with a check to run.
 - Z3 stays running, one process per core for the whole run, and each script is sent after `(reset)` with its limits set again. Starting Z3 takes longer than most queries, so it is paid once per core. A script already answered in the run isn't sent again.
 - A solver that is a script, or that doesn't answer a command as it reads it, gets one process per script instead. `STRATA_SOLVER_POOL=0` forces this.
 - `STRATA_SOLVER_LOG=FILE` writes one line per script: its time, flags, size, hash and first answer.
+- `STRATA_SOLVER_DUMP=DIR` writes each script asked as `DIR/HASH.smt2`, then the solver's output as `; out:` comments. A function's batch and single queries start with `; fn NAME` (only while dumping, so scripts and their hashes are otherwise the same). `tools/obligation_theories.py` reads these dumps.
 - Termination's loop bounds and recursion measures are found the same way.
 - Each query bounds the string lengths it uses below 2^64. Without that bound, Z3 tries to build a string of 10^308 characters to refute `len(s) < 10^308`.
 
