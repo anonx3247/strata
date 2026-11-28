@@ -1,0 +1,122 @@
+# An edit's loop-invariant searches share a budget of the solver's
+# resource units (two searches run to their limit): a loop left
+# unsearched is noted, with `strata fix` to search on, instead of the edit
+# searching every loop of what it changed before it returns. (A stand-in
+# that says it is Z3 and answers `unknown` to everything: each search
+# runs to its limit.) A package's folder edited with `--file` is checked
+# in what the edit can affect, as `strata edit` checks it.
+
+[[step]]
+write = "standin.c"
+text = '''
+#include <stdio.h>
+#include <string.h>
+int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "--version") == 0) { puts("Z3 version 4.15.0 - 64 bit"); return 0; }
+  char line[1 << 16];
+  while (fgets(line, sizeof line, stdin)) {
+    if (strncmp(line, "(check-sat", 10) == 0) puts("unknown");
+    else if (strncmp(line, "(echo \"", 7) == 0) { char *e = strchr(line + 7, '"'); if (e) *e = 0; puts(line + 7); }
+    else if (strncmp(line, "(get-info :reason-unknown", 25) == 0) puts("(:reason-unknown \"incomplete\")");
+    else if (strncmp(line, "(get-info", 9) == 0) puts("unsupported");
+    else if (strncmp(line, "(get-", 5) == 0) puts("(error \"model is not available\")");
+    fflush(stdout);
+  }
+  return 0;
+}
+'''
+
+[[step]]
+run = ["clang", "-o", "z3", "standin.c"]
+
+[[step]]
+write = "strata.toml"
+text = '''
+name = "loops"
+'''
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+env = { STRATA_SOLVER = "$TMP/z3" }
+text = '''
+pub fn walk_a(xs: List[Int]) -> Int {
+  mut i := 0
+  mut s := 0
+  while i < len(xs) {
+    s = s + xs[i]
+    i += 1
+  }
+  s
+}
+
+pub fn walk_b(xs: List[Int]) -> Int {
+  mut i := 0
+  mut s := 0
+  while i < len(xs) {
+    s = s + xs[i]
+    i += 2
+  }
+  s
+}
+
+pub fn walk_c(xs: List[Int]) -> Int {
+  mut i := 0
+  mut s := 0
+  while i < len(xs) {
+    s = s + xs[i]
+    i += 3
+  }
+  s
+}
+'''
+has = [
+  "the invariant search budget was used up before `while i < len(xs)` was searched: write an `invariant` for that loop, or run `strata fix",
+  "(this run's budget was 40M solver resource units)",
+]
+
+# a definition that doesn't check, written as given
+[[step]]
+strata = ["--file", ".", "edit", "main", "--as-given", "--no-search"]
+text = '''
+fn stale() -> Int {
+  "not a number"
+}
+'''
+fails = true
+has = ["written as given"]
+
+# an edit of a body checks what it can affect: `stale` is not
+[[step]]
+strata = ["--file", ".", "edit", "main", "--no-search"]
+text = '''
+pub fn walk_a(xs: List[Int]) -> Int {
+  mut i := 0
+  mut s := 0
+  while i < len(xs) {
+    s = xs[i] + s
+    i += 1
+  }
+  s
+}
+'''
+has = ["1 definition changed"]
+lacks = ["stale"]
+
+# an edit that breaks a use is rejected
+[[step]]
+strata = ["--file", ".", "edit", "main", "--no-search"]
+text = '''
+pub fn uses() -> Int {
+  walk_b([1, 2])
+}
+'''
+
+[[step]]
+strata = ["--file", ".", "edit", "main", "--no-search"]
+text = '''
+pub fn walk_b(xs: List[Int]) -> String {
+  "none"
+}
+'''
+fails = true
+has = ["rejected", "uses"]
