@@ -1,0 +1,46 @@
+# a call of a trait method on a concrete type relies on its impl's
+# contract: the impl's `ensures` weakened, the caller is proven again and
+# fails
+[[step]]
+save = "p.strata"
+text = '''
+trait Sized {
+  fn size(self) -> Int
+}
+type Box = { n: Int }
+impl Sized for Box {
+  fn size(self) -> Int
+    ensures it >= 0
+  {
+    if self.n < 0 { 0 } else { self.n }
+  }
+}
+fn user(b: Box) -> Int
+  ensures it >= 0
+{
+  b.size()
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+has = ["✓ user "]
+lacks = ["(cached)"]
+
+[[step]]
+strata = ["--file", "p.strata", "edit"]
+text = '''
+impl Sized for Box {
+  fn size(self) -> Int
+    ensures it >= -1
+  {
+    if self.n < 0 { -1 } else { self.n }
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--cases", "20"]
+fails = true
+has = ["✗ user "]
+lacks = ["(cached)"]
