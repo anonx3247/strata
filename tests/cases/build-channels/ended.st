@@ -1,10 +1,10 @@
 fn main() {
-  (tx, rx) := channel(1)
-  tx.close()
-  scope {
-    spawn {
-      tx.send(5)
-      tx.close()
-    }
+  (tx, rx) := channel()
+  got := scope {
+    t := spawn rx.recv()
+    sent := tx.send(1)
+    (await t, sent)
   }
+  print(got)
+  print(tx.send(2))
 }
