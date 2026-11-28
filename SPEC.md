@@ -618,7 +618,7 @@ with {
 
 - A parameter written `_x` is passed without its name (section 2). The name keeps its `_`.
 - A lambda's and a function type's parameters are `Parameter`s too. They have ids, because names are part of a function type.
-- A `TypeParameter`'s `type` is `Type` for a type parameter, or an integer, `Bool` or atom type for a value parameter (`type Matrix[R: s64, C: s64]`).
+- A `TypeParameter`'s `type_of` is `Type` for a type parameter, or an integer, `Bool` or atom type for a value parameter (`type Matrix[R: s64, C: s64]`).
 - `variance` is computed by elaborate (section 6) and is part of the type's interface.
 - A field with no name is positional: `Set(T)` is a variant with one unnamed field.
 - In an `ensures`, `it` is a `Local` whose binder is the `Function`. In a `requires` of a function with one parameter, `it` is that parameter.
