@@ -1,0 +1,20 @@
+# A task's captures are freed when the task ends, not when its scope does:
+# 100 tasks in one scope, each capturing a copy of 10,000 records, peak at a
+# few copies (STRATA_MEMORY_LIVE), not 100; everything is freed
+# (STRATA_MEMORY=check).
+
+[[step]]
+save = "server.strata"
+from = "server.st"
+
+[[step]]
+strata = ["--file", "server.strata", "build", "--no-verify", "--memory-sites", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "1009900\n"
+
+[[step]]
+run = ["sh", "-c", "STRATA_MEMORY_LIVE=1 ./prog 2>&1 >/dev/null | awk '/live at the peak/ { print ($5 < 100000 ? \"bounded\" : \"held: \" $5) }'"]
+out = "bounded\n"

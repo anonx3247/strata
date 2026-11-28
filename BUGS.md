@@ -518,6 +518,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Tools
 
+- [ ] **An edit's refinement probes run the package as it was before the edit.** `literal_errors` compiles its probes with `codegen_with(disk, sh, … path, probes)`, which reads the package's files from disk, not the edited definitions. An edit of `small` that breaks `fn five() -> Digit { 5 }` (`type Digit = Int where small(it)`) is accepted, and the edit that puts `small` back is refused with "5 does not satisfy `Digit`" (`strata check` afterwards agrees with the files).
+  Where: main.edit_errors, main.literal_errors_of, main.literal_errors. Source: seethrough-stamps PR. Confidence: sure.
 - [ ] **An edit of a function with a loop spends 8-15 s on its invariant search, even with nothing to search.** `search_invariants` runs `verify_program` with the changed functions as the selection, and `verify_inputs` re-reads and elaborates the whole package for it (`verified_decls`: desugar, `lambdas_typed`, `own_methods_resolved`, `elaborated`; about 8 s for compiler/). Termination is then analysed for what the targets reach (30 s for an 84-definition new module of lab-kernel's). The searches themselves are bounded (`edit_search_budget`).
   Where: main.search_invariants, main.verify_inputs, main.verified_decls. Source: edit-speed PR. Confidence: sure (`STRATA_TIMINGS=1`: `verify: inputs`).
 - [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
