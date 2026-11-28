@@ -99,6 +99,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: verify. Source: ledger V14 (#529). Confidence: likely.
 - [ ] **`verify` reports an insert naming a missing row as "not proven" instead of refuted.** `sqlite.memory()` doesn't carry its empty model through `create`; a `delete` of a referenced row is refused only at run time.
   Where: std.sqlite models. Source: ledger V27. Confidence: likely.
+- [ ] **Refinements nested in a parameter's type make no obligation for the checks inside them.** A function's own contract (its `requires`, `ensures`, `decreases`, its loops' `decreases`, the refinements of its parameters' and result's types, its quantifiers over a list) makes each partial operation in it an obligation. A refinement nested inside a parameter's type does not: the element type of a list (`List[Head]` with `type Head = List[Int] where it[0] > 0`), a record's field or a variant's payload, and a `let` annotation. The checks inside those refinements are neither proven nor reported.
+  Where: smt.own_refined (top-level `Refined` and named types only), smt.check_type_at (refinements evaluated through `pred`, no obligations). Source: contract-obligations PR. Confidence: sure.
+- [ ] **Function values in contracts other than `all`/`any` leave their checks unknown.** In a function's own contract, `all` and `any` make the checks of their function value obligations for any element (`every`). `map`, `filter`, `count`, `sum`, `fold`, comprehensions and a quantifier nested in another make none: they report one unknown obligation, "the checks inside `…`".
+  Where: smt.start_goal (`Vc.own_lost`), smt.every (only outside other quantifiers). Source: contract-obligations PR. Confidence: sure.
 
 ## Type checker
 
@@ -206,6 +210,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: checker. Source: ledger C21 (#416). Confidence: likely.
 - [ ] **`build --no-verify` prints no warnings.** Warnings are lost when verification is skipped.
   Where: build. Source: ledger C24 (#459). Confidence: possible.
+- [ ] **A decimal literal beside `abs` of a `Float` is typed as a `Real`.** In `a := abs(k); a > 1.0` (and `max(abs(k), 1.0)`, `max(1.0, abs(k))`) with `k: Float`, the checker writes `1.0` as a `Real` literal (`Real { num, den }`), so smt reads it as an unknown `Real` beside a `Float` ("a value of an unexpected shape") and `max(abs(k), 1.0) >= 1.0` is not proven. `max(k, 1.0)` and `max(abs(k), float(1))` are. std.array's `Array.scale` writes `float(1)` for that reason.
+  Where: the checker's typing of a decimal literal next to an overloaded builtin's result (`abs`: Int, Float, Real); smt.eval_expr (`CtorExpr { name: "Real", .. }`), smt.as_real. Source: contract-obligations PR. Confidence: likely.
 
 ## Front end
 
