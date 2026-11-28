@@ -89,6 +89,7 @@ Each tactic works on the first goal. A line can hold several, separated by `;`. 
 | `left` / `right` | On `p \|\| q`: prove `p`, or prove `q`. |
 | `exists e` | On `exists(x -> p)`: prove `p` at `e`. |
 | `exfalso` | Changes the goal to `false`. |
+| `funext` | On `f == g` between functions: the goal `f(x) == g(x)` for a new `x`. |
 | `contradiction` | Closes the goal from a hypothesis `false`, or from `p` and `!p`. |
 | `by_cases h : p` | Two goals: one with `h : p`, then one with `h : !p`. |
 | `split`, `split h` | On the first open `if c { … }` of the goal: two goals, first the `then` case with `h : c` and its `if` taken, then the `else` case with `h : !c` (`!c` written without a double negation). `split h` names the hypothesis; plain `split` picks a fresh name (`h`, `h1`, …). |

@@ -50,6 +50,8 @@ Strata expressions over `Int`, `Bool`, `String` (no operations), `List[T]`, func
   - `[].reversed() == []` and `([x] + xs).reversed() == xs.reversed() + [x]`
   - `[].map(f) == []` and `([x] + xs).map(f) == [f(x)] + xs.map(f)`
   - `sorted` is insertion sort: `([x] + xs).sorted() == insert_sorted(x, xs.sorted())`. `insert_sorted(x, [y] + ys)` is `[x, y] + ys` if `x <= y`, else `[y] + insert_sorted(x, ys)`.
+- A call of a computed function: `made(fs, v, b)(g)` (printed `made(fs, v, b, g)`).
+- A type made by a type function (`Patch[User]`, with `type Patch[T: Record] = …` and a blanket `impl[T: Record]`) is a datatype like any record, in a module file outside a package (a package's module is read back from its text, where a made type's name doesn't parse). A field left out of a record takes its default. A `mut self` method is left out.
 - A list of a type inside the type (`args: List[Expr]` in `Expr`) is a type of its own. It is still written `List[Expr]`, but `len`, `+` and `map` don't apply to it.
 
 ## Proof steps
@@ -68,6 +70,7 @@ A proof is a block of steps, one per line. Each step works on what is left to pr
 | `assumption()` | Finishes the goal with a fact that is it. |
 | `assert p by { steps }` | Proves `p`, then knows it for the rest of the proof. `assert p` alone proves it by the ladder. |
 | `calc { a == b; _ == c }` | A chain of equations, each step proven by the ladder (which knows the facts in scope). It ends at the goal's two sides. |
+| `extensionality()` | On `f == g` between functions: proves `f(x) == g(x)` for a new `x` (kernel steps: the equation under a lambda, then `eta` on both sides). |
 | `witness(e)` | On `exists(x -> p)`: proves `p` at `e`. |
 | `arithmetic()` | Linear integer arithmetic, by kernel steps. It first simplifies the facts and the goal (`Task { priority: Low, due: a } < Task { priority: Low, due: b }` becomes `a < b`), then refutes the goal's negation from them. `len(xs) >= 0` holds, since `len` returns a `Natural`. |
 | `nonlinear()` | Asks Z3 (strings, products of unknowns). The law is marked `[assumed: z3]`. |

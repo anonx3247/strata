@@ -26,17 +26,29 @@ has = ["proven sorted_is_sorted_by", "proven sorted_count_of", "6 proven, 0 fail
 strata = ["kernel", "check", "$ROOT/tests/kernel/laws/proven.strata", "$ROOT/tests/kernel/laws/insertion.strata"]
 has = ["proven leaves_all_pos", "proven sorted_count_of", "proven len_nonneg", "[assumed: refinement: len]", "20 proven, 0 failed, 0 open", "proven insert_keeps_sorted", "1 proven, 0 failed, 2 open"]
 
+# a type a type function makes (`Patch[User]`) is a datatype, and Patch's
+# laws hold for every record (a record as a map from its field names)
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/types/patch_user.strata", "$ROOT/tests/kernel/types/patch_laws.strata"]
+has = ["proven patched_empty", "3 proven, 0 failed, 0 open", "proven applied_is_patched", "6 proven, 0 failed, 0 open"]
+lacks = ["failed "]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/goals/patch_user.strata", "$ROOT/tests/kernel/goals/patch_laws.strata"]
+has = ["0 proven, 0 failed, 3 open", "0 proven, 0 failed, 6 open"]
+lacks = ["failed "]
+
 [[step]]
 strata = ["kernel", "check", "--z3-arith", "$ROOT/tests/kernel/proofs/tactics.kp"]
 has = ["proven omega_step", "[assumed: z3, 1 solver calls]", "13 proven, 0 failed, 0 open"]
 
 [[step]]
-strata = ["kernel", "check", "$ROOT/tests/kernel/goals/lists.kp", "$ROOT/tests/kernel/goals/eq_ord.kp", "$ROOT/tests/kernel/goals/patch.kp", "$ROOT/tests/kernel/goals/generic.kp", "$ROOT/tests/kernel/goals/exprs.kp"]
+strata = ["kernel", "check", "$ROOT/tests/kernel/goals/lists.kp", "$ROOT/tests/kernel/goals/eq_ord.kp", "$ROOT/tests/kernel/goals/generic.kp", "$ROOT/tests/kernel/goals/exprs.kp"]
 has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 0 failed, 4 open", "0 proven, 0 failed, 3 open"]
 lacks = ["note:", "failed "]
 
 [[step]]
-strata = ["kernel", "check", "$ROOT/tests/kernel/laws/lists.strata", "$ROOT/tests/kernel/laws/eq_ord.strata", "$ROOT/tests/kernel/laws/patch.strata", "$ROOT/tests/kernel/laws/generic.strata", "$ROOT/tests/kernel/laws/exprs.strata"]
+strata = ["kernel", "check", "$ROOT/tests/kernel/laws/lists.strata", "$ROOT/tests/kernel/laws/eq_ord.strata", "$ROOT/tests/kernel/laws/generic.strata", "$ROOT/tests/kernel/laws/exprs.strata"]
 has = ["4 proven, 0 failed, 12 open", "0 proven, 0 failed, 16 open", "0 proven, 0 failed, 4 open", "0 proven, 0 failed, 3 open"]
 lacks = ["note:", "failed "]
 
