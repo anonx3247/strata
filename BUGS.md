@@ -113,6 +113,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Type checker
 
+- [ ] **A concrete value isn't taken as a trait value in `+` and `==`.** With `xs: List[Out]`, `xs + [Tally { n: 7 }]` gives "`+` operands: expected `List[Out]`, found `List[Tally]`"; with `one: Shape`, `one == Square { side: 1.0 }` gives "`==` operands: expected `Shape`, found `Square`". A `let` with the trait type takes both. Codegen builds the original forms, but `one == Square { side: 1.0 }` gave `false` (the golden recorded it), where `one == same` with `let same: Shape = Square { side: 1.0 }` gives `true`. `codegen-constructs` (trait_places) and `codegen-programs-4` (methods_and_traits) go through a `let` until this is fixed.
+  Where: compiler.check, binary operators' operand types (no wanted type from the other operand). Source: build-fails-on-errors PR. Confidence: sure.
+- [ ] **Integer patterns at or past 2^62 are called unreachable.** `check.int_max()` is `4611686018427387903` and `int_min()` its negation: the ranges `check_coverage` works with end there, so `match n { 4611686018427387904 => …, _ => … }` gives "unreachable match arm `4611686018427387904`: the arms above already cover it", though `Int` has no bound. `build-bigint` builds with `--ignore-check-errors` until this is fixed.
+  Where: compiler.check.int_max/int_min, ints_not, cover_of (`ast.IntPat(n) => CInts([(n, n)])`), check_coverage; codegen has its own pair. Source: build-fails-on-errors PR. Confidence: sure.
 - [ ] **In std.array, a decimal literal beside `max` or `min` called as a function is a `Real`.** `max(k, 1.0)` and `min(k, 1.0)` with `k: Float`, in a function of std.array, give the literal the type `Real`, so smt reads it as an unknown value ("a value of an unexpected shape"). The same function in std.time, or in a `--file` program with types that have methods `max` and `min`, types it as a `Float`; `k.max(1.0)` is a `Float` in std.array too. std.array's three array types have methods `max` and `min`, and `Array.scale` keeps `float(1)` for this reason.
   Where: not found; to look at: check.infer_call (the built-in branch), check.dec_unmarked (a literal with no recorded type becomes a `Real`). Source: nested-refinements PR. Confidence: sure of the behaviour, not of the place.
 - [ ] **Trait bounds are checked only for a few traits.** `if t.derivable is None && !t.capability && len(t.params) == 0 { checked.insert }`, and blanket-implemented traits are then removed. `infer_call` checks bounds only `if contains(i.methods.checked, b.1)`.
@@ -624,8 +628,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: edit (pending changes). Source: ledger T15. Confidence: likely.
 - [ ] **A run killed by SIGKILL leaves its `smt/PID` folder.**
   Where: verify scratch. Source: ledger T23. Confidence: likely.
-- [ ] **`strata build` builds and exits 0 after a check error.** A program `strata check` refuses (stored with `edit --as-given`) is built: `build` prints the error, then "built prog", exit 0.
-  Where: build (driver). Source: generic-unions PR. Confidence: sure.
 
 ## Test cases failing on main
 
@@ -634,6 +636,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
   Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
+- [ ] **`build-std_array` fails.** Its `verify` proves `chain` with 13 checks and `mean_of` with 6, where the case wants 6 and 3. On 61492e1d too.
+  Where: tests/cases (verify check counts). Source: build-fails-on-errors PR. Confidence: sure.
 - [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
   Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
 - [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.

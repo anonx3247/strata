@@ -1,0 +1,69 @@
+# a check error stops `build` (with or without `--no-verify`), `run` and
+# `test` before anything is compiled: no executable is written.
+# `build --ignore-check-errors` says the errors and builds it all the same
+
+[[step]]
+save = "bad.strata"
+text = '''
+fn twice(n: Int) -> Int = n * 2
+
+fn main() {
+  print(twice("seven"))
+}
+
+test "twice doubles" {
+  assert twice(1) == 2
+}
+'''
+
+[[step]]
+strata = ["--file", "bad.strata", "build", "-o", "verified"]
+fails = true
+has = ["error in main: call to `twice`, argument 1: expected `Int`, found `String`"]
+lacks = ["built"]
+
+[[step]]
+run = ["test", "-e", "verified"]
+fails = true
+
+[[step]]
+strata = ["--file", "bad.strata", "build", "--no-verify", "-o", "unverified"]
+fails = true
+has = ["error in main: call to `twice`, argument 1: expected `Int`, found `String`"]
+lacks = ["built"]
+
+[[step]]
+run = ["test", "-e", "unverified"]
+fails = true
+
+[[step]]
+strata = ["--file", "bad.strata", "build", "--emit-llvm", "-o", "bad.ll"]
+fails = true
+has = ["expected `Int`, found `String`"]
+
+[[step]]
+run = ["test", "-e", "bad.ll"]
+fails = true
+
+[[step]]
+strata = ["--file", "bad.strata", "run"]
+fails = true
+has = ["expected `Int`, found `String`"]
+
+[[step]]
+strata = ["--file", "bad.strata", "test"]
+fails = true
+has = ["expected `Int`, found `String`"]
+lacks = ["passed"]
+
+[[step]]
+strata = ["--file", "bad.strata", "verify"]
+fails = true
+has = ["expected `Int`, found `String`"]
+
+[[step]]
+strata = ["--file", "bad.strata", "build", "--no-verify", "--ignore-check-errors", "-o", "anyway"]
+has = ["error in main: call to `twice`, argument 1: expected `Int`, found `String`", "built anyway"]
+
+[[step]]
+run = ["test", "-e", "anyway"]

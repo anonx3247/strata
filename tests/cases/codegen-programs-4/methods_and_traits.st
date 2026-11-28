@@ -116,6 +116,7 @@ fn main() {
     }
     print(shapes)
     let one: Shape = Square { side: 1.0 }
-    print(one == Square { side: 1.0 })
+    let same: Shape = Square { side: 1.0 }
+    print(one == same)
     print(one.describe())
 }

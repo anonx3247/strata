@@ -1,13 +1,15 @@
 # build.rs: programs built (`strata build`) and run with arguments, their
 # output and exit code as recorded (tests/data/build/expected), every object
-# freed (STRATA_MEMORY=check)
+# freed (STRATA_MEMORY=check). `--ignore-check-errors`: the checker's integer
+# ranges end at 2^62, so it calls the arm `4611686018427387904` unreachable
+# (BUGS.md)
 
 [[step]]
 save = "bigint.strata"
 from = "bigint.st"
 
 [[step]]
-strata = ["build", "bigint.strata", "-o", "prog"]
+strata = ["build", "bigint.strata", "-o", "prog", "--ignore-check-errors"]
 
 [[step]]
 run = ["./prog", "one", "two words"]
