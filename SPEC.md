@@ -406,7 +406,7 @@ Examples:
 
 ### 3.5 Expressions
 
-Every expression has a type, which is itself an expression, in its field `type_of` (section 6). The field can't be called `type`, which is a keyword.
+Every expression has a type, which is itself an expression, in its field `_type` (section 6). `type` is a keyword, so the field is `_type`; a leading `_` means nothing on a field.
 
 ```strata
 type Expression =
@@ -458,7 +458,7 @@ type Expression =
   | Inferred
   | ImplicitConstructor { value: Expression }
 with {
-  type_of: Option[Expression],
+  _type: Option[Expression],
 }
 
 type Target =
@@ -492,7 +492,7 @@ Calls:
 - `Call.arguments` holds the arguments given, in the order of the parameters. A parameter left out takes its default (section 7). A method's receiver is the first argument. `mode` records `mut` and `cap` as written at the call.
 
 Values made of parts:
-- `Construct` makes a record (`variant: None`) or a sum's variant. Its type, the node's `type_of`, says which record or sum.
+- `Construct` makes a record (`variant: None`) or a sum's variant. Its type, the node's `_type`, says which record or sum.
   - `fields` holds the fields given, in the order the type declares them. Each field left out takes its value from `base` when there is one (`T { ...r, f: v }`), and otherwise its default.
   - So a field added to a type later fills every stored `Construct` with no rewrite.
 - `FieldAccess` names a declared field by key, or a field of a structural record (`{ a: s64, .. }`) by name.
@@ -502,18 +502,18 @@ Control and logic:
 - `And`, `Or`, `Implies` and `Not` are nodes, not trait calls, because `And`, `Or` and `Implies` don't evaluate their right side when the left decides.
 
 Types:
-- `RecordType`, `SumType` and the other type nodes are expressions whose type is `Type`. A type in a signature, a field, a parameter or a node's `type_of` is such an expression, or a `Global` naming a type, or a `TypeApplication` (`List[Int]`).
+- `RecordType`, `SumType` and the other type nodes are expressions whose type is `Type`. A type in a signature, a field, a parameter or a node's `_type` is such an expression, or a `Global` naming a type, or a `TypeApplication` (`List[Int]`).
 - A `SumType` with shared fields (`| A { x } | B with { id: Id }`) is stored with each shared field in every variant, under its one id. The printer writes `with` when every variant holds the same fields under the same ids.
 - `Refinement` binds `it` in its predicate. A `Local` for that `it` refers to the `Refinement` node.
 
-The `type_of` field:
-- Every expression's `type_of` is `Some(t)`, where `t` is an expression whose own type is `Type`.
-- The one exception is the expression naming core's `Type` itself, whose `type_of` is `None`. So the chain of types ends: the type of `s64` is `Type`, and `Type` stores no type.
+The `_type` field:
+- Every expression's `_type` is `Some(t)`, where `t` is an expression whose own type is `Type`.
+- The one exception is the expression naming core's `Type` itself, whose `_type` is `None`. So the chain of types ends: the type of `s64` is `Type`, and `Type` stores no type.
 - Nothing in the tree records whether a type was written. The printer leaves out every type that inference would give back exactly, and `view --types` writes them all, as `(e: T)` (section 2).
 
 ```strata
 law types_end(e: Expression)
-  holds (e.type_of == None) == (e == Global { key: core.Type })
+  holds (e._type == None) == (e == Global { key: core.Type })
 ```
 
 ### 3.6 Statements, patterns, arms
@@ -550,7 +550,7 @@ type Pattern =
   | TypePattern { type_test: Expression, binding: Option[Pattern] }
   | Alternatives { patterns: List[Pattern] }
 with {
-  type_of: Option[Expression],
+  _type: Option[Expression],
 }
 
 type FieldPattern = { field: Id, pattern: Pattern }
@@ -575,7 +575,7 @@ Examples:
 type Parameter = {
   id: Id,
   name: Name,
-  type_of: Expression,
+  _type: Expression,
   mode: ParameterMode,
   default: Option[Expression],
   comment: Comment,
@@ -584,7 +584,7 @@ type ParameterMode = | Plain | Mutable | Capability | Comptime
 
 type TypeParameter = {
   name: Name,
-  type_of: Expression,
+  _type: Expression,
   bounds: List[Expression],
   variance: Variance,
 }
@@ -593,7 +593,7 @@ type Variance = | Covariant | Contravariant | Invariant
 type Field = {
   id: Id,
   name: Option[Name],
-  type_of: Expression,
+  _type: Expression,
   default: Option[Expression],
   doc: Doc,
   comment: Comment,
@@ -618,7 +618,7 @@ with {
 
 - A parameter written `_x` is passed without its name (section 2). The name keeps its `_`.
 - A lambda's and a function type's parameters are `Parameter`s too. They have ids, because names are part of a function type.
-- A `TypeParameter`'s `type_of` is `Type` for a type parameter, or an integer, `Bool` or atom type for a value parameter (`type Matrix[R: s64, C: s64]`).
+- A `TypeParameter`'s `_type` is `Type` for a type parameter, or an integer, `Bool` or atom type for a value parameter (`type Matrix[R: s64, C: s64]`).
 - `variance` is computed by elaborate (section 6) and is part of the type's interface.
 - A field with no name is positional: `Set(T)` is a variant with one unnamed field.
 - In an `ensures`, `it` is a `Local` whose binder is the `Function`. In a `requires` of a function with one parameter, `it` is that parameter.
@@ -627,7 +627,7 @@ with {
 
 `parse` and `desugar` give a tree with markers for what is left to infer. `elaborate` fills them in and gives the stored tree.
 
-- `Inferred` stands where a type was left out. Every expression whose type wasn't written gets `type_of: Some(Inferred)` from `parse`.
+- `Inferred` stands where a type was left out. Every expression whose type wasn't written gets `_type: Some(Inferred)` from `parse`.
 - `ImplicitConstructor { value }` stands where a constructor was left out (`Some`, `Ok`, `Err`: section 6). `elaborate` replaces it by the `Construct` the types decide, or reports where they don't.
 - A stored tree has no markers. A `Call`'s target and a node's type are known in every stored tree.
 
