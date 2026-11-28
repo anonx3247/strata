@@ -1,0 +1,122 @@
+# `abort` writes nothing from a malformed pending.json, and keeps the
+# pending change when a file can't be put back
+
+[[step]]
+run = ["mkdir", "shop"]
+
+[[step]]
+strata = ["init"]
+dir = "shop"
+
+[[step]]
+save = "shop/main.strata"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount / 10
+}
+
+fn total(amount: Int) -> Int {
+  amount + tax(amount)
+}
+'''
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+capture = "../before.st"
+
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "shop"
+text = "fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }"
+has = ["in a pending change"]
+
+[[step]]
+run = ["cp", "shop/.strata/pending.json", "pending.json"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+capture = "../after.st"
+
+# no `before`: it would remove every module file
+[[step]]
+write = "shop/.strata/pending.json"
+text = '{"message":"x","started":0,"holes":[],"renames":[]}'
+
+[[step]]
+strata = ["abort"]
+dir = "shop"
+fails = true
+has = ["pending.json is malformed", "`before` is not a list"]
+
+[[step]]
+strata = ["status"]
+dir = "shop"
+fails = true
+has = ["pending.json is malformed"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+out_file = "after.st"
+
+# bytes that aren't hex
+[[step]]
+write = "shop/.strata/pending.json"
+text = '{"message":"x","started":0,"before":[["main.strata","zz"]],"holes":[],"renames":[]}'
+
+[[step]]
+strata = ["abort"]
+dir = "shop"
+fails = true
+has = ["the bytes of `main.strata` are not hex"]
+
+# a path outside the package
+[[step]]
+write = "shop/.strata/pending.json"
+text = '{"message":"x","started":0,"before":[["../loose.strata","00"]],"holes":[],"renames":[]}'
+
+[[step]]
+strata = ["abort"]
+dir = "shop"
+fails = true
+has = ["`../loose.strata` is not a module file of the package"]
+
+[[step]]
+run = ["test", "-e", "loose.strata"]
+code = 1
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+out_file = "after.st"
+
+# a file that can't be written back: the pending change is kept
+[[step]]
+run = ["cp", "pending.json", "shop/.strata/pending.json"]
+
+[[step]]
+run = ["chmod", "a-w", "shop", "shop/main.strata"]
+
+[[step]]
+strata = ["abort"]
+dir = "shop"
+fails = true
+has = ["pending.json is kept, so `strata abort` can be run again"]
+
+[[step]]
+run = ["chmod", "u+w", "shop", "shop/main.strata"]
+
+[[step]]
+run = ["test", "-f", "shop/.strata/pending.json"]
+
+[[step]]
+strata = ["abort"]
+dir = "shop"
+has = ["every file is as it was before it"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+out_file = "before.st"

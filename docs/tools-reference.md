@@ -8,7 +8,7 @@ This page holds the detailed rules of [the tools](tools.md). Each section adds t
 
 **Editing a package.** A package's `strata edit` rejects an edit that doesn't check by itself. Uses that it breaks elsewhere (a changed return type, parameter list or parameter type) become holes of a pending change instead. The text of a rejected edit is saved in the package's `.strata/rejected/edit-N.st`, and the rejection message gives the path. This applies to an edit from standard input and to an editor session that gives up.
 
-**What an edit writes.** An edit that changes nothing, because every definition given matches what is stored, does nothing: nothing is written, checked, logged or committed. Otherwise only the module files whose definitions change are written. In those files, each untouched definition keeps its stored bytes and header entry, and only what changed is re-encoded. `strata upgrade` re-encodes every file.
+**What an edit writes.** An edit that changes nothing, because every definition given matches what is stored, does nothing: nothing is written, checked, logged or committed. Otherwise only the module files whose definitions change are written. In those files, each untouched definition keeps its stored bytes and header entry, and only what changed is re-encoded. `strata upgrade` re-encodes every file, resolving references against std and core in Strata's home. It encodes every file, and writes each to a temporary file, before replacing the first, so a file it can't read, encode or write leaves every file as it was.
 
 **What an edit checks.** Only what the edit can affect is checked, as `strata check` would check it, with the rest of the package and std in scope:
 
@@ -54,7 +54,7 @@ An invariant naming a variable's value before the loop gets a binding just befor
 - A type listed by one union is shown inside it unless it has its own doc or `impl`. `--members separate` shows every member as a separate definition. Both describe the same program.
 - Outside a package's log, `strata --file F edit < text` stores a script, or a folder's module with `--file DIR/ edit MODULE`, creating it if new. Only text that doesn't parse is refused.
 - Each module file starts with a header listing its definitions with their hashes and dependencies (`strata header core.strata` prints it). Each definition stores its interface before its body.
-- `strata pack app.strata` writes the whole program as one bundle, which `--file`, `strata run` and every view read like the package.
+- `strata pack app.strata` writes the whole program as one bundle, which `--file`, `strata run` and every view read like the package. It refuses to write a `.strata` file into a package's folder, over the file packed, or over a file that isn't a Strata file.
 - The hashes `strata` shows are hashes of the binary encoding (see the spec).
 
 **Verdicts.** `verify`'s verdicts are kept outside the package, in `.git/strata/verdicts`, shared by every worktree of the repository. Outside a repository, they are kept in `~/.cache/strata/verdicts`. There is one file per verdict, keyed by the hash of a definition and everything it depends on, plus the check's name and the run's settings.
