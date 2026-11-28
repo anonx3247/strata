@@ -1,14 +1,15 @@
 # An `await` inside an arena joins the last task: what the arena's closure
 # makes after it still goes to the arena, so a list made then and holding
 # what was made before is copied out whole before the arena is freed (the
-# closure holding a task's handle doesn't check, but is built as given)
+# closure holding a task's handle doesn't check, but is built as given:
+# `--ignore-check-errors`)
 
 [[step]]
 save = "flip.strata"
 from = "flip.st"
 
 [[step]]
-strata = ["build", "flip.strata", "-o", "prog", "--no-verify"]
+strata = ["build", "flip.strata", "-o", "prog", "--no-verify", "--ignore-check-errors"]
 
 [[step]]
 run = ["./prog"]

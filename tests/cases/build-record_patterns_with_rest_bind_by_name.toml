@@ -58,7 +58,7 @@ fn spread(n: Node) -> Int {
 
 fn inner_right(w: Wrap) -> Int {
   match w {
-    W { inner: Node { right, name, .. }, .. } => right + len(name),
+    W { inner: Node { right, name, .. }, .. } => right + byte_len(name),
   }
 }
 

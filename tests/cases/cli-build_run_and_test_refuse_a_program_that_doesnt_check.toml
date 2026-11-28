@@ -1,5 +1,6 @@
 # a check error stops `build` (with or without `--no-verify`), `run` and
-# `test` before anything is compiled: no executable is written
+# `test` before anything is compiled: no executable is written.
+# `build --ignore-check-errors` says the errors and builds it all the same
 
 [[step]]
 save = "bad.strata"
@@ -59,3 +60,10 @@ lacks = ["passed"]
 strata = ["--file", "bad.strata", "verify"]
 fails = true
 has = ["expected `Int`, found `String`"]
+
+[[step]]
+strata = ["--file", "bad.strata", "build", "--no-verify", "--ignore-check-errors", "-o", "anyway"]
+has = ["error in main: call to `twice`, argument 1: expected `Int`, found `String`", "built anyway"]
+
+[[step]]
+run = ["test", "-e", "anyway"]
