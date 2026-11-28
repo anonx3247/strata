@@ -8,14 +8,14 @@
 strata {
 type User = { name: String, age: Int }
 
-type Change[T] = | Keep | Set(T)
+type Change[T] = | Keep | SetTo(T)
 
 type UserPatch = { name: Change[String], age: Change[Int] }
 
 fn change[T](c: Change[T], old: T) -> T {
   match c {
     Keep => old,
-    Set(v) => v,
+    SetTo(v) => v,
   }
 }
 
@@ -27,19 +27,19 @@ fn patched(u: User, p: UserPatch) -> User = User { name: change(p.name, u.name),
 fn apply(u: User, p: UserPatch) -> User {
   named := match p.name {
     Keep => u,
-    Set(n) => { ..u, name: n },
+    SetTo(n) => { ..u, name: n },
   }
   match p.age {
     Keep => named,
-    Set(a) => { ..named, age: a },
+    SetTo(a) => { ..named, age: a },
   }
 }
 }
 
 theorem patched_empty(u: User): patched(u, UserPatch { name: Keep, age: Keep }) == u := by
 
-theorem patched_set_age(u: User, a: Int): patched(u, UserPatch { name: Keep, age: Set(a) }).age == a := by
+theorem patched_set_age(u: User, a: Int): patched(u, UserPatch { name: Keep, age: SetTo(a) }).age == a := by
 
-theorem patched_set_keeps_name(u: User, a: Int): patched(u, UserPatch { name: Keep, age: Set(a) }).name == u.name := by
+theorem patched_set_keeps_name(u: User, a: Int): patched(u, UserPatch { name: Keep, age: SetTo(a) }).name == u.name := by
 
 theorem apply_is_patched(u: User, p: UserPatch): apply(u, p) == patched(u, p) := by

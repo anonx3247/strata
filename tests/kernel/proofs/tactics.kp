@@ -81,5 +81,5 @@ theorem rfl_step(x: Int): x + 1 == x + 1 := by
 -- induction, simp, then omega on what is left
 theorem len_snoc[A](xs: List[A], y: A): len(xs + [y]) == len(xs) + 1 := by
   induction xs with
-  | nil => simp
+  | nil => simp; omega
   | cons x xs ih => simp [ih]; omega

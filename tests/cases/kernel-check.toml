@@ -1,0 +1,28 @@
+# strata kernel check: the proof scripts in tests/kernel prove, a failed
+# step names its tactic and goal, and the goal set has no failures
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/lists.kp"]
+has = ["proven reversed_reversed", "4 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/tactics.kp"]
+has = ["proven calc_steps", "proven omega_step", "[oracle: omega, 1 solver calls]", "13 proven, 0 failed, 0 open"]
+
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/goals/lists.kp", "$ROOT/tests/kernel/goals/eq_ord.kp", "$ROOT/tests/kernel/goals/patch.kp"]
+has = ["4 proven, 0 failed, 9 open", "0 proven, 0 failed, 10 open", "0 proven, 0 failed, 4 open"]
+lacks = ["note:"]
+
+[[step]]
+write = "bad.kp"
+text = '''
+theorem len_snoc[A](xs: List[A], y: A): len(xs + [y]) == len(xs) + 1 := by
+  induction xs with
+  | nil => simp
+  | cons x xs ih => simp [ih]; omega
+'''
+
+[[step]]
+strata = ["kernel", "check", "bad.kp"]
+code = 1
+has = ["failed len_snoc", "`induction` failed: unsolved goals:", "case nil", "⊢ 1 + 0 == 0 + 1"]
