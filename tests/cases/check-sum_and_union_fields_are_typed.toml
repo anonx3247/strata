@@ -1,5 +1,5 @@
 # A field, tuple element or variants' shared field whose type is a sum or a
-# union has that type.
+# union has that type, and so do a list pattern's elements.
 
 [[step]]
 save = "p.strata"
@@ -20,6 +20,20 @@ fn tuple_element(p: (Int, Option[Int])) -> Int = want(p.1)
 
 fn variant_field(s: Shape) -> Int = want(s.label)
 
+fn list_element(xs: List[Option[Int]]) -> Int {
+  match xs {
+    [x, ..] => want(x),
+    _ => 0,
+  }
+}
+
+fn list_rest(xs: List[Option[Int]]) -> Int {
+  match xs {
+    [_, ..rest] => want(rest),
+    _ => 0,
+  }
+}
+
 fn fine(o: Order, t: Tagged, p: (Int, Option[Int]), s: Shape) -> Int {
   k := match t.tag {
     Int => 1,
@@ -36,6 +50,8 @@ has = [
   "error in union_field: call to `want`, argument 1: expected `Bool`, found `Int | String`",
   "error in tuple_element: call to `want`, argument 1: expected `Bool`, found `Option[Int]`",
   "error in variant_field: call to `want`, argument 1: expected `Bool`, found `Option[String]`",
+  "error in list_element: call to `want`, argument 1: expected `Bool`, found `Option[Int]`",
+  "error in list_rest: call to `want`, argument 1: expected `Bool`, found `List[Option[Int]]`",
 ]
 lacks = [
   "error in fine",
