@@ -16,7 +16,7 @@ has = ["proven eta", "proven facts_simplified", "proven bullets", "proven split_
 
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/laws/patterns.strata"]
-has = ["proven left_size_is", "proven size_pos", "2 proven, 0 failed, 0 open"]
+has = ["proven left_size_is", "proven size_pos", "proven size_covers_left", "proven size_covers_right", "4 proven, 0 failed, 0 open"]
 
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/generic_sort.kp"]
@@ -32,6 +32,26 @@ has = ["proven leaves_all_pos", "proven sorted_count_of", "proven len_nonneg", "
 strata = ["kernel", "check", "$ROOT/tests/kernel/types/patch_user.strata", "$ROOT/tests/kernel/types/patch_laws.strata"]
 has = ["proven patched_empty", "3 proven, 0 failed, 0 open", "proven applied_is_patched", "6 proven, 0 failed, 0 open"]
 lacks = ["failed "]
+
+# a law for every record (`lemma l[T: Record]`) is checked again at each
+# record of the module, made ones included, and reported once; in a
+# package's module too
+[[step]]
+strata = ["kernel", "check", "--instances", "$ROOT/tests/kernel/types/patch_per_type.strata", "$ROOT/tests/kernel/laws/patching.strata"]
+has = ["proven patched_empty: proven for 7 derived types", "proven patched_fields: proven for 7 derived types", "proven applied_is_patched: proven for 7 derived types", "  Account: proven", "  Patch[Account]: proven", "proven applied_is_patched: proven for 4 derived types", "3 proven, 0 failed, 0 open"]
+lacks = ["failed "]
+
+# a second check keeps each type's result whose stamp is unchanged
+[[step]]
+strata = ["kernel", "check", "--instances", "$ROOT/tests/kernel/laws/patching.strata"]
+has = ["  User: proven", "kept from the last check", "3 proven, 0 failed, 0 open"]
+
+# a proof that names one record's field fails at the others: the law, the
+# type and the step
+[[step]]
+strata = ["kernel", "check", "$ROOT/tests/kernel/types/patch_not_replayable.strata"]
+code = 1
+has = ["failed patched_empty_by_age: proven for 2 of 4 derived types; fails for `Point`, `Patch[Point]`", "at `T = Point` (the law `patched_empty_by_age` written for every `T: Record`): `have` failed: no field `age`"]
 
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/goals/patch_user.strata", "$ROOT/tests/kernel/goals/patch_laws.strata"]

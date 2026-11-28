@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 /examples/wasm/stats.wasm
 /examples/wasm/stats.ts
+*.strata.instances
