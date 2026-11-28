@@ -648,3 +648,184 @@ law stored_has_no_markers(d: Definition)
 ```
 
 Section 2 states how `print`, `parse`, `desugar` and `elaborate` round-trip on stored trees.
+
+## 4. The binary format and hashing
+
+A module is stored as one module file, `NAME.strata`, holding the tree of section 3 in the encoding below. Text is never stored. A package is a folder of module files and a `strata.toml` (section 5).
+
+### 4.1 Primitives
+
+| notation | encoding |
+|---|---|
+| `uint` | unsigned LEB128: 7 bits per byte, least significant first, the high bit set on every byte but the last. Shortest form only, at most 64 bits. `300` is `ac 02`. |
+| `int` | a 64-bit signed integer, zigzag-encoded (`0, -1, 1, -2` become `0, 1, 2, 3`), then written as a `uint`. |
+| `bool` | one byte, `0` or `1`. |
+| `id` | 4 bytes, least significant first: a `u32`, never 0. |
+| `hash` | 32 bytes: a SHA-256 digest. |
+| `bytes` | a `uint` length, then that many bytes. |
+| `text` | `bytes` that are valid UTF-8. |
+| `list(T)` | a `uint` count, then each item. |
+| `option(T)` | a `bool`, then the value when it is `1`. |
+| a record | its fields, in the order section 3 lists them. |
+| a sum | a `uint` tag, then the fields of that member, in order. |
+
+Every encoding is canonical: one value has exactly one encoding, and the decoder refuses any other (a `uint` not in its shortest form, a `bool` other than `0` or `1`, invalid UTF-8, a list out of its stated order).
+
+### 4.2 The file
+
+```text
+module-file = "STRATA" version:uint kind:uint  header  definitions  evidence
+```
+
+- A file starts with the six ASCII bytes `STRATA` (`53 54 52 41 54 41`), then the format version, `2`, then `0` for a module file. Version 1 is the lab's format, which this one doesn't read.
+- The definitions follow the header, back to back, in the order of the header's entries. Their sizes are in the entries, so a reader can find any definition without decoding the ones before it.
+- The evidence follows the last definition, and the file ends exactly after it.
+
+### 4.3 The header
+
+```text
+header     = doc:list(text)  imports:list(Import)  modules:list(ModulePath)
+             declared:list(Declared)  refs:list(Ref)  entries:list(Entry)
+ModulePath = package:text  path:list(text)
+Import     = 0  module:uint  alias:option(text)
+           | 1  module:uint  names:list(ImportedName)
+ImportedName = key:uint  alias:option(text)
+Declared   = id:id  name:option(text)  owner:uint
+Ref        = module:uint  id:id  name:text
+Entry      = definition:uint  public:bool  variant:uint
+             interface_hash:hash  code_hash:hash  text_hash:hash
+             dependencies:list(uint)  stamp:hash
+             interface_size:uint  body_size:uint  text_size:uint
+```
+
+- `doc` is the module's `//!` lines.
+- `modules` lists every other module the file names, in imports or in references, sorted by package, then by path, comparing bytes. An `Import`'s and a `Ref`'s `module` is an index into it.
+- `declared` lists every id of the module (section 3.1). For each definition in order: the definition's own id, then each id it declares (methods, named types and atoms, fields, parameters), in node order.
+  - `name` is the id's name, the module's `names` table. It is none only for an `Impl`.
+  - `owner` is the index in `declared` of the definition that declares the id. A definition is its own owner.
+- `refs` lists every key of another module that the file refers to, sorted by module index, then by id. `name` is the name its module gave it when this file was written. Section 5 says which name a reader uses when the two differ.
+- **The id table** is `declared`, then `refs`. Everywhere else in the file, a key is a `uint`: its index in this table.
+- `entries` has one entry per definition, in the module's order.
+  - `definition` is the index in `declared` of the definition's id, `public` its `public`, and `variant` its tag in the `Definition` sum (section 4.5).
+  - `dependencies` lists the keys whose interfaces the definition's check relied on (section 6), as id-table indices in increasing order.
+  - The three hashes and the stamp are in section 4.6.
+  - `interface_size`, `body_size` and `text_size` are the sizes in bytes of the three parts of the definition (section 4.4).
+
+### 4.4 A definition
+
+```text
+definition = interface-types:list(TypeEntry)  interface:list(Node)
+             body-types:list(TypeEntry)       bodies:list(list(Node))
+             local-names:list(NodeName)  docs:list(NodeText)  comments:list(NodeText)
+TypeEntry  = nodes:list(Node)
+NodeName   = node:uint  name:text
+NodeText   = node:uint  lines:list(text)
+```
+
+A definition has three parts, each `size` bytes in its entry:
+
+1. **The interface**: `interface-types`, then `interface`, the definition's nodes with each body left out. Checking code against the module reads only this part.
+2. **The bodies**: `body-types`, then `bodies`, one list of nodes per body. A body is the `body` of a `Function` (methods included) or of a `Test`. They come in the order of the functions that have them.
+3. **The text**: the definition's entries of `local_names`, `docs` and `comments` (section 3.2), each sorted by node index. The names of its ids are in the header.
+
+**Nodes** are written in postorder (section 3.1), so the n-th node written is node index n, counting the interface's nodes and then each body's. Each node is:
+
+```text
+Node = tag:uint  fields
+```
+
+- `tag` is the node's tag in section 4.5. `Inferred` has no tag, since a stored tree has none.
+- `fields` are the node's fields in the order section 3 lists them, each written as follows:
+  - a node (an `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Arm`, `Contract`, or a method's `Definition.Function`): nothing, since it was written before as a child;
+  - an `Option` of a node: a `bool`, `1` when the child is there;
+  - a `List` of nodes: a `uint`, the number of children;
+  - a body (`Function.body`, `Test.body`): a `bool`, `1` when there is one; its nodes are in the body part;
+  - the `_type` of an expression or pattern: a `uint`, `0` for none (only `Type` itself), else 1 plus an index into the definition's type list;
+  - a `Key`, or an `Id` the node declares: a `uint`, its index in the id table;
+  - a `NodeIndex`: a `uint`;
+  - a `LiteralNumber`: tag `0` then a `uint` (`Small`), or tag `1` then `bytes` (`Large`);
+  - an `s32`: an `int`;
+  - a `u32` (`TupleElement.index`): a `uint`;
+  - a `Bool`: a `bool`;
+  - a sum with no fields (`PassingMode`, `ParameterMode`, `Variance`, `ForeignLanguage`): a `uint`, its member's position from 0;
+  - a `String` (`Text.value`): a `text`;
+  - a record that isn't a node (`Argument`, `FieldValue`, `FieldPattern`): its fields in order, by these same rules;
+  - a `Target`: its member's position from 0, then that member's fields by these same rules.
+- A decoder keeps a stack of nodes. Reading a node, it takes its children off the stack, the last child first, and refuses a child of the wrong type. After a definition's interface, the stack holds the definition alone. After each body, it holds that body's root alone.
+
+**Types.** Each distinct type stored in a `_type` field is written once per definition, as a `TypeEntry`: the type's nodes, in postorder. The `interface-types` hold the types the interface's nodes use, and the `body-types` the further types the bodies use, with indices continuing. A type enters the list the first time a node being written needs it, after the types its own nodes need. A type's nodes are not nodes of the definition (section 3.1), but a `Local` in a type (`Array[u8, size]`) refers to a node of the definition.
+
+### 4.5 Tags
+
+| tags | nodes |
+|---|---|
+| 0–5 | `Definition`: `Function`, `Extern`, `TypeDefinition`, `Trait`, `Impl`, `Test` |
+| 16–51 | `Expression`: `Integer`, `Decimal`, `Text`, `Local`, `Global`, `SelfType`, `Call`, `Lambda`, `Construct`, `RecordLiteral`, `Tuple`, `ListLiteral`, `FieldAccess`, `TupleElement`, `Block`, `If`, `Match`, `Return`, `Break`, `Continue`, `And`, `Or`, `Implies`, `Not`, `Is`, `Old`, `Comptime`, `RecordType`, `TupleType`, `Named`, `Atom`, `SumType`, `FunctionType`, `Refinement`, `TypeApplication`, `Hole` |
+| 64–69 | `Statement`: `Bind`, `Assign`, `While`, `For`, `Assert`, `Evaluate` |
+| 80–87 | `Pattern`: `Wildcard`, `Binding`, `LiteralPattern`, `NamedPattern`, `RecordPattern`, `TuplePattern`, `TypeTest`, `Alternatives` |
+| 96–102 | `Parameter`, `TypeParameter`, `Field`, `Arm`, `Contract`'s `Requires`, `Ensures`, `Decreases` |
+
+Within a row, tags are numbered from the first in the order listed: `Integer` is 16, `Hole` 51. The gaps leave room for the nodes of sections 8 and 9.
+
+### 4.6 Hashes and stamps
+
+All hashes are SHA-256. `strata` shows a hash as the hex of its first 8 bytes.
+
+The hashes are taken over a definition's **hashed form**: its interface and body parts as stored, with each key written in full instead of as an id-table index. A key of the file's own module is `0` then its `id`; a key of another module is `1`, its `ModulePath`, then its `id`. So a definition's hashes don't depend on the rest of the file.
+
+| hash | of | changes when |
+|---|---|---|
+| `interface_hash` | `public`, the variant's tag, and the hashed interface part | what other code relies on changes: types, signatures, contracts, visibility |
+| `code_hash` | `interface_hash` and the hashed body part | anything the definition does changes |
+| `text_hash` | `code_hash`, the names of the ids the definition declares (in `declared` order), and its text part | anything a reader of this definition sees changes, names, docs and comments included |
+
+- No hash holds a name of another definition. So a rename changes the `text_hash` of the renamed definition only. Every cache keyed by `interface_hash` or `code_hash` (checks, proofs, compiled code) stays valid. Compiled code names its symbols by key.
+- `stamp` is the SHA-256 of the `interface_hash`es of the definition's `dependencies`, written one after another, in their order, as they were when the definition was last checked.
+- A reader recomputes each stamp from the current headers of the modules it reads. A definition whose stamp differs is checked again before it is used (after a pull, a merge, a checkout or a fetched dependency). `strata check --full` checks every definition whatever its stamp.
+
+```strata
+law stamp_unchanged_check_holds(d: StoredDefinition, now: Headers)
+  requires stamp_of(d.dependencies, now) == d.stamp
+  holds checks(d, now)
+```
+
+### 4.7 Evidence
+
+```text
+evidence           = list(DefinitionEvidence)
+DefinitionEvidence = definition:uint  stamp:hash  obligations:list(ObligationEvidence)
+```
+
+- The evidence part keeps the result of each proof, so a proof is replayed from the facts it used instead of searched for again (section 8). `definition` is an index into `entries`, and the list is in that order.
+- Its `stamp` is the proof's: the SHA-256 of the hashes the proof relied on, as section 8 lists them. Evidence whose stamp differs from the current one is stale. It is ignored and the proof is redone, never trusted.
+- Section 8 gives `ObligationEvidence`: the obligation's node, its verdict, the solver and its version, the resources used and the facts used (the unsat core).
+- The evidence is outside every hash. Adding or dropping it never changes a definition's hashes.
+- How large the evidence part grows on core, std and the compiler is to measure in the lab, before deciding whether it moves to a file of its own.
+
+### 4.8 Reading safely
+
+A decoder never crashes on a file. It reports the first of these as an error:
+
+- a wrong magic, version or kind;
+- a primitive not in canonical form, or a length past the end of the file;
+- an index out of its table (id table, `modules`, `declared`, type list, `entries`);
+- an unknown tag, a child of the wrong type, or a stack holding anything but the expected root at the end of a part;
+- a key given twice, an id that is 0, or two ids of the module that are equal;
+- a list out of its stated order, or an entry whose sizes don't add up to the file's length;
+- a `Large` number below 2^64, or a `Decimal` whose `digits` end in a zero.
+
+The decoder checks no hash: hashes are computed when a definition is stored. `strata check --full` recomputes them.
+
+### 4.9 Laws
+
+```strata
+law decode_encode(m: Module)
+  requires stored(m)
+  holds decode(encode(m)) == Ok(m)
+
+law encode_decode(b: Bytes)
+  requires decode(b) is Ok
+  holds encode(decode(b)!) == b
+```
+
+The second law is what canonical means: any file the decoder accepts is exactly the file the encoder writes for its module.
