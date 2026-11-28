@@ -23,7 +23,7 @@ theorem double_pos(n: Int): n > 0 ==> double(n) > n := by
 
 - `strata { … }` holds Strata code: records, sums, functions, traits with laws, and `impl`s. Its functions become definitions with equations. Its `ensures` become goals named `f.ensures` (`f.ensures.0`, `.1`, … when there are several). Each `impl` of a trait with laws gets one goal per law, `T.law` (`Priority.transitive`). Prove a goal with `theorem f.ensures := by …`.
 - `theorem NAME[TYPES](PARAMS): STATEMENT := by` then the tactics, one or more per line, indented. The statement is a Strata `Bool` expression. When the proof starts, the parameters are the goal's variables. Each parameter of a refined type (`n: Natural`) also brings the hypothesis `n_ok : n >= 0`.
-- `theorem NAME[A: Ord](xs: List[A]): …`: a bound brings the variable `lt_A` (`A`'s `<`) and Ord's laws as hypotheses `irreflexive : forall(a -> !(a < a))`, `transitive`, `total`. A theorem proven this way holds for every `Ord`.
+- `theorem NAME[A: Ord](xs: List[A]): …`: a bound brings the variable `lt_A` (`A`'s `<`, printed `a < b`) and Ord's laws as hypotheses `irreflexive : forall(a -> !(a < a))`, `transitive`, `total`, and the derived fact `asymmetric : forall(a -> forall(b -> a < b ==> !(b < a)))` (proven once, in core/ord.kp, and used by `simp`). A theorem proven this way holds for every `Ord`. On an `Ord`, `a <= b` is `!(b < a)`; on `Int`, `simp` writes `!(a < b)` as `b <= a`.
 - `@[simp]` adds the theorem to the rules `simp` uses in the theorems after it.
 - A theorem can use every theorem proven above it in the file, by name. A theorem that failed can't be used: the error says "`name` failed above".
 - `mutual` … `end` around theorems about types defined together (`Expr` and its `List[Expr]`) proves them by one induction. Each proof is one `induction` on its first parameter.
@@ -55,7 +55,7 @@ A goal prints as Lean prints one: the variables and hypotheses, then `⊢` and w
   ⊢ [x] + xs + [] == [x] + xs
 ```
 
-A list built by `cons` prints as `[x] + xs`, a list ending in `[]` as `[a, b]`. A `match` the goal can't unfold prints as `case_T(…)`, with its arms as lambdas. The error then says which value it is stuck on, and `cases h : value with` splits it.
+A list built by `cons` prints as `[x] + xs`, a list ending in `[]` as `[a, b]`, and a record by its fields (`User { name: u.name, age: u.age }`). A bounded function prints without its dictionary (`insert_sorted(x, xs)`, written back the same way). A `match` the goal can't unfold prints as `match value { [] => …, [y, ..more] => … }`; the error names the value, and `cases h : value with` splits it. Every record has the law `T { ..t } == t` built in, which `simp` uses (`User { name: u.name, age: u.age }` is `u`).
 
 ## Tactics
 
@@ -65,7 +65,7 @@ Each tactic works on the first goal. A line can hold several, separated by `;`. 
 |---|---|
 | `intro x y h` | Takes `forall(x -> …)` as the variable `x`, and `p ==> q` (or `!p`, as `p ==> false`) as the hypothesis `h: p`, one name each, in order. `intro` alone takes one, naming it. |
 | `induction xs with` | Structural induction on the variable `xs`, with one alternative per constructor: `\| nil => tactics` and `\| cons x rest ih => tactics` (the constructor's arguments, then one hypothesis per recursive argument). A sum's constructors are its variants (`\| Red => …`, `\| SetTo v => …`); a record's is its name (`\| User n a => …`). Hypotheses that mention `xs` come back in each case under their names, holding for the new value. |
-| `induction xs generalizing ys with` | The same, with `ys` quantified in `ih` (`ih : forall(ys -> …)`). `ys` is back in scope in each case. When the theorem's own parameters are left out, they are generalized: `ih` holds for any of them. |
+| `induction xs generalizing ys with` | The same, with `ys` quantified in `ih` (`ih : forall(ys -> …)`). `ys` is back in scope in each case. The theorem's other parameters are always generalized, in their order: for `theorem t(x, xs, y)` with induction on `xs`, `ih : forall(x -> forall(y -> premises ==> …))`, applied as `ih(x, y)(h)`. |
 | `cases x with` | Induction without `ih`: one goal per constructor. |
 | `cases h : t with` | Cases on any term `t`, with the hypothesis `h : t == C(…)` in each case. Use it when a `match` is stuck on `t`. |
 | `cases h with` | On a hypothesis: `p && q` gives `\| intro hp hq`; `p \|\| q` gives `\| inl hp` and `\| inr hq`; `exists(x -> p)` gives `\| intro x hx`. |
@@ -75,14 +75,15 @@ Each tactic works on the first goal. A line can hold several, separated by `;`. 
 | `simp only [r1, r2]` | Only these rules, logic, literals and lambdas applied. |
 | `simp at h`, `simp [r] at h1 h2` | Simplifies hypotheses. A hypothesis that becomes `false` closes the goal. |
 | `unfold f g` | `simp only [f, g]`. |
-| `exact t` | Closes the goal with `t`: a hypothesis, or a theorem applied to terms and hypotheses (`exact append_nil(xs)`, `exact h(hx)`, `exact lt_trans(a, b, c)(h1)(h2)`). Arguments left out are found by matching the goal. |
+| `exact t` | Closes the goal with `t`: a hypothesis, or a theorem or hypothesis applied to terms and facts (`exact append_nil(xs)`, `exact h(hx)`, `exact ih(x, z)(h5)`, `exact lt_trans(a, b, c)(h1)(h2)`; a premise `p && q` takes its two facts one at a time). Arguments left out are found by matching the goal. A fact and a premise, or the theorem and the goal, that differ until simplified (a `match` unfolded) still match. |
 | `apply t` | Matches `t`'s conclusion (after its `forall`s and `==>` premises) against the goal; each premise becomes a goal. Give as arguments the variables the goal doesn't show: `apply le_trans(x, x + 1)`. On the goal `false`, `apply h` with `h : !p` leaves the goal `p`. |
 | `use t` | `exact t`, else `apply t`. |
 | `have h : p := by tactics` | Proves `p`, then adds the hypothesis `h : p`. `have h := lemma(args)` adds a theorem's instance. |
 | `calc` | A chain of equations, each with its proof. The first line is `calc a == b := by tactics`; then come lines `_ == c := by tactics`, indented under it (`_` is the previous right side). The chain ends at the goal's two sides. |
-| `omega` | Linear integer arithmetic, by kernel steps. It closes a goal that follows from its hypotheses by `+ - *` (by literals), `< <= ==`, and `&& \|\| ! ==>` on `Int` and `Bool`. Other subterms are unknowns: `len(xs) + 1 > len(xs)` holds. Refined results count as facts: `len(xs) >= 0` holds, since `len` returns a `Natural`. |
+| `omega` | Linear integer arithmetic, by kernel steps. It first simplifies its hypotheses and the goal (`Task { priority: Low, due: a } < Task { priority: Low, due: b }` becomes `a < b`), then closes a goal that follows by `+ - *` (by literals), `< <= ==`, and `&& \|\| ! ==>` on `Int` and `Bool`. Other subterms are unknowns: `len(xs) + 1 > len(xs)` holds. Refined results count as facts: `len(xs) >= 0` holds, since `len` returns a `Natural`. |
 | `nonlinear` | Asks Z3 (strings, products of unknowns). The theorem is marked `[assumed: z3]`. |
-| `auto` | Tries `simp`, then `omega`, then `nonlinear`. |
+| `auto` | Tries `simp` with every hypothesis, then `omega`, then `nonlinear`; first it applies the laws among the hypotheses (`transitive`) to the facts once. |
+| `assumption` | Closes the goal with a hypothesis that is it. |
 | `rfl` | Closes `a == b` when the two sides are the same once lambdas are applied. |
 | `constructor` | Splits `p && q` into two goals `p` and `q`, and `p == q` on `Bool` into `p ==> q` and `q ==> p`. |
 | `left` / `right` | On `p \|\| q`: prove `p`, or prove `q`. |
@@ -90,8 +91,9 @@ Each tactic works on the first goal. A line can hold several, separated by `;`. 
 | `exfalso` | Changes the goal to `false`. |
 | `contradiction` | Closes the goal from a hypothesis `false`, or from `p` and `!p`. |
 | `by_cases h : p` | Two goals: one with `h : p`, then one with `h : !p`. |
-| `split` | On the first open `if c { … }` of the goal: two goals, `h : c` with the `if` taken, then `h : !c` with the other branch. |
-| `try t` | Runs `t`; if it fails, nothing changes. |
+| `split`, `split h` | On the first open `if c { … }` of the goal: two goals, first the `then` case with `h : c` and its `if` taken, then the `else` case with `h : !c` (`!c` written without a double negation). `split h` names the hypothesis; plain `split` picks a fresh name (`h`, `h1`, …). |
+| `try t` | Runs `t`; if it fails, or no goal is left, nothing changes. |
+| `· tactics` | The next goal alone, closed by these tactics (and the lines indented under them). |
 | `t1 <;> t2` | Runs `t2` on every goal `t1` leaves. |
 
 Alternatives of `induction` and `cases` hold their tactics after `=>` on the same line, or on the lines below, indented further:
@@ -123,6 +125,7 @@ failed len_snoc (1.0 ms): `induction` failed: unsolved goals:
 
 - `unsolved goals`: the tactics ended with goals left.
 - `no goals left for …`: a tactic after the goal was closed. Remove it, or wrap it in `try`.
+- `rw` matches terms as written: `[a] + [b] + rest` and `[a] + ([b] + rest)` are different terms to it (`simp` normalises lists, `rw` doesn't).
 - `simp made no progress`: no rule applies. Check the names and that the goal is unfolded. A stuck `match` is named.
 - `its left side isn't in the goal` (`rw`): the equation's left side doesn't occur. `←` reverses it.
 - `omega: no contradiction found`: a fact is missing (rewrite with a lemma, `cases` a `match`), or the goal isn't linear (`nonlinear`).
@@ -132,5 +135,5 @@ failed len_snoc (1.0 ms): `induction` failed: unsolved goals:
 
 - Do induction on the list a function matches on: `len`, `+`, `reversed` and `map` match on their first list, `insert_sorted` and `count` on their list.
 - In the `cons` case, `simp [ih]` unfolds the definitions one step and uses the induction hypothesis; arithmetic left over usually closes by itself, else with `omega`.
-- Prove a lemma first (`theorem helper …`), then use it with `simp [helper]`, `rw [helper]` or `exact helper(…)`. That is the usual way through a harder goal.
+- Prove a lemma first (`theorem helper …`), then use it with `simp [helper]`, `rw [helper]` or `exact helper(…)`. That is the usual way through a harder goal. Any law or hypothesis can be used inside another step: `have h := transitive(a, b, c)(h1)(h2)`.
 - For `Ord` laws on a sum, `cases` every variable and `simp`: `Low < Mid` unfolds through `impl Ord` to literals, which `simp` computes.

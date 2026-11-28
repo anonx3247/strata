@@ -1,0 +1,45 @@
+-- Round-3 steps: record eta, facts simplified for omega, bullets,
+-- `assumption`, a named `split`, `try` with no goal left.
+
+strata {
+type Priority = | Low | Mid | High
+fn rank(p: Priority) -> Int {
+  match p {
+    Low => 0,
+    Mid => 1,
+    High => 2,
+  }
+}
+impl Ord for Priority {
+  fn lt(self, other: Priority) -> Bool = rank(self) < rank(other)
+}
+type Task = { priority: Priority, due: Int }
+impl Ord for Task {
+  fn lt(self, other: Task) -> Bool = self.priority < other.priority || self.priority == other.priority && self.due < other.due
+}
+type User = { name: String, age: Int }
+}
+
+theorem eta(u: User): User { name: u.name, age: u.age } == u := by
+  simp
+
+theorem facts_simplified(d1: Int, d2: Int, d3: Int): Task { priority: Low, due: d1 } < Task { priority: Low, due: d2 } && Task { priority: Low, due: d2 } < Task { priority: Low, due: d3 } ==> d1 < d3 := by
+  intro h
+  omega
+
+theorem bullets(p: Bool, q: Bool): p && q ==> q && p := by
+  intro h
+  cases h with
+  | intro a b =>
+    constructor
+    · exact b
+    · assumption
+
+theorem split_named(x: Int): (if x < 0 { 0 - x } else { x }) >= 0 := by
+  split hx
+  omega
+  omega
+
+theorem try_after(x: Int): x + 0 == x := by
+  simp
+  try omega

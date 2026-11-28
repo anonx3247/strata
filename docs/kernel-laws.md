@@ -30,11 +30,11 @@ lemma open_one(xs: List[Int]) ensures len(xs.sorted()) == len(xs) {
 ```
 
 - The module's records, sums, functions, traits with laws and `impl`s are the code the laws are about. Each function becomes a definition with equations.
-- `lemma NAME[TYPES](PARAMS) requires COND ensures STATEMENT { PROOF }`. The parameters are the law's variables, and each `requires` is an assumption. Nothing is introduced by hand: what a `for all` or `==>` would say is a parameter or a `requires`. A law whose statement is `!p` assumes `p` and proves `false`.
+- `lemma NAME[TYPES](PARAMS) requires COND ensures STATEMENT { PROOF }`. The parameters are the law's variables, and each `requires` is an assumption. Nothing is introduced by hand: what a `for all` or `==>` would say is a parameter or a `requires`. A statement `p ==> q` is read as `requires p` and `holds q` (each conjunct of `p` an assumption, named `h`, `h1`, …), and a statement `!p` assumes `p` and proves `false`. Inside a proof, `assume()` does the same for a goal `p ==> q` or `!p` left by a step.
 - No body: the law is proven by the ladder, `auto()`. A body `?proof`: the law is open.
 - A function's `ensures` is the goal `f.ensures`, and an `impl`'s trait laws are goals `T.law`. A `lemma` with no `ensures` proves the goal its name spells: `twice_ensures` proves `twice.ensures`, and `impl_priority_irreflexive` proves `Priority.irreflexive` (an `impl` obligation takes the prefix `impl_`).
 - A parameter of a refined type (`n: Natural`) brings the assumption `n >= 0`.
-- `[A: Ord]` brings `A`'s `<` and Ord's laws as assumptions: `irreflexive : forall(a -> !(a < a))`, `transitive`, `total`. A law proven so holds for every `Ord`; if it can't be proven from those, it fails, and it never becomes an obligation.
+- `[A: Ord]` brings `A`'s `<` (`lt_A`, printed `a < b`) and Ord's laws as assumptions: `irreflexive : forall(a -> !(a < a))`, `transitive`, `total`, and the derived law `asymmetric : forall(a -> forall(b -> a < b ==> !(b < a)))`, proven once in core/ord.kp from the first two, which `simplify` uses like any fact. A law proven so holds for every `Ord`; if it can't be proven from those, it fails, and it never becomes an obligation. On an `Ord`, `a <= b` is `!(b < a)`; on `Int`, `simplify` writes `!(a < b)` as `b <= a`, so the condition `if x <= y` and a definition's `if !(y < x)` meet.
 - A law can use any other law of the module, by calling it. Laws that call each other in their proofs are proven together, by one induction, so each must be a `match` on its first parameter.
 
 ## Statements
@@ -63,16 +63,22 @@ A proof is a block of steps, one per line. Each step works on what is left to pr
 | `simplify(l1, l2)` | Rewrites the goal to a normal form. It uses the laws named (bare: `append_nil`, or applied: `append_nil(rest)`), every definition's equations, the datatypes' facts, logic, and linear arithmetic. Arithmetic means literals computed, sums collected, and comparisons whose sides differ by a literal decided. It also uses every known fact, each first simplified with the others. An `if` left open is split, and the goal closes when both branches close. The step fails if nothing changed. |
 | `simplify_once(l)` | One rewrite with `l`: the first instance of its left side, every copy of it. |
 | `unfold(f, g)` | Unfolds the definitions of `f` and `g` only. |
-| `law(args)` | Uses a law: its conclusion finishes the goal. Its `requires` are met by the facts known: the law's own `requires`, steps proven before, the branch's conditions, and what simplifying them gives. Arguments left out are found by matching the goal. |
+| `law(args)` | Uses a law, or an assumption that is one (`transitive(a, b, c)`): its conclusion finishes the goal. Its `requires` are met by the facts known: the law's own `requires`, steps proven before, the branch's conditions, and what simplifying them gives. Arguments left out are found by matching the goal. Any law can be used inside a step: `assert a < c by { transitive(a, b, c) }`. |
+| `assume()` | A goal `p ==> q` (or `!p`) left by a step: `p` becomes a fact. |
+| `assumption()` | Finishes the goal with a fact that is it. |
 | `assert p by { steps }` | Proves `p`, then knows it for the rest of the proof. `assert p` alone proves it by the ladder. |
 | `calc { a == b; _ == c }` | A chain of equations, each step proven by the ladder (which knows the facts in scope). It ends at the goal's two sides. |
 | `witness(e)` | On `exists(x -> p)`: proves `p` at `e`. |
-| `arithmetic()` | Linear integer arithmetic, by kernel steps, from the known facts. `len(xs) >= 0` holds, since `len` returns a `Natural`. |
+| `arithmetic()` | Linear integer arithmetic, by kernel steps. It first simplifies the facts and the goal (`Task { priority: Low, due: a } < Task { priority: Low, due: b }` becomes `a < b`), then refutes the goal's negation from them. `len(xs) >= 0` holds, since `len` returns a `Natural`. |
 | `nonlinear()` | Asks Z3 (strings, products of unknowns). The law is marked `[assumed: z3]`. |
 | `compute()` | `simplify()`. |
-| `auto()` | The ladder: `simplify()`, then `arithmetic()`, then `nonlinear()`. |
+| `auto()` | The ladder: `simplify()`, then `arithmetic()`, then `nonlinear()`. First it applies the laws among the facts (`transitive`, an assumption like `forall(x -> p(x) ==> q(x))`) to the facts once. |
 
 There are no steps for splitting `&&`, choosing a side of `||`, or closing `a == a`: `simplify()` and `auto()` do these.
+
+Facts are the same wherever they come from: a law's `requires`, an `assert`, a branch's condition and a recursive call's result are all simplified with the others before `simplify`, `arithmetic` and `auto` use them.
+
+A record pattern binds by field name, in any order, and `..` leaves out the rest: `Bin { right, left, .. }`.
 
 ## Goals
 
@@ -87,7 +93,7 @@ A goal prints its variables and facts, then `⊢` and what is left to prove:
   ⊢ [x] + rest + [] == [x] + rest
 ```
 
-A `match` the goal can't unfold prints as `case_T(…)`; the error names the value it is stuck on. Split it with `match value { … }`.
+A record prints by its fields (`User { name: u.name, age: u.age }`), and every record has the law `T { ..t } == t` built in, which `simplify` uses. A bounded function prints without its dictionary (`insert_sorted(x, xs)`), as it is written. A `match` the goal can't unfold prints as `match value { [] => …, [y1, ..more] => … }`; the error names the value. Split it with `match value { … }`, or use a lemma about it: a lemma's statement and the goal match once both are simplified.
 
 ## Errors
 

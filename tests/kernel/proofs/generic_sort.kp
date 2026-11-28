@@ -42,7 +42,7 @@ theorem insert_sorted_sorted[A: Ord](x: A, xs: List[A]): is_sorted_by(xs) ==> is
     cases ys with
     | nil =>
       simp [hx]
-      exact ord_asym(y, x)(hx)
+      try exact ord_asym(y, x)(hx)
     | cons z zs =>
       rw [sorted_two] at h
       cases h with
@@ -50,7 +50,7 @@ theorem insert_sorted_sorted[A: Ord](x: A, xs: List[A]): is_sorted_by(xs) ==> is
         have r := ih(x)(h2)
         by_cases hz : x <= z
         simp [hx, hz, sorted_two, h2]
-        exact ord_asym(y, x)(hx)
+        try exact ord_asym(y, x)(hx)
         simp [hz] at r
         simp [hx, hz, sorted_two, h1, r]
 
