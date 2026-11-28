@@ -42,6 +42,10 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: termination.calls_in (`smaller := st.own != "" && trait_node(name) == st.own && self_field(recv)`). Source: review prover. Confidence: likely.
 - [ ] **Termination proofs assume the function's own `ensures`, which may be unproven.** Measure and loop-bound obligations are asked over the function's facts. Those include the callee contracts assumed at each call, the function's own `ensures` at its recursive calls among them.
   Where: smt.call_contract (a recursive call assumes `f.post`), smt.measure_check / termination.loop_answered (obligations over `vc.facts`). Source: review prover. Confidence: likely.
+- [ ] **A `for` over an adapter of a value whose type termination can't read stays unknown.** `termination.expr_type` reads types from bindings in scope, calls of the program's functions, builtins whose overload the arguments' types settle, fields, tuples, lists, and `match`/`if` values whose branches agree. It reads no type from a block with statements, a lambda parameter without a written type, a builtin result whose overload or type arguments aren't settled (`get(d, k)` with `d` a `Dict` literal), or a `match` with a branch it can't type. 28 compiler/ functions are unknown this way (`codegen.builtin_call`'s `drop(args, 1)`, `smt.shape`'s `rc.fields ?? []`), 20 compiler/ and 2 std for a `for` over a value the encoder doesn't model (`check.union_conflicts`, `std.orm.Query.all`).
+  Where: termination.expr_type, termination.source_of. Source: termination-modelling PR. Confidence: sure.
+- [ ] **A method call on a receiver of unknown type reaches every type's own method of that name.** Sound but imprecise: `d.members.filter(..).map(..)` in std.json.tags_of reached `std.array.Array.map`; it is proven now only because `Array.map` is. The checker's resolution (`check.mark_method_calls`, #626) tags a call only as a trait's or "other", not with the receiver's type, so it can't narrow these.
+  Where: termination.calls_in, termination.recv_head. Source: termination-modelling PR. Confidence: sure.
 - [ ] **Mutual recursion always unknown; tree recursion not proven to terminate (known).** Recorded in ~/dev/strata-bench/STRATA-ISSUES.md ("Tree recursion isn't proven to terminate. 52 and 68 functions respectively are reported 'may not terminate'"). The code has no measure search for components larger than one.
   Where: termination.analyze_with (`Some(other) => Err("it is recursive through ...")`). Source: review prover; ledger V7. Confidence: sure.
 - [ ] **A cached proof skips the lemma termination gate.** The proof key (`interface_keys`) holds callees' interface hashes for ContractOnly callees, not their termination status. A lemma calling `g` stays keyed the same when `g`'s body changes and `g` stops terminating.
@@ -85,7 +89,7 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: termination.cannot_fail (`_ => true`), smt.cannot_fail (`_ => SeeThrough`). Source: review prover. Confidence: possible.
 - [ ] **The lemma gate only fires for `Unknown`.** `Assumed(names)` (a callee marked `terminates`) and `None` (not analysed) pass. An induction then rests on a `terminates` mark, and the verdict says only "proven".
   Where: main.verify_program (lemma gate). Source: review prover. Confidence: sure.
-- [ ] **Loops stepping an `I64` counter are reported "may not terminate".** Termination doesn't handle sized-int counters.
+- [ ] **Loops stepping an `I64` counter are reported "may not terminate" unless the counter's lower bound is shown.** The bound `inner - j` of an `I64` counter wraps when `j` may be negative, so it is shown to go down only with `j >= 0` in the condition or an invariant (`std.array.gather` needed `invariant j >= 0`). Nothing derives that bound from the counter starting at 0 and only going up.
   Where: termination. Source: ledger V6. Confidence: likely.
 - [ ] **A function returning `Set[TaskId]` isn't seen through.** `list_set` doesn't restate the elements' refinements.
   Where: smt. Source: ledger V11. Confidence: likely.
@@ -619,6 +623,9 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: verify scratch. Source: ledger T23. Confidence: likely.
 
 ## Test cases failing on main
+
+- [ ] **`verify --termination` of a whole compiler/ goes past 300 s.** Per module (`verify 'M.*' --termination`) `main`, `markdown` and `tour` go past 300 s each, on 8a5c58aa too.
+  Where: termination (per-run analysis of the whole package). Source: termination-modelling PR. Confidence: sure.
 
 - [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
   Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
