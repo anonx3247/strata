@@ -1,0 +1,85 @@
+# A generic type's arguments fit by the variance of its parameters, inferred
+# from where each is used: a parameter only read is covariant, one only
+# taken by a function contravariant, one used both ways invariant, and one
+# never used counts as invariant. A `Sender` is contravariant.
+
+[[step]]
+save = "p.strata"
+text = '''
+type Handler[T] = { run: (T) -> Int }
+
+type Cell[T] = { get: () -> T, put: (T) -> Int }
+
+type Tag[T] = { id: Int }
+
+type Boxed[T] = { item: T }
+
+type Nested[T] = { inner: Handler[Handler[T]] }
+
+fn size(x: Int | String) -> Int {
+  match x {
+    Int => 1,
+    String => 2,
+  }
+}
+
+fn on_ints(h: Handler[Int]) -> Int = (h.run)(1)
+
+fn on_both(h: Handler[Int | String]) -> Int = (h.run)("a")
+
+fn read_both(c: Cell[Int | String]) -> Int = size((c.get)()) + (c.put)("x")
+
+fn tagged(t: Tag[Int | String]) -> Int = t.id
+
+fn boxed(b: Boxed[Int | String]) -> Int = size(b.item)
+
+fn nested(n: Nested[Int | String]) -> Int = (n.inner.run)(Handler { run: size })
+
+fn sends(_s: Sender[Int]) -> Int = 0
+
+fn sends_both(_s: Sender[Int | String]) -> Int = 0
+
+fn mk_handler() -> Handler[Int | String] = Handler { run: size }
+
+fn mk_int_handler() -> Handler[Int] = Handler { run: (x: Int) -> x }
+
+fn mk_cell() -> Cell[Int] = Cell { get: () -> 2, put: (x: Int) -> x }
+
+fn mk_tag() -> Tag[Int] = Tag { id: 1 }
+
+fn mk_boxed() -> Boxed[Int] = Boxed { item: 3 }
+
+fn mk_nested() -> Nested[Int] = Nested { inner: Handler { run: (h: Handler[Int]) -> (h.run)(1) } }
+
+fn contravariant_fits() -> Int = on_ints(mk_handler())
+
+fn covariant_fits() -> Int = boxed(mk_boxed())
+
+fn twice_flipped_fits() -> Int = nested(mk_nested())
+
+fn contravariant_wrong() -> Int = on_both(mk_int_handler())
+
+fn invariant_wrong() -> Int = read_both(mk_cell())
+
+fn unused_wrong() -> Int = tagged(mk_tag())
+
+fn sender_fits(s: Sender[Int | String]) -> Int = sends(s)
+
+fn sender_wrong(s: Sender[Int]) -> Int = sends_both(s)
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+fails = true
+has = [
+  "error in contravariant_wrong: call to `on_both`, argument 1: expected `Handler[Int | String]`, found `Handler[Int]`",
+  "error in invariant_wrong: call to `read_both`, argument 1: expected `Cell[Int | String]`, found `Cell[Int]`",
+  "error in unused_wrong: call to `tagged`, argument 1: expected `Tag[Int | String]`, found `Tag[Int]`",
+  "error in sender_wrong: call to `sends_both`, argument 1: expected `Sender[Int | String]`, found `Sender[Int]`",
+]
+lacks = [
+  "error in contravariant_fits",
+  "error in covariant_fits",
+  "error in twice_flipped_fits",
+  "error in sender_fits",
+]
