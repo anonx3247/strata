@@ -1,0 +1,42 @@
+# lab trial 1b (STRATA_CORES): each proven check's unsat core is stored
+# with its facts' origins and stamps; a callee's body change leaves its
+# callers' cores trusted, and a contract change rebuilds the changed facts
+[[step]]
+save = "p.strata"
+text = "fn double(x: Int) -> Int\n  requires x >= 0\n  ensures it >= x\n{\n  x + x\n}\nfn caller(n: Int) -> Int\n  requires n >= 0\n  ensures it >= 0\n{\n  double(n)\n}\n"
+
+[[step]]
+run = ["mkdir", "-p", "cores"]
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--no-cache"]
+env = { STRATA_CORES = "record", STRATA_CORES_DIR = "$TMP/cores" }
+has = ["✓ caller "]
+
+[[step]]
+run = ["grep", "-c", "fn:double", "cores/caller.core"]
+stdout = "1\n"
+
+[[step]]
+save = "p.strata"
+text = "fn double(x: Int) -> Int\n  requires x >= 0\n  ensures it >= x\n{\n  x * 2\n}\nfn caller(n: Int) -> Int\n  requires n >= 0\n  ensures it >= 0\n{\n  double(n)\n}\n"
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--no-cache"]
+env = { STRATA_CORES = "replay", STRATA_CORES_DIR = "$TMP/cores" }
+
+[[step]]
+run = ["grep", "-c", "^replay.caller.*trusted$", "cores/log.tsv"]
+stdout = "2\n"
+
+[[step]]
+save = "p.strata"
+text = "fn double(x: Int) -> Int\n  requires x >= 0\n  ensures it >= 0 && it >= x\n{\n  x * 2\n}\nfn caller(n: Int) -> Int\n  requires n >= 0\n  ensures it >= 0\n{\n  double(n)\n}\n"
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--no-cache"]
+env = { STRATA_CORES = "replay", STRATA_CORES_DIR = "$TMP/cores" }
+
+[[step]]
+run = ["grep", "-c", "^replay.caller.1.*rebuilt$", "cores/log.tsv"]
+stdout = "1\n"
