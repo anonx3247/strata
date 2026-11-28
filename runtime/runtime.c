@@ -1369,7 +1369,6 @@ static void *task_main(void *arg) {
   if (!contained || sigsetjmp(here, 1) == 0) {
     t->run(t->clo, &t->out);
     t->unwound = unwound;
-    // what the task captured is its own: dropped when it ends, not with its scope
     if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
     t->clo = NULL;
   } else if (!t->fail) {
