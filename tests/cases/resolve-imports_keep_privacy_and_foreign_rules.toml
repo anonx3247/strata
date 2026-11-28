@@ -1,0 +1,118 @@
+# A name that gets into a module's scope by an import, or from the root module,
+# keeps the rules of a qualified use: a private function, type, record or
+# variant is refused by every import form, and a foreign function of the root
+# module is called only from the root module
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+save = "util.strata"
+text = '''
+fn helper(x: Int) -> Int = x + 1
+
+type Secret = { n: Int }
+
+type Hidden =
+  | A
+  | B
+
+pub fn make() -> Secret = Secret { n: helper(1) }
+
+pub fn shown(s: Secret) -> Int = s.n
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+from util use helper as h, Secret, Hidden, make
+
+fn f(s: Secret) -> Int = h(1)
+
+fn main() {
+  print(to_string(f(make())))
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = [
+  "`helper` is private to module `util`",
+  "`Secret` is private to module `util`",
+  "`Hidden` is private to module `util`",
+]
+
+[[step]]
+save = "main.strata"
+text = '''
+use util as u
+
+fn g(s: u.Secret) -> Int = u.helper(u.shown(s))
+
+fn k(x: u.Hidden) -> Int = match x {
+  u.A => 1,
+  u.B => 2,
+}
+
+fn main() {
+  print(to_string(g(u.make())))
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = [
+  "`util.helper` is private to module `util`",
+  "`util.Secret` is private to module `util`",
+  "`util.Hidden` is private to module `util`",
+  "`util.A` is private to module `util`",
+]
+
+# the root module's extern, which every module's scope holds
+[[step]]
+save = "util.strata"
+text = '''
+pub fn twice(x: Int) -> Int = labs(x.to_i64()).to_int() * 2
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+extern c fn labs(x: I64) -> I64
+
+from util use twice
+
+fn main() {
+  print(to_string(twice(-3)))
+}
+'''
+
+[[step]]
+strata = ["check"]
+fails = true
+has = ["error in util.twice: `labs` is a foreign function: only module `main` can call it"]
+
+# the root module itself calls it
+[[step]]
+save = "util.strata"
+text = '''
+pub fn twice(x: Int) -> Int = x * 2
+'''
+
+[[step]]
+save = "main.strata"
+text = '''
+extern c fn labs(x: I64) -> I64
+
+from util use twice
+
+fn main() {
+  print(to_string(twice(labs(-3.to_i64()).to_int())))
+}
+'''
+
+[[step]]
+strata = ["run"]
+out = "6\n"
