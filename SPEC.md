@@ -164,7 +164,7 @@ fn total(orders: List[Order]) -> s64 {
 ### 1.9 Punctuation
 
 ```ebnf
-punctuation = "==>" | "..." | "..=" | ".." | "<<" | ">>" | "??" | "!!"
+punctuation = "==>" | "..." | "..=" | ".." | "|>" | "<<" | ">>" | "??" | "!!"
             | ":=" | "->" | "=>" | "==" | "!=" | "<=" | ">=" | "&&" | "||"
             | "+=" | "-=" | "*=" | "/=" | "%="
             | "(" | ")" | "[" | "]" | "{" | "}" | "," | ":" | "." | "="
@@ -173,6 +173,7 @@ punctuation = "==>" | "..." | "..=" | ".." | "<<" | ">>" | "??" | "!!"
 
 - The longest match wins: `a!=b` is `a`, `!=`, `b`, and `x..=y` is `x`, `..=`, `y`.
 - `..` and `..=` are ranges only: `a..b`, `a..=b`, and slices with an open end, `xs[..b]`.
+- `|>` is the pipe: `a |> f` is the call `f(a)` (section 2).
 - `...` is the spread: it puts a record's fields where fields are expected, in a call (`f(a, ...p)`) or in a record literal (`T { ...r, f: v }`, a record update).
 - `$`, `;`, `@`, `#`, `~`, `` ` ``, `'` and `\` outside a string are errors. No program can write a generated name. The tree tells generated nodes apart by their node ids and core forms (section 3).
 
@@ -186,7 +187,7 @@ A newline ends a statement unless the lexer drops it. It drops a newline when an
 2. The token before the newline is `{`, `,`, or a continuing operator.
 3. The token after the newline is `}`, `)`, `]`, `.`, a continuing operator other than `-`, or a continuing keyword.
 
-The continuing operators are `==>` `..` `..=` `<<` `>>` `??` `!!` `:=` `->` `=>` `==` `!=` `<=` `>=` `&&` `||` `+=` `-=` `*=` `/=` `%=` `:` `=` `<` `>` `+` `-` `*` `/` `%` `|` `&` `^`.
+The continuing operators are `==>` `..` `..=` `|>` `<<` `>>` `??` `!!` `:=` `->` `=>` `==` `!=` `<=` `>=` `&&` `||` `+=` `-=` `*=` `/=` `%=` `:` `=` `<` `>` `+` `-` `*` `/` `%` `|` `&` `^`.
 
 The continuing keywords are `else` `or` `except` `with` `where` `requires` `ensures` `holds` `decreases` `invariant` `by` `as`.
 
@@ -202,6 +203,9 @@ ok := a &&
   b                   // continues: the line ends with `&&`
 xs.map(f)
   .sum()              // continues: the line starts with `.`
+print(t, view)
+  |> parse
+  |> desugar         // continues: the lines start with `|>`
 f(a,
   b)                  // dropped: inside `(`
 print(x)
@@ -267,6 +271,7 @@ Each difference is a decision recorded in REBUILD.md.
 | markup `<p>…</p>`, three lexer modes | deferred: not in this spec until std.web needs it | not needed (deferred) |
 | `$` names in stored trees | no `$` at all | to try |
 | `;`, `++` punctuation | none | not needed (removal) |
+| no pipes | `a |> f` for `f(a)` | to try: trial 5, #661 |
 | record updates written `T { ..r, f: v }` | `T { ...r, f: v }`, as spreads write `f(...p)` | to try |
 | some keywords contextual | every keyword reserved, proof steps included | to try: measure the names it breaks |
 | newline continues only before an operator or `.` | also after an operator, `,` or `{`, and before a continuing keyword | to try |
