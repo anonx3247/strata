@@ -1560,26 +1560,43 @@ void *strata_spawn(void *clo, void (*run)(void *, void *), void (*drop)(void *),
   return t;
 }
 
+// Held while a task is joined: after its handle crossed, more than one
+// thread may await it at once.
+static pthread_mutex_t join_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static void join(Task *t) {
-  if (t->joined) return;
-  pthread_join(t->thread, NULL);
-  t->joined = 1;
-  if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(0);
-  if (t->printed) {
-    if (RS->capturing) keep_printed(t->printed, t->printed_len);
-    free(t->printed);
-    t->printed = NULL;
+  pthread_mutex_lock(&join_lock);
+  if (!t->joined) {
+    pthread_join(t->thread, NULL);
+    if (__atomic_sub_fetch(&live_tasks, 1, __ATOMIC_RELAXED) == 0) set_threaded(0);
+    if (t->printed) {
+      if (RS->capturing) keep_printed(t->printed, t->printed_len);
+      free(t->printed);
+      t->printed = NULL;
+    }
+    pthread_mutex_lock(&chan_lock);
+    t->joined = 1;
+    pthread_mutex_unlock(&chan_lock);
   }
+  pthread_mutex_unlock(&join_lock);
 }
 
-// Drop a finished scope's tasks: each result, closure and record.
+// Drop a finished scope's tasks: each result, closure and record. A task
+// whose handle crossed to another thread (`strata_task_share`) is kept,
+// with its result: an `await` there may come after the scope's end.
 static void release_scope(TaskScope *s) {
   for (Task *t = s->first, *next; t; t = next) {
     next = t->next;
-    if (!t->faulted && !t->unwound && t->drop) t->drop(&t->out);
+    pthread_mutex_lock(&chan_lock);
+    _Bool kept = t->shared;
+    pthread_mutex_unlock(&chan_lock);
+    if (!kept && !t->faulted && !t->unwound && t->drop) t->drop(&t->out);
     if (t->cancel) __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
-    free(t->origin);
+    t->cancel = 0;
     if (t->clo && strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
+    t->clo = NULL;
+    if (kept) continue;
+    free(t->origin);
     free(t->stack);
     free(t->shares);
     free(t);
@@ -4327,10 +4344,22 @@ Str *strata_host_read_file(Str *path, Str **kind, Str **msg) {
   }
   size_t cap = 4096, len = 0;
   char *buf = malloc(cap);
-  size_t got;
-  while ((got = fread(buf + len, 1, cap - len, f)) > 0) {
-    len += got;
-    if (len == cap) buf = realloc(buf, cap *= 2);
+  ssize_t got = 0;
+  while (buf && ((got = read(fileno(f), buf + len, cap - len)) > 0 || (got < 0 && errno == EINTR))) {
+    if (got < 0) continue;
+    len += (size_t)got;
+    if (len == cap) {
+      char *more = realloc(buf, cap *= 2);
+      if (!more) free(buf);
+      buf = more;
+    }
+  }
+  if (!buf || got < 0) {
+    if (!buf) errno = ENOMEM;
+    os_error(kind, msg);
+    free(buf);
+    fclose(f);
+    return NULL;
   }
   fclose(f);
   Str *s = str_from(buf, (int64_t)len);
@@ -4521,10 +4550,14 @@ Str *strata_host_current_dir(void) {
 Str *strata_host_read_stdin(void) {
   size_t cap = 4096, len = 0;
   char *buf = malloc(cap);
+  if (!buf) strata_fault(6, str_c("out of memory"));
   size_t got;
   while ((got = fread(buf + len, 1, cap - len, stdin)) > 0) {
     len += got;
-    if (len == cap) buf = realloc(buf, cap *= 2);
+    if (len == cap) {
+      buf = realloc(buf, cap *= 2);
+      if (!buf) strata_fault(6, str_c("out of memory"));
+    }
   }
   clearerr(stdin);
   Str *s = str_from(buf, (int64_t)len);
