@@ -1,0 +1,75 @@
+# a definition merge-file merges node by node is stored as `edit` stores the
+# same text (`codebase.stored_edits`): the merged file and an edit of its
+# view into ours are the same bytes
+[[step]]
+write = "p/strata.toml"
+text = "name = \"p\"\n"
+
+[[step]]
+strata = ["--file", ".", "edit", "geo"]
+dir = "p"
+text = '''
+pub type Shape =
+  | Circle(Int)
+  | Square { side: Int }
+
+pub fn area(s: Shape) -> Int {
+  match s {
+    Circle(r) => r * r * 3,
+    Square { side } => side * side,
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = '''
+from geo use area, Shape, Circle
+
+fn total(xs: List[Shape]) -> Int {
+  a := xs.map(s -> area(s)).fold(0, (x, y) -> x + y)
+  b := len(xs)
+  a + b
+}
+
+fn main() {
+  print(total([Circle(1), geo.Square { side: 2 }]))
+}
+'''
+
+[[step]]
+run = ["cp", "p/main.strata", "o.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn total(xs: List[Shape]) -> Int {\n  a := xs.map(s -> area(s)).fold(1, (x, y) -> x + y)\n  b := len(xs)\n  a + b\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "b.strata"]
+
+[[step]]
+run = ["cp", "o.strata", "p/main.strata"]
+
+[[step]]
+strata = ["--file", ".", "edit", "main"]
+dir = "p"
+text = "fn total(xs: List[Shape]) -> Int {\n  a := xs.map(s -> area(s)).fold(0, (x, y) -> x + y)\n  b := len(xs) * 2\n  a + b\n}\n"
+
+[[step]]
+run = ["cp", "p/main.strata", "a.strata"]
+
+[[step]]
+strata = ["merge-file", "../o.strata", "main.strata", "../b.strata", "main.strata"]
+dir = "p"
+has = ["merged node by node"]
+lacks = ["conflict", "doesn't check"]
+
+[[step]]
+run = ["sh", "-c", "\"$STRATA\" --file . view main --proofs > ../merged.st && cp main.strata ../merged.strata && cp ../a.strata main.strata && \"$STRATA\" --file . edit main --proofs < ../merged.st && cmp main.strata ../merged.strata"]
+dir = "p"
+
+[[step]]
+strata = ["--file", "p", "view", "total", "--level", "2"]
+has = ["fold(1, (x, y) -> x + y)", "b := len(xs) * 2"]
