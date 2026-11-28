@@ -1,7 +1,8 @@
 # An edit that changes nothing does nothing (nothing written, checked or
 # logged); one that changes something writes only the module files it
 # changes, and checks only what it can affect: the definitions it changed,
-# and the uses of what changed in its interface (found by the dependencies
+# what reaches a body that runs while checking, and the uses of what
+# changed in its interface (found by the dependencies
 # module headers list, and by the names a definition is written with: a
 # field read on a value whose type it never names)
 
@@ -70,7 +71,8 @@ lacks = ["stale", "rejected"]
 run = ["sh", "-c", "test -z \"$(find . -type f -name '*.strata' -newer marker)\" && cksum *.strata | diff - before.txt && (cat strata.log 2>/dev/null; true) | diff - log-before.txt"]
 
 # a body changed: only its module's file is written, only it is checked (the
-# broken `stale` elsewhere isn't)
+# broken `stale` elsewhere isn't). A contract may see through it, so its
+# users' proofs are named to prove again.
 [[step]]
 strata = ["edit", "orders"]
 text = '''
@@ -78,7 +80,7 @@ pub fn charge(o: Order) -> Int {
   o.total + 2
 }
 '''
-has = ["implementation only", "checked 1 definition of"]
+has = ["implementation only — contracts may see through it", "re-check dependents: billing.invoice, twice", "checked 1 definition of"]
 lacks = ["stale", "rejected"]
 
 [[step]]

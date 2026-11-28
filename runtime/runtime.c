@@ -1369,6 +1369,8 @@ static void *task_main(void *arg) {
   if (!contained || sigsetjmp(here, 1) == 0) {
     t->run(t->clo, &t->out);
     t->unwound = unwound;
+    if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
+    t->clo = NULL;
   } else if (!t->fail) {
     t->faulted = 1;
     t->kind = RS->fault_kind;
@@ -1577,7 +1579,7 @@ static void release_scope(TaskScope *s) {
     if (!t->faulted && !t->unwound && t->drop) t->drop(&t->out);
     if (t->cancel) __atomic_sub_fetch(&strata_cancel_any, 1, __ATOMIC_RELAXED);
     free(t->origin);
-    if (strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
+    if (t->clo && strata_release(t->clo)) ((void (*)(void *))(uintptr_t)((int64_t *)t->clo)[1])(t->clo);
     free(t->stack);
     free(t->shares);
     free(t);
