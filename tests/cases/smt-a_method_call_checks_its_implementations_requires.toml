@@ -1,0 +1,21 @@
+# smt: a trait method called on a receiver whose type is known is checked
+# against its implementation's `requires` as well as the trait's
+# (`impl Div for Int`'s `div` requires `other != 0`)
+[[step]]
+save = "f.strata"
+text = '''
+fn direct(a: Int, b: Int) -> Int {
+  a.div(b)
+}
+
+fn guarded(a: Int, b: Int) -> Int
+  requires b != 0
+{
+  a.div(b)
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--cases", "20"]
+has = ["✗ direct                   Runtime violation (found by the solver)", "✓ guarded "]
+code = 1
