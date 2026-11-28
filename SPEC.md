@@ -51,13 +51,15 @@ The keywords are reserved: none of them can be an identifier anywhere, including
 
 | group | keywords |
 |---|---|
-| definitions | `fn` `type` `trait` `impl` `test` `law` `proof` `lemma` `extern` `pub` `use` `from` `as` `mock` `derive` `with` |
+| definitions | `fn` `type` `trait` `impl` `test` `law` `lemma` `extern` `pub` `use` `from` `as` `mock` `derive` `with` |
 | bindings | `mut` `cap` `comptime` |
-| control | `if` `else` `match` `while` `for` `in` `loop` `return` `break` `continue` `assert` |
-| values | `true` `false` `is` `self` `Self` `it` `old` `except` `or` |
+| control | `if` `else` `match` `while` `for` `in` `loop` `return` `break` `continue` `assert` `except` `or` |
+| values | `true` `false` `is` `self` `Self` `it` `old` |
 | tasks | `spawn` `scope` `await` `select` `race` |
-| contracts | `requires` `ensures` `holds` `invariant` `decreases` `where` `assumed` `by` `calc` |
-| proof steps | `simplify` `once` `unfold` `witness` `arithmetic` `nonlinear` `bits` `compute` `auto` |
+| contracts | `requires` `ensures` `holds` `invariant` `decreases` `where` `by` |
+| proof steps | `calc` `simplify` `once` `unfold` `witness` `arithmetic` `nonlinear` `bits` `compute` `auto` |
+
+The groups are only for reading; every keyword is reserved alike. Arenas, roots and frozen values are library functions (`std.memory`), not keywords; section 10 decides whether any of them becomes a block with a keyword.
 
 The proof steps follow the proposed proof syntax (IDEAS.md "Proofs for the kernel"). Section 8 fixes the final list, and any change to it is made here too.
 
@@ -260,7 +262,7 @@ Each difference is a decision recorded in REBUILD.md.
 | raw LF allowed in strings | an error; write `\n` | to try |
 | decimal digits only | `0x`, `0b`, exponents; leading zeros an error | to try |
 | module doc as a first `//` comment | `//!` | to try |
-| markup `<p>…</p>`, three lexer modes | none | not needed (removal) |
+| markup `<p>…</p>`, three lexer modes | deferred: not in this spec until std.web needs it | not needed (deferred) |
 | `$` names in stored trees | no `$` at all | to try |
 | `;`, `++` punctuation | none | not needed (removal) |
 | some keywords contextual | every keyword reserved, proof steps included | to try: measure the names it breaks |
