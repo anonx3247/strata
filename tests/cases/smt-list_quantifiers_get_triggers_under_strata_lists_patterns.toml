@@ -1,0 +1,29 @@
+# Under `STRATA_LISTS=patterns` each quantifier the list encoding sends
+# without triggers gets `:pattern`s from its body (smt `listed`): `pick`'s
+# `xs.all(…)` fact is a `forall` over positions, instantiated at `xs[i]`
+# by matching instead of by model-based instantiation.
+
+[[step]]
+save = "t.strata"
+text = '''
+/// The `i`th of a list of positive numbers.
+pub fn pick(xs: List[Int], i: Int) -> Int
+  requires xs.all(x -> x > 0)
+  requires 0 <= i && i < len(xs)
+  ensures it > 0 {
+  xs[i]
+}
+'''
+
+[[step]]
+run = ["mkdir", "-p", "dump"]
+
+[[step]]
+strata = ["--file", "t.strata", "verify", "--no-race", "--no-cache", "--checks"]
+env = { STRATA_LISTS = "patterns", STRATA_SOLVER_DUMP = "$TMP/dump" }
+has = ["✓ pick ", "proven:  ensures it > 0", "proven:  index in range"]
+lacks = ["not proven"]
+
+[[step]]
+run = ["sh", "-c", "cat dump/*.smt2 | grep -c '(forall ((q[0-9]* Int)) (! .*:pattern' | sed 's/^[1-9][0-9]*$/some/'"]
+stdout = "some\n"

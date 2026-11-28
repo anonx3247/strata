@@ -1,0 +1,82 @@
+# A record pattern that names some fields and ends with `..` binds each name
+# to the field of that name, whatever the order and whichever fields are left
+# out: in a variant's payload, a record, a nested pattern, a rename
+# (`right: r`), a `:=`, a lambda's parameter and a generic record. The
+# fields have different types, so a name bound to another field is a type
+# error. They are shown as written.
+
+[[step]]
+save = "p.strata"
+text = '''
+type BinOp =
+  | Add
+  | Mul
+
+type Expr =
+  | Lit(Int)
+  | Binary { op: BinOp, left: Expr, right: Expr }
+
+type Node = { op: BinOp, name: String, size: Int }
+
+type Wrap =
+  | W { tag: Bool, inner: Node }
+
+type Pair[T] =
+  | P { first: Bool, a: String, b: T }
+
+fn nodes(e: Expr) -> Int {
+  match e {
+    Lit(_) => 1,
+    Binary { left, right, .. } => 1 + nodes(left) + nodes(right),
+  }
+}
+
+fn rightmost(e: Expr) -> Int {
+  match e {
+    Lit(n) => n,
+    Binary { right: r, .. } => rightmost(r),
+  }
+}
+
+fn reversed(e: Expr) -> Int {
+  match e {
+    Lit(n) => n,
+    Binary { right, left, .. } => reversed(right) - reversed(left),
+  }
+}
+
+fn label(n: Node) -> String {
+  Node { size, name, .. } := n
+  name + to_string(size)
+}
+
+fn inner_size(w: Wrap) -> Int {
+  match w {
+    W { inner: Node { size, .. }, .. } => size,
+  }
+}
+
+fn second(p: Pair[Int]) -> Int {
+  match p {
+    P { b, .. } => b,
+  }
+}
+
+fn sizes(ns: List[Node]) -> List[Int] {
+  ns.map((Node { size, .. }) -> size)
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "check"]
+has = ["ok: 12 definitions check"]
+lacks = ["error"]
+
+[[step]]
+strata = ["--file", "p.strata", "view", "main"]
+has = [
+  "Binary { right: r, .. } => rightmost(r),",
+  "Binary { right, left, .. } => reversed(right) - reversed(left),",
+  "Node { size, name, .. } := n",
+  "W { inner: Node { size, .. }, .. } => size,",
+]

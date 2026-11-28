@@ -1,0 +1,90 @@
+# verify reads each name of a record pattern ending in `..` as the field of
+# that name: contracts that hold only for the named field are proven (out
+# of order, renamed, nested, under a `:=`), and the same contracts on the
+# neighbouring field are refuted.
+
+[[step]]
+save = "p.strata"
+text = '''
+type BinOp =
+  | Add
+  | Mul
+
+type Expr =
+  | Lit(Int)
+  | Binary { op: BinOp, left: Expr, right: Expr }
+
+type Node = { op: BinOp, left: Int, right: Int }
+
+fn right_of(n: Node) -> Int
+  ensures it == n.right
+{
+  match n {
+    Node { right, .. } => right,
+  }
+}
+
+fn difference(n: Node) -> Int
+  ensures it == n.right - n.left
+{
+  Node { right: r, left: l, .. } := n
+  r - l
+}
+
+fn right_lit(e: Expr) -> Int
+  ensures match e {
+    Binary { left: Lit(_), right: Lit(k), .. } => it == k,
+    _ => true,
+  }
+{
+  match e {
+    Binary { right: Lit(k), .. } => k,
+    _ => 0,
+  }
+}
+
+fn nested_right(e: Expr) -> Int
+  ensures match e {
+    Binary { left: Binary { right: Lit(k), .. }, .. } => it == k,
+    _ => true,
+  }
+{
+  match e {
+    Binary { left: Binary { right, .. }, .. } => match right {
+      Lit(k) => k,
+      _ => 0,
+    },
+    _ => 0,
+  }
+}
+
+fn left_of(n: Node) -> Int
+  ensures it == n.left
+{
+  match n {
+    Node { right, .. } => right,
+  }
+}
+
+fn left_lit(e: Expr) -> Int
+  ensures match e {
+    Binary { left: Lit(k), .. } => it == k,
+    _ => true,
+  }
+{
+  match e {
+    Binary { right: Lit(k), .. } => k,
+    _ => 0,
+  }
+}
+'''
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--no-cache", "--no-race", "right_of,difference,right_lit,nested_right"]
+has = ["✓ right_of ", "✓ difference ", "✓ right_lit ", "✓ nested_right "]
+lacks = ["✗"]
+
+[[step]]
+strata = ["--file", "p.strata", "verify", "--no-cache", "--no-race", "left_of,left_lit"]
+fails = true
+has = ["✗ left_of ", "✗ left_lit "]

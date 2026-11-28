@@ -477,3 +477,39 @@ Found, not fixed:
   - std `regex` (2): `std.regex.product_relations` 2
   - core `gen` (1): `core.gen.gen_unit` 1
 - **Rung 2: our own procedures, or Z3?** Linear arithmetic with case splits, uninterpreted functions and datatypes covers 36% of the solver obligations and 9% of their solver time; with arrays (dicts, sets) 45% and 19%; with strings 74% and 48%. The other 24% of obligations and half of the time are quantified, and the scripts verify sends beside the obligations (invariant and termination probes) cost 17 times what the obligations do and are mostly quantifiers and strings. So rung 2 stays Z3. Own procedures would only pay as a first try ahead of it, for the third of obligations that are cheap already (medians of 81 to 3,575 units by class). What would move the line is the encoding, not the solver: lists without `forall` over indices (a length and elements by position, or a decision procedure for sequences), and strings by length and equality where no string operation is used; then measure again.
+
+### Lists with triggers, or as z3 sequences (measured 2026-11-28, branch `list-encoding`)
+
+- **How**: the follow-up #631 asked for. `STRATA_LISTS` picks a list encoding in smt; unset, nothing changes (the scripts are the same bytes). `patterns`: each `forall` sent without triggers gets `:pattern`s, terms of its body (its defined functions read through) that apply a declared function, `select` or `seq.nth` to the bound variables, added to the text as it goes to z3 (`smt.listed`). `seq`: a list sort of `Int`, `Real`, `Bool` or `String` elements (or of such lists) is `(Seq T)`, its `.len` and `.at` are `seq.len` and `seq.nth`, a fresh list of such a type is an unknown of that sort, and lists made of sequence terms, `+` and literals are equal as sequences (`seq.++`, `seq.unit`), with no quantifier (`smt.seq_sorted`, `seq_list`, `seq_equal`); other element sorts stay as they are. Every module of core, std and compiler/, and examples/tasks, in each mode, with the same build and at the same time (the three modes of a module side by side, 4 at once, load 30-50): `verify 'MODULE.*' --no-cache --no-race --cross-check 0 --json --checks`, 300 s each, then each query asked alone with `tools/obligation_theories.py collect` (z3 5.4.1, `rlimit=2000000`). Measured on origin/main 0a09fd9a (after #656 obligations inside contracts and #660 datatype groups) with this branch merged. Seconds are noisy under that load: instructions retired (each z3 query alone, less z3's start) and z3's units are the measure. Data: `tools/data/list-encodings/` (one file per mode, as #631's), the tables by `obligation_theories.py compare`.
+- **Verdicts of the solver obligations**:
+
+| package | mode | obligations | solver | proven | unknown | refuted | rejected |
+|---|---|---|---|---|---|---|---|
+| core | all three | 277 | 215 | 200 | 0 | 15 | 0 |
+| std | default, patterns | 1644 | 1338 | 1336 | 0 | 2 | 0 |
+| std | seq | 1866 | 1557 | 1500 | 55 | 2 | 0 |
+| compiler + tasks | default, patterns | 6493 | 2611 | 2550 / 2545 | 20 / 25 | 41 | 0 |
+| compiler + tasks | seq | 6549 | 2685 | 2623 | 28 | 34 | 0 |
+| all | default | 8414 | 4164 | 4086 | 20 | 58 | 0 |
+| all | patterns | 8414 | 4164 | 4081 | 25 | 58 | 0 |
+| all | seq | 8692 | 4457 | 4323 | 82 | 52 | 0 |
+
+- **Cost and the quantified share** (solver obligations and the other scripts: probes, termination bounds, counterexample inputs):
+
+| | default | patterns | seq |
+|---|---|---|---|
+| obligations: z3 G instructions / M units | 646 / 153 | 658 / 162 | 1165 / 260 |
+| quantified obligations, of their instructions | 1910 of 4164, 80% | 1910 of 4164 (1717 with patterns), 80% | 2011 of 4457, 71% |
+| other scripts: G instructions / M units | 2555 / 1208 | 2553 / 1206 | 4729 / 1771 |
+| other scripts answered `unknown` | 346 | 346 | 697 |
+| functions no longer proven / newly proven | | 5 / 0 | 8 / 1 |
+| functions no longer shown to terminate | | 0 | 92 (std) |
+| std.array: s, strata G instr | 35, 181 | 33, 173 | 79, 220 |
+| core.real: s | 4 | 5 | 3 |
+| examples/tasks: s, strata G instr | 103, 513 | 112, 684 | 98, 520 |
+| every module: s, CPU s | 1266, 1492 | 1259, 1509 | 1371, 1764 |
+
+- **Triggers** change nothing the solver does that counts: the same obligations stay quantified (no encoding removes a `forall`), z3 spends 2% more instructions and 6% more units on them, and the other scripts cost the same. Five lemmas of examples/tasks (`memory.settled_*`, `unlocked_*`) are no longer proven: the instance they need is at a position no ground term names, which model-based instantiation finds and matching on the element term doesn't. None is newly proven. Done as a rewrite of the text, it also costs strata itself 33% more instructions on examples/tasks (reading every quantified script back). z3 already infers triggers for these quantifiers on its own; ours are the same terms.
+- **Sequences** cost 1.8 times the instructions on obligations and on the other scripts, and leave the quantified share where it was (71% of the obligations' instructions). z3's sequence solver answers `unknown` ("reached max unfolding") where the uninterpreted encoding answers at once: twice as many other scripts end unknown, which loses 58 obligations (std.array's `dot_run_*`, `sum_run_*`, `within`, `at_least`, merge.similarity) and the termination of 92 std functions (loop bounds no longer shown to go down, std.array most of them), and shows 278 more obligations of std.array (callees no longer proven to terminate are entered). It proves what the default can't: `(xs + ys) + zs == xs + (ys + zs)` (case `smt-lists_are_sequences_under_strata_lists_seq`) and compiler `tree.changes` (`a == b ==> len(it) == 0`, from `walk_diff`'s `out == old out`), both true. `--cross-check 20` (proven checks run on cases) found nothing wrong in `tree.*` and `std.array.Array.add`/`slice` under `seq`, `std.lemmas.*` and `std.cli.parse` under `patterns`.
+- **Why neither moves the line**: the quantifiers are facts about every element, not the list structure. Of the 1910 quantified obligations, 1590 hold an `all` fact (`all_of`: `(forall ((q Int)) (P q))`), 1038 a fact over a dict's or set's keys, 1155 another fact by position; only 85 a list equality by position (`eq_lists`), the one a sequence theory states without a quantifier, and 50 only that. A sequence theory has no quantifier-free "every element satisfies P", and triggers only say how z3 should instantiate what it instantiates already.
+- **Answer**: adopt neither as the default. Keep the uninterpreted list sort and the per-element facts. What would cut the quantified share is fewer `forall`s, by the rule in force (fast proofs): an `all` fact instantiated by the encoder at the positions the code reads (as validity is), and only then quantified on the goal side. The sequence encoding is worth keeping only for the list equalities (`seq_equal`), if z3's unknowns on the rest can be kept out of the probes; the flag stays for measuring that.
