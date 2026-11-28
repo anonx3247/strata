@@ -536,14 +536,14 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **A new module with many loops spends 10-20 s of its edit on termination's loop-bound searches.** `verify_inputs` now builds verify's inputs from what the selection reaches (`reached_decls`), so an edit of one function with a loop in compiler/ spends about 1 s there, not 3-8 s. For new code nothing is cached, and `analyze_with` searches a bound for each loop the changed functions reach: a copy of lab-kernel's `kernel_tactics` (84 definitions, 22 loop bounds, 36 measures) spends 12-21 s in `verify: termination`, out of 34-45 s. Analysing only what the targets call, not the targets themselves, didn't help there: the loop functions call each other.
   Where: main.verify_program (`analyze_with`), termination's loop bounds. Source: verify-inputs PR. Confidence: sure (`STRATA_TIMINGS=1`: `verify: termination: loop bounds`).
-- [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
-  Where: main.abort_command, main.restore_files. Source: review tools. Confidence: sure.
 - [ ] **`strata update` is a test-internal command: it takes a DIR, not names, and always exits 0.** `low_level` makes `update` always the internal step (`… | "update" | … => true`). `update_deps` reads `dir := get(args, 0) ?? "."` and `names := drop(args, 1)`. Errors only `print("error: " + e)`, and `code` stays 0.
   Where: main.command_line (`"update" => update_deps(…)`), main.low_level, main.update_deps. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `upgrade` ignores STRATA_HOME: outside the repo it re-stores every reference with no std or core.** `lib := std_imports(disk, "std", decls)` and `core := read_core(disk)`. `read_core` reads `core_files()`, which are `"core/types.strata"` and so on, relative to the current folder.
-  Where: main.upgrade_command. Source: review tools. Confidence: likely.
-- [ ] **(data loss) The log is written after the files, and a failed append still leaves the change on disk.** `apply_edit` runs `write_modules`, then `disk.append(root + "/" + log_file(), …)` and returns `Err` on failure, which gives exit 1 with the files changed and nothing logged.
-  Where: main.apply_edit, main.apply_change, main.done_command. Source: review tools. Confidence: sure.
+- [ ] **(data loss) A crash between a change's module files and its log entry leaves them apart.** A failed append now puts the files back (`main.logged_or_undone`), but a process killed after `write_modules` and before the append leaves the files changed with no entry; `done` killed after setting pending.json aside (as `pending.json-done`) and before the append leaves the change neither pending nor logged. A failed append can also leave a torn last line in strata.log. A journal (the entry and the files' old bytes, written first and replayed or undone on the next command) would make it one step.
+  Where: main.apply_edit, main.apply_change, main.done_command, main.logged_or_undone. Source: review tools; tools-dataloss-store PR. Confidence: sure.
+- [ ] **Putting files back after a failed log append can write an empty module file.** `package_bytes` reads each module file with `read_bytes(…) !! []`, so a file it couldn't read is snapshotted as no bytes, and `restore_files` writes those bytes back. `abort` refuses such bytes (they don't decode); `logged_or_undone` doesn't.
+  Where: main.package_bytes, main.logged_or_undone, main.restore_files. Source: tools-dataloss-store PR. Confidence: likely.
+- [ ] **`upgrade` can stop part-way through renaming its new files into place.** Every file is encoded and written to `x.strata-upgrade` before the first is replaced, but a rename that fails after others succeeded leaves those rewritten (it says how many).
+  Where: main.upgrade_command. Source: tools-dataloss-store PR. Confidence: sure.
 - [ ] **`--file PKG/mod.strata edit` writes a package module unchecked.** `alone := !of_core && in_package is None && (…)`, so a module file of a package gets `errors = []` and is written as given. std's module files are edited as the std package (`main.std_module_file`, case `cli-std_module_file_edit_is_checked`); other packages' are not. Recorded in IDEAS.md "A failed edit writes nothing…", "Not yet: … a single module file of a package (`--file p/util.strata edit`) is still written unchecked".
   Where: main.edit_file. Source: review tools. Confidence: sure.
 - [ ] **(data loss) `fix --file` writes in place, not atomically, and removes "unused" definitions without any check.** `match mut disk.write_bytes(f, bytes)` writes the script in place (not `codebase.write_file`), after `unused.removable` and `lint.fixes`. Nothing is checked. The package branch goes through `apply_change` (write, then check).
@@ -552,12 +552,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.git_commit. Source: review tools. Confidence: sure.
 - [ ] **`rename`, `move`, `fix` (package) and `done` write, then check, then restore.** `rename`, `move`, `fix` (package), `done` and `follow_renames` write first, then check, then restore on failure; `follow_renames` also writes without a check and without grouping the writes.
   Where: main.apply_change; main.follow_renames. Source: review tools; ledger T6. Confidence: sure.
-- [ ] **`apply_change` ignores the pending file's write failure and the log's.** `mut disk.write(pending.file_of(o.root), pending.pending_json(saved)) !! ()` and `mut disk.append(…log…) !! ()`. A rename during a pending change can lose its rename record, so the `done` entry has no `renames` and `sync` can't follow it.
-  Where: main.apply_change. Source: review tools. Confidence: sure.
 - [ ] **Renames reach patterns only inside `match` arms.** `patterns_renamed` rewrites only `MatchExpr` arms. Patterns in `Let` (destructuring `Point { x, y } := p`), `For`, `CompFor`, lambda parameter patterns (IDEAS "Patterns as parameters") and `CondPat` are not renamed.
   Where: refactor.patterns_renamed, refactor.substituted. Source: review tools. Confidence: likely.
-- [ ] **(data loss) A malformed pending.json makes `abort` delete module files, or forget the change.** `parse_pending` returns `Some` for any JSON object. A missing `before` gives `[]`, and a bad entry gives `("", "")`. `unhex` maps a bad digit to 0 (`index_of(…) ?? 0`).
-  Where: pending.parse_pending, main.restore_files. Source: review tools. Confidence: likely.
 - [ ] **(data loss) `holeify` makes holes by short name, so unrelated code becomes holes.** `Var(n) => contains(names, short(n))`, `MethodCall { name, .. } => contains(names, short(name))` and `Call { callee: Var(n), .. }`. A changed `shop.get` turns every `get(...)` in a broken definition into a hole: std's `get`, another module's `get`, a local variable named `get`.
   Where: pending.uses, pending.visit. Source: review tools. Confidence: sure.
 - [ ] **merge-file stores core files qualified, breaking core.** Neither path has the `of_core` case `edit_file` has (`codebase.merge_parsed`).
@@ -576,8 +572,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: views.select (compiler.views.st:46, 641); main.st:22846. Source: ledger T2 (#448). Confidence: sure.
 - [ ] **Round-tripping `core/builtins` through a non-core file loses overloads.**
   Where: edit / view. Source: ledger T8. Confidence: likely.
-- [ ] **`strata upgrade` writes core's files without their dependency lists.** Fixed only on unmerged #562.
-  Where: upgrade. Source: ledger T10. Confidence: likely.
 - [ ] **(data loss) `--file std edit std.regex` rewrote all std files and lost the module name.** It also auto-committed; a file-mode edit stores references comptime's codegen can't compile. Recorded against an old seed.
   Where: edit (file mode). Source: ledger T12 (#421). Confidence: possible.
 - [ ] **Adding an `all` overload for `Dict` by `edit` replaced the list one.** `edit` replaces a definition by name, so a new overload overwrote the existing one.
@@ -614,10 +608,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: deps.bare_repo, deps.checkout. Source: review tools. Confidence: likely.
 - [ ] **`module_files` stops at depth 64 without a word.** `for _ in 0..64 { … }`. Deeper module files are left out of every package operation, including `upgrade` and `restore_files`, which deletes module files missing from `before`.
   Where: deps.module_files. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `upgrade` returns at the first write error after rewriting part of the tree.** `return fail_with(…)` inside the loop, after earlier files were already renamed. Its temp name `target + "-tmp"` (`x.strata-tmp`) is the name `codebase.write_file` uses, so a concurrent edit collides with it.
-  Where: main.upgrade_command. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `pack` overwrites any path, including a module file of the package.** `disk.write_bytes(target, bytes)` with no check that `target` isn't one of the package's own module files. `strata pack main.strata` in a package replaces its root module with a bundle of the whole program.
-  Where: main.pack_command. Source: review tools. Confidence: likely.
 - [ ] **The shipped std library is preferred without checking it matches std's sources.** When `home/std/names`, `std.o` and `libstd.dylib` exist, they are returned at once (`return Some(shipped)`), before any key. In a checkout where a release's precompiled library was copied into `std/`, edits to std are ignored by JIT runs.
   Where: main.std_library. Source: review tools. Confidence: possible.
 - [ ] **Unknown long options are accepted by the global parser.** `else if starts_with(a, "--") { mut flags.insert(a, …) }`. Any typo is kept as a flag and ignored by commands that only test `given(line, …)`, for example `strata check --with-dep`.
@@ -804,7 +794,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [The tools' output] `std.io.printed(console)` in a test crashed with signal 11.
 - [Networking] Two tasks using copies of one connection aren't synchronized; a root-module local named like a rewritten function is rewritten too.
 - [Known gaps] `--json` missing on `view`, `render`, `interface`, `status`, `done`, `test`, `run`.
-- [Known gaps] Lab-fleet tool bugs: `strata --file core check` never type-checks core; round-tripping `core/builtins` through a non-core file loses overloads; `diff`/`tour --check` report ~35 `noalloc` core functions as changed; `upgrade` writes core without dependency lists (fixed on stored-core only); the merge driver re-encoded `smt.infer_invariants` with different bytes; `edit` refuses `from m use f` with `--rm 'use m'`; `edit` can't delete a detached `//` banner; selectors split on `,` so `impl Json for Dict[String, V]` can't be named; `parse.debug_quoted` replaces `"\r"` with itself; `declarations.Names.open` is always false; unused prelude dict/set functions.
+- [Known gaps] Lab-fleet tool bugs: `strata --file core check` never type-checks core; round-tripping `core/builtins` through a non-core file loses overloads; `diff`/`tour --check` report ~35 `noalloc` core functions as changed; the merge driver re-encoded `smt.infer_invariants` with different bytes; `edit` refuses `from m use f` with `--rm 'use m'`; `edit` can't delete a detached `//` banner; selectors split on `,` so `impl Json for Dict[String, V]` can't be named; `parse.debug_quoted` replaces `"\r"` with itself; `declarations.Names.open` is always false; unused prelude dict/set functions.
 - [Known gaps] Speed and memory: `view --graph` past 4.5 GB; long list literals need 5 GB at 20,000 elements; `containers` in `build-copies` quadratic; `std.json.parse` makes one-character strings (65% of peak on 8 MB); `check` of compiler keeps 112 MB read by `read_bytes`.
 - [Known gaps] Failing cases on main: `cli-modules_contracts_and_files` (view order).
 - The format trials' "Found, not fixed" items (stored core, stable ids, operators, the trio's merge) are listed in REBUILD.md's appendix, "The format trials as recorded in the lab": to reconcile here.
