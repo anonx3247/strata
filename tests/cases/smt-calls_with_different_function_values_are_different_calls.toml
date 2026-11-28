@@ -1,0 +1,27 @@
+# smt: a function value is told from another one, so the same function
+# called with two of them on the same argument gives two results, not one
+[[step]]
+save = "f.strata"
+text = '''
+fn apply(f: (Int) -> Int, x: Int) -> Int {
+  f(x)
+}
+
+fn same(f: (Int) -> Int) -> Int
+  ensures it == 0
+{
+  apply(f, 0) - apply(f, 0)
+}
+
+fn pick(f: (Int) -> Int, g: (Int) -> Int) -> Int
+  ensures it == 0
+{
+  apply(f, 0) - apply(g, 0)
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--cases", "20"]
+has = ["✓ same ", "✗ pick ", "(found by the fuzzer)"]
+lacks = ["the solver had proven every check"]
+code = 1
