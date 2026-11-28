@@ -1,0 +1,25 @@
+# check: a built-in with a `Real` overload (`abs`, `max`) called on a `Float`
+# is a `Float`, so a decimal literal beside it is one too; before, the
+# `Real` overload's parameter read as any type and the call's type was lost
+[[step]]
+save = "t.strata"
+text = '''
+fn wrong(k: Float) -> Real = k.abs()
+'''
+
+[[step]]
+strata = ["--file", "t.strata", "check"]
+fails = true
+has = ["error in wrong"]
+
+[[step]]
+save = "fl.strata"
+text = '''
+fn at_least_one(k: Float) -> Float ensures it >= 1.0 = max(abs(k), 1.0)
+
+fn below(k: Float) -> Bool ensures it == (abs(k) < 2.5) = abs(k) < 2.5
+'''
+
+[[step]]
+strata = ["--file", "fl.strata", "verify", "--no-cache", "--no-race"]
+has = ["✓ at_least_one", "✓ below"]
