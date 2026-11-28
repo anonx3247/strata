@@ -299,14 +299,21 @@ type Name = String where is_identifier(it)
 - These have an `Id`: definitions (methods included), named types and atoms declared inside a sum (section 3.4), fields, and parameters of functions, methods and function types.
 - An id is unique among the ids of its module, and it stays the same through edits, renames and moves within the module. `edit` draws a new id at random, never 0, and draws again while it is taken.
 - A `Key` names something in any module: the module and the id.
-- A definition's nodes are every value of the types `Definition`, `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Arm` and `Contract` reachable from it. They are numbered from 0 in postorder: a node's children first, in the order of their fields in this section and of their lists, then the node. The definition is the last node.
+- A definition's nodes are every value of the types `Definition`, `Expression`, `Pattern`, `Statement`, `Parameter`, `TypeParameter`, `Field`, `Arm` and `Contract` reachable from it, except through the `_type` field of an expression or a pattern. A type stored in that field is not a node of the definition and has no index.
+- The nodes are numbered from 0 in postorder: a node's children first, in the order of their fields in this section and of their lists, then the node. Bodies are numbered last, so the interface can be read alone (section 4):
+  1. first the definition with each body left out, in postorder, which ends with the definition itself;
+  2. then each body, in postorder, in the order of the functions that have them.
 - A `NodeKey` names a node in its module: its definition's id and its index. Passes keep their results in tables keyed by it.
 - A local variable, a type parameter, a lambda's parameter and a pattern's binding have no id. A use refers to its binder by node index: `Local { binder }`.
 
 ```strata
 law children_first(d: Definition, parent: NodeIndex, child: NodeIndex)
-  requires is_child(d, parent, child)
+  requires is_child(d, parent, child) && !is_body(d, child)
   holds child < parent
+
+law bodies_last(d: Definition, body: NodeIndex, other: NodeIndex)
+  requires is_body(d, body) && !inside_a_body(d, other)
+  holds other < body
 
 law binder_in_scope(d: Definition, usage: NodeIndex)
   requires node(d, usage) is Local
