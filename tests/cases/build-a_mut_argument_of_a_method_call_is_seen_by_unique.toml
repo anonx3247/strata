@@ -1,0 +1,17 @@
+# `t.stash(mut a)` and `mut u.bump(mut c)` lend `a` and `c` as plain calls
+# `stash(t, mut a)` and `bump(mut u, mut c)` do: `a` and `c` are also held
+# by `b` and `d`, so the pushes inside `stash` and `bump` are not proven to
+# find their list held once, and they copy it. `b` and `d` keep the old
+# lists.
+
+[[step]]
+save = "lent.strata"
+from = "lent.st"
+
+[[step]]
+strata = ["--file", "lent.strata", "build", "--no-verify", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "[0, 1, 2]\n[0, 1, 2, 7]\n[0, 1]\n[0, 1, 2]\n"
