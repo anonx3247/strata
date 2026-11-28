@@ -1,0 +1,307 @@
+-- The lemmas the kernel's linear arithmetic (compiler/kernel_arith) uses,
+-- proven from the integers' axioms (`int.add_comm` …, compiler/kernel) and
+-- the logic's, by rewriting alone. `strata kernel check` proves them before
+-- each script.
+
+-- ---- logic, for reading hypotheses ----
+
+theorem logic.not_not(p: Bool): !(!p) == p := by
+  constructor
+  intro h
+  by_cases hp : p
+  exact hp
+  exfalso
+  apply h
+  exact hp
+  intro h
+  intro hn
+  apply hn
+  exact h
+
+theorem logic.imp_or(p: Bool, q: Bool): (p ==> q) == (!p || q) := by
+  constructor
+  intro h
+  by_cases hp : p
+  right
+  apply h
+  exact hp
+  left
+  exact hp
+  intro h
+  intro hp
+  cases h with
+  | inl hn => exfalso; apply hn; exact hp
+  | inr hq => exact hq
+
+theorem logic.not_and(p: Bool, q: Bool): !(p && q) == (!p || !q) := by
+  constructor
+  intro h
+  by_cases hp : p
+  right
+  intro hq
+  apply h
+  constructor
+  exact hp
+  exact hq
+  left
+  exact hp
+  intro h
+  intro hpq
+  cases hpq with
+  | intro hp hq =>
+    cases h with
+    | inl np => apply np; exact hp
+    | inr nq => apply nq; exact hq
+
+theorem logic.not_or(p: Bool, q: Bool): !(p || q) == (!p && !q) := by
+  constructor
+  intro h
+  constructor
+  intro hp
+  apply h
+  left
+  exact hp
+  intro hq
+  apply h
+  right
+  exact hq
+  intro h
+  intro hpq
+  cases h with
+  | intro np nq =>
+    cases hpq with
+    | inl hp => apply np; exact hp
+    | inr hq => apply nq; exact hq
+
+theorem logic.not_imp(p: Bool, q: Bool): !(p ==> q) == (p && !q) := by
+  constructor
+  intro h
+  by_cases hp : p
+  constructor
+  exact hp
+  intro hq
+  apply h
+  intro hp2
+  exact hq
+  exfalso
+  apply h
+  intro hp2
+  exfalso
+  apply hp
+  exact hp2
+  intro h
+  intro hpq
+  cases h with
+  | intro hp nq => apply nq; exact hpq(hp)
+
+-- ---- the ring ----
+
+theorem int.zero_add(a: Int): 0 + a == a := by
+  rw [int.add_comm(0, a), int.add_zero(a)]
+
+theorem int.neg_add(a: Int): -a + a == 0 := by
+  rw [int.add_comm(-a, a), int.add_neg(a)]
+
+theorem int.add_left_comm(a: Int, b: Int, c: Int): a + (b + c) == b + (a + c) := by
+  rw [← int.add_assoc(a, b, c), int.add_comm(a, b), int.add_assoc(b, a, c)]
+
+theorem int.mul_zero(a: Int): a * 0 == 0 := by
+  calc a * 0 == a * 0 + 0 := by rw [int.add_zero(a * 0)]
+    _ == a * 0 + (a * 0 + -(a * 0)) := by rw [int.add_neg(a * 0)]
+    _ == (a * 0 + a * 0) + -(a * 0) := by rw [int.add_assoc(a * 0, a * 0, -(a * 0))]
+    _ == a * (0 + 0) + -(a * 0) := by rw [int.distrib(a, 0, 0)]
+    _ == a * 0 + -(a * 0) := by rw [int.zero_add(0)]
+    _ == 0 := by rw [int.add_neg(a * 0)]
+
+theorem int.zero_mul(a: Int): 0 * a == 0 := by
+  rw [int.mul_comm(0, a), int.mul_zero(a)]
+
+theorem int.one_mul(a: Int): 1 * a == a := by
+  rw [int.mul_comm(1, a), int.mul_one(a)]
+
+theorem int.distrib_r(a: Int, b: Int, c: Int): (a + b) * c == a * c + b * c := by
+  rw [int.mul_comm(a + b, c), int.distrib(c, a, b), int.mul_comm(c, a), int.mul_comm(c, b)]
+
+theorem int.neg_unique(a: Int, b: Int): a + b == 0 ==> b == -a := by
+  intro h
+  calc b == b + 0 := by rw [int.add_zero(b)]
+    _ == b + (a + -a) := by rw [int.add_neg(a)]
+    _ == (b + a) + -a := by rw [int.add_assoc(b, a, -a)]
+    _ == (a + b) + -a := by rw [int.add_comm(b, a)]
+    _ == 0 + -a := by rw [h]
+    _ == -a := by rw [int.zero_add(-a)]
+
+theorem int.neg_one_mul(a: Int): -1 * a == -a := by
+  apply int.neg_unique(a)
+  calc a + -1 * a == 1 * a + -1 * a := by rw [int.one_mul(a)]
+    _ == (1 + -1) * a := by rw [int.distrib_r(1, -1, a)]
+    _ == 0 * a := by simp only []
+    _ == 0 := by rw [int.zero_mul(a)]
+
+theorem int.sub_neg_one(a: Int, b: Int): a - b == a + -1 * b := by
+  rw [int.sub_def(a, b), int.neg_one_mul(b)]
+
+theorem int.neg_to_mul(a: Int): -a == -1 * a := by
+  rw [int.neg_one_mul(a)]
+
+theorem int.atom(x: Int): x == 1 * x + 0 := by
+  rw [int.add_zero(1 * x), int.one_mul(x)]
+
+theorem int.combine(c: Int, d: Int, x: Int, a: Int, b: Int): (c * x + a) + (d * x + b) == (c + d) * x + (a + b) := by
+  rw [int.add_assoc(c * x, a, d * x + b), int.add_left_comm(a, d * x, b), ← int.add_assoc(c * x, d * x, a + b), ← int.distrib_r(c, d, x)]
+
+theorem int.zero_coef(x: Int, a: Int): 0 * x + a == a := by
+  rw [int.zero_mul(x), int.zero_add(a)]
+
+theorem int.scale(c: Int, d: Int, x: Int, a: Int): c * (d * x + a) == (c * d) * x + c * a := by
+  rw [int.distrib(c, d * x, a), ← int.mul_assoc(c, d, x)]
+
+-- ---- the order ----
+
+theorem int.cancel(b: Int, a: Int): (b + -a) + a == b := by
+  rw [int.add_assoc(b, -a, a), int.neg_add(a), int.add_zero(b)]
+
+theorem int.lt_to_sub(a: Int, b: Int): a < b ==> 0 < b - a := by
+  intro h
+  rw [int.sub_def(b, a), ← int.add_neg(a)]
+  apply int.lt_add(a, b, -a)
+  exact h
+
+theorem int.sub_to_lt(a: Int, b: Int): 0 < b - a ==> a < b := by
+  intro h
+  rw [int.sub_def(b, a)] at h
+  rw [← int.zero_add(a), ← int.cancel(b, a)]
+  apply int.lt_add(0, b + -a, a)
+  exact h
+
+theorem int.le_to_sub(a: Int, b: Int): a <= b ==> 0 <= b - a := by
+  intro h
+  rw [int.le_def(a, b)] at h
+  rw [int.le_def(0, b - a)]
+  cases h with
+  | inl h1 => left; apply int.lt_to_sub(a, b); exact h1
+  | inr h2 => right; rw [h2, int.sub_def(b, b), int.add_neg(b)]
+
+theorem int.sub_to_le(a: Int, b: Int): 0 <= b - a ==> a <= b := by
+  intro h
+  rw [int.le_def(0, b - a)] at h
+  rw [int.le_def(a, b)]
+  cases h with
+  | inl h1 => left; apply int.sub_to_lt(a, b); exact h1
+  | inr h2 =>
+    right
+    calc a == 0 + a := by rw [int.zero_add(a)]
+      _ == (b - a) + a := by rw [h2]
+      _ == b := by rw [int.sub_def(b, a), int.cancel(b, a)]
+
+theorem int.le_iff(a: Int, b: Int): (a <= b) == (0 <= b - a) := by
+  constructor
+  exact int.le_to_sub(a, b)
+  exact int.sub_to_le(a, b)
+
+theorem int.lt_iff(a: Int, b: Int): (a < b) == (0 <= b - (a + 1)) := by
+  rw [int.discrete(a, b), int.le_iff(a + 1, b)]
+
+theorem int.eq_iff(a: Int, b: Int): (a == b) == (0 == b - a) := by
+  constructor
+  intro h
+  rw [h, int.sub_def(b, b), int.add_neg(b)]
+  intro h
+  calc a == 0 + a := by rw [int.zero_add(a)]
+    _ == (b - a) + a := by rw [h]
+    _ == b := by rw [int.sub_def(b, a), int.cancel(b, a)]
+
+theorem int.not_le(a: Int, b: Int): !(a <= b) == (b < a) := by
+  constructor
+  intro h
+  have t := int.lt_total(a, b)
+  cases t with
+  | inl t1 =>
+    cases t1 with
+    | inl t2 => exfalso; apply h; rw [int.le_def(a, b)]; left; exact t2
+    | inr t3 => exfalso; apply h; rw [int.le_def(a, b)]; right; exact t3
+  | inr t4 => exact t4
+  intro h
+  intro h2
+  rw [int.le_def(a, b)] at h2
+  cases h2 with
+  | inl h3 => apply int.lt_irrefl(a); exact int.lt_trans(a, b, a)(h3)(h)
+  | inr h4 => rw [h4] at h; apply int.lt_irrefl(b); exact h
+
+theorem int.not_lt(a: Int, b: Int): !(a < b) == (b <= a) := by
+  constructor
+  intro h
+  rw [int.le_def(b, a)]
+  have t := int.lt_total(a, b)
+  cases t with
+  | inl t1 =>
+    cases t1 with
+    | inl t2 => exfalso; apply h; exact t2
+    | inr t3 => right; rw [t3]
+  | inr t4 => left; exact t4
+  intro h
+  intro h2
+  rw [int.le_def(b, a)] at h
+  cases h with
+  | inl h3 => apply int.lt_irrefl(a); exact int.lt_trans(a, b, a)(h2)(h3)
+  | inr h4 => rw [h4] at h2; apply int.lt_irrefl(a); exact h2
+
+theorem int.not_eq(a: Int, b: Int): !(a == b) == (a < b || b < a) := by
+  constructor
+  intro h
+  have t := int.lt_total(a, b)
+  cases t with
+  | inl t1 =>
+    cases t1 with
+    | inl t2 => left; exact t2
+    | inr t3 => exfalso; apply h; exact t3
+  | inr t4 => right; exact t4
+  intro h
+  intro h2
+  rw [h2] at h
+  cases h with
+  | inl x => apply int.lt_irrefl(b); exact x
+  | inr y => apply int.lt_irrefl(b); exact y
+
+-- ---- Fourier–Motzkin's steps ----
+
+theorem int.add_pos(a: Int, b: Int): 0 < a ==> 0 < b ==> 0 < a + b := by
+  intro ha hb
+  have s := int.lt_add(0, a, b)(ha)
+  rw [int.zero_add(b)] at s
+  exact int.lt_trans(0, b, a + b)(hb)(s)
+
+theorem int.add_nonneg(a: Int, b: Int): 0 <= a ==> 0 <= b ==> 0 <= a + b := by
+  intro ha hb
+  rw [int.le_def(0, a)] at ha
+  rw [int.le_def(0, b)] at hb
+  rw [int.le_def(0, a + b)]
+  cases ha with
+  | inl a1 =>
+    left
+    cases hb with
+    | inl b1 => exact int.add_pos(a, b)(a1)(b1)
+    | inr b2 => rw [← b2, int.add_zero(a)]; exact a1
+  | inr a2 => rw [← a2, int.zero_add(b)]; exact hb
+
+theorem int.mul_nonneg(c: Int, a: Int): 0 <= c ==> 0 <= a ==> 0 <= c * a := by
+  intro hc ha
+  rw [int.le_def(0, c)] at hc
+  rw [int.le_def(0, a)] at ha
+  rw [int.le_def(0, c * a)]
+  cases hc with
+  | inl c1 =>
+    cases ha with
+    | inl a1 => left; exact int.mul_pos(c, a)(c1)(a1)
+    | inr a2 => right; rw [← a2, int.mul_zero(c)]
+  | inr c2 => right; rw [← c2, int.zero_mul(a)]
+
+theorem int.eq_le(a: Int): 0 == a ==> 0 <= a := by
+  intro h
+  rw [int.le_def(0, a)]
+  right
+  exact h
+
+theorem int.eq_neg(a: Int): 0 == a ==> 0 == -1 * a := by
+  intro h
+  rw [← h, int.mul_zero(-1)]
