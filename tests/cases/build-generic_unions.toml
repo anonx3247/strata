@@ -1,0 +1,16 @@
+# Generic functions whose types hold unions with type-parameter members
+# (`Result[T, E | TimedOut]`, `T | E`, a generic record's field, `Option`,
+# a lambda's result), each called at two instantiations, built and run
+
+[[step]]
+save = "generic_unions.strata"
+from = "generic_unions.st"
+
+[[step]]
+strata = ["build", "generic_unions.strata", "-o", "prog"]
+lacks = ["error"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+golden = "tests/data/build/expected/generic_unions.out"

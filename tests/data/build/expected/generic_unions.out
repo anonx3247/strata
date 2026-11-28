@@ -1,0 +1,18 @@
+ok 20
+failed
+ok found 1
+missing k0
+timed out after 4
+int 4
+string four
+string five
+true
+false after 2
+false after 3
+some int
+some timeout
+picked missing p
+picked timeout 9
+picked int
+
+--- exit 0
