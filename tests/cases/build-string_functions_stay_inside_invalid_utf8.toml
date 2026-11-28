@@ -1,0 +1,19 @@
+# core.str on bytes that aren't UTF-8 (a file's, read unchecked): `trim`
+# made a negative-length string, and a lead byte whose sequence runs past
+# the end was read past it (`f"{s:.3}"`, `to_upper`, `is_alpha`). Each code
+# point is cut at the end of the string, and decodes to U+FFFD.
+[[step]]
+save = "main.strata"
+from = "main.st"
+
+[[step]]
+strata = ["build", "main.strata", "-o", "prog"]
+
+[[step]]
+run = ["./prog"]
+memory = true
+stdout = "2\n3\n[65, 66, 239, 191, 189]\nfalse\n"
+
+[[step]]
+strata = ["run", "main.strata"]
+stdout = "2\n3\n[65, 66, 239, 191, 189]\nfalse\n"

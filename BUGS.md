@@ -64,10 +64,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: check (compile-time refinement of a function's result). Source: smt-datatypes. Confidence: sure (reproduced).
 - [ ] **smt finds core.real by function name.** `real_record` takes a function for one of core.real's when its last name part starts with `real_` or it holds `Real.`, so a program's own `real_…` function reads `Real` as a record (REBUILD rule 12).
   Where: smt.real_record, smt.builtin_key. Source: smt-datatypes. Confidence: sure (by reading).
-- [ ] **`core.rt.hash_slot` divides by a table size it doesn't require to be positive.** `hash_slot(c, 0)` divides by zero; its callers (`large_find`, `large_put`, `large_grow`) read the size from memory (`load_i64`), so a `requires m > 0` would be a check in the allocator that no proof can remove.
-  Where: core.rt.hash_slot. Source: smt-datatypes (refuted obligations of #631). Confidence: sure.
-- [ ] **`Int`'s `Div` and `Rem` impls divide by zero.** `Int.div(0, 0)` and `Int.rem(0, 0)` fault; the traits have no precondition to say the divisor isn't zero, and a trait-wide `requires` would be wrong for `Float`.
-  Where: core.ops (impl Div for Int, impl Rem for Int). Source: smt-datatypes (refuted obligations of #631). Confidence: sure.
+- [ ] **A method call `a.div(b)` on `Int` is proven though `Int.div` requires `other != 0`.** `fn direct(a: Int, b: Int) -> Int { a.div(b) }` is proven by the solver and refuted by the cross-check (`direct(0, 0)`: division by zero, "a bug in the prover"); the same through `[T: Div]`. Calls of a trait's method on a concrete type don't check the implementation's `requires`.
+  Where: smt (method calls on built-in types, trait calls); core.ops impl Div/Rem for Int. Source: PR runtime-memory-safety. Confidence: sure (reproduced).
 - [ ] **A selector of several core names finds only the first.** `strata --file core verify 'core.gen.shift_out,core.float.two_to'` says "`core.float.two_to` names no definition and no module"; each name alone is found.
   Where: the verify selector (main). Source: smt-datatypes. Confidence: sure (reproduced).
 - [ ] **`verify` loses the value under `x!` for capability or trait calls in std.** When `x` is a call on a capability or a trait inside std, the facts about `x!` are lost.
@@ -331,8 +329,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Code generation
 
-- [ ] **(memory) `extern c` `mut String` parameter: the buffer is freed before it is read back.** For `p.mutable` with `ct.kind == "str"`, the `strata_cstr` copy goes in the out slot and is also pushed to `frees`. After the call, `for c in frees { … strata_cstr_free(c) }` runs before `for (l, ct, slot, old) in outs { raw := load slot; from_c(raw …) }`.
-  Where: codegen.foreign_call (st:21127-21195). Source: review codegen. Confidence: sure.
 - [ ] **A union with two members of the same head reads under the wrong tag.** Widening into `List[Int] | List[String]` reads the list under the wrong tag (wrong results).
   Where: codegen (unions). Source: ledger G3 (#577). Confidence: likely.
 - [ ] **Refinements inside a generic record's type arguments are not checked at run time.** A `Box[Cents]` holding a negative value doesn't fault.
@@ -384,22 +380,18 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Runtime and core
 
+- [ ] **A task whose handle crossed to another thread is never freed.** `release_scope` keeps a `shared` task, with its result, so that an `await` after the scope's end reads it; nothing counts the handle's copies, so the record and the result stay until the program ends (`STRATA_MEMORY=check` reports a result that holds objects as live).
+  Where: runtime.c release_scope, strata_task_share; codegen cross_fn (Task). Source: PR runtime-memory-safety. Confidence: sure.
 - [ ] **A test's start forgets the senders its thread holds, so a later `close` of one faults.** `strata_run_begin` calls `forget_senders()`, which drops this thread's `held` entries without closing them (`senders` stays up). A `close` of such a sender after the test began fails `unhold_sender` and faults with "`close` of a sender this task doesn't hold, or has closed already", and the channel's receivers never see it end.
   Where: runtime.c forget_senders, strata_run_begin, strata_channel_close. Source: PR #621 (runtime-uaf). Confidence: likely.
 - [ ] **Per-thread free lists only go back when the thread ends (producer/consumer grows without bound).** A freeing thread pushes onto its own `heap` list. `refill` only takes from the shared list, and `strata_memory_thread_end` gives lists back at thread end. A consumer that frees what a producer allocated hoards the blocks, and the producer keeps carving new chunks.
   Where: core.rt.strata_free (threaded branch), refill, strata_memory_thread_end. Source: review core-runtime; ledger R3. Confidence: sure.
-- [ ] **(memory) `join` is not synchronized: double `pthread_join` and a wrong `live_tasks`.** `static void join(Task *t) { if (t->joined) return; pthread_join(t->thread, NULL); t->joined = 1; if (__atomic_sub_fetch(&live_tasks, 1, …) == 0) set_threaded(0); …}`.
-  Where: runtime.c join (1535), strata_await (1621), strata_scope_end, strata_task_share. Source: review core-runtime. Confidence: likely.
-- [ ] **(memory) `str_trim` makes a negative-length string on non-UTF-8 input (memory corruption).** The forward loop steps by the lead byte's length (`a += char_size(s, a)`) and decodes past the end. The backward loop steps back over continuation bytes and can end before `a`.
-  Where: core.str.str_trim (core.str.st:158), str_part, str_alloc. Source: review core-runtime. Confidence: sure.
 - [ ] **Host strings are never checked to be UTF-8.** Each builds the `String` with `str_from(buf, len)` and no check. IDEAS.md "Known gaps": "`Files.read` (`host_read_file`) and `Console.read_line` don't check that the bytes are UTF-8 … it should be an `FsError`".
   Where: runtime.c strata_host_read_file, strata_host_read_line, strata_host_read_stdin, strata_host_env_var, strata_host_args, strata_host_run (output); std_net's `net_text` uses `utf8_prefix`. Source: review core-runtime; ledger R1. Confidence: sure.
 - [ ] **`Taken` is a `FiniteIterator` over any iterator, but its `next` need not end.** The `take` doc says "Finite even when this iterator is not", and the `FiniteIterator` doc says "`verify` proves that a `for` loop over one ends".
   Where: core.iter `impl[I: Iterator[T], T] FiniteIterator[T] for Taken[I, T]` (core.iter.st:124); `Filtered.next`'s `loop`. Source: review core-runtime. Confidence: likely.
 - [ ] **The JIT never frees modules.** `jit_fuzz_load` keeps up to 4096 (`static LLVMOrcLLJITRef fuzz_jits[4096]`), so a long-lived process grows with every `check`, then fails with "too many modules compiled".
   Where: compiler/c/jit.c. Source: ledger R2. Confidence: sure.
-- [ ] **(memory) A crossed task handle can outlive its `Task`.** `release_scope` frees each `Task` at scope end (`free(t)`). A handle sent on a channel (`strata_task_share`) to a thread outside the scope can be awaited after that, which dereferences freed memory.
-  Where: runtime.c release_scope, strata_await, strata_task_share. Source: review core-runtime. Confidence: possible.
 - [ ] **`send` after this thread closed its sender still succeeds.** The only check is `if (c->senders == 0)`. core.channel says "A `send` after the channel has ended fails, and so does a second `close` of one sender". A send after the thread's own `close` passes while other copies are open, because `holds_sender` isn't checked.
   Where: runtime.c strata_channel_send. Source: review core-runtime. Confidence: sure.
 - [ ] **An unbuffered send in `select` doesn't wait for its receiver, and can strand a value.** `(c->cap == 0 && c->waiting > c->len)` then `push_item` and return. `strata_channel_send` instead waits `while (c->cap == 0 && c->taken < mine …)`. A receiving `select` raises `waiting` on every channel it lists.
@@ -410,16 +402,14 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: runtime.c strata_int_hash. Source: review core-runtime. Confidence: sure.
 - [ ] **A big integer literal is re-parsed on every evaluation.** `int_lit(s)` builds the number from its decimal digits each time it is called. IDEAS.md lab-fleet bugs: "An integer literal of 2^62 or more is re-parsed from its digits each time it is evaluated; `to_u64`'s precondition holds one, so every `n.to_u64()` allocates".
   Where: core.int.int_lit. Source: review core-runtime; ledger G11. Confidence: sure.
-- [ ] **(memory) `str_at`, `str_slice` and `str_case` read past the end on a truncated sequence.** `str_part(s, i, char_size(s, i))` copies a lead byte's full length even past `str_size`. `str_slice` does `j += char_size(s, j)` with no `j <= n` clamp, then `str_part(s, i, j - i)`.
-  Where: core.str.str_at (281), str_slice (323), char_code, str_case (550), str_is. Source: review core-runtime. Confidence: sure.
 - [ ] **Code-point counting disagrees across functions on invalid UTF-8.** `str_len` and prelude `str_chars` count non-continuation bytes. `char_offset` (used by `str_at`, `str_slice`) jumps by the lead byte's stated length. `CodePoints.next` uses `min(n, remaining)` bytes and doesn't check that they are continuation bytes.
   Where: core.str.str_len vs char_offset; prelude str_chars; core.text CodePoints.next vs CodePoints.len. Source: review core-runtime. Confidence: sure.
 - [ ] **`CodePoints.next` gives negative or out-of-range code points.** `c = c * 64 + (byte_at(self.text, self.at + k) - 128)` doesn't check that the byte is in 0x80..0xBF, so `"\xC0\x00"` gives -128. Leads 0xF8..0xFF give values past 0x10FFFF, and surrogates and overlong forms are accepted. core.str's `char_code` masks with `& 63` instead, so the two decoders disagree.
   Where: core.text CodePoints.next. Source: review core-runtime. Confidence: sure.
 - [ ] **Host paths and process arguments silently drop everything after a NUL.** `memcpy(c, s->bytes, len); c[len] = 0;` has no NUL check, while `strata_cstr` (FFI) faults on an embedded NUL. A path such as `"secret\0.txt"` passes a `.txt` suffix check in Strata and opens `secret`.
   Where: runtime.c static `cstr` (4180, used by read_file, list_dir, env_var, …), strata_host_run (`strndup`). Source: review core-runtime. Confidence: sure.
-- [ ] **(data loss) A read error during `read_file` returns a truncated string as success.** `while ((got = fread(…)) > 0) …; fclose(f); return str_from(buf, len)`. `ferror` is never checked, so an EIO in the middle of a file looks like its end. `malloc` and `realloc` results aren't checked either.
-  Where: runtime.c strata_host_read_file, strata_host_read_stdin. Source: review core-runtime. Confidence: sure.
+- [ ] **(data loss) A read error during `read_all` of standard input returns a truncated string as success.** `strata_host_read_stdin` stops at the first `fread` that gives 0, error or end alike, and `Console.read_all` returns a `String`, with no way to report the error (`Files.read` gives an `FsError`).
+  Where: runtime.c strata_host_read_stdin; std.io Console.read_all. Source: review core-runtime. Confidence: sure.
 - [ ] **`range` passes `Int`s to an `I64` function: big bounds are read as raw words.** `list_range(lo: I64, hi: I64)` computes `hi - lo` on the encoded words.
   Where: core.list.list_range; codegen `call(mut g, TList(TInt), "strata_range", vs)`; core.builtins `range(a: Int, b: Int)` (no `requires`). Source: review core-runtime. Confidence: likely.
 - [ ] **`float_from_bits` makes infinite `Float`s.** `ord` is true for infinities, so `Some(inf)`. core.types says "An operation whose result is not finite fails". Recorded in IDEAS.md "Known gaps": "`float_from_bits` gives infinities (only a NaN is `None`), though a `Float` is never infinite".
@@ -434,19 +424,15 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: std.io / runtime. Source: ledger R4. Confidence: possible.
 - [ ] **Arena tags wrap after 8191 arenas.** `store_i64(d, 32, rem_unsigned(n, 8191) + 1 << 48)`. `arena_made` compares only the tag. Kept arenas live for ever (finding above), so arena number k+8191 has the same tag as a live kept arena.
   Where: core.rt.strata_arena_begin, arena_made. Source: review core-runtime. Confidence: likely.
-- [ ] **(memory) `hash_slot` can give a negative slot.** `h := (c >> 4) * 40503` wraps. For `h == INT64_MIN`, `0 - h` is still negative, so `% m` is negative and `large_put`/`large_find` index before the table. This only matters with `--memory-sites`, and the address needed is improbable.
-  Where: core.rt.hash_slot. Source: review core-runtime. Confidence: possible.
 - [ ] **A cancelled unbuffered `send` leaves its value in the channel.** The value is pushed first, then `while (c->cap == 0 && c->taken < mine && !strata_cancelled()) WAIT(…)`. On cancellation it returns with the item still queued, so a "cancelled" send can still be received.
   Where: runtime.c strata_channel_send. Source: review core-runtime. Confidence: sure.
 - [ ] **Timed waits use the wall clock.** `clock_gettime(CLOCK_REALTIME, &now)` feeds `pthread_cond_timedwait`. A wall-clock step (NTP, a sleep/resume) makes sleeps and `select` timers wake early or very late.
   Where: runtime.c wait_until. Source: review core-runtime. Confidence: sure.
-- [ ] **(memory) `stack_leave` with an empty stack reads before the counts array.** With `r == 0`, `load_i64(calls, 32776 + (r - 1) * 8)` reads a frame slot and stores depth -1. From then on every stack text is garbage. This needs an unbalanced enter/leave (e.g. after `test_run` resets depth to 0 while an outer frame later leaves).
-  Where: core.fault.stack_leave (core.fault.st:45). Source: review core-runtime. Confidence: possible.
 - [ ] **`test_run` doesn't restore the outer run's capture flag and leaks a failed test's arenas.** It sets `store_i64(st, 80, 1)`, then `store_i64(st, 80, 0)` instead of restoring the old value, so a nested run (compile-time code inside a test) turns capturing off for the outer one.
   Where: core.run.test_run. Source: review core-runtime. Confidence: sure.
 - [ ] **`strata_run_begin` forgets the thread's held senders without restoring them.** `nheld = 0` without saving the old list. After a test on a thread that held senders (a JIT host running compile-time code), that thread can no longer `close` them.
   Where: runtime.c strata_run_begin (`forget_senders()`). Source: review core-runtime. Confidence: possible.
-- [ ] **`ord`'s `requires` and its runtime check differ on invalid UTF-8.** For `"\x80"`, `chars` gives one element, so the precondition holds, but `str_ord` sees `char_size` 2 ≠ 1 and faults. Code that verify proved safe faults anyway.
+- [ ] **`ord`'s `requires` and its runtime check differ on invalid UTF-8.** For `"a\x80"`, `chars` gives one element, so the precondition holds, but `str_ord` sees `char_size` 1 ≠ 2 and faults (reproduced 2026-11-28). Code that verify proved safe faults anyway.
   Where: core.builtins `ord` (`requires len(chars(s)) == 1`) vs core.str.str_ord (`char_size(s, 0) == str_size(s)`). Source: review core-runtime. Confidence: sure.
 - [ ] **Float show and parse in C depend on the locale.** `snprintf("%.*e")` and `strtod` follow `LC_NUMERIC`. `shortest` copies every byte except `.` as a digit, so a C library loaded via FFI that calls `setlocale` changes `to_string(1.5)` and `parse_float("1.5")`.
   Where: runtime.c shortest, strata_show_float, parse_float_trimmed (strtod), strata_show_float_fixed (snprintf). Source: review core-runtime. Confidence: possible.
@@ -548,14 +534,14 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 - [ ] **A new module with many loops spends 10-20 s of its edit on termination's loop-bound searches.** `verify_inputs` now builds verify's inputs from what the selection reaches (`reached_decls`), so an edit of one function with a loop in compiler/ spends about 1 s there, not 3-8 s. For new code nothing is cached, and `analyze_with` searches a bound for each loop the changed functions reach: a copy of lab-kernel's `kernel_tactics` (84 definitions, 22 loop bounds, 36 measures) spends 12-21 s in `verify: termination`, out of 34-45 s. Analysing only what the targets call, not the targets themselves, didn't help there: the loop functions call each other.
   Where: main.verify_program (`analyze_with`), termination's loop bounds. Source: verify-inputs PR. Confidence: sure (`STRATA_TIMINGS=1`: `verify: termination: loop bounds`).
-- [ ] **(data loss) `abort` ignores write errors, deletes the backup, and says everything is restored.** `restore_files` uses `mut disk.remove(…) !! ()` and `mut disk.write_bytes(path, bytes) !! ()`. Then `abort_command` runs `mut disk.remove(pending.file_of(root)) !! ()` and prints "every file is as it was before it".
-  Where: main.abort_command, main.restore_files. Source: review tools. Confidence: sure.
 - [ ] **`strata update` is a test-internal command: it takes a DIR, not names, and always exits 0.** `low_level` makes `update` always the internal step (`… | "update" | … => true`). `update_deps` reads `dir := get(args, 0) ?? "."` and `names := drop(args, 1)`. Errors only `print("error: " + e)`, and `code` stays 0.
   Where: main.command_line (`"update" => update_deps(…)`), main.low_level, main.update_deps. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `upgrade` ignores STRATA_HOME: outside the repo it re-stores every reference with no std or core.** `lib := std_imports(disk, "std", decls)` and `core := read_core(disk)`. `read_core` reads `core_files()`, which are `"core/types.strata"` and so on, relative to the current folder.
-  Where: main.upgrade_command. Source: review tools. Confidence: likely.
-- [ ] **(data loss) The log is written after the files, and a failed append still leaves the change on disk.** `apply_edit` runs `write_modules`, then `disk.append(root + "/" + log_file(), …)` and returns `Err` on failure, which gives exit 1 with the files changed and nothing logged.
-  Where: main.apply_edit, main.apply_change, main.done_command. Source: review tools. Confidence: sure.
+- [ ] **(data loss) A crash between a change's module files and its log entry leaves them apart.** A failed append now puts the files back (`main.logged_or_undone`), but a process killed after `write_modules` and before the append leaves the files changed with no entry; `done` killed after setting pending.json aside (as `pending.json-done`) and before the append leaves the change neither pending nor logged. A failed append can also leave a torn last line in strata.log. A journal (the entry and the files' old bytes, written first and replayed or undone on the next command) would make it one step.
+  Where: main.apply_edit, main.apply_change, main.done_command, main.logged_or_undone. Source: review tools; tools-dataloss-store PR. Confidence: sure.
+- [ ] **Putting files back after a failed log append can write an empty module file.** `package_bytes` reads each module file with `read_bytes(…) !! []`, so a file it couldn't read is snapshotted as no bytes, and `restore_files` writes those bytes back. `abort` refuses such bytes (they don't decode); `logged_or_undone` doesn't.
+  Where: main.package_bytes, main.logged_or_undone, main.restore_files. Source: tools-dataloss-store PR. Confidence: likely.
+- [ ] **`upgrade` can stop part-way through renaming its new files into place.** Every file is encoded and written to `x.strata-upgrade` before the first is replaced, but a rename that fails after others succeeded leaves those rewritten (it says how many).
+  Where: main.upgrade_command. Source: tools-dataloss-store PR. Confidence: sure.
 - [ ] **`--file PKG/mod.strata edit` writes a package module unchecked.** `alone := !of_core && in_package is None && (…)`, so a module file of a package gets `errors = []` and is written as given. std's module files are edited as the std package (`main.std_module_file`, case `cli-std_module_file_edit_is_checked`); other packages' are not. Recorded in IDEAS.md "A failed edit writes nothing…", "Not yet: … a single module file of a package (`--file p/util.strata edit`) is still written unchecked".
   Where: main.edit_file. Source: review tools. Confidence: sure.
 - [ ] **(data loss) `fix --file` writes in place, not atomically, and removes "unused" definitions without any check.** `match mut disk.write_bytes(f, bytes)` writes the script in place (not `codebase.write_file`), after `unused.removable` and `lint.fixes`. Nothing is checked. The package branch goes through `apply_change` (write, then check).
@@ -564,12 +550,8 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.git_commit. Source: review tools. Confidence: sure.
 - [ ] **`rename`, `move`, `fix` (package) and `done` write, then check, then restore.** `rename`, `move`, `fix` (package), `done` and `follow_renames` write first, then check, then restore on failure; `follow_renames` also writes without a check and without grouping the writes.
   Where: main.apply_change; main.follow_renames. Source: review tools; ledger T6. Confidence: sure.
-- [ ] **`apply_change` ignores the pending file's write failure and the log's.** `mut disk.write(pending.file_of(o.root), pending.pending_json(saved)) !! ()` and `mut disk.append(…log…) !! ()`. A rename during a pending change can lose its rename record, so the `done` entry has no `renames` and `sync` can't follow it.
-  Where: main.apply_change. Source: review tools. Confidence: sure.
 - [ ] **Renames reach patterns only inside `match` arms.** `patterns_renamed` rewrites only `MatchExpr` arms. Patterns in `Let` (destructuring `Point { x, y } := p`), `For`, `CompFor`, lambda parameter patterns (IDEAS "Patterns as parameters") and `CondPat` are not renamed.
   Where: refactor.patterns_renamed, refactor.substituted. Source: review tools. Confidence: likely.
-- [ ] **(data loss) A malformed pending.json makes `abort` delete module files, or forget the change.** `parse_pending` returns `Some` for any JSON object. A missing `before` gives `[]`, and a bad entry gives `("", "")`. `unhex` maps a bad digit to 0 (`index_of(…) ?? 0`).
-  Where: pending.parse_pending, main.restore_files. Source: review tools. Confidence: likely.
 - [ ] **(data loss) `holeify` makes holes by short name, so unrelated code becomes holes.** `Var(n) => contains(names, short(n))`, `MethodCall { name, .. } => contains(names, short(name))` and `Call { callee: Var(n), .. }`. A changed `shop.get` turns every `get(...)` in a broken definition into a hole: std's `get`, another module's `get`, a local variable named `get`.
   Where: pending.uses, pending.visit. Source: review tools. Confidence: sure.
 - [ ] **merge-file stores core files qualified, breaking core.** Neither path has the `of_core` case `edit_file` has (`codebase.merge_parsed`).
@@ -588,8 +570,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: views.select (compiler.views.st:46, 641); main.st:22846. Source: ledger T2 (#448). Confidence: sure.
 - [ ] **Round-tripping `core/builtins` through a non-core file loses overloads.**
   Where: edit / view. Source: ledger T8. Confidence: likely.
-- [ ] **`strata upgrade` writes core's files without their dependency lists.** Fixed only on unmerged #562.
-  Where: upgrade. Source: ledger T10. Confidence: likely.
 - [ ] **(data loss) `--file std edit std.regex` rewrote all std files and lost the module name.** It also auto-committed; a file-mode edit stores references comptime's codegen can't compile. Recorded against an old seed.
   Where: edit (file mode). Source: ledger T12 (#421). Confidence: possible.
 - [ ] **Adding an `all` overload for `Dict` by `edit` replaced the list one.** `edit` replaces a definition by name, so a new overload overwrote the existing one.
@@ -626,10 +606,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: deps.bare_repo, deps.checkout. Source: review tools. Confidence: likely.
 - [ ] **`module_files` stops at depth 64 without a word.** `for _ in 0..64 { … }`. Deeper module files are left out of every package operation, including `upgrade` and `restore_files`, which deletes module files missing from `before`.
   Where: deps.module_files. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `upgrade` returns at the first write error after rewriting part of the tree.** `return fail_with(…)` inside the loop, after earlier files were already renamed. Its temp name `target + "-tmp"` (`x.strata-tmp`) is the name `codebase.write_file` uses, so a concurrent edit collides with it.
-  Where: main.upgrade_command. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `pack` overwrites any path, including a module file of the package.** `disk.write_bytes(target, bytes)` with no check that `target` isn't one of the package's own module files. `strata pack main.strata` in a package replaces its root module with a bundle of the whole program.
-  Where: main.pack_command. Source: review tools. Confidence: likely.
 - [ ] **The shipped std library is preferred without checking it matches std's sources.** When `home/std/names`, `std.o` and `libstd.dylib` exist, they are returned at once (`return Some(shipped)`), before any key. In a checkout where a release's precompiled library was copied into `std/`, edits to std are ignored by JIT runs.
   Where: main.std_library. Source: review tools. Confidence: possible.
 - [ ] **Unknown long options are accepted by the global parser.** `else if starts_with(a, "--") { mut flags.insert(a, …) }`. Any typo is kept as a flag and ignored by commands that only test `given(line, …)`, for example `strata check --with-dep`.
@@ -806,7 +782,7 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [The tools' output] `std.io.printed(console)` in a test crashed with signal 11.
 - [Networking] Two tasks using copies of one connection aren't synchronized; a root-module local named like a rewritten function is rewritten too.
 - [Known gaps] `--json` missing on `view`, `render`, `interface`, `status`, `done`, `test`, `run`.
-- [Known gaps] Lab-fleet tool bugs: `strata --file core check` never type-checks core; round-tripping `core/builtins` through a non-core file loses overloads; `diff`/`tour --check` report ~35 `noalloc` core functions as changed; `upgrade` writes core without dependency lists (fixed on stored-core only); the merge driver re-encoded `smt.infer_invariants` with different bytes; `edit` refuses `from m use f` with `--rm 'use m'`; `edit` can't delete a detached `//` banner; selectors split on `,` so `impl Json for Dict[String, V]` can't be named; `parse.debug_quoted` replaces `"\r"` with itself; `declarations.Names.open` is always false; unused prelude dict/set functions.
+- [Known gaps] Lab-fleet tool bugs: `strata --file core check` never type-checks core; round-tripping `core/builtins` through a non-core file loses overloads; `diff`/`tour --check` report ~35 `noalloc` core functions as changed; the merge driver re-encoded `smt.infer_invariants` with different bytes; `edit` refuses `from m use f` with `--rm 'use m'`; `edit` can't delete a detached `//` banner; selectors split on `,` so `impl Json for Dict[String, V]` can't be named; `parse.debug_quoted` replaces `"\r"` with itself; `declarations.Names.open` is always false; unused prelude dict/set functions.
 - [Known gaps] Speed and memory: `view --graph` past 4.5 GB; long list literals need 5 GB at 20,000 elements; `std.json.parse` makes one-character strings (65% of peak on 8 MB); `check` of compiler keeps 112 MB read by `read_bytes`.
 - [Known gaps] Failing cases on main: `cli-modules_contracts_and_files` (view order).
 - The format trials' "Found, not fixed" items (stored core, stable ids, operators, the trio's merge) are listed in REBUILD.md's appendix, "The format trials as recorded in the lab": to reconcile here.

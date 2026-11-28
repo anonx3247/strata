@@ -1,0 +1,94 @@
+# a change whose log entry can't be appended is undone: `edit`, `rename`
+# and `done` leave every file as it was, and `done` keeps the pending
+# change
+
+[[step]]
+run = ["mkdir", "shop"]
+
+[[step]]
+strata = ["init"]
+dir = "shop"
+
+[[step]]
+save = "shop/main.strata"
+text = '''
+fn tax(amount: Int) -> Int {
+  amount / 10
+}
+
+fn total(amount: Int) -> Int {
+  amount + tax(amount)
+}
+'''
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+capture = "../before.st"
+
+# (a folder in the log's place: appending to it fails)
+[[step]]
+run = ["sh", "-c", "rm -f shop/strata.log && mkdir shop/strata.log"]
+
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "shop"
+text = "fn tax(amount: Int) -> Int { amount / 5 }"
+fails = true
+has = ["the change is undone, every module file is as it was"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+out_file = "before.st"
+
+[[step]]
+strata = ["rename", "tax", "levy", "--no-commit"]
+dir = "shop"
+fails = true
+has = ["the change is undone, every module file is as it was"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+out_file = "before.st"
+
+# `done`: the holes it keeps are put back, and the change stays pending
+[[step]]
+strata = ["edit", "--no-commit"]
+dir = "shop"
+text = "fn tax(amount: Int, rate: Int) -> Int { amount * rate / 100 }"
+has = ["in a pending change"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+capture = "../pending.st"
+
+[[step]]
+strata = ["done", "--keep-holes", "--no-commit"]
+dir = "shop"
+fails = true
+has = ["the change is undone", "the change is still pending"]
+
+[[step]]
+strata = ["view", "main"]
+dir = "shop"
+out_file = "pending.st"
+
+[[step]]
+strata = ["status"]
+dir = "shop"
+has = ["pending change: edit"]
+
+[[step]]
+run = ["rmdir", "shop/strata.log"]
+
+[[step]]
+strata = ["done", "--keep-holes", "--no-commit"]
+dir = "shop"
+has = ["recorded \"edit\" as one change"]
+
+[[step]]
+run = ["grep", "-c", "todo_1", "shop/strata.log"]
+out = "1\n"
