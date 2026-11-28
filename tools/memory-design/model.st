@@ -187,3 +187,23 @@ lemma no_cycle(bs: List[Int])
     no_cycle(drop(bs, 1))
   }
 }
+
+/// Where a part of a snapshot scope's result is once copied out at the
+/// scope's end (at depth `d`), to task `owner`, bounded by `home`: a static
+/// part and one of an enclosing snapshot as they are, any other copied.
+fn copied_out(p: Place, d: Int, owner: Int, home: Int) -> Place {
+  match p {
+    Static => Static,
+    Frozen { depth } => if depth < d {
+      Frozen { depth }
+    } else {
+      Counted { owner, home }
+    },
+    _ => Counted { owner, home },
+  }
+}
+
+/// What a scope's result holds outlives the scope once copied out.
+lemma copied_out_outlives(p: Place, d: Int, owner: Int, home: Int)
+  requires d >= 1 && home < d
+  ensures alive_after(copied_out(p, d, owner, home), d)

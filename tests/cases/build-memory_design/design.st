@@ -1,4 +1,4 @@
-from std.memory use frozen, root
+from std.memory use arena, frozen, root
 
 /// Settings every task reads.
 type Site = { name: String, pages: Dict[String, String], tags: List[String], greet: (String) -> String }
@@ -63,7 +63,27 @@ fn rooted(tags: List[String], n: Int) -> Int {
   done
 }
 
+/// A result made outside the snapshot that holds parts of it: copied out
+/// whole before the snapshot is freed.
+fn kept_parts(s: Site) -> (List[String], String, Dict[String, String]) {
+  frozen(s, fs -> (fs.tags[1..4], fs.name, Dict { "p2": get(fs.pages, "p2") ?? "" }))
+}
+
+/// Allocates and drops much, reusing the chunks freed snapshots gave back.
+fn churn(n: Int) -> Int {
+  arena(() -> {
+    mut total := 0
+    for i in 0..n {
+      total += byte_len(repeat(f"x{i}", 10))
+    }
+    total
+  })
+}
+
 fn main() {
+  kept := kept_parts(site(30))
+  _n := shared_reads(site(50))
+  print(churn(20000))
   s := site(40)
   (total, greeting, first) := shared_reads(s)
   print(total)
@@ -71,4 +91,5 @@ fn main() {
   print(first)
   print(rooted(s.tags, 100))
   print(bytes_of(s, "p1"))
+  print(kept)
 }
