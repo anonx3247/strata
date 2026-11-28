@@ -12,7 +12,7 @@ lacks = ["assumed"]
 
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/proofs/features.kp"]
-has = ["proven eta", "proven facts_simplified", "proven bullets", "proven split_named", "proven try_after", "5 proven, 0 failed, 0 open"]
+has = ["proven eta", "proven facts_simplified", "proven bullets", "proven split_named", "proven try_after", "proven conj_premise", "6 proven, 0 failed, 0 open"]
 
 [[step]]
 strata = ["kernel", "check", "$ROOT/tests/kernel/laws/patterns.strata"]

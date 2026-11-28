@@ -43,3 +43,8 @@ theorem split_named(x: Int): (if x < 0 { 0 - x } else { x }) >= 0 := by
 theorem try_after(x: Int): x + 0 == x := by
   simp
   try omega
+
+-- a fact `p && q` given for two premises
+theorem conj_premise(a: Int, b: Int, c: Int): (forall(x -> x < b ==> b < c ==> x < c)) ==> (a < b && b < c) ==> a < c := by
+  intro h hp
+  exact h(a)(hp)
