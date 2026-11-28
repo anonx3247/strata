@@ -461,9 +461,8 @@ type Expression =
   | TypeApplication { generic: Expression, arguments: List[Expression] }
   // unfinished code
   | Hole { choices: List[Expression] }
-  // markers, never stored (section 3.7)
+  // a marker, never stored (section 3.7)
   | Inferred
-  | ImplicitConstructor { value: Expression }
 with {
   _type: Option[Expression],
 }
@@ -505,6 +504,7 @@ Values made of parts:
 - An atom is its type's one value, so a use of it is a `Global`: `None`, `true` and `false` are `Global { key: <None> }`, `Global { key: <True> }` and `Global { key: <False> }`.
 - `RecordLiteral` holds the fields given, in the order the type declares them. Each field left out takes its value from `base` when there is one (`T { ...r, f: v }`), and otherwise its default. So a field added to a type later fills every stored literal with no rewrite. With no `Construct` around it, a `RecordLiteral` is a structural record (`{ x: 1, y: 2 }`).
 - `FieldAccess` names the field by key: the field of the record's type, or of the bound that declares it when the record's type is a type parameter.
+- Indexing has no node: `xs[i]` is a call of core's `Index` trait (section 12), `Static { …, written_as: Some(<Index's method>) }`, and the printer writes `xs[i]` from `written_as`. `xs[i] = v` and slices `xs[a..b]` are calls of the same trait. Any type gets `[ ]` by implementing `Index`.
 
 Control and logic:
 - `Return`, `Break` and `Continue` are expressions whose type is core's `Never`.
@@ -628,16 +628,16 @@ with {
 
 ### 3.7 Parsed trees and stored trees
 
-`parse` and `desugar` give a tree with markers for what is left to infer. `elaborate` fills them in and gives the stored tree.
+`parse` and `desugar` give a tree with a marker for each type left to infer. `elaborate` fills them in and gives the stored tree.
 
 - `Inferred` stands where a type was left out. Every expression whose type wasn't written gets `_type: Some(Inferred)` from `parse`.
-- `ImplicitConstructor { value }` stands where a constructor was left out (`Some`, `Ok`, `Err`: section 6). `elaborate` replaces it by the `Construct` the types decide, or reports where they don't.
+- A constructor left out (`Some`, `Ok`, `Err`: section 6) has no marker, since `parse` can't tell where one is missing. `elaborate` puts in the `Construct` wherever the expected type asks for one, or reports where the types don't decide which. The printer leaves it out again where inference would put it back.
 - A stored tree has no markers. A `Call`'s target and a node's type are known in every stored tree.
 
 ```strata
 law stored_has_no_markers(d: Definition)
   requires stored(d)
-  holds !any_node(d, n -> n is Inferred || n is ImplicitConstructor)
+  holds !any_node(d, n -> n is Inferred)
 ```
 
 Section 2 states how `print`, `parse`, `desugar` and `elaborate` round-trip on stored trees.
