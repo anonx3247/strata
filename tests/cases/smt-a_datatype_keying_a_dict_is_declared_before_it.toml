@@ -1,0 +1,32 @@
+# smt: a datatype used as a dict's key (`(String, Int)`) is declared in a
+# group of its own, before the datatype holding the dict (`Table`), so the
+# solver accepts the declarations
+[[step]]
+save = "f.strata"
+text = '''
+type Table = { name: String, rows: Dict[(String, Int), String] }
+
+fn lookup(t: Option[Table], k: (String, Int)) -> Option[String]
+  ensures t == None ==> it == None {
+  match t {
+    Some(x) => x.rows.get(k),
+    None => None,
+  }
+}
+
+fn put(t: Table, k: (String, Int), v: String) -> Option[Table]
+  ensures match it { Some(u) => u.rows.get(k) == Some(v), None => false } {
+  Some(Table { ..t, rows: t.rows.with(k, v) })
+}
+'''
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+has = ["✓ lookup ", "✓ put "]
+lacks = ["rejected"]
+
+[[step]]
+strata = ["--file", "f.strata", "verify", "--no-cache", "--no-race"]
+env = { "STRATA_TERMS" = "1" }
+has = ["✓ lookup ", "✓ put "]
+lacks = ["rejected"]
