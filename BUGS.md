@@ -625,22 +625,18 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
 
 ## Test cases failing on main
 
-- [ ] **`build-jit-tests` fails.** `tests/data/build/expected/tests-tasks.out:9` still expects the `_ := model.run_worker(…)` warning that a96adb16 changed.
-  Where: tests/cases build-jit-tests. Source: ledger tests table (#557, #570, #608, #609). Confidence: sure.
-- [ ] **`cli-pack_a_package_into_one_file` fails.** It expects "69 definitions"; the packed tasks has 67 since #529/#530.
-  Where: tests/cases. Source: ledger tests table (#533). Confidence: sure.
-- [ ] **`cli-merge_file_keeps_overloads_and_module_names` fails.** The builtin count drifts: the case says 135, `core.builtins.st` has 143 `builtin` lines.
-  Where: tests/cases. Source: ledger tests table (#608). Confidence: likely.
 - [ ] **std fails `--require proven`.** `std.orm.Schema.create` and `std.orm.Key.load` fail the policy on main.
-  Where: std.orm. Source: ledger tests table (#513, #530). Confidence: likely.
+  Where: std.orm. Source: ledger tests table (#513, #530). Confidence: sure (checked on ecf3c860).
 - [ ] **`build-copies` times out under load.** Its `containers` step is quadratic (see Code generation).
   Where: tests/cases. Source: ledger tests table (#492, #513, #573, #609). Confidence: likely.
-- [ ] **`cli-a_conflict_resolved_by_hand_stores_as_written` failed.** Seen failing only on std-math's head; not checked on main.
-  Where: tests/cases. Source: ledger tests table (#608). Confidence: possible.
-- [ ] **`cli-for_over_iterators` may fail.** A cached counterexample `pos: -265` instead of `-1` was reported.
-  Where: tests/cases. Source: ledger tests table (#492, #498). Confidence: possible.
-- [ ] **`cli-smt_tracks_list_elements_through_loops` was weakened.** `fill_wrong` is refuted by the fuzzer, not the solver; the case accepts either.
-  Where: tests/cases. Source: ledger tests table. Confidence: likely.
+- [ ] **`cli-tasks_port_checks_tests_and_verifies` fails.** `memory.lock_one` isn't proven (the prover follow-up work).
+  Where: examples/tasks. Source: main-cases PR. Confidence: sure.
+- [ ] **`smt-a_call_written_twice_is_one_list`, `smt-long_terms_read_through_a_let` and `smt-the_same_value_is_one_term` hit their 60 s limit.** On ecf3c860 too, run 4 at a time.
+  Where: tests/cases, the SMT terms work (#616). Source: main-cases PR. Confidence: sure.
+- [ ] **`cli-smt_proves_sums_over_lists` fails.** `bounded` (`ensures it <= 10 * len(xs)`, a sum of elements under 10) is not proven: "a possible counterexample it could not express". On ecf3c860 too.
+  Where: compiler/smt, sums over lists. Source: main-cases PR. Confidence: sure.
+- [ ] **`cli-structural_records` fails.** A structural record's refined field is lost: `total_of(x: { total: Cents, .. }) -> Cents` gets the counterexample `x = { total: -1 }`, and `bigger` proves 2 checks instead of 3. On ecf3c860 too.
+  Where: compiler/smt, refinements of structural record fields. Source: main-cases PR. Confidence: sure.
 
 ## From the old IDEAS.md, to reconcile
 
