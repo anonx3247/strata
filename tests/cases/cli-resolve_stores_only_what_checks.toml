@@ -1,0 +1,57 @@
+# `strata resolve FILE...` checks the text a merge left, fixed by hand, with
+# the rest of the package before storing it: text that doesn't check is
+# refused and left as text. Several files left as text are resolved in one
+# command, all or none.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["new", "shop"]
+text = "pub fn get(n: Int) -> Int {\n  n\n}\n"
+
+[[step]]
+strata = ["new", "util"]
+text = "pub fn one() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["edit"]
+text = "use shop\nuse util\n\npub fn total() -> Int {\n  shop.get(util.one())\n}\n"
+
+# shop as text, with a change its caller doesn't check with
+[[step]]
+write = "shop.strata"
+text = "pub fn get(n: Int, m: Int) -> Int {\n  n + m\n}\n"
+
+[[step]]
+run = ["cp", "shop.strata", "shop.before"]
+
+[[step]]
+strata = ["resolve", "shop.strata"]
+fails = true
+has = ["rejected: the resolved files don't check; nothing was written", "expects 2 arguments, got 1"]
+
+[[step]]
+run = ["cmp", "shop.strata", "shop.before"]
+
+# two files left as text: one alone can't be checked, both together can
+[[step]]
+write = "shop.strata"
+text = "pub fn get(n: Int) -> Int {\n  n * 2\n}\n"
+
+[[step]]
+write = "util.strata"
+text = "pub fn one() -> Int {\n  1\n}\n"
+
+[[step]]
+strata = ["resolve", "shop.strata"]
+fails = true
+has = ["util.strata", "resolve it in the same command"]
+
+[[step]]
+strata = ["resolve", "shop.strata", "util.strata"]
+has = ["shop.strata: 1 definitions stored", "util.strata: 1 definitions stored"]
+
+[[step]]
+strata = ["check"]
+has = ["ok"]
