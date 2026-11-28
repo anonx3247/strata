@@ -1,0 +1,36 @@
+# `--file PKG/mod.strata edit` checks the module with the package's other
+# modules, as `--file PKG edit` does: an edit that breaks a caller in
+# another module is rejected and writes nothing.
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["new", "shop"]
+text = "pub fn get(n: Int) -> Int {\n  n\n}\n"
+
+[[step]]
+strata = ["edit"]
+text = "use shop\n\npub fn total() -> Int {\n  shop.get(1)\n}\n"
+
+[[step]]
+run = ["cp", "shop.strata", "shop.before"]
+
+[[step]]
+strata = ["--file", "shop.strata", "edit"]
+text = "pub fn get(n: Int, m: Int) -> Int {\n  n + m\n}\n"
+fails = true
+has = ["rejected: shop.strata doesn't check", "expects 2 arguments, got 1", "nothing was written"]
+
+[[step]]
+run = ["cmp", "shop.strata", "shop.before"]
+
+# one that keeps the package checking is written
+[[step]]
+strata = ["--file", "shop.strata", "edit"]
+text = "pub fn get(n: Int) -> Int {\n  n + 1\n}\n"
+has = ["shop.strata: 1 definition changed"]
+
+[[step]]
+strata = ["check"]
+has = ["ok"]

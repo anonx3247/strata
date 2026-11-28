@@ -542,28 +542,22 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.package_bytes, main.logged_or_undone, main.restore_files. Source: tools-dataloss-store PR. Confidence: likely.
 - [ ] **`upgrade` can stop part-way through renaming its new files into place.** Every file is encoded and written to `x.strata-upgrade` before the first is replaced, but a rename that fails after others succeeded leaves those rewritten (it says how many).
   Where: main.upgrade_command. Source: tools-dataloss-store PR. Confidence: sure.
-- [ ] **`--file PKG/mod.strata edit` writes a package module unchecked.** `alone := !of_core && in_package is None && (…)`, so a module file of a package gets `errors = []` and is written as given. std's module files are edited as the std package (`main.std_module_file`, case `cli-std_module_file_edit_is_checked`); other packages' are not. Recorded in IDEAS.md "A failed edit writes nothing…", "Not yet: … a single module file of a package (`--file p/util.strata edit`) is still written unchecked".
-  Where: main.edit_file. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `fix --file` writes in place, not atomically, and removes "unused" definitions without any check.** `match mut disk.write_bytes(f, bytes)` writes the script in place (not `codebase.write_file`), after `unused.removable` and `lint.fixes`. Nothing is checked. The package branch goes through `apply_change` (write, then check).
-  Where: main.fix_command (the `--file` branch). Source: review tools. Confidence: sure.
 - [ ] **`git_commit` stages and commits everything under the package folder.** `["add", "-A", "--", ".", ":(exclude).strata"]`, then `["commit", "-q", "-m", message, "--", "."]`. Unrelated work-in-progress files, untracked notes, `.env` files, the strata.lock rewritten by dependency resolution, and C or doc files in the package folder are all committed under the edit's message.
   Where: main.git_commit. Source: review tools. Confidence: sure.
-- [ ] **`rename`, `move`, `fix` (package) and `done` write, then check, then restore.** `rename`, `move`, `fix` (package), `done` and `follow_renames` write first, then check, then restore on failure; `follow_renames` also writes without a check and without grouping the writes.
-  Where: main.apply_change; main.follow_renames. Source: review tools; ledger T6. Confidence: sure.
+- [ ] **`revert` is not logged.** It writes the working tree only (checked, in one step, refused during a pending change), so `strata.log` has no entry for it and `sync` can't follow it; a log entry needs `revert_command` to get a clock.
+  Where: main.revert_command. Source: tools-dataloss-edits PR. Confidence: sure.
+- [ ] **`holeify` still matches fields and trait methods by short name.** `FieldOf { name }` is a use of any changed record's field of that name, and a method call one of any changed trait method of that name, so an unrelated `x.name` or `x.m()` in a broken definition can become a hole (written; `abort` puts it back).
+  Where: pending.uses. Source: tools-dataloss-edits PR. Confidence: sure.
 - [ ] **Renames reach patterns only inside `match` arms.** `patterns_renamed` rewrites only `MatchExpr` arms. Patterns in `Let` (destructuring `Point { x, y } := p`), `For`, `CompFor`, lambda parameter patterns (IDEAS "Patterns as parameters") and `CondPat` are not renamed.
   Where: refactor.patterns_renamed, refactor.substituted. Source: review tools. Confidence: likely.
-- [ ] **(data loss) `holeify` makes holes by short name, so unrelated code becomes holes.** `Var(n) => contains(names, short(n))`, `MethodCall { name, .. } => contains(names, short(name))` and `Call { callee: Var(n), .. }`. A changed `shop.get` turns every `get(...)` in a broken definition into a hole: std's `get`, another module's `get`, a local variable named `get`.
-  Where: pending.uses, pending.visit. Source: review tools. Confidence: sure.
 - [ ] **merge-file stores core files qualified, breaking core.** Neither path has the `of_core` case `edit_file` has (`codebase.merge_parsed`).
-  Where: main.resolve_command → main.encode_at; main.merge_file_command → kept_decls (`stored(others + mine, std, core)`). Source: review tools; ledger T7. Confidence: sure.
+  Where: main.resolve_command (`stored(others + mine, std, core)`); main.merge_file_command → kept_decls (`stored(others + mine, std, core)`). Source: review tools; ledger T7. Confidence: sure.
 - [ ] **`sync` checks every package in the repository, core included, with a reduced check.** It runs `discover` and then, for every package and script under the git top, `check_errors_of(program, std_imports(…), core, values)`. That includes `compiler/`, `core/` (checked like any package, though core "checks only as the runtime's compilation does"), `std/` and every example.
   Where: main.merged_checks. Source: review tools. Confidence: likely.
 - [ ] **Git URLs and revs from strata.toml reach git without `--`.** `["clone", "--bare", "--quiet", url, repo]` and `["--git-dir", repo, "fetch", "--quiet", …, url, "+refs/heads/*:refs/heads/*"]` have no `--`. `rev-parse --verify --quiet asked^{commit}` uses a `rev` value taken from the manifest.
   Where: deps.bare_repo, deps.checkout, deps.fetch_git. Source: review tools. Confidence: possible.
 - [ ] **Two dependencies with the same name: the first wins silently.** `if len(path) > 0 && !any(out, f -> f.name == at.name) { mut out.push(at) }`. A diamond in which two packages depend on different versions (or URLs) of `util` keeps whichever came first, with no conflict reported, and both lock pins are written.
   Where: deps.visit, deps.fetched_visit. Source: review tools. Confidence: sure.
-- [ ] **(data loss) `revert` writes unchecked, in place, outside the log and the pending change.** `disk.write_bytes(p.path, written)`, with no check, no `write_file`, no log entry and no look at pending.json. A definition restored from an old commit that calls something since renamed or removed is written broken.
-  Where: main.revert_command, history.reverted. Source: review tools. Confidence: sure.
 - [ ] **`strata parse FILE` exits 0 when the file doesn't parse.** `main.front_command` ends with `parse_one(disk, file)` then `0`; the package branch returns 0 too.
   Where: main.front_command. Source: ledger T1 (#577). Confidence: sure.
 - [ ] **Selectors split on `,`, so impls with a comma in their name can't be named.** `impl Json for Dict[String, V]` can't be selected in `view` or `verify` (`views.select` splits on `,`).
@@ -596,8 +590,6 @@ Bugs to fix in Strata, newest review 2026-11-27 at v0.5.0 (origin/main 5f039e07)
   Where: main.merge_file_command (`tmp`), merge.line_merge. Source: review tools. Confidence: sure.
 - [ ] **Rename detection in merge is a similarity guess, and its errors are swallowed.** A definition deleted on one side and a similar one added (`sim >= 0.6 && followed`) is treated as a rename and applied to the base and the other side. `o = refactor.rename_all(o, …) !! o` hides a failure on the base.
   Where: merge.renames, merge.merge. Source: review tools. Confidence: possible.
-- [ ] **(data loss) `resolve` stores the text unchecked and in place.** It rejects only lines starting with `<<<<<<<` or `>>>>>>>`, then writes `encode_at(...)` with `disk.write_bytes(f, …)` (not `write_file`). It never checks the result, unlike merge-file's final check.
-  Where: main.resolve_command. Source: review tools. Confidence: sure.
 - [ ] **`sync` ignores git merge's exit code.** `ran := mut launcher.run_with("git", […, "merge", "--no-ff", "--no-commit", target], …)`, then `match ran { Err(e) => …, Ok(_) => () }`.
   Where: main.sync_command. Source: review tools. Confidence: sure.
 - [ ] **`setup-git` quotes the executable with single quotes.** `driver := f"'{exe}' merge-file %O %A %B %P"`. A path containing `'` breaks the driver. `setup-git` exits 0 when not in a git repository (`Err(_) => "."`), and it only prints a hint about `.gitattributes`.
@@ -765,7 +757,6 @@ Problems IDEAS.md recorded before it was split (origin/main 1799da47), not yet c
 - [Docs in the terminal] `///` lines lose leading spaces on `edit` (indented examples become prose); a colored span wrapped keeps its color on the indentation; code in a heading isn't colored; core modules list no builtins.
 - [Builtins viewable] `refs` doesn't find a program's uses of a builtin.
 - [Web UIs] `strata parse FILE` exits 0 when the file doesn't parse.
-- [A failed edit writes nothing] `done`, `fix`, `rename`/`move` and `follow_renames` still write, check, then restore; `--file p/util.strata edit` writes unchecked.
 - [view in reading order] Header dependency lists go stale; `views.depth_first`'s worklist isn't shown to terminate.
 - [strata diff in seconds] About 2 s of a diff is outside it (std, hashing the tree, git); log-mode verdict lookups encode every definition.
 - [Diff and three-way merge on trees] `strata resolve core/rt.strata` stores core calls qualified, so core.rt's build drops every function.

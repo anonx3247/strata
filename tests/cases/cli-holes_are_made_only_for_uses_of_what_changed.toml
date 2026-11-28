@@ -1,0 +1,31 @@
+# A breaking edit of `shop.get` makes holes of its uses only: a call to
+# std's `get` and a local variable named `get`, in the same broken
+# definition, stay as they are (names are matched as stored, qualified).
+
+[[step]]
+strata = ["init"]
+
+[[step]]
+strata = ["new", "shop"]
+text = "pub fn get(n: Int) -> Int {\n  n\n}\n"
+
+[[step]]
+strata = ["edit"]
+text = '''
+use shop
+
+pub fn total(xs: List[Int]) -> Int {
+  get := 3
+  shop.get(1) + (std.list.get(xs, 0) ?? 0) + get
+}
+'''
+
+[[step]]
+strata = ["edit", "shop"]
+text = "pub fn get(n: Int, m: Int) -> Int {\n  n + m\n}\n"
+has = ["the edit breaks 1 use elsewhere", "?pending_1  in total\n      was: shop.get(1)"]
+lacks = ["pending_2"]
+
+[[step]]
+strata = ["view", "main"]
+has = ["?pending_1 + (std.list.get(xs, 0) ?? 0) + get"]
