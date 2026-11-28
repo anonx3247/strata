@@ -36,3 +36,19 @@ lacks = ["dependent: failed"]
 strata = ["kernel", "check", "--dependent", "$ROOT/core/int.kp", "$ROOT/tests/kernel/proofs/features.kp", "$ROOT/tests/kernel/proofs/generic_sort.kp", "$ROOT/tests/kernel/proofs/lists.kp", "$ROOT/tests/kernel/proofs/tactics.kp", "$ROOT/tests/kernel/types/patch_laws.strata", "$ROOT/tests/kernel/types/patch_user.strata"]
 has = ["dependent: 36 checked", "dependent: 6 checked", "dependent: 4 checked", "dependent: 13 checked", "dependent: 3 checked"]
 lacks = ["dependent: failed"]
+
+# a module's laws for every record (`lemma l[T: Record]`), translated from
+# its tree (the type function `Patch`, the blanket impl's `patched` and
+# `apply`, the statements, the steps), proven once, and applied at each record
+[[step]]
+strata = ["kernel", "dependent", "$ROOT/tests/kernel/dependent/patch_every_record.strata"]
+has = [
+  "translated: type functions Patch; methods patched, apply",
+  "proven for every record patched_empty",
+  "proven for every record patched_fields",
+  "proven for every record applied_is_patched",
+  "instance User.applied_is_patched",
+  "instance Point.patched_fields",
+  "instance Address.patched_empty",
+]
+lacks = ["laws for every record: ", "ACCEPTED"]
