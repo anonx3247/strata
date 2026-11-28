@@ -1,0 +1,60 @@
+# smt: a check inside a function value a contract passes to `map`, `count`
+# or a function of the program is an obligation, for any element or
+# argument, also inside a quantifier; one inside `find` is unknown, with the
+# reason, never left out
+[[step]]
+save = "l.strata"
+text = '''
+fn mapped(xs: List[Natural], ys: List[Int]) -> Int requires xs.map(i -> ys[i]).all(y -> y > 0) = 0
+
+fn mapped_ok(xs: List[Natural], ys: List[Int]) -> Int
+  requires xs.all(i -> i < len(ys))
+  requires xs.map(i -> ys[i]).all(y -> y > 0)
+= 0
+
+fn mapped_len(xs: List[Natural], ys: List[Int]) -> Int requires len(xs.map(i -> ys[i])) > 0 = 0
+
+fn counted(xs: List[Natural], ys: List[Int]) -> Int requires xs.count(i -> ys[i] > 0) > 0 = 0
+
+fn counted_ok(xs: List[Natural], ys: List[Int]) -> Int
+  requires xs.count(i -> i < len(ys) && ys[i] > 0) > 0
+= 0
+
+fn found(xs: List[Natural], ys: List[Int]) -> Int requires xs.find(i -> ys[i] > 0) != None = 0
+
+fn halves(xs: List[Int]) -> List[Int] ensures it == xs.map(x -> 10 / x) = xs.map(x -> 10 / x)
+
+fn passed(xs: List[Int], ys: List[Int]) -> Int requires holds(xs, i -> ys[i] > 0) = 0
+
+fn holds(xs: List[Int], f: (Int) -> Bool) -> Bool = xs.all(f)
+
+fn nested(xss: List[List[Natural]], ys: List[Int]) -> Int
+  requires xss.all(xs -> xs.count(i -> ys[i] > 0) > 0)
+= 0
+'''
+
+[[step]]
+strata = ["--file", "l.strata", "verify", "--no-cache", "--no-race", "--obligations"]
+out = '''
+fn mapped
+  unknown index in range
+fn mapped_ok
+  proven index in range
+fn mapped_len
+  unknown index in range
+fn counted
+  unknown index in range
+fn counted_ok
+  proven index in range
+fn found
+  unknown the checks inside `xs.find((i: Int) -> at(ys, i) > 0) != None`
+fn halves
+  unknown no division by zero
+  unknown no division by zero
+  proven ensures it == xs.map((x: Int) -> 10 / x)
+fn passed
+  refuted index in range
+fn holds
+fn nested
+  unknown index in range
+'''
