@@ -278,6 +278,15 @@ fn start_cache(s: Scope) -> Cache {
 - Cost: one message hop per access on the green scheduler; batched requests or snapshots where that is too much. (user asked for the sketch, 2026-11-27; REBUILD.md L3)
 ## Tools
 
+### Fuzzy pickers for people at a terminal (user, 2026-11-28; for the lab)
+Commands given no target, at a terminal, open a fuzzy picker; with a target, or not at a terminal (agents, scripts), they behave as now.
+- `strata` writes candidates as lines (`module.name  kind  first doc line`) and runs `fzf` with a preview of `strata view` on the highlighted line. fzf isn't shipped: without it on the PATH, a numbered list (or, later, our own matcher in Strata).
+- `strata edit`: pick a definition, edit that definition's text in `$EDITOR`, store it on save as `edit` stores what it is given.
+- `strata view`: pick a definition, view it with its slice folded around it (what it calls, what calls it); in the picker `ctrl-r` references, `ctrl-c` callers, `ctrl-t` tests and laws that mention it.
+- `strata find`: fuzzy over names, doc lines and contracts at once, previewed in context.
+- `strata log`, `strata tour`: pick a change or a stop, previewed as its node diff.
+- Fuzzy ranks text; it complements `strata search` (structural), and can pick among a structural search's results.
+
 ### Structural search and rewrite: `strata search`
 A pattern is Strata code with holes (`?x`, `...`, `(?x: T)` for a typed hole), with `--where` conditions on types, regexes and modules, `--text` over strings, comments and docs, and `--rewrite` that previews and applies an edit. Saved rules in strata.toml could run in `check` as lint. Names in a pattern mean what they resolve to. (user, 2026-11-24)
 
